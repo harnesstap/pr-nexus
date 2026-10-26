@@ -71,7 +71,7 @@ pr-nexus/
 | Need | Choice | Version | Rationale |
 |---|---|---|---|
 | Desktop shell | `tauri` v2 | 2.12.x (CLI 2.12.4) | Stable v2. Capabilities-based permissions. |
-| SQLite | `rusqlite` (`bundled`) + `rusqlite_migration` | 0.41 / 2.6 | Sync API with simple ownership. sqlx 0.9 adds compile-time query checking (needs `DATABASE_URL`/offline prepare) and async-over-threadpool for SQLite, which buys nothing here. |
+| SQLite | `rusqlite` (`bundled`) | 0.41 | Sync API with simple ownership. sqlx 0.9 adds compile-time query checking (needs `DATABASE_URL`/offline prepare) and async-over-threadpool for SQLite, which buys nothing here. `rusqlite_migration` 2.6 pins rusqlite 0.40, and Cargo cannot link two `libsqlite3-sys` versions, so migrations are applied in-tree: `migrations/NNNN_*.sql`, one transaction, `PRAGMA user_version`. |
 | GitHub | `octocrab` | 0.54.x | Auth, REST models, and `Octocrab::graphql()` passthrough. GraphQL queries are hand-written `.graphql` strings with serde response structs. `graphql_client` codegen (0.16) is rejected to avoid vendoring the ~1 MB schema. Fixture tests guard the shapes. |
 | Slack | `rmcp` client (`client`, `auth`, `transport-streamable-http-client-reqwest`) | 3.7 | Talks to the official Slack MCP server over Streamable HTTP, with client-side OAuth 2.1 + PKCE built in (§7.11). The same crate backs the *Future* MCP server (§10.1). Direct Web API (`slack-morphism` 2.31 or a thin `reqwest` client) is only the documented fallback. |
 | Secrets | `keyring` 4.x, default `v1` feature (same `Entry` API as v1) | 4.2 | v4 wraps `keyring-core` plus per-OS stores. If finer control is needed, use `keyring-core` + `apple-native-keyring-store` / `windows-native-keyring-store` / `zbus-secret-service-keyring-store`. |
@@ -296,7 +296,7 @@ CREATE TABLE view_state (view_key TEXT PRIMARY KEY, state_json TEXT NOT NULL, up
 Rules:
 - Timestamps are RFC 3339 UTC text.
 - Enums are stored as lowercase snake_case text and mapped with `FromStr`/`Display`. Unknown values fail loudly.
-- Migrations live in `crates/pr-nexus-core/migrations/NNNN_*.sql` and run at startup in one transaction.
+- Migrations live in `crates/pr-nexus-core/migrations/NNNN_*.sql` and run at startup in one transaction. The runner tracks `PRAGMA user_version` (same contract as `rusqlite_migration`; that crate is not a dependency, see §3).
 - **No secrets in SQLite** (§9). A test asserts that no column name matches `token|secret|password`.
 
 ### 4.3 Errors
