@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = ["crates/pr-nexus-core", "crates/pr-nexus-providers", "app/src-tauri"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+license = "UNLICENSED"
+repository = "https://github.com/github-christophe-oudar/pr-nexus"
+publish = false
+
+[workspace.dependencies]
+thiserror = "2"
+chrono = { version = "0.4", default-features = false, features = ["std"] }

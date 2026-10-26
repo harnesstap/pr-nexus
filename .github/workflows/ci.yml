@@ -1,0 +1,328 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  # Merge queue builds gh-readonly-queue/* and fires merge_group instead of
+  # pull_request. Job names stay the same, so the required `validate` check
+  # reports for the queue. Jobs skipped by path filters still pass.
+  merge_group:
+    types: [checks_requested]
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      rust: ${{ steps.resolve.outputs.rust }}
+      web: ${{ steps.resolve.outputs.web }}
+      ci: ${{ steps.resolve.outputs.ci }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Detect changed paths
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          base: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || '' }}
+          ref: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || '' }}
+          filters: |
+            rust:
+              - 'crates/**'
+              - 'app/src-tauri/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'deny.toml'
+              - 'rust-toolchain.toml'
+            web:
+              - 'app/**'
+              - '!app/src-tauri/**'
+              - 'scripts/**'
+            ci:
+              - '.github/**'
+              - 'scripts/**'
+
+      - name: Resolve change flags
+        id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          FILTER_RUST: ${{ steps.filter.outputs.rust }}
+          FILTER_WEB: ${{ steps.filter.outputs.web }}
+          FILTER_CI: ${{ steps.filter.outputs.ci }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "push" ] || [ "$EVENT_NAME" = "schedule" ] || [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            {
+              echo "rust=true"
+              echo "web=true"
+              echo "ci=true"
+            } >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo "rust=${FILTER_RUST}"
+              echo "web=${FILTER_WEB}"
+              echo "ci=${FILTER_CI}"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+  rust-lint:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.ci == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/linux-tauri-deps
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+      # tauri-build embeds app/dist. Cargo does not run the frontend build.
+      - name: Build frontend
+        working-directory: app
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+          bun run build
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Lockfile is current
+        run: cargo update --workspace --locked
+
+  rust-test:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.ci == 'true'
+    name: rust-test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest]
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux Tauri dependencies
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/linux-tauri-deps
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+      - name: Build frontend
+        working-directory: app
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+          bun run build
+      # Keyring's mock store joins this command when secrets land. Nothing
+      # links the keyring crate yet, so Linux and macOS run the same tests.
+      - name: Test
+        run: cargo test --workspace --locked
+
+  web:
+    needs: changes
+    if: needs.changes.outputs.web == 'true' || needs.changes.outputs.ci == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+      - name: Install
+        run: bun install --frozen-lockfile
+      - name: Lint
+        run: bun run lint
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Test
+        run: bun run test
+
+  build-check:
+    needs: changes
+    if: >-
+      needs.changes.outputs.rust == 'true' ||
+      needs.changes.outputs.web == 'true' ||
+      needs.changes.outputs.ci == 'true'
+    name: build-check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-24.04, windows-latest]
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux Tauri dependencies
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/linux-tauri-deps
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+      - name: Install frontend dependencies
+        working-directory: app
+        run: bun install --frozen-lockfile
+      # --no-bundle proves the binary links. macOS also builds the .app so CI
+      # can upload it; `tauri build --no-bundle` does not produce a bundle.
+      - name: Build
+        working-directory: app
+        run: |
+          set -euo pipefail
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            bun run tauri build --bundles app
+          else
+            bun run tauri build --no-bundle
+          fi
+      - name: Upload macOS app
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-nexus-macos-app
+          path: target/release/bundle/macos/PR-Nexus.app
+          retention-days: 7
+          if-no-files-found: error
+
+  deny:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.ci == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          arguments: --all-features
+
+  guards:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Lint workflows
+        uses: rhysd/actionlint@v1.7.12
+
+      - name: Require a Changie fragment
+        if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'no-changelog')
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          if git diff --name-only "$BASE_SHA" HEAD | grep -Eq '^\.changes/unreleased/.+\.ya?ml$'; then
+            echo "Changie fragment present."
+            exit 0
+          fi
+          echo "Add a fragment under .changes/unreleased/, or label the PR no-changelog."
+          exit 1
+
+  validate:
+    runs-on: ubuntu-24.04
+    needs:
+      - changes
+      - rust-lint
+      - rust-test
+      - web
+      - build-check
+      - deny
+      - guards
+    if: always()
+    steps:
+      - name: Fail if a needed job failed or was cancelled
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          CHANGES_RUST: ${{ needs.changes.outputs.rust }}
+          CHANGES_WEB: ${{ needs.changes.outputs.web }}
+          CHANGES_CI: ${{ needs.changes.outputs.ci }}
+          RUST_LINT: ${{ needs.rust-lint.result }}
+          RUST_TEST: ${{ needs.rust-test.result }}
+          WEB: ${{ needs.web.result }}
+          BUILD_CHECK: ${{ needs.build-check.result }}
+          DENY: ${{ needs.deny.result }}
+          GUARDS: ${{ needs.guards.result }}
+        run: |
+          set -euo pipefail
+          failed=0
+          should_run() {
+            local job="$1"
+            shift
+            if [ "$CHANGES" != "success" ]; then
+              echo "$job should have run (changes=$CHANGES)"
+              return 0
+            fi
+            local flag
+            for flag in "$@"; do
+              if [ "$flag" = "true" ]; then
+                return 0
+              fi
+            done
+            return 1
+          }
+          check_required() {
+            local job="$1"
+            local result="$2"
+            shift 2
+            if should_run "$job" "$@"; then
+              if [ "$result" != "success" ]; then
+                echo "::error::$job is required but result is $result"
+                failed=1
+              fi
+            elif [ "$result" = "failure" ] || [ "$result" = "cancelled" ]; then
+              echo "::error::$job $result"
+              failed=1
+            fi
+          }
+          if [ "$CHANGES" != "success" ]; then
+            echo "::error::changes is required but result is $CHANGES"
+            failed=1
+          fi
+          check_required rust-lint "$RUST_LINT" "$CHANGES_RUST" "$CHANGES_CI"
+          check_required rust-test "$RUST_TEST" "$CHANGES_RUST" "$CHANGES_CI"
+          check_required web "$WEB" "$CHANGES_WEB" "$CHANGES_CI"
+          check_required build-check "$BUILD_CHECK" "$CHANGES_RUST" "$CHANGES_WEB" "$CHANGES_CI"
+          check_required deny "$DENY" "$CHANGES_RUST" "$CHANGES_CI"
+          check_required guards "$GUARDS" "true"
+          if [ "$failed" -ne 0 ]; then
+            exit 1
+          fi

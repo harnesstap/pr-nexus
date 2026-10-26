@@ -1,0 +1,24 @@
+[package]
+name = "pr-nexus"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "PR-Nexus desktop shell"
+
+[lib]
+name = "pr_nexus_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.7", features = [] }
+
+[dependencies]
+pr-nexus-core = { path = "../../crates/pr-nexus-core" }
+pr-nexus-providers = { path = "../../crates/pr-nexus-providers" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2.12", features = [] }
+tauri-plugin-opener = "2"
