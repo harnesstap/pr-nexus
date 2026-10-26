@@ -89,6 +89,7 @@ pub(crate) fn parse_viewer(body: &Value) -> Result<VcsUser, ProviderError> {
         id,
         login,
         organizations,
+        organizations_needing_sso: Vec::new(),
     })
 }
 
@@ -381,5 +382,34 @@ fn checks_state(value: &str) -> ChecksState {
         "ERROR" => ChecksState::Error,
         "EXPECTED" => ChecksState::Expected,
         _ => ChecksState::None,
+    }
+}
+
+/// Logins from a `GET /user/orgs` page.
+pub(crate) fn parse_rest_orgs(body: &str) -> Result<Vec<String>, ProviderError> {
+    let value: Value = serde_json::from_str(body)
+        .map_err(|err| ProviderError::Decode(format!("user orgs json: {err}")))?;
+    let items = value
+        .as_array()
+        .ok_or_else(|| ProviderError::Decode("user orgs is not a list".into()))?;
+    Ok(items
+        .iter()
+        .filter_map(|item| item.get("login").and_then(Value::as_str))
+        .map(str::to_owned)
+        .collect())
+}
+
+/// Adds orgs that only REST lists. GraphQL `viewer.organizations` silently
+/// drops orgs whose SAML SSO the token is not authorized for.
+pub(crate) fn merge_orgs(user: &mut VcsUser, rest: Vec<String>) {
+    for org in rest {
+        if !user
+            .organizations
+            .iter()
+            .any(|known| known.eq_ignore_ascii_case(&org))
+        {
+            user.organizations.push(org.clone());
+            user.organizations_needing_sso.push(org);
+        }
     }
 }

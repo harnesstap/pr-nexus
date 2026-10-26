@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Api, Bootstrap, ListRow, ProjectDto } from "../api";
 import { errorMessage } from "../api";
+import { OrgOption } from "../orgs";
 import { defaultView, parseViewState, syncLabel, type SavedView } from "./model";
 import { PrList } from "./PrList";
 
@@ -147,16 +148,15 @@ export function ListScreen({ api, boot, onBoot }: Props) {
             <ul className="mt-4 space-y-2">
               {boot.org_choices.map((org) => (
                 <li key={org}>
-                  <label className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      checked={orgs.includes(org)}
-                      onChange={() =>
-                        setOrgs((current) => (current.includes(org) ? current.filter((item) => item !== org) : [...current, org]))
-                      }
-                    />
-                    {org}
-                  </label>
+                  <OrgOption
+                    org={org}
+                    checked={orgs.includes(org)}
+                    needsSso={boot.orgs_needing_sso.includes(org)}
+                    onToggle={() =>
+                      setOrgs((current) => (current.includes(org) ? current.filter((item) => item !== org) : [...current, org]))
+                    }
+                    onOpen={(url) => void api.openExternal(url)}
+                  />
                 </li>
               ))}
             </ul>

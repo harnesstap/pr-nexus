@@ -1,9 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
 import type { Api, Bootstrap, OnboardingState } from "../api";
 import { errorMessage } from "../api";
-import { backEnabled, nextEnabled, showSkip, stepTitle, type StepModel } from "./logic";
+import { OrgOption } from "../orgs";
+import { backEnabled, nextEnabled, nextHint, nextLabel, showSkip, stepTitle, type StepModel } from "./logic";
 
 const DEFAULT_REDIRECT = "http://127.0.0.1:47821/mcp/oauth/callback";
+
+const ARM_DELAY_MS = 800;
+
+const CSV_HEADER = "github_org,github_team_slug,github_team_name,slack_channel_name,slack_channel_id";
+const CSV_EXAMPLE = `${CSV_HEADER}
+acme,platform,Platform,#platform-reviews,C0123ABCD
+acme,web-app,Web App,#web-reviews,C0456EFGH`;
 
 interface Props {
   api: Api;
@@ -22,6 +30,7 @@ export function Wizard({ api, boot, onFinished }: Props) {
   const [login, setLogin] = useState(boot.github_login);
   const [orgs, setOrgs] = useState<string[]>(boot.tracked_orgs);
   const [choices, setChoices] = useState<string[]>(boot.org_choices);
+  const [ssoOrgs, setSsoOrgs] = useState<string[]>(boot.orgs_needing_sso);
   const [personal, setPersonal] = useState(boot.include_personal);
   const [orgFilter, setOrgFilter] = useState("");
   const [mode, setMode] = useState<"gh_cli" | "pat" | "device">(boot.gh_ready ? "gh_cli" : "pat");
@@ -41,6 +50,17 @@ export function Wizard({ api, boot, onFinished }: Props) {
   const [error, setError] = useState<string | null>(null);
 
   const step = steps[index] ?? "choose_vcs";
+  // The Done screen's button sits where Skip/Next were; a short delay keeps a
+  // double click on the previous step from skipping the summary.
+  const [armedIndex, setArmedIndex] = useState<number | null>(null);
+  const armed = armedIndex === index;
+  useEffect(() => {
+    if (step !== "done") {
+      return;
+    }
+    const timer = window.setTimeout(() => setArmedIndex(index), ARM_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [step, index]);
 
   useEffect(() => {
     if (step !== "done") {
@@ -74,7 +94,9 @@ export function Wizard({ api, boot, onFinished }: Props) {
     orgCount: orgs.length,
     personal,
     syncSettled,
+    csvFilled: csv.trim().length > 0,
   };
+  const hint = busy ? null : nextHint(step, model);
   const canNext = nextEnabled(step, model) && !busy;
   const filteredChoices = useMemo(
     () => choices.filter((org) => org.toLowerCase().includes(orgFilter.trim().toLowerCase())),
@@ -108,6 +130,15 @@ export function Wizard({ api, boot, onFinished }: Props) {
       }
       if (step === "connect_chat") {
         await api.saveSlack(clientId, clientSecret, redirectUri);
+      }
+      if (step === "chat_mapping") {
+        if (csv.trim()) {
+          const summary = await api.importMapping(csv, workspace);
+          setMappingNote(`${summary.rows} rows imported`);
+          setMappingSkipped(false);
+        } else if (boot.mapping_count === 0) {
+          setMappingSkipped(true);
+        }
       }
       const done = [...completed];
       if (!done.includes(step)) {
@@ -182,6 +213,7 @@ export function Wizard({ api, boot, onFinished }: Props) {
       setGithubConnected(true);
       setLogin(session.login);
       setChoices((current) => mergeOrgs(current, session.organizations));
+      setSsoOrgs(session.organizations_needing_sso);
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -199,31 +231,6 @@ export function Wizard({ api, boot, onFinished }: Props) {
         setLogin(result.login);
         setDeviceCode(null);
       }
-    } catch (err) {
-      setError(errorMessage(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function importCsv() {
-    setBusy(true);
-    setError(null);
-    try {
-      const summary = await api.importMapping(csv, workspace);
-      setMappingNote(`${summary.rows} rows imported`);
-      setMappingSkipped(false);
-      const done = completed.includes(step) ? completed : [...completed, step];
-      setCompleted(done);
-      const next = Math.min(index + 1, steps.length - 1);
-      await api.saveOnboarding({
-        step: steps[next] ?? step,
-        completed: done,
-        mapping_skipped: false,
-        slack_skipped: slackSkipped,
-        finished_at: null,
-      });
-      setIndex(next);
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -289,7 +296,7 @@ export function Wizard({ api, boot, onFinished }: Props) {
             prompt="Where do you ask for reviews?"
             selected="Slack"
             cards={[
-              ["Slack", "N workspaces", false],
+              ["Slack", "One or more workspaces", false],
               ["Discord", "Coming soon", true],
               ["Mattermost", "Coming soon", true],
             ]}
@@ -379,20 +386,17 @@ export function Wizard({ api, boot, onFinished }: Props) {
             <ul className="mt-4 space-y-2">
               {filteredChoices.map((org) => (
                 <li key={org}>
-                  <label className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      checked={orgs.includes(org)}
-                      onChange={() =>
-                        setOrgs((current) =>
-                          current.includes(org)
-                            ? current.filter((item) => item !== org)
-                            : [...current, org],
-                        )
-                      }
-                    />
-                    {org}
-                  </label>
+                  <OrgOption
+                    org={org}
+                    checked={orgs.includes(org)}
+                    needsSso={ssoOrgs.includes(org)}
+                    onToggle={() =>
+                      setOrgs((current) =>
+                        current.includes(org) ? current.filter((item) => item !== org) : [...current, org],
+                      )
+                    }
+                    onOpen={(url) => void api.openExternal(url)}
+                  />
                 </li>
               ))}
               {filteredChoices.length === 0 && (
@@ -412,7 +416,8 @@ export function Wizard({ api, boot, onFinished }: Props) {
         {step === "connect_chat" && (
           <div className="space-y-4">
             <p className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-100">
-              Slack sign-in comes in M10. You can save these settings and continue, or skip.
+              Slack sign-in isn't available in this version yet. Save your Slack app details now and PR-Nexus will
+              use them once sign-in is available, or skip this step and add them later in Settings.
             </p>
             <button type="button" className="text-sm text-violet-300 underline" onClick={() => void openManifest()}>
               Create your Slack app
@@ -448,51 +453,84 @@ export function Wizard({ api, boot, onFinished }: Props) {
                 onChange={(event) => setRedirectUri(event.target.value)}
               />
             </label>
-            <button type="button" className="rounded border border-slate-600 px-3 py-2 text-sm opacity-50" disabled>
-              Add another workspace
-            </button>
+            <div>
+              <button
+                type="button"
+                className="rounded border border-slate-600 px-3 py-2 text-sm opacity-50"
+                disabled
+                aria-describedby="add-workspace-hint"
+              >
+                Add another workspace
+              </button>
+              <p id="add-workspace-hint" className="mt-1 text-xs text-slate-400">
+                Extra workspaces are added by signing in to each one, so this unlocks with Slack sign-in.
+              </p>
+            </div>
           </div>
         )}
         {step === "chat_mapping" && (
           <div className="space-y-3">
-            <p>Tell PR-Nexus which Slack channel each GitHub team reviews in.</p>
+            <p className="text-slate-300">
+              Tell PR-Nexus which Slack channel each GitHub team reviews in. When a PR requests a team review, PR-Nexus
+              suggests posting the request in that team's channel. This step is optional.
+            </p>
             <label className="block text-sm">
-              Target workspace for rows without one
+              Default Slack workspace
+              <span className="mt-0.5 block text-xs text-slate-400">
+                Used for rows without a <code>slack_workspace</code> column, e.g. <code>acme.slack.com</code>.
+              </span>
               <input
                 className="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2"
                 value={workspace}
                 onChange={(event) => setWorkspace(event.target.value)}
-                placeholder="workspace domain"
+                placeholder="acme.slack.com"
               />
             </label>
-            <textarea
-              className="h-40 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-xs"
-              placeholder="github_org,github_team_slug,github_team_name,slack_channel_name,slack_channel_id"
-              value={csv}
-              onChange={(event) => setCsv(event.target.value)}
-            />
-            <button type="button" className="rounded bg-slate-800 px-3 py-2 text-sm" onClick={() => void importCsv()}>
-              Import & next
-            </button>
+            <label className="block text-sm">
+              Mapping CSV
+              <span className="mt-0.5 block text-xs text-slate-400">
+                One row per GitHub team. Columns: org, team slug, team display name, Slack channel name, Slack channel id
+                (starts with C or G; copy it from the channel's details in Slack). An optional <code>slack_workspace</code>{" "}
+                column overrides the default workspace.
+              </span>
+              <textarea
+                className="mt-1 h-36 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-xs"
+                placeholder={CSV_EXAMPLE}
+                value={csv}
+                onChange={(event) => setCsv(event.target.value)}
+              />
+            </label>
+            <details className="text-xs text-slate-400">
+              <summary className="cursor-pointer">Example (made-up data)</summary>
+              <pre className="mt-2 overflow-x-auto rounded bg-slate-900 p-2 font-mono">{CSV_EXAMPLE}</pre>
+            </details>
             {mappingNote && <p className="text-sm text-slate-300">{mappingNote}</p>}
             <p className="text-sm text-slate-400">
-              You can also map channels later in Settings. Skip leaves the mapping empty.
+              {csv.trim()
+                ? "Import & next imports these rows and continues."
+                : "Paste a CSV and press Import & next, or press Next / Skip to continue without one. You can map channels later in Settings."}
             </p>
           </div>
         )}
         {step === "done" && (
-          <div className="space-y-2">
+          <div className="space-y-3">
+            <p className="text-slate-300">You're all set. Here's what PR-Nexus will use:</p>
             <p>GitHub: {login ? `@${login}` : "not connected"} · {orgs.length} orgs · personal repos {personal ? "on" : "off"}</p>
             <p>
               Slack: {slackSkipped ? "skipped" : "settings saved"} · mapping:{" "}
               {mappingSkipped ? "skipped" : mappingNote || "imported"}
             </p>
-            <p className="text-slate-300">{syncMessage}</p>
+            <p className="text-slate-300">First sync: {syncMessage}</p>
           </div>
         )}
         {error && <p className="mt-4 text-sm text-rose-300">{error}</p>}
       </section>
-      <footer className="mt-8 flex justify-end gap-2 border-t border-slate-800 pt-4">
+      {hint && (
+        <p className="mt-4 text-right text-sm text-slate-400" role="status">
+          {hint}
+        </p>
+      )}
+      <footer className="mt-4 flex justify-end gap-2 border-t border-slate-800 pt-4">
         <button
           type="button"
           className="rounded px-3 py-2 text-sm disabled:opacity-40"
@@ -511,7 +549,7 @@ export function Wizard({ api, boot, onFinished }: Props) {
             type="button"
             className="rounded bg-violet-500 px-3 py-2 text-sm font-medium text-white disabled:opacity-40"
             onClick={() => void openApp()}
-            disabled={busy || !syncSettled}
+            disabled={busy || !syncSettled || !armed}
           >
             Open PR-Nexus
           </button>
@@ -522,7 +560,7 @@ export function Wizard({ api, boot, onFinished }: Props) {
             onClick={() => void goNext()}
             disabled={!canNext}
           >
-            Next
+            {nextLabel(step, model)}
           </button>
         )}
       </footer>

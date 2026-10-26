@@ -17,6 +17,7 @@ pub const TRACKED_ORGS: &str = "github.tracked_orgs";
 pub const INCLUDE_PERSONAL: &str = "github.include_personal_repos";
 pub const VIEWER_ORGS: &str = "github.viewer_orgs";
 pub const SEEN_ORGS: &str = "github.seen_orgs";
+pub const SSO_ORGS: &str = "github.sso_orgs";
 pub const OAUTH_CLIENT_ID: &str = "github.oauth_client_id";
 pub const KEEP_CLOSED_DAYS: &str = "sync.keep_closed_days";
 pub const FOCUSED_INTERVAL: &str = "sync.focused_interval_s";
@@ -50,6 +51,15 @@ pub fn viewer_orgs(store: &Store) -> Result<Vec<String>, CoreError> {
 
 pub fn set_viewer_orgs(store: &Store, orgs: &[String]) -> Result<(), CoreError> {
     put_json(store, VIEWER_ORGS, orgs)
+}
+
+/// Orgs the user belongs to that the token cannot read until SSO is authorized.
+pub fn sso_orgs(store: &Store) -> Result<Vec<String>, CoreError> {
+    json_or(store, SSO_ORGS, Vec::new())
+}
+
+pub fn set_sso_orgs(store: &Store, orgs: &[String]) -> Result<(), CoreError> {
+    put_json(store, SSO_ORGS, orgs)
 }
 
 pub fn seen_orgs(store: &Store) -> Result<Vec<String>, CoreError> {

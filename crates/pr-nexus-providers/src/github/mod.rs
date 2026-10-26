@@ -110,6 +110,44 @@ impl GithubClient {
     }
 }
 
+impl GithubClient {
+    /// `GET /user/orgs`, following pagination (100 per page, at most 10 pages).
+    fn rest_user_orgs(&self) -> Result<Vec<String>, ProviderError> {
+        let mut orgs = Vec::new();
+        for page in 1..=10 {
+            let _permit = http::Permit::acquire(&self.gate);
+            let response = self
+                .http
+                .get(format!("{}/user/orgs", self.api))
+                .query(&[("per_page", "100"), ("page", &page.to_string())])
+                .bearer_auth(&self.token)
+                .header("Accept", "application/vnd.github+json")
+                .send()
+                .map_err(|err| ProviderError::Network(err.to_string()))?;
+            let status = response.status().as_u16();
+            let body = response
+                .text()
+                .map_err(|err| ProviderError::Network(err.to_string()))?;
+            if !(200..300).contains(&status) {
+                return Err(http::classify(
+                    status,
+                    None,
+                    None,
+                    &body,
+                    chrono::Utc::now(),
+                ));
+            }
+            let batch = parse::parse_rest_orgs(&body)?;
+            let full = batch.len() == 100;
+            orgs.extend(batch);
+            if !full {
+                break;
+            }
+        }
+        Ok(orgs)
+    }
+}
+
 impl VcsProvider for GithubClient {
     fn kind(&self) -> VcsKind {
         VcsKind::GitHub
@@ -117,7 +155,13 @@ impl VcsProvider for GithubClient {
 
     fn viewer(&self) -> Result<VcsUser, ProviderError> {
         let body = self.graphql(VIEWER, json!({}))?;
-        parse::parse_viewer(&body)
+        let mut user = parse::parse_viewer(&body)?;
+        // REST lists every membership; GraphQL hides SSO-protected orgs the
+        // token is not authorized for. A REST failure keeps the GraphQL list.
+        if let Ok(rest) = self.rest_user_orgs() {
+            parse::merge_orgs(&mut user, rest);
+        }
+        Ok(user)
     }
 
     fn search_pull_requests(

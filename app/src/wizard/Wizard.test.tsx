@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { expect, test } from "vitest";
 import type { Api, Bootstrap } from "../api";
 import { Wizard } from "./Wizard";
@@ -28,6 +28,7 @@ const boot: Bootstrap = {
   tracked_orgs: [],
   include_personal: false,
   org_choices: ["acme"],
+  orgs_needing_sso: [],
   slack_client_id: "",
   slack_redirect_uri: "http://127.0.0.1:47821/mcp/oauth/callback",
   mapping_count: 0,
@@ -43,7 +44,7 @@ function api(overrides: Partial<Api> = {}): Api {
     bootstrap: () => Promise.resolve(boot),
     saveProviders: () => Promise.resolve(),
     saveOnboarding: () => Promise.resolve(),
-    connectGithub: () => Promise.resolve({ login: "ada", organizations: ["acme"] }),
+    connectGithub: () => Promise.resolve({ login: "ada", organizations: ["acme"], organizations_needing_sso: [] }),
     startDevice: () => Promise.reject(new Error("unused")),
     pollDevice: () => Promise.reject(new Error("unused")),
     saveOrgs: () => Promise.resolve(),
@@ -78,7 +79,9 @@ test("coming soon providers cannot be selected and back is disabled on step 1", 
 test("skip is on the Slack step and a second workspace cannot be added yet", async () => {
   render(<Wizard api={api()} boot={{ ...boot, resume_step: "connect_chat" }} onFinished={() => undefined} />);
   expect(await screen.findByRole("heading", { name: /Connect Slack/ })).toBeInTheDocument();
-  expect(screen.getByText(/Slack sign-in comes in M10/)).toBeInTheDocument();
+  expect(screen.getByText(/Slack sign-in isn't available in this version yet/)).toBeInTheDocument();
+  expect(screen.queryByText(/M\d+/)).not.toBeInTheDocument();
+  expect(screen.getByText(/unlocks with Slack sign-in/)).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Skip" })).toBeEnabled();
   expect(screen.getByRole("button", { name: "Add another workspace" })).toBeDisabled();
   expect(screen.getByRole("button", { name: "Create your Slack app" })).toBeEnabled();
@@ -91,4 +94,69 @@ test("next is disabled on orgs until one org or personal repos is chosen", () =>
   expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
   fireEvent.click(screen.getByRole("checkbox", { name: "acme" }));
   expect(screen.getByRole("button", { name: "Next" })).toBeEnabled();
+});
+
+test("skipping the mapping step lands on Done before the list opens", async () => {
+  let finished = false;
+  render(
+    <Wizard
+      api={api()}
+      boot={{ ...boot, resume_step: "chat_mapping", github_connected: true, github_login: "ada" }}
+      onFinished={() => {
+        finished = true;
+      }}
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Skip" }));
+  expect(await screen.findByRole("heading", { name: /Step 7 of 7 · Done/ })).toBeInTheDocument();
+  expect(screen.getByText(/mapping: skipped/)).toBeInTheDocument();
+  expect(finished).toBe(false);
+  const open = screen.getByRole("button", { name: "Open PR-Nexus" });
+  expect(open).toBeDisabled();
+  fireEvent.click(open);
+  expect(finished).toBe(false);
+  await waitFor(() => expect(open).toBeEnabled(), { timeout: 2000 });
+});
+
+test("the mapping step shows a CSV example and Next imports pasted rows", async () => {
+  let imported = "";
+  render(
+    <Wizard
+      api={api({
+        importMapping: (csv) => {
+          imported = csv;
+          return Promise.resolve({ rows: 2 });
+        },
+      })}
+      boot={{ ...boot, resume_step: "chat_mapping" }}
+      onFinished={() => undefined}
+    />,
+  );
+  expect(screen.getByRole("button", { name: "Next" })).toBeEnabled();
+  expect(screen.getAllByText(/C0123ABCD/).length).toBeGreaterThan(0);
+  fireEvent.change(screen.getByRole("textbox", { name: /Mapping CSV/ }), {
+    target: { value: "github_org,github_team_slug,github_team_name,slack_channel_name,slack_channel_id\nacme,web,Web,#web,C1" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Import & next" }));
+  expect(await screen.findByRole("heading", { name: /Done/ })).toBeInTheDocument();
+  expect(imported).toContain("acme,web");
+});
+
+test("a disabled Next on Connect GitHub says why", () => {
+  render(<Wizard api={api()} boot={{ ...boot, resume_step: "connect_vcs" }} onFinished={() => undefined} />);
+  expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
+  expect(screen.getByText("Connect GitHub above to continue.")).toBeInTheDocument();
+});
+
+test("orgs hidden behind SSO are listed with an authorization hint", () => {
+  render(
+    <Wizard
+      api={api()}
+      boot={{ ...boot, resume_step: "choose_vcs_scope", org_choices: ["acme", "acme-sso"], orgs_needing_sso: ["acme-sso"] }}
+      onFinished={() => undefined}
+    />,
+  );
+  expect(screen.getByRole("checkbox", { name: /acme-sso/ })).toBeInTheDocument();
+  expect(screen.getAllByText("SSO authorization needed")).toHaveLength(1);
+  expect(screen.getByText(/at least one org/)).toBeInTheDocument();
 });
