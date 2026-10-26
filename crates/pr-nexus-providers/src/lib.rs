@@ -1,7 +1,7 @@
 //! Provider factories.
 //!
-//! GitHub (octocrab + GraphQL) arrives with sync. Slack is an empty module:
-//! the client is not chosen yet. See `slack`.
+//! GitHub (octocrab + GraphQL) arrives with sync. Slack stays an empty module
+//! until M10. The transport is the official Slack MCP server; see `slack`.
 
 use pr_nexus_core::domain::{ChatKind, VcsKind};
 use pr_nexus_core::error::ProviderError;
@@ -29,8 +29,7 @@ pub fn build_vcs(kind: VcsKind) -> Result<(), ProviderError> {
 
 /// Build the chat client for `kind`.
 ///
-/// Slack returns unsupported on purpose. Do not add a Web API client here
-/// until the Slack integration approach is settled.
+/// Slack returns unsupported on purpose. The MCP client lands in M10.
 pub fn build_chat(kind: ChatKind) -> Result<(), ProviderError> {
     match kind {
         ChatKind::Slack => Err(ProviderError::Unsupported(

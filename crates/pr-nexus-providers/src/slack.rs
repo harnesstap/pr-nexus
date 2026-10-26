@@ -1,6 +1,6 @@
 //! Slack provider.
 //!
-//! Empty on purpose. v1 will talk to Slack, but the transport is not chosen:
-//! a direct Web API client is one option, and Slack's official remote MCP
-//! server (<https://mcp.slack.com/mcp>) over OAuth is the other. Do not add
-//! methods, tokens, or scopes here until that decision lands.
+//! Empty on purpose for this milestone. The spec (D19, §7.11) talks to Slack
+//! only through the official remote MCP server at <https://mcp.slack.com/mcp>
+//! (`rmcp`, OAuth 2.1 + PKCE). Direct Web API is a documented fallback and is
+//! not built in v1. Do not add the client, tokens, or scopes until M10.

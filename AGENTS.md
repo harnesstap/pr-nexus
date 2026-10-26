@@ -17,7 +17,7 @@ Fragments live in `.changes/unreleased/`. Never edit `CHANGELOG.md` by hand. Ski
 ## Layout
 
 - `crates/pr-nexus-core` — domain kinds, errors, and the provider registry. No network dependencies.
-- `crates/pr-nexus-providers` — GitHub and Slack factories. GitHub is a stub until sync. Slack is an empty module: the client is not chosen yet (a direct Web API client, or Slack's official remote MCP server at <https://mcp.slack.com/mcp> over OAuth). Do not add Slack Web API calls, tokens, or scopes until that is decided.
+- `crates/pr-nexus-providers` — GitHub and Slack factories. GitHub is a stub until sync. Slack is an empty module until M10. The spec uses Slack's official remote MCP server at <https://mcp.slack.com/mcp> (`rmcp`, OAuth). Do not add that client, a Web API client, tokens, or scopes in an earlier milestone.
 - `app/` — React, TypeScript, Vite, and Tailwind.
 - `app/src-tauri` — Tauri v2 shell. It is a Cargo workspace member.
 
