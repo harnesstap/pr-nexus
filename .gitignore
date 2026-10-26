@@ -1,0 +1,22 @@
+# Rust
+/target
+**/*.rs.bk
+
+# Frontend
+app/node_modules
+app/dist
+
+# Tauri
+app/src-tauri/target
+app/src-tauri/gen
+
+# OS / editor
+.DS_Store
+.idea
+.vscode
+
+# Secrets and local env
+.env
+.env.*
+*.pem
+*.p12
