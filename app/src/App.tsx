@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { tauriApi, type Api, type Bootstrap } from "./api";
-import { Home } from "./home/Home";
+import { ListScreen } from "./list/ListScreen";
 import { Wizard } from "./wizard/Wizard";
 
 interface Props {
@@ -35,5 +35,5 @@ export default function App({ api = tauriApi }: Props) {
   if (!boot.onboarding.finished_at) {
     return <Wizard api={api} boot={boot} onFinished={() => void api.bootstrap().then(setBoot)} />;
   }
-  return <Home api={api} boot={boot} onBoot={setBoot} />;
+  return <ListScreen api={api} boot={boot} onBoot={setBoot} />;
 }

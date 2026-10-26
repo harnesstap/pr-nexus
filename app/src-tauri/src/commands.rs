@@ -1,7 +1,7 @@
 use chrono::Utc;
 use pr_nexus_core::domain::{
-    Account, AccountId, AccountKind, AuthMode, ChecksState, PullRequest, RequestStatus,
-    ReviewDecision,
+    Account, AccountId, AccountKind, AuthMode, ChecksState, ProjectId, PullRequest, RequestStatus,
+    ReviewDecision, ViewState,
 };
 use pr_nexus_core::mapping::{self, ImportMode};
 use pr_nexus_core::onboarding::{self, OnboardingState};
@@ -121,6 +121,7 @@ pub struct ProjectDto {
     pub color: String,
     pub archived: bool,
     pub description: String,
+    pub sort_order: i32,
 }
 
 #[derive(Deserialize)]
@@ -490,8 +491,65 @@ pub fn list_projects(
             color: project.color,
             archived: project.archived,
             description: project.description,
+            sort_order: project.sort_order,
         })
         .collect())
+}
+
+#[tauri::command]
+pub fn rename_project(
+    app: State<'_, std::sync::Arc<AppState>>,
+    id: i64,
+    name: String,
+) -> Result<(), AppError> {
+    let state = app.inner().as_ref();
+    state.store.rename_project(ProjectId(id), name)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn archive_project(
+    app: State<'_, std::sync::Arc<AppState>>,
+    id: i64,
+    archived: bool,
+) -> Result<(), AppError> {
+    let state = app.inner().as_ref();
+    state.store.set_project_archived(ProjectId(id), archived)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_project(app: State<'_, std::sync::Arc<AppState>>, id: i64) -> Result<(), AppError> {
+    let state = app.inner().as_ref();
+    state.store.delete_project(ProjectId(id))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn load_view_state(
+    app: State<'_, std::sync::Arc<AppState>>,
+    view_key: String,
+) -> Result<Option<String>, AppError> {
+    let state = app.inner().as_ref();
+    Ok(state
+        .store
+        .get_view_state(view_key)?
+        .map(|entry| entry.state_json))
+}
+
+#[tauri::command]
+pub fn save_view_state(
+    app: State<'_, std::sync::Arc<AppState>>,
+    view_key: String,
+    state_json: String,
+) -> Result<(), AppError> {
+    let state = app.inner().as_ref();
+    state.store.put_view_state(ViewState {
+        view_key,
+        state_json,
+        updated_at: Utc::now(),
+    })?;
+    Ok(())
 }
 
 fn to_row(state: &AppState, pr: &PullRequest, flag: bool) -> Result<ListRow, AppError> {
