@@ -6,7 +6,7 @@ PR-Nexus is a private desktop app. Do not commit company names, organization nam
 
 - Rust stable, via rustup. `rust-toolchain.toml` selects the channel and installs rustfmt and clippy.
 - Bun 1.3.14.
-- On Linux, the WebKitGTK packages CI installs (see `.github/actions/linux-tauri-deps`).
+- On Linux, the WebKitGTK packages listed in `.github/actions/linux-tauri-deps`.
 
 ```bash
 cd app
@@ -77,7 +77,9 @@ Kinds: Breaking (major), Features and Added (minor), Changed, Fixes, Fixed, Docs
 
 ## CI
 
-`.github/workflows/ci.yml` runs on pull requests, pushes to `main`, the merge queue (`merge_group`), a nightly schedule, and manual dispatch.
+`.github/workflows/ci.yml` runs on pull requests, pushes to `main` and `v*` tags, the merge queue (`merge_group`), a nightly schedule, and manual dispatch.
+
+Linux jobs run on the harnesstap org's self-hosted runners (labels `self-hosted`, `Linux`; override with the repository variable `LINUX_RUNNER_LABELS`, a JSON array). The runners are shared: CI never installs system packages on them. If the WebKitGTK headers are missing, the `linux-tauri-deps` step fails and prints the `apt-get` command for a runner admin. macOS and Windows jobs use GitHub-hosted runners and only run for `v*` tags and manual dispatch, to save Actions minutes.
 
 Path filters skip expensive jobs when they are not needed. The merge queue requires one check: **`validate`**. That job fails when any job that should have run failed or was cancelled. A skipped job is success.
 
@@ -86,13 +88,14 @@ Jobs behind `validate`:
 | Job | What it does |
 |---|---|
 | `rust-lint` | `cargo fmt`, `cargo clippy -D warnings`, `cargo update --locked` |
-| `rust-test` | `cargo test --workspace --locked` on Ubuntu 24.04 and macOS |
+| `rust-test` | `cargo test --workspace --locked` on Linux |
 | `web` | `bun run lint`, `typecheck`, and `test` |
-| `build-check` | Tauri build on macOS, Ubuntu 24.04, and Windows. macOS uploads the `.app` for 7 days |
+| `build-check` | Tauri build (`--no-bundle`) on Linux |
+| `desktop` | Tags and dispatch only: macOS tests and `.app` (uploaded for 7 days), Windows build |
 | `deny` | `cargo deny check` |
 | `guards` | actionlint, and a Changie fragment on pull requests |
 
-Linux and Windows are built in CI. They are not attached to GitHub releases.
+Linux and Windows are built in CI (Windows on tags and dispatch). They are not attached to GitHub releases.
 
 `.github/workflows/nightly.yml` runs the same kind of checks after `cargo update` without `--locked`. It does not open issues and it does not push the updated lockfile. Its cron is `47 6 * * *`, offset from CI's `17 6 * * *`.
 
@@ -126,7 +129,7 @@ v1 ships one artifact: an ad-hoc-sealed macOS Apple Silicon DMG. There is no aut
 
 The DMG is ad-hoc signed (`codesign --force --deep --sign -`), not notarized.
 
-1. Preferred: `gh release download vX.Y.Z -R github-christophe-oudar/pr-nexus -p '*.dmg'`. The repository is private, and files fetched by `gh` do not get the quarantine flag.
+1. Preferred: `gh release download vX.Y.Z -R harnesstap/pr-nexus -p '*.dmg'`. The repository is private, and files fetched by `gh` do not get the quarantine flag.
 2. After a browser download, macOS may say the app is damaged or from an unidentified developer. Open it once, then System Settings → Privacy & Security → Open Anyway. On macOS 15 and later, Control-click → Open does not bypass that.
 3. Or: `xattr -dr com.apple.quarantine /Applications/PR-Nexus.app`.
 

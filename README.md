@@ -26,7 +26,7 @@ v1 publishes an unsigned, ad-hoc-sealed macOS Apple Silicon DMG only. Linux and 
 Preferred, because `gh` does not set the quarantine flag:
 
 ```bash
-gh release download vX.Y.Z -R github-christophe-oudar/pr-nexus -p '*.dmg'
+gh release download vX.Y.Z -R harnesstap/pr-nexus -p '*.dmg'
 ```
 
 A browser download can be blocked by Gatekeeper ("cannot verify the developer" or "damaged"). Open the app once, then allow it under System Settings → Privacy & Security → Open Anyway. Alternatively:
