@@ -926,8 +926,8 @@ Approved mockups (AI-generated; style references, not pixel specs):
 - [`docs/ui/slack-preview.jpg`](ui/slack-preview.jpg): the Slack preview modal only (cropped; in the app it sits centered over the dimmed list view). The rendered message is illustrative: the real text is the §7.6 template, byte-exact, and the sender shown is **you** (messages are posted with your user token), not an "APP" bot. Bumps appear in a separate "Bump · thread reply" group per channel.
 
 **Layout.**
-- **Sidebar** (navigation only, no persistent filters): My PRs, To review, Projects, Settings. There is no org checkbox list here; orgs are a filter in the menu.
-- **Sidebar footer:** sync status plus a refresh button: `● Synced · 2m ago  ⟳`, `◌ Syncing…`, `▲ Rate limited · resets 14:32  ⟳`, or `▲ Sync failed · <reason>  ⟳` (§6). Clicking the text shows per-account detail.
+- **Sidebar** (navigation only, no persistent filters): My PRs, To review, then a **Projects** section listing active projects with a `+` (New project) button. With no projects it shows an empty state ("No projects yet…") with a **Create project** button; both open an inline name field (`Enter` creates via `create_project`: trimmed, non-empty, unique; `Esc` cancels) and select the new project. Settings is **not** a project entry. There is no org checkbox list here; orgs are a filter in the menu.
+- **Sidebar footer:** Settings, then sync status plus a refresh button: `● Synced · 2m ago  ⟳`, `◌ Syncing…`, `▲ Rate limited · resets 14:32  ⟳`, or `▲ Sync failed · <reason>  ⟳` (§6). Clicking the text shows per-account detail.
 - **Header:** view title and subtitle (`5 open PRs across 2 projects`), the **search bar**, and a single small **filter icon button** (funnel). There is **no** overflow `⋯` button in the header.
 - **List header:** a global tri-state checkbox with `N of M selected` (or `M PRs` when nothing is selected).
 
@@ -939,21 +939,22 @@ Approved mockups (AI-generated; style references, not pixel specs):
 │                  │ 5 open PRs across 2 projects                                             │
 │ ⌂ My PRs       ● │ ⊟ 2 of 5 selected                                                        │
 │ ◷ To review      │ ┌ ▾ ⊟ Auth V2 (3) ────────────────────────────────────────────────── ⋯ ┐ │
-│ ▤ Projects       │ │ ☑ #142 Migrate login to new auth +1 ✓Approved 💬0/2  Requested 2d ↗  │ │
-│ ⚙ Settings       │ │   acme/webapp · ● Passing                            bumped 5h ago   │ │
-│                  │ │ ☑ #138 Add passkeys support       ● Review  💬1/4                    │ │
+│ ▤ PROJECTS     + │ │ ☑ #142 Migrate login to new auth +1 ✓Approved 💬0  ⧉ Bumped · 5h ago ↗│ │
+│   ● Auth V2      │ │   acme/webapp · ● Passing                                            │ │
+│   ● Billing      │ │ ☑ #138 Add passkeys support  ● Review pending 💬1  ⧉ Not requested  │ │
 │                  │ │   acme/auth-service · ● Passing                                      │ │
-│                  │ │ ☐ #135 Refresh token rotation     ✕ Changes 💬3/3                    │ │
+│                  │ │ ☐ #135 Refresh token rotation ✕ Changes req. 💬3  ⧉ Not requested   │ │
 │                  │ │   acme/auth-service · ● Failing                                      │ │
 │                  │ └──────────────────────────────────────────────────────────────────────┘ │
 │                  │ ▸ ⊟ Billing revamp (2) · collapsed                                    ⋯  │
 │                  │ ┌ ▾ ☐ Unassigned (1) ──────────────────────────────────────────────────┐ │
-│                  │ │ ☐ #23  Fix tax calculation        ● Review  💬0/0  Requested 5d ↗    │ │
+│                  │ │ ☐ #23  Fix tax calculation   ● Review pending 💬0 ⧉ Requested · 5d ↗│ │
 │                  │ │   acme/billing · ● Passing                                           │ │
 │                  │ └──────────────────────────────────────────────────────────────────────┘ │
+│ ⚙ Settings       │                                                                          │
 │ ● Synced · 2m  ⟳ │      ┌ 2 selected │ [Request / bump on Slack] │ [✕ Clear] ┐              │
 └──────────────────┴──────────────────────────────────────────────────────────────────────────┘
- ☐ none · ⊟ partly selected · ☑ all · 💬 unresolved/total threads · ↗ original Slack request
+ ☐ none · ⊟ partly selected · ☑ all · 💬 unresolved threads · ⧉ Slack icon (grey = not requested) · ↗ original Slack request
  ⋯ project actions (auto-link rules) · double-click a project title to rename · no per-row buttons
 ```
 
@@ -973,12 +974,12 @@ Approved mockups (AI-generated; style references, not pixel specs):
 
 **Rows have no action buttons.** A row is selected only with its checkbox (or `x`). The **only** Slack action in the list is the floating bar's **Request / bump on Slack**, which decides request vs bump per PR and per channel from `review_requests` (§7.7, §7.9).
 
-Row content, each part toggled under **Show**: number and title; `owner/repo`; CI; review-decision pill; 💬 unresolved/total threads (default on); owning teams; last activity; project badges (`+1` when in several projects); the **Slack request indicator**.
+Row content, each part toggled under **Show**: number and title; `owner/repo`; CI (colored dot + label); review-decision pill (`✓ Approved`, `● Review pending`, `✕ Changes requested`); 💬 unresolved thread count (default on; icon + number, tooltip and accessible label `N unresolved of M review threads`, dimmed at 0; never a bare `0/0`); owning teams; last activity; project badges (`+1` when in several projects); the **Slack request indicator**. Layout matches the mockup: title and repo on the left, then aligned review, threads, and Slack columns.
 
 **Slack request indicator** (from the newest active `review_requests` row):
-- `Requested 2d ago`, plus `· bumped 5h ago` when `last_bumped_at` is set. Tooltip: `workspace · #channel`, bump count, and source (app or discovered). With several active channels: `Requested 2d ago · 2 channels`, with a hover list.
+- Slack icon plus the newest event and its age: `Requested · 2d ago`, or `Bumped · 5h ago` once `last_bumped_at` is set. Tooltip: `workspace · #channel`, the request age, and the bump count. With several active channels: `Requested 2d ago · 2 channels`, with a hover list.
 - A small **link icon ↗** opens the **original request message/thread**. It tries the Slack app first with `slack://channel?team=<team_id>&id=<channel_id>&message=<root_ts>`, where `team_id` comes from the Slack account's `external_id`. If no handler is registered (`tauri-plugin-opener` errors), it opens the stored https `permalink` in the browser. Verify the deep-link format in M10; if Slack ignores `message`, use the permalink directly, since the desktop app intercepts Slack https links when installed.
-- Rows without an active request show nothing by default. Show → "Not requested label" adds a subtle grey `Not requested`.
+- Rows without an active request show a greyed Slack icon and `Not requested` (as in the mockup), with no ↗. Show → "Not requested label" turns it off.
 
 **Filter menu** (funnel button; opens a menu like Linear/Cursor, with submenus on hover/→):
 
@@ -1010,7 +1011,7 @@ Row content, each part toggled under **Show**: number and title; `owner/repo`; C
   - Slack request: None, Requested, Bumped, Bump due (last request or bump older than `review.min_bump_interval_hours`);
   - Archived: show PRs in archived projects and hidden closed PRs.
   **Reset** clears filters only, not grouping, ordering, or Show.
-- The funnel shows a dot when any filter is active. There is no other persistent filter UI.
+- The funnel is an icon button immediately right of the search field. It shows a dot when any filter is active. The menu closes on `Esc` and on a click outside it. There is no other persistent filter UI.
 - **Persistence:** grouping, ordering, Show, and filters are saved **per view** in `view_state` (`mine`, `to_review`, `project:<id>`) and restored on launch.
 
 **Search bar:** always visible. Filters the current view as you type (150 ms debounce), case- and accent-insensitive, whitespace-separated terms ANDed. It matches project name, PR title, PR body (`bodyText`), `owner/repo`, and number (`#142` or `142`). It runs in core over the cached rows (a few hundred PRs; no FTS needed). It combines with the menu filters. `/` focuses it, and `Esc` clears it.

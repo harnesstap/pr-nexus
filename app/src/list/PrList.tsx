@@ -1,17 +1,22 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ListRow, ProjectDto } from "../api";
+import { CommentIcon, ExternalIcon, FunnelIcon, SearchIcon, SlackIcon } from "../icons";
 import {
   ago,
   bulkIds,
   checkState,
   ciLabel,
+  ciTone,
   filtersActive,
   groupRows,
   hiddenSelectedCount,
   renameError,
   resetFilters,
   reviewLabel,
+  reviewTone,
   sectionIds,
+  slackStatus,
+  threadsLabel,
   toggleParent,
   visibleIds,
   visibleRows,
@@ -26,6 +31,7 @@ import {
   type ShowFlags,
   type SlackFilter,
   type StatusFilter,
+  type Tone,
 } from "./model";
 
 interface Props {
@@ -141,7 +147,7 @@ export function PrList({ rows, projects, viewKey, view, onViewChange, now, onOpe
         event.preventDefault();
         setSelected(toggleParent(ids, selected));
       } else if (event.key === "r") {
-        setNotice("Slack preview comes in M10");
+        setNotice("Sending Slack requests isn't available in this version yet.");
       } else if (event.key === "s") {
         const link = flat[focusIndex]?.row.slack?.permalink;
         if (link) {
@@ -170,18 +176,21 @@ export function PrList({ rows, projects, viewKey, view, onViewChange, now, onOpe
         <div>
           <h1 className="text-lg font-semibold">{viewTitle(viewKey, projects)}</h1>
           <p className="text-sm text-slate-400">
-            {shown.length} open PRs across {projectCount} projects
+            {shown.length} open {shown.length === 1 ? "PR" : "PRs"} across {projectCount} {projectCount === 1 ? "project" : "projects"}
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <input
-            ref={searchRef}
-            aria-label="Search"
-            className="w-72 rounded border border-slate-700 bg-slate-900 px-3 py-1.5 text-sm"
-            placeholder="Search projects, PRs, descriptions…"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-          />
+          <label className="flex w-80 items-center gap-2 rounded-md border border-slate-700 bg-slate-900 px-3 py-1.5 text-sm focus-within:border-violet-400">
+            <SearchIcon className="shrink-0 text-slate-500" />
+            <input
+              ref={searchRef}
+              aria-label="Search"
+              className="min-w-0 flex-1 bg-transparent outline-none placeholder:text-slate-500"
+              placeholder="Search projects, PRs, descriptions…"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+            />
+          </label>
           <FilterMenu view={view} rows={rows} orgs={orgOptions(rows)} menu={menu} setMenu={setMenu} onViewChange={onViewChange} />
         </div>
       </header>
@@ -281,7 +290,7 @@ export function PrList({ rows, projects, viewKey, view, onViewChange, now, onOpe
                   return (
                     <article
                       key={`${section.key}-${row.id}`}
-                      className={`flex gap-2 border-t border-slate-800 px-2 py-1.5 ${index === focusIndex ? "bg-slate-900" : ""}`}
+                      className={`flex items-center gap-3 border-t border-slate-800 px-2 py-1.5 ${index === focusIndex ? "bg-slate-900" : ""}`}
                     >
                       <TriCheckbox
                         label={`Select ${row.title}`}
@@ -296,25 +305,32 @@ export function PrList({ rows, projects, viewKey, view, onViewChange, now, onOpe
                             </span>
                           )}
                           {view.show.badges && row.project_ids.length > 1 && (
-                            <span className="text-xs text-slate-500">+{row.project_ids.length - 1}</span>
-                          )}
-                          {view.show.review && reviewLabel(row.review_decision) && (
-                            <span className="rounded bg-slate-800 px-1.5 text-xs text-slate-300">{reviewLabel(row.review_decision)}</span>
-                          )}
-                          {view.show.threads && (
-                            <span className="text-xs text-slate-500">
-                              {row.unresolved_threads}/{row.total_threads}
+                            <span
+                              className="shrink-0 rounded bg-slate-800 px-1 text-xs text-slate-400"
+                              title={`Also in ${row.project_ids.length - 1} other project${row.project_ids.length > 2 ? "s" : ""}`}
+                            >
+                              +{row.project_ids.length - 1}
                             </span>
                           )}
-                          <SlackMark row={row} now={now} showMissing={view.show.notRequested} onOpen={onOpen} />
                         </div>
-                        <p className="text-xs text-slate-500">
+                        <p className="flex items-center gap-1 truncate text-xs text-slate-500">
                           {view.show.repo && <span>{row.repo}</span>}
-                          {view.show.repo && view.show.ci && <span> · </span>}
-                          {view.show.ci && <span>{ciLabel(row.checks)}</span>}
-                          {view.show.activity && <span> · {ago(row.updated_at, now)}</span>}
-                          {view.show.teams && <span className="sr-only">owners arrive later</span>}
+                          {view.show.repo && view.show.ci && <span aria-hidden="true">·</span>}
+                          {view.show.ci && (
+                            <span className="flex items-center gap-1">
+                              <Dot tone={ciTone(row.checks)} />
+                              {ciLabel(row.checks)}
+                            </span>
+                          )}
+                          {view.show.activity && <span> · updated {ago(row.updated_at, now)}</span>}
                         </p>
+                      </div>
+                      <div className="flex w-40 shrink-0 items-center">
+                        {view.show.review && <ReviewPill decision={row.review_decision} />}
+                      </div>
+                      {view.show.threads && <Threads row={row} />}
+                      <div className="flex w-44 shrink-0 items-center justify-end">
+                        <SlackMark row={row} now={now} showMissing={view.show.notRequested} onOpen={onOpen} />
                       </div>
                     </article>
                   );
@@ -330,7 +346,7 @@ export function PrList({ rows, projects, viewKey, view, onViewChange, now, onOpe
             <span>
               {bulkIds(selected).length} selected{hidden > 0 ? ` (${hidden} hidden)` : ""}
             </span>
-            <button type="button" className="rounded bg-violet-500/40 px-3 py-1 text-white" disabled title="Slack requests come in M10">
+            <button type="button" className="rounded bg-violet-500/40 px-3 py-1 text-white" disabled title="Sending Slack requests isn't available in this version yet">
               Request / bump on Slack
             </button>
             <button type="button" onClick={() => setSelected(new Set())}>
@@ -341,7 +357,7 @@ export function PrList({ rows, projects, viewKey, view, onViewChange, now, onOpe
       )}
       {rulesFor && (
         <dialog open className="rounded border border-slate-700 bg-slate-900 p-4 text-sm text-slate-200">
-          <p>Auto-link rules for {rulesFor} arrive in a later milestone. Archive and delete work from this menu.</p>
+          <p>Auto-link rules for {rulesFor} can't be edited in this version yet. Archive and delete work from this menu.</p>
           <button type="button" className="mt-3 rounded bg-slate-800 px-3 py-1" onClick={() => setRulesFor(null)}>
             Close
           </button>
@@ -405,22 +421,80 @@ function SlackMark({
   showMissing: boolean;
   onOpen: (url: string) => void;
 }) {
-  if (!row.slack) {
+  const status = slackStatus(row.slack, now);
+  if (!status) {
     if (!showMissing) {
       return null;
     }
-    return <span className="text-xs text-slate-600">Not requested</span>;
+    return (
+      <span className="flex items-center gap-1.5 text-xs text-slate-600">
+        <SlackIcon active={false} />
+        Not requested
+      </span>
+    );
   }
-  const bumped = row.slack.last_bumped_at ? ` · bumped ${ago(row.slack.last_bumped_at, now)}` : "";
+  const link = row.slack?.permalink;
   return (
-    <span className="ml-auto flex items-center gap-1 text-xs text-slate-300" title={`${row.slack.workspace} · #${row.slack.channel_name}`}>
-      Requested · {ago(row.slack.requested_at, now)}
-      {bumped}
-      {row.slack.permalink && (
-        <button type="button" aria-label={`Open Slack request for ${row.title}`} className="text-slate-400" onClick={() => onOpen(row.slack!.permalink!)}>
-          ↗
+    <span className="flex items-center gap-1.5 text-xs text-slate-300" title={status.title}>
+      <SlackIcon />
+      {status.label}
+      {link && (
+        <button
+          type="button"
+          aria-label={`Open Slack request for ${row.title}`}
+          className="rounded p-0.5 text-slate-400 hover:text-slate-100"
+          onClick={() => onOpen(link)}
+        >
+          <ExternalIcon size={12} />
         </button>
       )}
+    </span>
+  );
+}
+
+const TONE_TEXT: Record<Tone, string> = {
+  good: "text-emerald-400",
+  bad: "text-rose-400",
+  warn: "text-amber-400",
+  pending: "text-violet-400",
+  muted: "text-slate-500",
+};
+
+function Dot({ tone }: { tone: Tone }) {
+  return <span aria-hidden="true" className={`inline-block h-1.5 w-1.5 rounded-full bg-current ${TONE_TEXT[tone]}`} />;
+}
+
+function ReviewPill({ decision }: { decision: string | null }) {
+  const label = reviewLabel(decision);
+  if (!label) {
+    return null;
+  }
+  const tone = reviewTone(decision);
+  const mark = tone === "good" ? "✓" : tone === "bad" ? "✕" : null;
+  return (
+    <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-700 bg-slate-900 px-2 py-0.5 text-xs text-slate-200">
+      {mark ? (
+        <span aria-hidden="true" className={`text-[10px] font-bold ${TONE_TEXT[tone]}`}>
+          {mark}
+        </span>
+      ) : (
+        <Dot tone={tone} />
+      )}
+      {label}
+    </span>
+  );
+}
+
+function Threads({ row }: { row: ListRow }) {
+  const { text, title } = threadsLabel(row.unresolved_threads, row.total_threads);
+  return (
+    <span
+      className={`flex w-12 shrink-0 items-center gap-1 text-xs ${row.unresolved_threads > 0 ? "text-slate-300" : "text-slate-600"}`}
+      title={title}
+      aria-label={title}
+    >
+      <CommentIcon size={14} />
+      {text}
     </span>
   );
 }
@@ -457,15 +531,42 @@ function FilterMenu({
   setMenu: (menu: string | null) => void;
   onViewChange: (view: SavedView) => void;
 }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const open = menu !== null;
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    function onPointer(event: MouseEvent) {
+      if (ref.current && event.target instanceof Node && !ref.current.contains(event.target)) {
+        setMenu(null);
+      }
+    }
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        setMenu(null);
+      }
+    }
+    document.addEventListener("mousedown", onPointer);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onPointer);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open, setMenu]);
   return (
-    <div className="relative">
+    <div ref={ref} className="relative">
       <button
         type="button"
         aria-label="Filter menu"
-        className="relative rounded border border-slate-700 px-2 py-1.5 text-sm"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title="Grouping, ordering, and filters (f)"
+        className={`relative flex h-8 w-8 items-center justify-center rounded-md border text-slate-300 hover:text-white ${open ? "border-violet-400 bg-slate-800" : "border-slate-700 bg-slate-900"}`}
         onClick={() => setMenu(menu ? null : "root")}
       >
-        ▾
+        <FunnelIcon />
         {filtersActive(view.filters) && <span aria-label="Filters active" className="absolute -right-1 -top-1 h-2 w-2 rounded-full bg-violet-400" />}
       </button>
       {menu && (

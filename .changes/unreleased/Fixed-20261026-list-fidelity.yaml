@@ -1,0 +1,3 @@
+kind: Fixed
+body: Bring the PR list in line with the mockup — funnel filter button next to search that closes on Escape or outside click, a Slack status per row (Requested / Bumped with age, greyed Not requested, ↗ link), labelled thread counts and review pills, a Projects empty state with Create project, and Settings moved to the sidebar footer.
+time: 2026-10-26T09:00:00.000000Z

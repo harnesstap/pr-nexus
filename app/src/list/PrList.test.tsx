@@ -150,3 +150,70 @@ test("inline rename saves, cancels, and rejects an empty or duplicate name", asy
   fireEvent.keyDown(input, { key: "Enter" });
   expect(onRename).toHaveBeenCalledWith(1, "Auth v2");
 });
+
+test("the funnel button sits right of search and its menu closes on Escape and outside click", () => {
+  render(<Harness rows={rows} />);
+  const search = screen.getByRole("textbox", { name: "Search" });
+  const funnel = screen.getByRole("button", { name: "Filter menu" });
+  expect(search.compareDocumentPosition(funnel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(funnel.querySelector("svg")).not.toBeNull();
+  expect(funnel).not.toHaveTextContent("▾");
+  fireEvent.click(funnel);
+  expect(screen.getByRole("menu")).toBeInTheDocument();
+  fireEvent.keyDown(document, { key: "Escape" });
+  expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  fireEvent.click(funnel);
+  fireEvent.mouseDown(screen.getByRole("menu"));
+  expect(screen.getByRole("menu")).toBeInTheDocument();
+  fireEvent.mouseDown(document.body);
+  expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+});
+
+test("rows show labelled threads, a review pill, and the Slack request status", () => {
+  const slack = {
+    workspace: "acme-team",
+    channel_id: "C1",
+    channel_name: "reviews",
+    permalink: "https://acme-team.slack.com/archives/C1/p1",
+    root_ts: "1.0",
+    source: "app",
+    bump_count: 0,
+    last_bumped_at: null,
+    requested_at: "2026-10-24T12:00:00Z",
+  };
+  const onOpen = vi.fn();
+  render(
+    <PrList
+      rows={[
+        row({ id: 1, title: "Requested one", review_decision: "approved", unresolved_threads: 1, total_threads: 3, slack }),
+        row({
+          id: 2,
+          title: "Bumped one",
+          review_decision: "changes_requested",
+          slack: { ...slack, bump_count: 2, last_bumped_at: "2026-10-26T07:00:00Z" },
+        }),
+        row({ id: 3, title: "Quiet one", total_threads: 0 }),
+      ]}
+      projects={[auth, billing]}
+      viewKey="mine"
+      view={defaultView()}
+      onViewChange={() => undefined}
+      now={now}
+      onOpen={onOpen}
+      onRename={() => Promise.resolve()}
+      onArchive={() => undefined}
+      onDelete={() => undefined}
+    />,
+  );
+  expect(screen.getByText("Requested · 2d ago")).toBeInTheDocument();
+  expect(screen.getByText("Bumped · 5h ago")).toBeInTheDocument();
+  expect(screen.getByText("Not requested")).toBeInTheDocument();
+  expect(screen.getByLabelText("1 unresolved of 3 review threads")).toBeInTheDocument();
+  expect(screen.getByLabelText("0 unresolved of 0 review threads")).toBeInTheDocument();
+  expect(screen.queryByText("0/0")).not.toBeInTheDocument();
+  expect(screen.getByText("Approved")).toBeInTheDocument();
+  expect(screen.getByText("Changes requested")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Open Slack request for Requested one" }));
+  expect(onOpen).toHaveBeenCalledWith(slack.permalink);
+  expect(screen.queryByRole("button", { name: "Open Slack request for Quiet one" })).not.toBeInTheDocument();
+});

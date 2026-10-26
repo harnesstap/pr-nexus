@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { Api, Bootstrap, ListRow, ProjectDto } from "../api";
 import { errorMessage } from "../api";
+import { ClockIcon, FolderIcon, GearIcon, HomeIcon, LogoIcon, PlusIcon, RefreshIcon } from "../icons";
 import { OrgOption } from "../orgs";
-import { defaultView, parseViewState, syncLabel, type SavedView } from "./model";
+import { defaultView, parseViewState, renameError, syncLabel, type SavedView } from "./model";
 import { PrList } from "./PrList";
 
 interface Props {
@@ -23,6 +24,7 @@ export function ListScreen({ api, boot, onBoot }: Props) {
   const [orgs, setOrgs] = useState(boot.tracked_orgs);
   const [personal, setPersonal] = useState(boot.include_personal);
   const [error, setError] = useState<string | null>(null);
+  const [draft, setDraft] = useState<{ name: string; error: string | null } | null>(null);
   const view = views[viewKey] ?? defaultView();
   const needsOrgs = orgs.length === 0 && !personal;
 
@@ -92,6 +94,28 @@ export function ListScreen({ api, boot, onBoot }: Props) {
     }
   }
 
+  async function createProject() {
+    if (!draft) {
+      return;
+    }
+    const problem = renameError(draft.name, projects, null);
+    if (problem) {
+      setDraft({ ...draft, error: problem });
+      return;
+    }
+    try {
+      const project = await api.createProject(draft.name.trim());
+      setDraft(null);
+      setProjects(await api.listProjects());
+      setViewKey(`project:${project.id}`);
+    } catch (err) {
+      setDraft({ ...draft, error: errorMessage(err) });
+    }
+  }
+
+  const activeProjects = projects.filter((project) => !project.archived);
+  const syncTone = sync.phase === "error" || sync.paused || sync.phase === "paused" ? "bg-amber-400" : sync.phase === "syncing" ? "bg-sky-400" : "bg-emerald-400";
+
   async function saveOrgs() {
     setError(null);
     try {
@@ -104,36 +128,106 @@ export function ListScreen({ api, boot, onBoot }: Props) {
 
   return (
     <div className="flex h-screen bg-slate-950 text-slate-100">
-      <aside className="flex w-56 shrink-0 flex-col border-r border-slate-800">
-        <p className="px-4 py-4 text-sm font-semibold">PR-Nexus</p>
-        <nav className="flex flex-col gap-1 px-2 text-sm">
-          <NavButton current={viewKey} id="mine" onSelect={setViewKey}>
+      <aside className="flex w-60 shrink-0 flex-col border-r border-slate-800 bg-slate-950">
+        <p className="flex items-center gap-2 px-4 py-4 text-base font-semibold">
+          <LogoIcon size={20} className="text-violet-400" />
+          PR-Nexus
+        </p>
+        <nav aria-label="Views" className="flex flex-col gap-0.5 px-2 text-sm">
+          <NavButton current={viewKey} id="mine" icon={<HomeIcon />} onSelect={setViewKey}>
             My PRs
           </NavButton>
-          <NavButton current={viewKey} id="to_review" onSelect={setViewKey}>
+          <NavButton current={viewKey} id="to_review" icon={<ClockIcon />} onSelect={setViewKey}>
             To review
           </NavButton>
-          <p className="mt-3 px-2 text-xs uppercase tracking-wide text-slate-500">Projects</p>
-          {projects
-            .filter((project) => !project.archived)
-            .map((project) => (
-              <NavButton key={project.id} current={viewKey} id={`project:${project.id}`} onSelect={setViewKey}>
+        </nav>
+        <section aria-labelledby="projects-heading" className="mt-4 flex min-h-0 flex-1 flex-col px-2 text-sm">
+          <div className="flex items-center justify-between px-2 pb-1">
+            <h2 id="projects-heading" className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-slate-500">
+              <FolderIcon size={14} />
+              Projects
+            </h2>
+            <button
+              type="button"
+              aria-label="New project"
+              title="New project"
+              className="rounded p-0.5 text-slate-500 hover:bg-slate-800 hover:text-slate-200"
+              onClick={() => setDraft({ name: "", error: null })}
+            >
+              <PlusIcon size={14} />
+            </button>
+          </div>
+          <div className="flex min-h-0 flex-col gap-0.5 overflow-auto">
+            {activeProjects.map((project) => (
+              <NavButton
+                key={project.id}
+                current={viewKey}
+                id={`project:${project.id}`}
+                icon={<span aria-hidden="true" className="ml-1 mr-0.5 h-2 w-2 rounded-sm" style={{ background: project.color }} />}
+                onSelect={setViewKey}
+              >
                 {project.name}
               </NavButton>
             ))}
-          <NavButton current={viewKey} id="settings" onSelect={setViewKey}>
+          </div>
+          {draft ? (
+            <form
+              className="mt-1 px-1"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void createProject();
+              }}
+            >
+              <input
+                aria-label="Project name"
+                autoFocus
+                className="w-full rounded border border-slate-600 bg-slate-900 px-2 py-1 text-sm"
+                placeholder="Project name"
+                value={draft.name}
+                onChange={(event) => setDraft({ name: event.target.value, error: null })}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") {
+                    setDraft(null);
+                  }
+                }}
+              />
+              {draft.error ? (
+                <p className="mt-1 text-xs text-rose-300">{draft.error}</p>
+              ) : (
+                <p className="mt-1 text-xs text-slate-500">Enter to create · Esc to cancel</p>
+              )}
+            </form>
+          ) : (
+            activeProjects.length === 0 && (
+              <div className="mx-1 mt-1 rounded-md border border-dashed border-slate-800 px-3 py-3 text-xs text-slate-500">
+                <p>No projects yet. Group related PRs, for example by feature or initiative.</p>
+                <button
+                  type="button"
+                  className="mt-2 flex items-center gap-1 rounded bg-slate-800 px-2 py-1 text-slate-200 hover:bg-slate-700"
+                  onClick={() => setDraft({ name: "", error: null })}
+                >
+                  <PlusIcon size={12} />
+                  Create project
+                </button>
+              </div>
+            )
+          )}
+        </section>
+        <footer className="border-t border-slate-800 px-2 py-2 text-sm">
+          <NavButton current={viewKey} id="settings" icon={<GearIcon />} onSelect={setViewKey}>
             Settings
           </NavButton>
-        </nav>
-        <footer className="mt-auto flex items-center justify-between gap-2 border-t border-slate-800 px-3 py-3 text-xs text-slate-400">
-          <button type="button" className="text-left" onClick={() => setDetail((open) => !open)}>
-            {syncLabel(sync, now)}
-          </button>
-          <button type="button" aria-label="Refresh" onClick={() => void refresh()}>
-            ⟳
-          </button>
+          <div className="mt-1 flex items-center justify-between gap-2 px-2 text-xs text-slate-400">
+            <button type="button" className="flex items-center gap-2 text-left" onClick={() => setDetail((open) => !open)}>
+              <span aria-hidden="true" className={`h-2 w-2 rounded-full ${syncTone}`} />
+              {syncLabel(sync, now)}
+            </button>
+            <button type="button" aria-label="Refresh" title="Sync now" className="rounded p-1 hover:bg-slate-800 hover:text-slate-200" onClick={() => void refresh()}>
+              <RefreshIcon size={14} />
+            </button>
+          </div>
+          {detail && <p className="px-2 pt-1 text-xs text-slate-500">{sync.message}</p>}
         </footer>
-        {detail && <p className="px-3 pb-3 text-xs text-slate-500">{sync.message}</p>}
       </aside>
       <main className="relative flex min-w-0 flex-1 flex-col">
         {boot.keyring_warning && (
@@ -199,11 +293,13 @@ export function ListScreen({ api, boot, onBoot }: Props) {
 function NavButton({
   current,
   id,
+  icon,
   onSelect,
   children,
 }: {
   current: string;
   id: string;
+  icon: ReactNode;
   onSelect: (id: string) => void;
   children: string;
 }) {
@@ -212,10 +308,11 @@ function NavButton({
     <button
       type="button"
       aria-current={selected ? "page" : undefined}
-      className={`rounded px-2 py-1.5 text-left ${selected ? "bg-slate-800 text-white" : "text-slate-300"}`}
+      className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left ${selected ? "bg-slate-800 text-white" : "text-slate-300 hover:bg-slate-900"}`}
       onClick={() => onSelect(id)}
     >
-      {children}
+      <span className="flex w-4 shrink-0 justify-center text-slate-400">{icon}</span>
+      <span className="truncate">{children}</span>
     </button>
   );
 }

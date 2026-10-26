@@ -157,6 +157,7 @@ const api: Api = {
   syncStatus: () => Promise.resolve(boot.sync),
   listRows: () => Promise.resolve(rows),
   listProjects: () => Promise.resolve(projects),
+  createProject: (name) => Promise.resolve({ id: 99, name, color: "#7c5cbf", archived: false, description: "", sort_order: 99 }),
   renameProject: () => Promise.resolve(),
   archiveProject: () => Promise.resolve(),
   deleteProject: () => Promise.resolve(),

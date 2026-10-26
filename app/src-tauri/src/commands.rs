@@ -1,7 +1,7 @@
 use chrono::Utc;
 use pr_nexus_core::domain::{
-    Account, AccountId, AccountKind, AuthMode, ChecksState, ProjectId, PullRequest, RequestStatus,
-    ReviewDecision, ViewState,
+    Account, AccountId, AccountKind, AuthMode, ChecksState, Project, ProjectId, PullRequest,
+    RequestStatus, ReviewDecision, ViewState,
 };
 use pr_nexus_core::mapping::{self, ImportMode};
 use pr_nexus_core::onboarding::{self, OnboardingState};
@@ -481,6 +481,17 @@ pub fn list_rows(app: State<'_, std::sync::Arc<AppState>>) -> Result<Vec<ListRow
     Ok(rows)
 }
 
+fn project_dto(project: Project) -> ProjectDto {
+    ProjectDto {
+        id: project.id.0,
+        name: project.name,
+        color: project.color,
+        archived: project.archived,
+        description: project.description,
+        sort_order: project.sort_order,
+    }
+}
+
 #[tauri::command]
 pub fn list_projects(
     app: State<'_, std::sync::Arc<AppState>>,
@@ -490,15 +501,17 @@ pub fn list_projects(
         .store
         .list_projects()?
         .into_iter()
-        .map(|project| ProjectDto {
-            id: project.id.0,
-            name: project.name,
-            color: project.color,
-            archived: project.archived,
-            description: project.description,
-            sort_order: project.sort_order,
-        })
+        .map(project_dto)
         .collect())
+}
+
+#[tauri::command]
+pub fn create_project(
+    app: State<'_, std::sync::Arc<AppState>>,
+    name: String,
+) -> Result<ProjectDto, AppError> {
+    let state = app.inner().as_ref();
+    Ok(project_dto(state.store.create_project(name)?))
 }
 
 #[tauri::command]

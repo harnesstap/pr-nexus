@@ -45,6 +45,7 @@ pub fn run() {
             commands::set_focus,
             commands::list_rows,
             commands::list_projects,
+            commands::create_project,
             commands::rename_project,
             commands::archive_project,
             commands::delete_project,
