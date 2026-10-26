@@ -200,7 +200,7 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen }: Props) {
               <div className="space-y-2">
                 <p className="text-xs text-slate-400">
                   {bump
-                    ? `Bump in the existing thread (${preview.bump_count} earlier bump${preview.bump_count === 1 ? "" : "s"}).`
+                    ? `Bump in the existing thread${preview.broadcast ? ", also sent to the channel" : " only"} (${preview.bump_count} earlier bump${preview.bump_count === 1 ? "" : "s"}).`
                     : `New message in ${channelLabel(preview.target)}.`}
                   {bump && preview.permalink && (
                     <>

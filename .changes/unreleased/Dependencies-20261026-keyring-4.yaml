@@ -1,0 +1,3 @@
+kind: Dependencies
+body: keyring 3.6 → 4.2 (same Entry API through its v1 feature; same keychain, Credential Manager and Secret Service attributes, so stored secrets are still found).
+time: 2026-10-26T05:00:02.000000-10:00

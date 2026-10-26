@@ -8,6 +8,7 @@ const boot = {
   slack_redirect_uri: "",
   slack_secret_saved: true,
   slack_mentions: "off",
+  bump_broadcast: true,
   slack_workspaces: [{ id: 1, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: false, needs_sign_in: false }],
 } as unknown as Bootstrap;
 
@@ -72,4 +73,25 @@ test("a failed mentions save reverts the select", async () => {
   fireEvent.change(select, { target: { value: "public" } });
   expect(await screen.findByText(/disk full/)).toBeInTheDocument();
   expect(select).toHaveValue("off");
+});
+
+test("the bump broadcast toggle defaults on, saves off, and rolls back on failure", async () => {
+  const saved: boolean[] = [];
+  const changed: boolean[] = [];
+  const api = {
+    saveBumpBroadcast: (on: boolean) => {
+      saved.push(on);
+      return saved.length > 1 ? Promise.reject(new Error("disk full")) : Promise.resolve();
+    },
+  } as unknown as Api;
+  render(<SlackSettings api={api} boot={boot} onBroadcastChange={(on) => changed.push(on)} />);
+  const toggle = screen.getByRole("checkbox", { name: /Also post bumps to the channel/ });
+  expect(toggle).toBeChecked();
+  fireEvent.click(toggle);
+  await waitFor(() => expect(changed).toEqual([false]));
+  expect(toggle).not.toBeChecked();
+  fireEvent.click(toggle);
+  expect(await screen.findByText("disk full")).toBeInTheDocument();
+  expect(toggle).not.toBeChecked();
+  expect(saved).toEqual([false, true]);
 });

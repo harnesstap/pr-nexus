@@ -33,6 +33,8 @@ pub const MIN_BUMP_INTERVAL: &str = "review.min_bump_interval_hours";
 pub const BULK_BUMP_MAX_THREADS: &str = "review.bulk_bump_max_threads";
 /// Mentions search in the Slack panel (§7.10): `off`, `public`, or `all`.
 pub const SLACK_MENTIONS: &str = "slack.mentions";
+/// Bumps are thread replies; with this on they are also sent to the channel.
+pub const BUMP_BROADCAST: &str = "review.bump_broadcast";
 
 pub const DEFAULT_REDIRECT: &str = "http://127.0.0.1:47821/mcp/oauth/callback";
 
@@ -173,6 +175,16 @@ pub fn slack_mentions(store: &Store) -> Result<MentionsScope, CoreError> {
 
 pub fn set_slack_mentions(store: &Store, scope: MentionsScope) -> Result<(), CoreError> {
     put_json(store, SLACK_MENTIONS, &scope.as_str())
+}
+
+/// `review.bump_broadcast`: whether a bump reply is also sent to the
+/// channel (Slack's `reply_broadcast`). Defaults to on.
+pub fn bump_broadcast(store: &Store) -> Result<bool, CoreError> {
+    json_or(store, BUMP_BROADCAST, true)
+}
+
+pub fn set_bump_broadcast(store: &Store, on: bool) -> Result<(), CoreError> {
+    put_json(store, BUMP_BROADCAST, &on)
 }
 
 /// `review.bulk_bump_max_threads`: above this many distinct roots in one

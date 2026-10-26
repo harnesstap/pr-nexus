@@ -70,6 +70,8 @@ pub struct ReviewPreview {
     pub signed_in: bool,
     pub bump_count: u32,
     pub permalink: Option<String>,
+    /// A bump is also sent to the channel (`review.bump_broadcast`).
+    pub broadcast: bool,
 }
 
 /// Slack accounts, newest last.
@@ -340,6 +342,7 @@ pub fn review_preview(
         signed_in,
         bump_count,
         permalink,
+        broadcast: settings::bump_broadcast(&state.store)?,
     })
 }
 

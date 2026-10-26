@@ -325,6 +325,7 @@ pub fn send_batch(
             permalink: None,
         });
     }
+    let broadcast = crate::settings::bump_broadcast(store)?;
     let mut last_post: HashMap<(String, String), DateTime<Utc>> = HashMap::new();
     for card in &plan.cards {
         let key = (
@@ -361,7 +362,7 @@ pub fn send_batch(
                     pace.sleep(wait);
                 }
             }
-            let posted = post_with_retry(chat.as_ref(), &card.target, message, pace)
+            let posted = post_with_retry(chat.as_ref(), &card.target, message, broadcast, pace)
                 .map(|posted| with_link(posted, &card.target));
             last_post.insert(key.clone(), pace.now());
             match posted {
@@ -485,6 +486,7 @@ fn post_with_retry(
     chat: &dyn ChatProvider,
     target: &Target,
     message: &PlannedMessage,
+    broadcast: bool,
     pace: &dyn Pace,
 ) -> Result<PostedMessage, ProviderError> {
     let thread_ts = match &message.kind {
@@ -495,7 +497,7 @@ fn post_with_retry(
         channel_id: &target.channel_id,
         text: &message.wire_text,
         thread_ts,
-        reply_broadcast: thread_ts.is_some(),
+        reply_broadcast: thread_ts.is_some() && broadcast,
         unfurl_app_links: thread_ts.is_none(),
     };
     match chat.post(&outgoing) {
@@ -1232,6 +1234,33 @@ mod tests {
         assert_eq!(posts[0].2.as_deref(), Some("1700000001.000100"));
         assert!(posts[0].3, "bump is broadcast");
         assert_eq!(posts[1].2, None);
+    }
+
+    #[test]
+    fn bulk_bump_is_thread_only_when_broadcast_is_off() {
+        let w = world();
+        crate::settings::set_bump_broadcast(&w.store, false).unwrap();
+        let team = target("acme", "C0TEAM");
+        let a = pr(&w, 1, "Fix login");
+        requested(&w, &a, &team, "1700000001.000100", 48);
+        let plan = plan_batch(&w.store, &[input(&a, &[&team])], vec![], &options(), at(0)).unwrap();
+        let fake = Arc::new(FakeChat {
+            account: w.slack.0,
+            ..FakeChat::default()
+        });
+        let chat: Arc<dyn ChatProvider> = fake.clone();
+        send_batch(
+            &w.store,
+            &mut |_| Ok(chat.clone()),
+            &plan,
+            &BTreeSet::new(),
+            "b4",
+            &FakePace::new(),
+        )
+        .unwrap();
+        let posts = fake.posts.lock().unwrap();
+        assert_eq!(posts[0].2.as_deref(), Some("1700000001.000100"));
+        assert!(!posts[0].3, "thread reply only");
     }
 
     #[test]

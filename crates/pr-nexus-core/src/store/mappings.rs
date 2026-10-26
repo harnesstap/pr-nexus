@@ -12,6 +12,17 @@ impl Store {
         self.write(move |conn| upsert_mapping(conn, &row))
     }
 
+    /// Upsert every row in one transaction: all of them land, or none do.
+    pub fn upsert_mappings(&self, rows: Vec<TeamChannelMapping>) -> Result<(), CoreError> {
+        self.write(move |conn| {
+            let tx = conn.transaction().map_err(db)?;
+            for row in &rows {
+                upsert_mapping(&tx, row)?;
+            }
+            tx.commit().map_err(db)
+        })
+    }
+
     pub fn list_mappings(&self) -> Result<Vec<TeamChannelMapping>, CoreError> {
         self.read(|conn| {
             let mut stmt = conn
@@ -37,27 +48,28 @@ impl Store {
         })
     }
 
-    /// Delete every imported row and insert `rows`, in one write.
+    /// Delete every imported row and insert `rows`, in one transaction.
     /// User-layer rows are left in place.
     pub fn replace_imported_mappings(
         &self,
         rows: Vec<TeamChannelMapping>,
     ) -> Result<(), CoreError> {
         self.write(move |conn| {
-            conn.execute(
+            if rows.iter().any(|row| row.layer != MappingLayer::Imported) {
+                return Err(CoreError::Validation(
+                    "replace_imported_mappings only inserts imported rows".into(),
+                ));
+            }
+            let tx = conn.transaction().map_err(db)?;
+            tx.execute(
                 "DELETE FROM team_channel_mappings WHERE layer = 'imported'",
                 [],
             )
             .map_err(db)?;
             for row in &rows {
-                if row.layer != MappingLayer::Imported {
-                    return Err(CoreError::Validation(
-                        "replace_imported_mappings only inserts imported rows".into(),
-                    ));
-                }
-                upsert_mapping(conn, row)?;
+                upsert_mapping(&tx, row)?;
             }
-            Ok(())
+            tx.commit().map_err(db)
         })
     }
 

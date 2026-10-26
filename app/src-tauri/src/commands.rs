@@ -46,6 +46,8 @@ pub struct Bootstrap {
     pub slack_workspaces: Vec<crate::slack::SlackWorkspace>,
     /// `off`, `public`, or `all` (§7.10).
     pub slack_mentions: String,
+    /// `review.bump_broadcast`: bumps are also sent to the channel.
+    pub bump_broadcast: bool,
     pub mapping_count: i64,
     pub sync: SyncDto,
     pub env_token: bool,
@@ -206,6 +208,7 @@ pub fn bootstrap(app: State<'_, std::sync::Arc<AppState>>) -> Result<Bootstrap, 
             .map(|account| crate::slack::workspace_dto(state, account))
             .collect(),
         slack_mentions: settings::slack_mentions(&state.store)?.as_str().to_owned(),
+        bump_broadcast: settings::bump_broadcast(&state.store)?,
         mapping_count: state.store.mapping_count()?,
         sync: sync_dto(state),
         env_token: github::github_token_from_env().is_some(),

@@ -170,19 +170,22 @@ pub fn apply_import(
         }
         ImportMode::Merge => {
             let existing = store.list_mappings()?;
-            for row in incoming {
-                let current = existing.iter().find(|stored| {
-                    stored.layer == MappingLayer::User
-                        && stored.github_org == row.github_org
-                        && stored.team_slug == row.team_slug
-                });
-                let merged = match current {
-                    Some(current) => merge_user(current, row, now),
-                    None => to_stored(row, MappingLayer::User, false, String::new(), now),
-                };
-                store.upsert_mapping(merged)?;
-            }
-            Ok(())
+            let rows = incoming
+                .iter()
+                .map(|row| {
+                    let current = existing.iter().find(|stored| {
+                        stored.layer == MappingLayer::User
+                            && stored.github_org == row.github_org
+                            && stored.team_slug == row.team_slug
+                    });
+                    match current {
+                        Some(current) => merge_user(current, row, now),
+                        None => to_stored(row, MappingLayer::User, false, String::new(), now),
+                    }
+                })
+                .collect();
+            // One transaction: a failed row leaves the user layer untouched.
+            store.upsert_mappings(rows)
         }
     }
 }
@@ -811,5 +814,27 @@ acme,team-a,Team A,team-reviews,C0123456789,widgets
         let user_only = export_csv(&rows, ExportMode::User).unwrap();
         let parsed_user = parse_csv(&user_only, Some("acme")).unwrap();
         assert!(parsed_user.is_empty());
+    }
+
+    #[test]
+    fn merge_import_is_all_or_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("nexus.sqlite")).unwrap();
+        let row = |slug: &str, name: &str| CsvRow {
+            github_org: "acme".into(),
+            team_slug: slug.into(),
+            team_name: name.into(),
+            slack_channel_name: format!("{slug}-reviews"),
+            slack_channel_id: String::new(),
+            slack_workspace: "acme".into(),
+        };
+        // Two slugs sharing a display name violate the per-layer name index,
+        // so the second insert fails after the first one has run.
+        let incoming = vec![row("team-a", "Shared"), row("team-b", "Shared")];
+        assert!(apply_import(&store, &incoming, ImportMode::Merge, now()).is_err());
+        assert!(store.list_mappings().unwrap().is_empty());
+
+        apply_import(&store, &incoming[..1], ImportMode::Merge, now()).unwrap();
+        assert_eq!(store.list_mappings().unwrap().len(), 1);
     }
 }
