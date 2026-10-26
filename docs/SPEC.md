@@ -783,7 +783,7 @@ Approved mockups (AI-generated; style references, not pixel specs):
 **Layout.**
 - **Sidebar** (navigation only, no persistent filters): My PRs, To review, Projects, Settings. There is no org checkbox list here; orgs are a filter in the menu.
 - **Sidebar footer:** sync status plus a refresh button: `● Synced · 2m ago  ⟳`, `◌ Syncing…`, `▲ Rate limited · resets 14:32  ⟳`, or `▲ Sync failed · <reason>  ⟳` (§6). Clicking the text shows per-account detail.
-- **Header:** view title and subtitle (`8 open PRs across 3 projects`), the **search bar**, and a single small **filter icon button** (funnel). There is **no** overflow `⋯` button in the header.
+- **Header:** view title and subtitle (`5 open PRs across 2 projects`), the **search bar**, and a single small **filter icon button** (funnel). There is **no** overflow `⋯` button in the header.
 - **List header:** a global tri-state checkbox with `N of M selected` (or `M PRs` when nothing is selected).
 
 **List (home)**:
