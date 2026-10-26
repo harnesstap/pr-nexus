@@ -98,6 +98,7 @@ export interface ProjectDto {
   color: string;
   archived: boolean;
   description: string;
+  sort_order: number;
 }
 
 export interface Api {
@@ -116,6 +117,11 @@ export interface Api {
   syncStatus(): Promise<SyncStatus>;
   listRows(): Promise<ListRow[]>;
   listProjects(): Promise<ProjectDto[]>;
+  renameProject(id: number, name: string): Promise<void>;
+  archiveProject(id: number, archived: boolean): Promise<void>;
+  deleteProject(id: number): Promise<void>;
+  loadViewState(viewKey: string): Promise<string | null>;
+  saveViewState(viewKey: string, stateJson: string): Promise<void>;
   openExternal(url: string): Promise<void>;
 }
 
@@ -141,6 +147,11 @@ export const tauriApi: Api = {
   syncStatus: () => invoke("sync_status"),
   listRows: () => invoke("list_rows"),
   listProjects: () => invoke("list_projects"),
+  renameProject: (id, name) => invoke("rename_project", { id, name }),
+  archiveProject: (id, archived) => invoke("archive_project", { id, archived }),
+  deleteProject: (id) => invoke("delete_project", { id }),
+  loadViewState: (viewKey) => invoke("load_view_state", { viewKey }),
+  saveViewState: (viewKey, stateJson) => invoke("save_view_state", { viewKey, stateJson }),
   openExternal: (url) => invoke("open_external", { url }),
 };
 

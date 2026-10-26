@@ -55,6 +55,16 @@ PR_NEXUS_DISABLE_KEYRING=1 \
 
 `cargo run -p pr-nexus` needs `app/dist` from `bun run build`. `bun run tauri dev` rebuilds the frontend itself.
 
+A static render of the wizard and the list, with invented data and no GitHub calls:
+
+```bash
+cd app
+bun run dev
+# http://127.0.0.1:1420/preview.html?screen=wizard
+# http://127.0.0.1:1420/preview.html?screen=slack
+# http://127.0.0.1:1420/preview.html?screen=list
+```
+
 ## Changelog
 
 Do not edit `CHANGELOG.md` by hand. Install [Changie](https://changie.dev/) and add a fragment:

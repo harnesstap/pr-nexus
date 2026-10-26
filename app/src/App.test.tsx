@@ -55,6 +55,11 @@ function api(): Api {
     syncStatus: () => Promise.resolve(boot.sync),
     listRows: () => Promise.resolve([]),
     listProjects: () => Promise.resolve([]),
+    renameProject: () => Promise.resolve(),
+    archiveProject: () => Promise.resolve(),
+    deleteProject: () => Promise.resolve(),
+    loadViewState: () => Promise.resolve(null),
+    saveViewState: () => Promise.resolve(),
     openExternal: () => Promise.resolve(),
   };
 }

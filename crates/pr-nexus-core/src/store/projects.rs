@@ -30,6 +30,54 @@ impl Store {
         })
     }
 
+    pub fn rename_project(&self, id: ProjectId, name: String) -> Result<Project, CoreError> {
+        let name = name.trim().to_owned();
+        if name.is_empty() {
+            return Err(CoreError::Validation("Project name cannot be empty".into()));
+        }
+        self.write(move |conn| {
+            let taken: Option<i64> = conn
+                .query_row(
+                    "SELECT id FROM projects WHERE name = ?1 AND id <> ?2",
+                    params![name, id.0],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(db)?;
+            if taken.is_some() {
+                return Err(CoreError::Validation(
+                    "A project with that name already exists".into(),
+                ));
+            }
+            let updated = conn
+                .execute(
+                    "UPDATE projects SET name = ?1 WHERE id = ?2",
+                    params![name, id.0],
+                )
+                .map_err(db)?;
+            if updated == 0 {
+                return Err(CoreError::Validation("Project not found".into()));
+            }
+            load_project(conn, id)?
+                .ok_or_else(|| CoreError::Store("renamed project disappeared".into()))
+        })
+    }
+
+    pub fn set_project_archived(&self, id: ProjectId, archived: bool) -> Result<(), CoreError> {
+        self.write(move |conn| {
+            let updated = conn
+                .execute(
+                    "UPDATE projects SET archived = ?1 WHERE id = ?2",
+                    params![sql_bool(archived), id.0],
+                )
+                .map_err(db)?;
+            if updated == 0 {
+                return Err(CoreError::Validation("Project not found".into()));
+            }
+            Ok(())
+        })
+    }
+
     pub fn delete_project(&self, id: ProjectId) -> Result<(), CoreError> {
         self.write(move |conn| {
             conn.execute("DELETE FROM projects WHERE id = ?1", [id.0])

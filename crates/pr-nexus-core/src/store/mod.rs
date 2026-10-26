@@ -221,6 +221,46 @@ mod tests {
     }
 
     #[test]
+    fn rename_rejects_empty_and_duplicate_names_and_archive_round_trips() {
+        let (_dir, store) = open_temp();
+        let auth = store
+            .insert_project(crate::domain::Project {
+                id: crate::domain::ProjectId(0),
+                name: "Auth".into(),
+                description: String::new(),
+                color: "#7c5cbf".into(),
+                archived: false,
+                sort_order: 0,
+            })
+            .unwrap();
+        let renamed = store.rename_project(auth.id, "  Auth v2  ".into()).unwrap();
+        assert_eq!(renamed.name, "Auth v2");
+        let err = store
+            .rename_project(auth.id, "   ".into())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("empty"), "{err}");
+        let other = store
+            .insert_project(crate::domain::Project {
+                id: crate::domain::ProjectId(0),
+                name: "Billing".into(),
+                description: String::new(),
+                color: "#3f6f8f".into(),
+                archived: false,
+                sort_order: 1,
+            })
+            .unwrap();
+        let dup = store
+            .rename_project(other.id, "Auth v2".into())
+            .unwrap_err()
+            .to_string();
+        assert!(dup.contains("already exists"), "{dup}");
+        store.set_project_archived(other.id, true).unwrap();
+        let loaded = store.get_project(other.id).unwrap().unwrap();
+        assert!(loaded.archived);
+    }
+
+    #[test]
     fn no_column_stores_a_secret() {
         let (_dir, store) = open_temp();
         let columns = store
