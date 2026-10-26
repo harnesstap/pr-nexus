@@ -49,7 +49,19 @@ pub struct ReadinessSnapshot {
     pub files_truncated: bool,
 }
 
+/// Readiness with `review.blocked_review_required_is_ready` left at its default (`true`).
 pub fn decide_readiness(snapshot: &ReadinessSnapshot) -> Readiness {
+    decide_readiness_with(snapshot, true)
+}
+
+/// `blocked_review_required_is_ready` is the `review.blocked_review_required_is_ready` setting.
+///
+/// When it is false, a `BLOCKED` pull request that is only waiting on reviews is
+/// [`Readiness::Unknown`] and the waiting note is a reason.
+pub fn decide_readiness_with(
+    snapshot: &ReadinessSnapshot,
+    blocked_review_required_is_ready: bool,
+) -> Readiness {
     let mut blocking = Vec::new();
     let mut unknown = Vec::new();
 
@@ -113,6 +125,9 @@ pub fn decide_readiness(snapshot: &ReadinessSnapshot) -> Readiness {
             snapshot.review_decision,
             None | Some(ReviewDecision::ReviewRequired)
         );
+    if reviews_only && !blocked_review_required_is_ready {
+        unknown.push(BLOCKED_WAITING_FOR_REVIEWS.to_string());
+    }
     if snapshot.merge_state == Some(MergeStateStatus::Blocked)
         && !reviews_only
         && blocking.is_empty()
@@ -127,7 +142,7 @@ pub fn decide_readiness(snapshot: &ReadinessSnapshot) -> Readiness {
         return Readiness::Unknown { reasons: unknown };
     }
     let mut notes = Vec::new();
-    if reviews_only {
+    if reviews_only && blocked_review_required_is_ready {
         notes.push(BLOCKED_WAITING_FOR_REVIEWS.to_string());
     }
     Readiness::Ready { notes }
@@ -538,6 +553,23 @@ mod tests {
         assert!(matches!(
             decide_readiness(&snapshot),
             Readiness::Unknown { reasons } if !reasons.is_empty()
+        ));
+    }
+
+    #[test]
+    fn blocked_waiting_for_reviews_follows_the_setting() {
+        let mut snapshot = ready_base();
+        snapshot.merge_state = Some(MergeStateStatus::Blocked);
+        snapshot.review_decision = Some(ReviewDecision::ReviewRequired);
+        match decide_readiness_with(&snapshot, false) {
+            Readiness::Unknown { reasons } => {
+                assert_eq!(reasons, [BLOCKED_WAITING_FOR_REVIEWS]);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(
+            decide_readiness_with(&snapshot, true),
+            Readiness::Ready { notes } if notes == [BLOCKED_WAITING_FOR_REVIEWS]
         ));
     }
 

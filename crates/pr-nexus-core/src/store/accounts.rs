@@ -30,6 +30,10 @@ impl Store {
         })
     }
 
+    pub fn upsert_account(&self, account: Account) -> Result<Account, CoreError> {
+        self.write(move |conn| upsert_account(conn, &account))
+    }
+
     pub fn delete_account(&self, id: AccountId) -> Result<(), CoreError> {
         self.write(move |conn| {
             conn.execute("DELETE FROM accounts WHERE id = ?1", [id.0])
@@ -37,6 +41,39 @@ impl Store {
             Ok(())
         })
     }
+}
+
+fn upsert_account(conn: &Connection, account: &Account) -> Result<Account, CoreError> {
+    let id: i64 = conn
+        .query_row(
+            "INSERT INTO accounts (
+                kind, display_name, host, external_id, slack_workspace, login,
+                auth_mode, keychain_key, created_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT(kind, external_id) DO UPDATE SET
+                display_name = excluded.display_name,
+                host = excluded.host,
+                slack_workspace = excluded.slack_workspace,
+                login = excluded.login,
+                auth_mode = excluded.auth_mode,
+                keychain_key = excluded.keychain_key
+             RETURNING id",
+            params![
+                account.kind.as_str(),
+                account.display_name,
+                account.host,
+                account.external_id,
+                account.slack_workspace,
+                account.login,
+                account.auth_mode.as_str(),
+                account.keychain_key,
+                format_ts(account.created_at),
+            ],
+            |row| row.get(0),
+        )
+        .map_err(db)?;
+    load_account(conn, AccountId(id))?
+        .ok_or_else(|| CoreError::Store("upserted account disappeared".to_owned()))
 }
 
 fn insert_account(conn: &Connection, account: &Account) -> Result<Account, CoreError> {

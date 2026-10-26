@@ -42,7 +42,7 @@ pr-nexus/
 │  ├─ pr-nexus-core/             # domain types, errors, provider traits, SQLite store + migrations,
 │  │                             # sync engine, ownership/CODEOWNERS, mapping, message builder,
 │  │                             # review-request planner, project auto-link rules. NO network deps.
-│  └─ pr-nexus-providers/        # GitHub (octocrab + GraphQL) and Slack (rmcp MCP client)
+│  └─ pr-nexus-providers/        # GitHub (blocking reqwest + GraphQL) and Slack (rmcp MCP client)
 │                                # implementations of core traits; auth helpers (keyring, gh CLI).
 ├─ app/
 │  ├─ package.json, vite.config.ts, src/ (React + TS + Tailwind)
@@ -55,14 +55,14 @@ pr-nexus/
 
 **Why 2 library crates plus the app (and not the original 3–4):**
 - `core` contains all logic that can be tested without the network: ownership rules, mapping precedence, message text, planner, SQL. It compiles fast and has no TLS stack. That keeps the edit-test loop for agents short.
-- `providers` isolates heavy dependencies (octocrab, rmcp, reqwest, rustls, keyring) and HTTP fixtures. It implements the traits from `core`.
+- `providers` isolates heavy dependencies (reqwest, rustls, keyring, and later rmcp) and HTTP fixtures. It implements the traits from `core`.
 - `app/src-tauri` stays a thin layer: it wires state and maps commands to services. It is a workspace member, so `cargo test --workspace` covers it.
 - There is no `pr-nexus-mcp` crate in v1 (YAGNI). §10.1 describes where it will go.
 - Splitting `adapters` into `vcs` and `chat` crates is rejected: 2 implementations do not justify 2 crates.
 
 **Runtime model**
-- A single Tauri process. One `tokio` runtime (Tauri's).
-- Store: one SQLite file at `$APPDATA/pr-nexus/pr-nexus.db`, in WAL mode, `foreign_keys=ON`, `busy_timeout=5000`. Access goes through a `Store` that owns one write connection on a dedicated thread (actor, `tokio-rusqlite`-style) plus a small read pool. WAL already prepares for a second process, the *Future* MCP server.
+- A single Tauri process. Commands that touch the store or GitHub block on OS threads. The store does not use an async runtime, and neither does the GitHub client.
+- Store: one SQLite file at the Tauri app-data dir `pr-nexus.db` (override with `PR_NEXUS_DB_PATH`), in WAL mode, `foreign_keys=ON`, `busy_timeout=5000`. Access goes through a `Store` that owns one write connection on a dedicated thread plus a small read pool. There is no `tokio` runtime and no `tokio-rusqlite` actor (§4). WAL already prepares for a second process, the *Future* MCP server.
 - The frontend never runs SQL. Everything goes through typed Tauri commands. TS types are generated with `tauri-specta`. If the specta crates are unstable at bootstrap time, hand-write `app/src/bindings.ts` and add a test that keeps it in sync. Push events (`sync://updated`, `review://progress`) use Tauri events.
 - `tauri-plugin-sql` is rejected, because it exposes raw SQL to the webview.
 
@@ -72,9 +72,9 @@ pr-nexus/
 |---|---|---|---|
 | Desktop shell | `tauri` v2 | 2.12.x (CLI 2.12.4) | Stable v2. Capabilities-based permissions. |
 | SQLite | `rusqlite` (`bundled`) | 0.41 | Sync API with simple ownership. sqlx 0.9 adds compile-time query checking (needs `DATABASE_URL`/offline prepare) and async-over-threadpool for SQLite, which buys nothing here. `rusqlite_migration` 2.6 pins rusqlite 0.40, and Cargo cannot link two `libsqlite3-sys` versions, so migrations are applied in-tree: `migrations/NNNN_*.sql`, one transaction, `PRAGMA user_version`. |
-| GitHub | `octocrab` | 0.54.x | Auth, REST models, and `Octocrab::graphql()` passthrough. GraphQL queries are hand-written `.graphql` strings with serde response structs. `graphql_client` codegen (0.16) is rejected to avoid vendoring the ~1 MB schema. Fixture tests guard the shapes. |
+| GitHub | blocking `reqwest` (rustls) | 0.12 | GraphQL and the few REST calls are synchronous, on the same threading model as the store (§4). Queries are hand-written `.graphql` files with serde response structs. `octocrab` is async-first, so it is not used. `graphql_client` codegen is rejected to avoid vendoring the schema. Fixture tests guard the shapes. |
 | Slack | `rmcp` client (`client`, `auth`, `transport-streamable-http-client-reqwest`) | 3.7 | Talks to the official Slack MCP server over Streamable HTTP, with client-side OAuth 2.1 + PKCE built in (§7.11). The same crate backs the *Future* MCP server (§10.1). Direct Web API (`slack-morphism` 2.31 or a thin `reqwest` client) is only the documented fallback. |
-| Secrets | `keyring` 4.x, default `v1` feature (same `Entry` API as v1) | 4.2 | v4 wraps `keyring-core` plus per-OS stores. If finer control is needed, use `keyring-core` + `apple-native-keyring-store` / `windows-native-keyring-store` / `zbus-secret-service-keyring-store`. |
+| Secrets | `keyring` | 3.6 | Service `dev.pr-nexus`, one entry `vault`. v3's `Entry` API is what the vault uses. A two-second probe falls back to memory when the secret service is missing (§9), so Linux CI and a desktop without a keyring daemon still launch. |
 | Errors | `thiserror` | 2.x | §4.3 |
 | CSV | `csv` | 1.4 | mapping import/export |
 | Frontend | React + TypeScript + Vite + Tailwind + TanStack Table + TanStack Query | — | Multi-select tables are the core UI. TanStack Table handles grouping and row selection. |
@@ -82,6 +82,8 @@ pr-nexus/
 | *Future* MCP | `rmcp` (official Rust SDK) | 3.7 | §10.1 |
 
 ## 4. Domain model & SQLite schema
+
+**Store threading.** `Store::open` applies migrations, then starts one writer thread named `pr-nexus-store`. That thread owns the only write connection. Reads borrow from a pool of four connections (`query_only`). A caller blocks until the writer replies. No async runtime, no task spawn, and no connection is shared across threads. `busy_timeout` covers the short lock a reader hits while the writer is in a transaction.
 
 ### 4.1 Rust types (pr-nexus-core::domain)
 
@@ -125,11 +127,16 @@ pub struct PullRequest {
     pub created_at: DateTime<Utc>, pub updated_at: DateTime<Utc>,
     pub last_activity_at: DateTime<Utc>,      // max(updatedAt, last commit, last review)
     pub synced_at: DateTime<Utc>,
+    pub hidden: bool,                         // closed PRs past sync.keep_closed_days
 }
 
 // ---- ownership (computed, cached per head_sha) ----------------------------
 pub enum Tri { True, False, Unknown }
-pub enum Readiness { Ready, Blocked { reasons: Vec<String> }, Unknown { reasons: Vec<String> } }
+pub enum Readiness {
+    Ready { notes: Vec<String> },             // does not block; e.g. waiting for reviews
+    Blocked { reasons: Vec<String> },
+    Unknown { reasons: Vec<String> },
+}
 pub struct OwnerDecision { /* fields and rules in §7.2 */ }
 
 // ---- chat -----------------------------------------------------------------
@@ -330,32 +337,30 @@ Tauri commands return `Result<T, AppError>`, where `AppError` serializes to `{ki
 ## 5. Provider traits (pr-nexus-core::providers)
 
 ```rust
-#[async_trait]
 pub trait VcsProvider: Send + Sync {
     fn kind(&self) -> VcsKind;
-    async fn viewer(&self) -> Result<VcsUser, ProviderError>;
+    fn viewer(&self) -> Result<VcsUser, ProviderError>;
     /// Open PRs the viewer authored or is requested on. Replaces org → repo → PR enumeration.
-    async fn search_pull_requests(&self, q: &PrQuery) -> Result<Vec<PullRequest>, ProviderError>;
+    fn search_pull_requests(&self, q: &PrQuery) -> Result<Vec<SyncedPullRequest>, ProviderError>;
     /// Refresh known PRs by provider id (catches merged/closed PRs that left the search results).
-    async fn refresh_pull_requests(&self, ids: &[ProviderRef]) -> Result<Vec<PullRequest>, ProviderError>;
-    /// Everything ownership resolution needs, for one PR (§6, §7.2).
-    async fn ownership_inputs(&self, pr: &PullRequest) -> Result<OwnershipInputs, ProviderError>;
-    async fn team_members(&self, team: &TeamRef) -> Result<TeamMembers, ProviderError>;
-    async fn rate_limit(&self) -> Result<RateBudget, ProviderError>;
+    fn refresh_pull_requests(&self, ids: &[ProviderRef]) -> Result<Vec<SyncedPullRequest>, ProviderError>;
+    /// Everything ownership resolution needs, for one PR (§6, §7.2). M9.
+    fn ownership_inputs(&self, pr: &PullRequest) -> Result<OwnershipInputs, ProviderError>;
+    fn team_members(&self, team: &TeamRef) -> Result<TeamMembers, ProviderError>;
+    fn rate_limit(&self) -> Result<RateBudget, ProviderError>;
     /// Optional write (M10): request team reviewers on the PR.
-    async fn request_team_review(&self, pr: &PullRequest, teams: &[TeamRef]) -> Result<(), ProviderError>;
+    fn request_team_review(&self, pr: &PullRequest, teams: &[TeamRef]) -> Result<(), ProviderError>;
 }
 
-#[async_trait]
 pub trait ChatProvider: Send + Sync {
     fn kind(&self) -> ChatKind;
-    async fn whoami(&self) -> Result<ChatUser, ProviderError>;
-    async fn list_channels(&self, cursor: Option<String>) -> Result<Page<ChatChannel>, ProviderError>; // picker
-    async fn channel_info(&self, channel_id: &str) -> Result<ChatChannel, ProviderError>;              // archived? name?
-    async fn post(&self, msg: &OutgoingMessage) -> Result<ChatMessage, ProviderError>;
-    async fn thread(&self, channel_id: &str, root: &ProviderRef) -> Result<Vec<ChatMessage>, ProviderError>;
-    async fn search(&self, query: &str) -> Result<Vec<ChatMessage>, ProviderError>; // Forbidden if unsupported
-    async fn permalink(&self, msg: &ProviderRef) -> Result<String, ProviderError>;
+    fn whoami(&self) -> Result<ChatUser, ProviderError>;
+    fn list_channels(&self, cursor: Option<String>) -> Result<Page<ChatChannel>, ProviderError>; // picker
+    fn channel_info(&self, channel_id: &str) -> Result<ChatChannel, ProviderError>;              // archived? name?
+    fn post(&self, msg: &OutgoingMessage) -> Result<ChatMessage, ProviderError>;
+    fn thread(&self, channel_id: &str, root: &ProviderRef) -> Result<Vec<ChatMessage>, ProviderError>;
+    fn search(&self, query: &str) -> Result<Vec<ChatMessage>, ProviderError>; // Forbidden if unsupported
+    fn permalink(&self, msg: &ProviderRef) -> Result<String, ProviderError>;
 }
 
 pub struct OutgoingMessage {
@@ -366,7 +371,7 @@ pub struct OutgoingMessage {
 }
 ```
 
-All methods return typed errors (no `String`). The original `list_repositories` is dropped: navigation is project-first (§8), and repos are discovered from PR search results. `list_organizations` is kept only to fill the org picker in onboarding/Settings (`viewer.organizations`, plus orgs seen in search results), not for sync. Test doubles (`FakeVcs`, `FakeChat`) live in `pr-nexus-core::testing` behind a `testing` feature.
+All methods return typed errors (no `String`) and are synchronous, matching the store (§4). `SyncedPullRequest` is the search/refresh row: a `PullRequest` plus the repository node id, default branch, and archived flag the store needs. The original `list_repositories` is dropped: navigation is project-first (§8), and repos are discovered from PR search results. `list_organizations` is kept only to fill the org picker in onboarding/Settings (`viewer.organizations`, plus orgs seen in search results), not for sync. Test doubles (`FakeVcs`, `FakeChat`) live in `pr-nexus-core::testing` behind a `testing` feature.
 
 ### 5.1 Provider registry and setup steps
 
@@ -401,7 +406,7 @@ pub fn build_chat(kind: ChatKind, account: AccountId, token: SecretString) -> Re
 - The descriptors and `setup_steps` live in `pr-nexus-core` (pure data, no network). The factories live in `pr-nexus-providers`, and the app wires them together.
 
 - v1 registers GitHub and Slack as `Available`, and GitLab, Gitea, Discord, and Mattermost as `ComingSoon`. `ComingSoon` entries have no factory (the factory returns `ProviderError::Unsupported`) and an empty `setup`; they exist only so the wizard can show them disabled.
-- `ChatMapping` is the only step marked skippable (`SetupStep::is_skippable`).
+- `ChatMapping` is the only step marked skippable once Slack sign-in exists (`SetupStep::is_skippable`). Until that client lands (M10), `ConnectChat` is also skippable (`is_skippable_before_slack_oauth`): the screen, client settings, and **Create your Slack app** link are present, and sign-in shows “coming in M10”.
 - Adding a provider later means adding a descriptor, its factory, and any new `SetupStep` screens; the wizard and Settings pick it up without other changes.
 - The chosen providers are stored in `settings` (`providers.vcs`, `providers.chat`, §7.12). v1 allows exactly one of each.
 
@@ -496,6 +501,7 @@ Computed from synced fields. Re-computed in the pre-send refresh.
   - no blocking row above applies (not a draft, not behind, no changes requested).
 
   The PR detail and preview show a note: "GitHub BLOCKED: waiting for reviews". Any other `BLOCKED` stays Unknown. Other GitHub requirements (e.g. signed commits, deployments) can still hide behind `BLOCKED`. The owner accepted that risk: the worst case is a review request that arrives slightly early. Golden tests must cover both branches.
+- **`review.blocked_review_required_is_ready`** (default `true`, §7.12) gates the deviation above. `decide_readiness_with(snapshot, flag)` keeps the Ready note when the flag is true. When the flag is false, that same PR is Unknown and the note is a reason, which is the skill's behavior. Callers read the setting from the store; the function stays pure.
 - **Check buckets:** SUCCESS, NEUTRAL, and SKIPPED pass. Only a check rollup with real items counts. "No checks at all" is Unknown (`no CI checks reported`).
 
 ### 7.2 Ownership: CODEOWNERS + branch rules, never requested reviewers
@@ -593,6 +599,7 @@ There is no age-based expiry. An old request is still the right thread to bump; 
   `github_org,github_team_slug,github_team_name,slack_channel_name,slack_channel_id`
   plus an optional 6th column, `slack_workspace` (a workspace domain). The skill's 5-column CSV imports as is. On import, rows without a workspace get the **target workspace the user picks in the import dialog** (required when any row lacks one; the choice lists connected workspaces). A domain with no connected Slack account still imports. That row shows "workspace not connected" and is skipped when sending.
   The export quotes with RFC 4180 rules and sorts rows by `(org, slug)`, so exports are diff-friendly.
+- **Tombstones do not survive CSV.** A user row with `disabled=1` is omitted from every export mode (`effective`, `user`, `imported`). The CSV has no disabled column, and import always writes `disabled=0`. Exporting and importing therefore cannot recreate a tombstone. The row stays in SQLite until the user deletes that user-layer row in the app.
 - Import modes:
   - `replace`: delete imported rows, then insert.
   - `merge`: upsert into user rows; empty cells do not overwrite non-empty ones.
@@ -604,7 +611,7 @@ There is no age-based expiry. An old request is still the right thread to bump; 
 
 ### 7.6 Message text: byte-exact port of `build-review-message.py` (MUST)
 
-`pr-nexus-core::review::message::build(mode, items: &[(title, url)], requester: Option<&str>, extra: Option<&str>) -> String`. Rules:
+`pr-nexus-core::review::message::build(mode, items: &[(title, url)], requester: Option<&str>, extra: Option<&str>) -> Result<String, CoreError>`. An empty item list, an empty title, or a URL that does not start with `http` is `Err`. Rules:
 - Titles and URLs are `trim()`med. An empty title is an error. A URL must start with `http`.
 - Lines are joined with `\n`. Then `rstrip()` all trailing whitespace and append exactly one `\n`.
 - `who` = `" (" + requester + ")"` if a requester is set, else `""`.
@@ -648,7 +655,7 @@ Thanks!
 - **Wire format: standard Markdown for `slack_send_message`.** The MCP send tool takes standard Markdown, not Slack mrkdwn, and converts it on the server. The skill sends the script's stdout **unchanged** through that same tool, so the golden text already is what the tool expects: plain lines, `- {title}` as a list item, bare URLs on their own line (auto-linked), and `:pray:` as an emoji shortcode.
   - Golden fixtures stay byte-exact against the Python script. `review_messages.text` and the preview store and show that text.
   - **No mrkdwn entity escaping** (`&amp;`, `&lt;`, `&gt;`) on the MCP path; it would show literally. That escaping belongs to the Web API fallback only (§7.11).
-  - The only transform is `wire_text = md_escape_titles(text)`. It backslash-escapes Markdown-active characters **inside titles only**: `` \ * _ ` ~ [ ] < > ``, plus a leading `#`, `>`, `+`, `-`, or `N.` at the start of a title. So `fix *_init_* [WIP]` renders literally. URLs, template text, and `extra` are never touched. It has its own golden pairs (`text` → `wire_text`).
+  - The only transform is `wire_text = md_escape_titles(text)`. It backslash-escapes Markdown-active characters **inside titles only**: `` \ * _ ` ~ [ ] < > ``, plus a leading `#`, `>`, `+`, or `-`, and a leading ordered-list marker `N.` (one or more digits followed by a dot) at the start of a title. So `fix *_init_* [WIP]` and `1. Title` render literally. URLs, template text, and `extra` are never touched. It has its own golden pairs (`text` → `wire_text`).
   - **M10 read-back check decides the transform:** post a title containing `` * _ ~ ` [ ] < > & `` to a test channel and read it back with `slack_read_thread`. If the server honours backslash escapes, ship `md_escape_titles`. If it does not, the transform is the identity (exactly what the skill sends), and the preview warns when a title contains Markdown-active characters.
   - The preview renders the same Markdown subset that Slack shows.
 - `settings.review.requester` defaults to empty, so no requester is added, matching the skill's default.
@@ -862,7 +869,7 @@ Nothing org-specific is hard-coded or shipped: GitHub orgs, Slack workspaces, te
 | Key (`settings`) | Default | Example user value |
 |---|---|---|
 | `providers.vcs` / `providers.chat` | unset until wizard steps 1–2 | `"github"` / `"slack"` |
-| `onboarding.state` | unset (wizard starts at step 1) | `{"step":"connect_chat","completed":["choose_vcs",…],"mapping_skipped":false,"finished_at":null}` |
+| `onboarding.state` | unset (wizard starts at step 1) | `{"step":"connect_chat","completed":["choose_vcs",…],"mapping_skipped":false,"slack_skipped":false,"finished_at":null}` |
 | `github.tracked_orgs` | `[]`: none; onboarding asks the user to pick | `["acme","acme-labs"]` |
 | `github.include_personal_repos` | `false` | false |
 | `github.codeowners_paths` | `[".github/CODEOWNERS","CODEOWNERS","docs/CODEOWNERS"]` | same |
@@ -1087,14 +1094,14 @@ Onboarding is a **wizard of separate screens, shown one step at a time**, not a 
 | 2 | Choose communication provider | Cards: **Slack** (enabled), Discord and Mattermost (disabled, "Coming soon"). | a provider is selected (Slack preselected) |
 | 3 | Connect GitHub | The three auth modes of §9 in order: `gh` CLI token (preselected when `gh auth status` succeeds), PAT, device flow. Validates with `viewer` and shows the login and scope check; SSO errors show the authorization link. | the account is verified |
 | 4 | Choose orgs to track | Checkboxes from `viewer.organizations` (plus orgs seen in search), a filter box, and the **Include my personal repos** toggle. Writes `github.tracked_orgs` and `github.include_personal_repos`. | at least one org is checked or personal repos is on |
-| 5 | Connect Slack workspace(s) | The **Create your Slack app** link with its help text (§7.11), then the Slack MCP client fields: client ID (required once, empty by default: no client ID ships), client secret (optional, saved to the keychain; needed for apps created from the link), and redirect URI (pre-filled with the default that the manifest registers). Below them come the list of connected workspaces, then **Sign in with Slack** for **one workspace at a time**: browser OAuth against the Slack MCP server (PKCE, loopback callback; §7.11), with tokens saved to the keychain. "Add another workspace" repeats the sign-in. An optional per-workspace client override sits under "Advanced". | at least one workspace is connected |
+| 5 | Connect Slack workspace(s) | The **Create your Slack app** link with its help text (§7.11), then the Slack MCP client fields: client ID (required once, empty by default: no client ID ships), client secret (optional, saved to the keychain; needed for apps created from the link), and redirect URI (pre-filled with the default that the manifest registers). Below them come the list of connected workspaces, then **Sign in with Slack** for **one workspace at a time**. OAuth against the Slack MCP server lands in M10; until then the control shows “Slack sign-in comes in M10” and the step is skippable. "Add another workspace" is present and disabled until a workspace can connect. | M10: at least one workspace is connected. Until then: Next saves the client settings, or Skip |
 | 6 | Team → channel mapping | CSV import with the target-workspace picker and dry-run preview (§7.5), or **Skip**. A note says it can be done later in Settings → Mappings or from the preview's "Change channel". | always (Import & next, or Skip) |
 | 7 | Done | Summary (account, orgs, workspaces, mapping rows or "skipped") and the **first sync** starting, with live progress. "Open PR-Nexus" goes to My PRs. | — |
 
 **Navigation and rules.**
 - A progress indicator at the top (one dot per step, `Step k of N` and the step name). `N` comes from the registry, so it changes if other providers add steps.
 - **Back** and **Next** in the footer. Back is disabled on step 1. Back never undoes work already saved (a connected account stays connected); it only moves the screen. Going back to step 1 or 2 and changing the provider would drop later steps, but in v1 there is only one available provider per kind.
-- **Only the mapping step is skippable.** Every other step requires its condition above. Steps 1–2 never show a Skip button.
+- **Only the mapping step is skippable** once Slack sign-in exists. Until M10, step 5 (Connect Slack) is also skippable: the screen and its settings fields are required, and the sign-in control shows “Slack sign-in comes in M10”. Skip on that step records `slack_skipped` and does not pretend a workspace is connected. Steps 1–2 never show a Skip button.
 - Next writes the step's result immediately (settings, accounts, keychain), so each step is durable on its own.
 - **Resumable:** `onboarding.state` (§7.12) stores the current step, completed steps, and `mapping_skipped`. It is updated on every Next/Back. If the app is closed mid-wizard, the next launch reopens the wizard at that step with saved values pre-filled. On launch, completed steps are re-validated cheaply (account still verifiable, keychain entry present); if one fails, the wizard resumes at the first invalid step.
 - Step 7 sets `finished_at` and starts the first sync. After that, the app opens on the list, and the wizard is only reachable through Settings → About → Re-run setup.
@@ -1236,7 +1243,7 @@ Step 7:
    - Classic: `repo`, `read:org`.
    - Fine-grained: per org, read access to Pull requests, Contents (for CODEOWNERS), Metadata, Checks/Commit statuses; Members (org) read for team membership; Pull requests write only for the M10 option.
    - An org may block classic or fine-grained PATs. That is why the `gh` token is the default (D1).
-3. **OAuth device flow** with a PR-Nexus OAuth App (client id embedded, no secret). The token is stored in the keychain. An org may need to approve the app.
+3. **OAuth device flow.** The client id is not committed (same rule as the Slack client id). It is read from `github.oauth_client_id` or `PR_NEXUS_GITHUB_OAUTH_CLIENT_ID`. When both are empty the wizard still shows the mode and explains that a client id is required; `gh` and a PAT stay usable. A token obtained this way is stored in the keychain. An org may need to approve the app.
 
 Detect `X-GitHub-SSO: required; url=…` and show the authorization link.
 
@@ -1249,7 +1256,7 @@ Detect `X-GitHub-SSO: required; url=…` and show the authorization link.
 - Use `keyring` with service `dev.pr-nexus` and **one single entry**, `vault`. It holds a JSON map `{ "<kind>:<external_id>": <secret> }`, e.g. `github:<node id>` → token, one `slack:<team_id>:<user_id>` per workspace → `{access_token, refresh_token?, expires_at?}`, and one `slack-client:<client_id>` per configured Slack app → `{client_secret}`, entered before the first sign-in and shared by the workspaces that use that client. The app reads it once at startup and keeps it in memory (`secrecy::SecretString`).
 - **Why one entry:** builds are unsigned (see the caveat below). After each update, macOS asks once per keychain item whether to allow access. With 1 GitHub account and N Slack workspaces, separate items would mean 1+N prompts per update; one entry means one.
 - Never write secrets to SQLite, logs, or the frontend. Commands return only `has_token: bool`.
-- In Linux CI there is no secret service, so tests use the keyring `mock` store behind a feature flag.
+- In Linux CI there is no secret service. The app probes the keyring for at most two seconds. If the probe fails, times out, or `PR_NEXUS_DISABLE_KEYRING=1` is set, the vault stays in memory and the UI shows a warning. The process does not crash. `PR_NEXUS_GITHUB_TOKEN`, when set, is the GitHub token for that process: it is preferred over `gh` and the keychain, and it is never written to the vault or to SQLite. `PR_NEXUS_DB_PATH` points the store at a chosen file (a temp database in development).
 
 **Webview hardening**:
 - Tauri v2 capabilities give the main window only `core:default`, `opener:allow-open-url` limited to `https://github.com/*`, `https://*.slack.com/*`, and `slack://*` (request deep links, §8.2), and the app's own commands.

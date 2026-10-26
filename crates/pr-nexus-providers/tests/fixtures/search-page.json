@@ -1,0 +1,66 @@
+{
+  "data": {
+    "rateLimit": {
+      "limit": 5000,
+      "remaining": 4900,
+      "resetAt": "2026-10-26T12:00:00Z",
+      "cost": 1
+    },
+    "search": {
+      "pageInfo": { "hasNextPage": false, "endCursor": null },
+      "nodes": [
+        {
+          "id": "PR_node_12",
+          "number": 12,
+          "title": "Add a latch",
+          "url": "https://github.com/acme/widgets/pull/12",
+          "bodyText": "Holds the drawer shut.",
+          "isDraft": false,
+          "state": "OPEN",
+          "createdAt": "2026-10-20T00:00:00Z",
+          "updatedAt": "2026-10-25T00:00:00Z",
+          "author": { "login": "ada" },
+          "headRefName": "feat/latch",
+          "baseRefName": "main",
+          "headRefOid": "abc123",
+          "repository": {
+            "id": "R_widgets",
+            "owner": { "login": "acme" },
+            "name": "widgets",
+            "isArchived": false,
+            "defaultBranchRef": { "name": "main" }
+          },
+          "labels": { "nodes": [{ "name": "bug" }] },
+          "reviewDecision": "REVIEW_REQUIRED",
+          "mergeable": "MERGEABLE",
+          "mergeStateStatus": "BLOCKED",
+          "commits": {
+            "nodes": [
+              {
+                "commit": {
+                  "committedDate": "2026-10-25T01:00:00Z",
+                  "statusCheckRollup": { "state": "SUCCESS" }
+                }
+              }
+            ]
+          },
+          "reviewRequests": {
+            "nodes": [
+              { "requestedReviewer": { "login": "octo" } },
+              {
+                "requestedReviewer": {
+                  "slug": "team-a",
+                  "organization": { "login": "acme" }
+                }
+              }
+            ]
+          },
+          "reviewThreads": {
+            "totalCount": 2,
+            "nodes": [{ "isResolved": false }, { "isResolved": true }]
+          }
+        }
+      ]
+    }
+  }
+}

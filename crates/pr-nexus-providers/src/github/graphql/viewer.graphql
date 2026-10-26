@@ -1,0 +1,17 @@
+query Viewer {
+  rateLimit {
+    limit
+    remaining
+    resetAt
+    cost
+  }
+  viewer {
+    login
+    id
+    organizations(first: 100) {
+      nodes {
+        login
+      }
+    }
+  }
+}

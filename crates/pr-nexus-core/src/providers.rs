@@ -1,10 +1,12 @@
-//! Which providers exist, and the setup-wizard steps for a chosen pair.
+//! Which providers exist, the setup-wizard steps, and the synchronous provider traits.
 //!
-//! The async `VcsProvider` / `ChatProvider` traits land with the first real
-//! client. Their input types (ownership inputs, search queries) are specified
-//! across later milestones, so this module keeps the pure registry only.
+//! HTTP clients live in `pr-nexus-providers`. These traits block; the store
+//! has no async runtime (§4).
 
-use crate::domain::{ChatKind, VcsKind};
+use chrono::{DateTime, Utc};
+
+use crate::domain::{AccountId, ChatKind, ProviderRef, PullRequest, TeamRef, VcsKind};
+use crate::error::ProviderError;
 
 /// Whether the wizard can connect a provider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,9 +28,39 @@ pub enum SetupStep {
 }
 
 impl SetupStep {
-    /// Mapping is the only step the user can skip.
+    /// Mapping is the only step the user can skip once Slack sign-in exists.
     pub const fn is_skippable(self) -> bool {
         matches!(self, Self::ChatMapping)
+    }
+
+    /// Until M10, the Slack connect screen can be skipped. The screen still exists.
+    pub const fn is_skippable_before_slack_oauth(self) -> bool {
+        matches!(self, Self::ChatMapping | Self::ConnectChat)
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ChooseVcs => "choose_vcs",
+            Self::ChooseChat => "choose_chat",
+            Self::ConnectVcs => "connect_vcs",
+            Self::ChooseVcsScope => "choose_vcs_scope",
+            Self::ConnectChat => "connect_chat",
+            Self::ChatMapping => "chat_mapping",
+            Self::Done => "done",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "choose_vcs" => Self::ChooseVcs,
+            "choose_chat" => Self::ChooseChat,
+            "connect_vcs" => Self::ConnectVcs,
+            "choose_vcs_scope" => Self::ChooseVcsScope,
+            "connect_chat" => Self::ConnectChat,
+            "chat_mapping" => Self::ChatMapping,
+            "done" => Self::Done,
+            _ => return None,
+        })
     }
 }
 
@@ -181,6 +213,10 @@ mod tests {
         ];
         for step in skippable {
             assert_eq!(step.is_skippable(), step == SetupStep::ChatMapping);
+            assert_eq!(
+                step.is_skippable_before_slack_oauth(),
+                matches!(step, SetupStep::ChatMapping | SetupStep::ConnectChat)
+            );
         }
     }
 
@@ -194,4 +230,99 @@ mod tests {
         assert!(slack.multi_account);
         assert_eq!(slack.availability, Availability::Available);
     }
+}
+
+/// Which GitHub search bucket to run. Org filtering happens after the fetch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchBucket {
+    Mine,
+    ReviewRequested,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrQuery {
+    pub bucket: SearchBucket,
+}
+
+/// A pull request plus the repository fields the store upserts with it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncedPullRequest {
+    pub pull_request: PullRequest,
+    pub repo_node_id: Option<String>,
+    pub default_branch: Option<String>,
+    pub repo_archived: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VcsUser {
+    pub id: String,
+    pub login: String,
+    pub organizations: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RateBudget {
+    pub limit: u32,
+    pub remaining: u32,
+    pub reset_at: DateTime<Utc>,
+    pub cost: u32,
+    /// Set when GitHub returns a secondary limit. Scheduled polls wait until then.
+    pub secondary_until: Option<DateTime<Utc>>,
+}
+
+/// Placeholder until M9 fills files, CODEOWNERS, and rules.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnershipInputs {
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TeamMembers {
+    pub complete: bool,
+    pub logins: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatUser {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatChannel {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Page<T> {
+    pub items: Vec<T>,
+    pub next_cursor: Option<String>,
+}
+
+pub trait VcsProvider: Send + Sync {
+    fn kind(&self) -> VcsKind;
+    fn viewer(&self) -> Result<VcsUser, ProviderError>;
+    fn search_pull_requests(
+        &self,
+        query: &PrQuery,
+    ) -> Result<Vec<SyncedPullRequest>, ProviderError>;
+    fn refresh_pull_requests(
+        &self,
+        ids: &[ProviderRef],
+    ) -> Result<Vec<SyncedPullRequest>, ProviderError>;
+    fn ownership_inputs(&self, pr: &PullRequest) -> Result<OwnershipInputs, ProviderError>;
+    fn team_members(&self, team: &TeamRef) -> Result<TeamMembers, ProviderError>;
+    fn rate_limit(&self) -> Result<RateBudget, ProviderError>;
+    fn request_team_review(&self, pr: &PullRequest, teams: &[TeamRef])
+    -> Result<(), ProviderError>;
+}
+
+pub trait ChatProvider: Send + Sync {
+    fn kind(&self) -> ChatKind;
+    fn whoami(&self) -> Result<ChatUser, ProviderError>;
+    fn list_channels(&self, cursor: Option<String>) -> Result<Page<ChatChannel>, ProviderError>;
+    fn channel_info(&self, channel_id: &str) -> Result<ChatChannel, ProviderError>;
+    fn post(&self, channel_id: &str, text: &str) -> Result<(), ProviderError>;
+    fn account_id(&self) -> AccountId;
 }

@@ -1,0 +1,250 @@
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread;
+use std::time::Duration;
+
+use chrono::{DateTime, Utc};
+use pr_nexus_core::domain::{Account, AccountKind};
+use pr_nexus_core::onboarding::{self, OnboardingState, StepValidity};
+use pr_nexus_core::providers::{ProviderRegistry, SetupStep};
+use pr_nexus_core::settings;
+use pr_nexus_core::store::Store;
+use pr_nexus_core::sync::{self, SyncKind};
+use pr_nexus_providers::github::{self, GithubClient};
+use pr_nexus_providers::vault::Vault;
+use tauri::Manager;
+
+use crate::error::AppError;
+
+pub struct SyncStatus {
+    pub phase: String,
+    pub message: String,
+    pub synced_at: Option<DateTime<Utc>>,
+    pub paused: bool,
+}
+
+impl SyncStatus {
+    fn idle() -> Self {
+        Self {
+            phase: "idle".into(),
+            message: "Not synced yet".into(),
+            synced_at: None,
+            paused: false,
+        }
+    }
+}
+
+pub struct DeviceSession {
+    pub device_code: String,
+    pub client_id: String,
+}
+
+pub struct AppState {
+    pub store: Store,
+    pub vault: Vault,
+    pub sync: Mutex<SyncStatus>,
+    pub device: Mutex<Option<DeviceSession>>,
+    pub focused: AtomicBool,
+    pub wake: Arc<(Mutex<bool>, Condvar)>,
+}
+
+impl AppState {
+    pub fn open(path: PathBuf) -> Result<Self, AppError> {
+        let store = Store::open(&path)?;
+        let vault = Vault::open();
+        if std::env::var("PR_NEXUS_DEMO").ok().as_deref() == Some("1") {
+            crate::demo::seed_if_empty(&store)?;
+        }
+        Ok(Self {
+            store,
+            vault,
+            sync: Mutex::new(SyncStatus::idle()),
+            device: Mutex::new(None),
+            focused: AtomicBool::new(true),
+            wake: Arc::new((Mutex::new(false), Condvar::new())),
+        })
+    }
+}
+
+pub fn database_path(app: &tauri::App) -> PathBuf {
+    if let Ok(path) = std::env::var("PR_NEXUS_DB_PATH")
+        && !path.is_empty()
+    {
+        return PathBuf::from(path);
+    }
+    app.path()
+        .app_data_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join("pr-nexus.db")
+}
+
+pub fn github_account(store: &Store) -> Result<Option<Account>, AppError> {
+    let accounts = store.list_accounts()?;
+    Ok(accounts
+        .into_iter()
+        .find(|account| account.kind == AccountKind::GitHub))
+}
+
+pub fn resolve_github_token(
+    state: &AppState,
+    account: Option<&Account>,
+) -> Result<String, AppError> {
+    if let Some(token) = github::github_token_from_env() {
+        return Ok(token);
+    }
+    let Some(account) = account else {
+        return Err(AppError::new(
+            "unauthorized",
+            "Connect GitHub before syncing",
+        ));
+    };
+    match account.auth_mode {
+        pr_nexus_core::domain::AuthMode::GhCli => match github::read_gh_token() {
+            github::GhProbe::Ready { token } => Ok(token),
+            github::GhProbe::Unavailable { reason } => Err(AppError::new("unauthorized", reason)),
+        },
+        pr_nexus_core::domain::AuthMode::Pat | pr_nexus_core::domain::AuthMode::OauthDevice => {
+            let key = account
+                .keychain_key
+                .clone()
+                .unwrap_or_else(|| format!("github:{}", account.external_id));
+            state.vault.get(&key)?.ok_or_else(|| {
+                AppError::new(
+                    "unauthorized",
+                    "GitHub token is not in the keychain. Reconnect, or set PR_NEXUS_GITHUB_TOKEN.",
+                )
+            })
+        }
+        other => Err(AppError::new(
+            "unsupported",
+            format!("auth mode {other} is not a GitHub token"),
+        )),
+    }
+}
+
+pub fn validity(state: &AppState, saved: &OnboardingState) -> Result<StepValidity, AppError> {
+    let (vcs, chat) = settings::provider_kinds(&state.store)?;
+    let account = github_account(&state.store)?;
+    let orgs = settings::tracked_orgs(&state.store)?;
+    let personal = settings::include_personal_repos(&state.store)?;
+    let github_verified =
+        account.is_some() && resolve_github_token(state, account.as_ref()).is_ok();
+    let slack_completed = saved
+        .completed
+        .iter()
+        .any(|step| step == SetupStep::ConnectChat.as_str());
+    Ok(StepValidity {
+        vcs_selected: vcs.as_deref() == Some("github"),
+        chat_selected: chat.as_deref() == Some("slack"),
+        github_verified,
+        orgs_chosen: !orgs.is_empty() || personal,
+        slack_ok: saved.slack_skipped || slack_completed,
+        mapping_ok: saved.mapping_skipped
+            || saved.completed.iter().any(|step| step == "chat_mapping"),
+    })
+}
+
+pub fn run_sync(state: &AppState, kind: SyncKind) -> Result<sync::SyncReport, AppError> {
+    {
+        let mut status = state.sync.lock().expect("sync status");
+        status.phase = "syncing".into();
+        status.message = "Syncing…".into();
+        status.paused = false;
+    }
+    let outcome = (|| {
+        let account = github_account(&state.store)?
+            .ok_or_else(|| AppError::new("unauthorized", "Connect GitHub before syncing"))?;
+        let token = resolve_github_token(state, Some(&account))?;
+        let client = GithubClient::new(account.id, token)?;
+        let report = sync::sync_account(&state.store, &client, account.id, kind, Utc::now())?;
+        Ok::<_, AppError>(report)
+    })();
+    let mut status = state.sync.lock().expect("sync status");
+    match &outcome {
+        Ok(report) if report.paused => {
+            status.phase = "paused".into();
+            status.message = report.message.clone();
+            status.paused = true;
+            status.synced_at = Some(Utc::now());
+        }
+        Ok(report) => {
+            status.phase = "ok".into();
+            status.message = if report.message == "Choose orgs to track" {
+                report.message.clone()
+            } else {
+                format!("Synced · {}", report.message)
+            };
+            status.paused = false;
+            status.synced_at = Some(Utc::now());
+        }
+        Err(err) => {
+            status.phase = if err.kind == "rate_limited" {
+                "paused"
+            } else {
+                "error"
+            }
+            .into();
+            status.message = if err.kind == "rate_limited" {
+                "Rate limited".into()
+            } else {
+                format!("Sync failed · {}", err.message)
+            };
+            status.paused = err.kind == "rate_limited";
+        }
+    }
+    outcome
+}
+
+pub fn spawn_scheduler(state: Arc<AppState>) {
+    thread::Builder::new()
+        .name("pr-nexus-sync".into())
+        .spawn(move || {
+            if onboarding::load(&state.store)
+                .ok()
+                .is_some_and(|saved| saved.is_finished())
+            {
+                let _ = run_sync(&state, SyncKind::Manual);
+            }
+            loop {
+                let interval = interval_secs(&state);
+                let (lock, cv) = &*state.wake;
+                let guard = lock.lock().expect("sync wake");
+                let (mut guard, wait) = cv
+                    .wait_timeout(guard, Duration::from_secs(interval))
+                    .expect("sync wake");
+                let manual = *guard || !wait.timed_out();
+                *guard = false;
+                drop(guard);
+                let finished = onboarding::load(&state.store)
+                    .ok()
+                    .is_some_and(|saved| saved.is_finished());
+                if !finished {
+                    continue;
+                }
+                let kind = if manual {
+                    SyncKind::Manual
+                } else {
+                    SyncKind::Scheduled
+                };
+                let _ = run_sync(&state, kind);
+            }
+        })
+        .expect("sync scheduler");
+}
+
+fn interval_secs(state: &AppState) -> u64 {
+    let focused = state.focused.load(Ordering::Relaxed);
+    if focused {
+        settings::focused_interval_s(&state.store).unwrap_or(180)
+    } else {
+        settings::unfocused_interval_s(&state.store).unwrap_or(900)
+    }
+}
+
+pub fn registry_steps() -> Vec<SetupStep> {
+    ProviderRegistry::v1().setup_steps(
+        pr_nexus_core::domain::VcsKind::GitHub,
+        pr_nexus_core::domain::ChatKind::Slack,
+    )
+}
