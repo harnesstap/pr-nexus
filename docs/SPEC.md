@@ -8,7 +8,7 @@ This file is the source of truth for product behavior. When code and spec disagr
 
 ## 1. Vision & non-goals
 
-**Vision.** A desktop app for one developer who has many open pull requests across several GitHub orgs (today `outbrain` and `ebuzzing`). It answers two questions in one place: *"what state are my PRs in, grouped by the project they belong to?"* and *"who do I ping on Slack to get them reviewed?"* It also performs that ping (request, or bump an earlier request) in one click, with a preview before anything is sent.
+**Vision.** A desktop app for one developer who has many open pull requests across one or more GitHub orgs that they choose. It answers two questions in one place: *"what state are my PRs in, grouped by the project they belong to?"* and *"who do I ping on Slack to get them reviewed?"* It also performs that ping (request, or bump an earlier request) in one click, with a preview before anything is sent.
 
 PR-Nexus reimplements, natively in Rust, the workflow of the existing Claude skill `request-slack-review` (§7). That skill is the behavioral reference. Deviations from it are listed explicitly.
 
@@ -25,7 +25,7 @@ PR-Nexus reimplements, natively in Rust, the workflow of the existing Claude ski
 |---|---|---|
 | Platforms | Desktop. **macOS first** (Apple Silicon). Linux and Windows **must build in CI** but are not shipped or tested by hand. | Android/iOS (Tauri mobile) |
 | VCS | GitHub.com: read (PRs, checks, reviews, CODEOWNERS, rules). One optional write (see note). | GitLab, Gitea, GHES |
-| Chat | Slack, **two workspaces in v1** (`teads`, `teads-innovation`): read (threads tied to PRs, optional mention search) and write (post request, post bump) | Discord, Mattermost |
+| Chat | Slack, **N workspaces in v1**, chosen by the user: read (threads tied to PRs, optional mention search) and write (post request, post bump) | Discord, Mattermost |
 | Views | Grouped list (by project) with multi-select and bulk actions; PR detail; projects mgmt; settings (accounts, mappings, rules) | Kanban, stats |
 | Automation | Polling sync while the app runs | Scheduled reminders, MCP server |
 
@@ -200,11 +200,11 @@ CREATE TABLE pr_projects (
   rule_id INTEGER REFERENCES project_rules(id) ON DELETE SET NULL,
   created_at TEXT NOT NULL, PRIMARY KEY (pr_id, project_id));
 
--- team → channel mapping, layered (§7.5). Seed rows are never edited in place.
+-- team → channel mapping, layered (§7.5). Starts empty. Imported rows are never edited in place.
 CREATE TABLE team_channel_mappings (
-  id INTEGER PRIMARY KEY, layer TEXT NOT NULL CHECK (layer IN ('seed','user')),
+  id INTEGER PRIMARY KEY, layer TEXT NOT NULL CHECK (layer IN ('imported','user')),
   github_org TEXT NOT NULL, team_slug TEXT NOT NULL, team_name TEXT NOT NULL DEFAULT '',
-  slack_workspace TEXT NOT NULL,                           -- Slack workspace domain, e.g. 'teads' | 'teads-innovation'
+  slack_workspace TEXT NOT NULL,                           -- Slack workspace domain, e.g. 'acme' (from acme.slack.com)
   slack_channel_id TEXT NOT NULL DEFAULT '', slack_channel_name TEXT NOT NULL DEFAULT '',
   disabled INTEGER NOT NULL DEFAULT 0,                     -- user tombstone: "never post for this team"
   note TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL,
@@ -320,7 +320,7 @@ pub struct OutgoingMessage {
 }
 ```
 
-All methods return typed errors (no `String`). The original `list_organizations`/`list_repositories` are dropped: navigation is project-first (§8), and repos are discovered from PR search results. Test doubles (`FakeVcs`, `FakeChat`) live in `pr-nexus-core::testing` behind a `testing` feature.
+All methods return typed errors (no `String`). The original `list_repositories` is dropped: navigation is project-first (§8), and repos are discovered from PR search results. `list_organizations` is kept only to fill the org picker in onboarding/Settings (`viewer.organizations`, plus orgs seen in search results), not for sync. Test doubles (`FakeVcs`, `FakeChat`) live in `pr-nexus-core::testing` behind a `testing` feature.
 
 ## 6. GitHub sync
 
@@ -332,7 +332,7 @@ All methods return typed errors (no `String`). The original `list_organizations`
 | `review_requested` | `is:pr is:open review-requested:@me archived:false sort:updated-desc` | "To review" filter, shipped in v1 (default D4) |
 
 - Use `search(type: ISSUE, query:…, first: 50)` with cursor pagination and a hard cap of 500 per bucket. `ISSUE_ADVANCED` was removed on 2025-09-04, so do not use it.
-- **Org filtering happens client-side.** Several `org:` qualifiers separated by spaces are ANDed, so `org:outbrain org:ebuzzing` matches nothing. The org list is a filter chip in the UI (`settings.github.org_filter`), not a navigation level. An empty filter means all orgs.
+- **Org filtering happens client-side.** Several `org:` qualifiers separated by spaces are ANDed, so `org:acme org:acme-labs` matches nothing. The search runs unfiltered, and results are kept only for the orgs the user tracks (`github.tracked_orgs`, picked in onboarding and Settings → Accounts; §8). Nothing is hardcoded and there is no default org. Until the user picks orgs, the PR list shows an empty state with a "Choose orgs to track" button. Personal (user-owned) repos are a separate opt-in toggle. In the UI the org list is also a filter chip, not a navigation level.
 - **PRs that disappear** from a bucket (merged, closed, or no longer requested) are refreshed once via `nodes(ids:[…])` so their final state is stored. Merged/closed PRs stay visible for `settings.sync.keep_closed_days` (default 7), then become `hidden`.
 
 **Fragment** (one GraphQL file per query under `crates/pr-nexus-providers/src/github/graphql/`):
@@ -457,14 +457,14 @@ Computed from synced fields. Re-computed in the pre-send refresh.
 For each target team:
 1. Effective mapping (§7.5): match `(org, slug)`. The row carries its `slack_workspace`, which selects the Slack account and token used for every later call for this team.
 2. Otherwise match `(org, team_name)` exactly. This covers rows that are filled in only by name.
-3. A row with `slack_channel_id`: use it. Call `conversations.info` once per session. If the channel is **archived**, refuse to post and open the picker with a banner: "#x is archived — pick its replacement. It will be saved as your correction." (The skill followed redirect messages by hand. The app keeps the seed's known redirects as seed rows that already point to the live channel. It does not parse "moved to" messages.)
+3. A row with `slack_channel_id`: use it. Call `conversations.info` once per session. If the channel is **archived**, refuse to post and open the picker with a banner: "#x is archived — pick its replacement. It will be saved as your correction." (The skill followed redirect messages by hand. The app does not parse "moved to" messages; the saved correction replaces the old channel.)
 4. A row with only `slack_channel_name`: resolve it through the cached `conversations.list` (types public+private, `exclude_archived=true`). The user confirms the match once, and it is saved as a user row with an ID.
-5. No row, an empty row, or `disabled=1` → the **channel picker**. It is **scoped per workspace**: a workspace switcher (`teads` | `teads-innovation`) defaults to the row's workspace or `slack.default_workspace`. It shows a searchable list from `slack_channels_cache` for that workspace only, plus a "paste channel link/ID" fallback (the workspace is detected from the link's domain). The choice is saved as a user correction unless "just this once" is ticked.
+5. No row, an empty row, or `disabled=1` → the **channel picker**. It is **scoped per workspace**: a workspace switcher (one tab per connected workspace) defaults to the row's workspace, else the last workspace used. It shows a searchable list from `slack_channels_cache` for that workspace only, plus a "paste channel link/ID" fallback (the workspace is detected from the link's domain). The choice is saved as a user correction unless "just this once" is ticked.
 6. Never invent a channel ID. Never post to `@channel`/`@here`.
 
 Channel IDs are only unique within a workspace. Every lookup, dedup, post, and cache key is therefore `(workspace, channel_id)`, never `channel_id` alone.
 
-The seed CSV has 180 teams. **120 have no channel**, 5 have only a name, and 55 have an ID. The picker and correction flow is therefore the main path, not an edge case.
+The mapping **starts empty**: no company data ships with the app or the repo. Most teams get a channel on first use through the picker, or in bulk through CSV import (§7.5). The picker and correction flow is therefore the main path, not an edge case.
 
 ### 7.4 Dedup and "last request"
 
@@ -477,26 +477,27 @@ The goal is to know, for each (PR, channel), whether a request already exists, a
    - `search.messages` is a legacy API (Tier 2, user token, `search:read`), but it is the only way to find messages posted by other tools. It includes bot messages. If the scope is missing, skip the import and show "dedup: local history only".
 3. The PR detail shows **"Last request: <relative time> in #channel · Open in Slack"**, from the newest request or bump per channel.
 
-### 7.5 Mapping store: seed + user layers, CSV import/export
+### 7.5 Mapping store: imported + user layers, CSV import/export
 
+- The mapping starts **empty**. It is filled by CSV import, by the channel picker, and by corrections in the preview. Nothing is bundled or committed.
 - Two layers in `team_channel_mappings`:
-  - `seed`: imported from the committed seed CSV (below). It is replaced wholesale on re-import.
-  - `user`: corrections made in the app or imported as "user". It is never touched by a seed import.
-- **Precedence: a user row beats a seed row for the same `(org, slug)`, whatever the workspace.** One team maps to one channel in one workspace. A user row with `disabled=1` is a tombstone that hides the seed row. Lookup is one SQL query:
+  - `imported`: rows from a CSV import in `replace` mode. A new `replace` import swaps them out wholesale.
+  - `user`: corrections made in the app, or a CSV imported in `merge` mode. A `replace` import never touches them.
+- **Precedence: a user row beats an imported row for the same `(org, slug)`, whatever the workspace.** One team maps to one channel in one workspace. A user row with `disabled=1` is a tombstone that hides the imported row. Lookup is one SQL query:
   `SELECT … ORDER BY layer='user' DESC LIMIT 1` on slug, then on name.
-- **Δ vs the skill:** in the skill, `~/.slack-team-channel-mapping.csv` *replaces the whole bundled file* (`home_override_replaces_bundled`), so a sparse home file hides every bundled row. Row-level layering fixes that.
+- **Δ vs the skill:** in the skill, `~/.slack-team-channel-mapping.csv` *replaces the whole bundled file* (`home_override_replaces_bundled`), so a sparse home file hides every bundled row. Row-level layering fixes that: a re-import of the team's shared CSV keeps your corrections.
 - **Δ:** the skill's `upsert-mapping.py` writes CSV columns in a nondeterministic order (it builds them from a Python `set`). PR-Nexus always exports this fixed header:
   `github_org,github_team_slug,github_team_name,slack_channel_name,slack_channel_id`
-  plus a 6th column, `slack_workspace` (a workspace domain). On import, the column is optional: when it is missing or empty, rows get `slack.default_workspace` (`teads`; every seed row today points to a `teads` channel). A domain with no connected Slack account still imports. That row shows "workspace not connected" and is skipped when sending.
+  plus an optional 6th column, `slack_workspace` (a workspace domain). The skill's 5-column CSV imports as is. On import, rows without a workspace get the **target workspace the user picks in the import dialog** (required when any row lacks one; the choice lists connected workspaces). A domain with no connected Slack account still imports. That row shows "workspace not connected" and is skipped when sending.
   The export quotes with RFC 4180 rules and sorts rows by `(org, slug)`, so exports are diff-friendly.
 - Import modes:
-  - `seed-replace`: delete seed rows, then insert.
-  - `user-merge`: upsert into user rows; empty cells do not overwrite non-empty ones.
+  - `replace`: delete imported rows, then insert.
+  - `merge`: upsert into user rows; empty cells do not overwrite non-empty ones.
   - A dry-run diff is shown before applying: added, changed, unchanged, and rows that the user layer shadows.
   - Unknown columns are an error. Missing optional columns default to empty.
-- Export modes: `effective` (merged view), `user` (corrections only, for backup), and `seed`.
-- **The seed IS committed, as data** (the repo is private). It lives at `data/seed/team-channel-mapping.csv`: the skill's CSV plus the `slack_workspace` column. It ships as a Tauri **resource** (`bundle.resources`), not via `include_str!`, so it can change without touching code. On first run, and from Settings → Mappings → "Re-import bundled seed", it loads as `seed-replace`, with the dry-run diff. The seed changes through normal PRs, and the CI check is the CSV parser test (header, column count, unique `(org, slug)`, `C…`/`G…` ID shape).
-- The settings UI has a mappings table with filters (org, empty channel, overridden) and inline edits that write user rows. It has a "Reset to seed" action per row, which deletes the user row.
+- Export modes: `effective` (merged view), `user` (corrections only, for backup), and `imported`.
+- **No company data in the repo.** Test fixtures use made-up orgs, teams, and channels (`acme`, `team-a`, `#team-reviews`). The CSV parser is tested on those fixtures (header, column count, unique `(org, slug)`, `C…`/`G…` ID shape).
+- The settings UI has a mappings table with filters (org, empty channel, overridden) and inline edits that write user rows. It has a "Reset to imported" action per row, which deletes the user row.
 
 ### 7.6 Message text: byte-exact port of `build-review-message.py` (MUST)
 
@@ -581,7 +582,7 @@ When the user clicks Send, for each affected PR:
   1. gate each PR, dropping Blocked ones with their reason;
   2. run `decide_owners` per PR;
   3. resolve channels;
-  4. **group by `(workspace, channel)`: one message per channel lists every selected PR routed to it**. A batch can span both workspaces;
+  4. **group by `(workspace, channel)`: one message per channel lists every selected PR routed to it**. A batch can span several workspaces;
   5. show the preview, with one card per channel;
   6. send sequentially;
   7. show per-PR results.
@@ -604,7 +605,7 @@ The PR detail has a right-hand panel titled "Slack". It shows **only** threads P
 
 **Auth:** a **user token** (`xoxp-…`) from a Slack app **the user creates in their own workspace**, using the manifest below. Messages are posted *as the user*, which matches the skill (it posts via the user's MCP session) and is what reviewers expect.
 - Onboarding is done **once per workspace**. The user creates the app from the manifest in that workspace, installs it, copies the user OAuth token, and pastes it into PR-Nexus. PR-Nexus checks the token with `auth.test`, which returns `team_id`, `team` and `url` (the workspace domain comes from `url`). It then creates the Slack account row and stores the token in the keychain under that workspace (§9).
-- `teads` and `teads-innovation` are separate workspaces, not one Enterprise Grid org. Create one internal app per workspace. Do not turn on public distribution to share a single app: that could move it into the "distributed app" rate-limit category.
+- Separate workspaces (not one Enterprise Grid org) each need their own internal app. Do not turn on public distribution to share a single app: that could move it into the "distributed app" rate-limit category.
 - There is no PR-Nexus-hosted OAuth: there is no server, and the redirect URI would need one.
 
 **Rate-limit note (with source).** Since 2025-05-29, Slack applies stricter limits to **commercially distributed, non-Marketplace apps**: `conversations.history` and `conversations.replies` drop to 1 request/min and 15 objects per call. **Internal, customer-built apps are exempt** and keep Tier 3 (~50+/min).
@@ -638,27 +639,27 @@ settings:
   token_rotation_enabled: false
 ```
 
-**Multi-workspace (MUST, v1): `teads` + `teads-innovation`.**
-- There is one Slack account per workspace (`accounts.slack_workspace` UNIQUE), each with its own keychain token.
+**Multi-workspace (MUST, v1): any number of workspaces.**
+- The user picks which workspaces to use by connecting them in onboarding or Settings → Accounts; no workspace is preconfigured. There is one Slack account per workspace (`accounts.slack_workspace` UNIQUE), each with its own keychain token.
 - The `ChatProvider` registry is keyed by workspace. Every write and read picks the provider from the mapping row's `slack_workspace`.
 - Mapping rows carry `slack_workspace`. The channel picker and `slack_channels_cache` are scoped per workspace. Dedup search runs only in the target channel's workspace.
-- The preview card shows `workspace · #channel` (e.g. `teads-innovation · #ask-x`). Bulk grouping is by `(workspace, channel_id)`, so a batch can post to both workspaces in one Send, each with its own token.
-- A workspace that is missing or unauthorized blocks only its own channels. The other workspace still sends, and the result report says "re-auth teads-innovation".
-- `slack.default_workspace` (default `teads`) is used for CSV rows without a workspace and as the picker's initial tab.
+- The preview card shows `workspace · #channel` (e.g. `acme · #team-reviews`). Bulk grouping is by `(workspace, channel_id)`, so a batch can post to several workspaces in one Send, each with its own token.
+- A workspace that is missing or unauthorized blocks only its own channels. The other workspaces still send, and the result report says "re-auth <workspace>".
+- There is no default workspace setting. CSV rows without a workspace get the one picked in the import dialog (§7.5); the picker opens on the row's workspace, else the last one used.
 
-### 7.12 Config: everything Teads/outbrain/ebuzzing-specific is data, not code
+### 7.12 Config: everything org-specific is user data, not code
 
-Nothing org-specific is hard-coded in Rust or TS logic: org names, workspaces, and channels come from settings and the seed CSV. The repo is private, so internal names may appear in `data/`, `docs/`, test fixtures, and default settings values. The earlier CI grep guard (`check-no-org-names.sh`) is **dropped**. The rule lives in AGENTS.md ("no org/workspace/channel literals in `crates/*/src` or `app/src` outside `defaults.rs`") and is enforced in review.
+Nothing org-specific is hard-coded or shipped: GitHub orgs, Slack workspaces, teams, and channels are chosen by the user in onboarding and Settings, and stored in SQLite. The repo contains no company names or company data; examples and fixtures use neutral placeholders (`acme`, `team-a`, `#team-reviews`). The rule lives in AGENTS.md ("no org/workspace/channel literals in code, fixtures use placeholders") and is enforced in review.
 
-| Key (`settings`) | Default | Teads value (set by the user, not shipped) |
+| Key (`settings`) | Default | Example user value |
 |---|---|---|
-| `github.org_filter` | `["outbrain","ebuzzing"]` (in `defaults.rs`) | same |
+| `github.tracked_orgs` | `[]`: none; onboarding asks the user to pick | `["acme","acme-labs"]` |
+| `github.include_personal_repos` | `false` | false |
 | `github.codeowners_paths` | `[".github/CODEOWNERS","CODEOWNERS","docs/CODEOWNERS"]` | same |
 | `github.files_cap` | 3000 | same |
 | `sync.focused_interval_s` / `unfocused_interval_s` | 180 / 900 | same |
 | `sync.keep_closed_days` | 7 | same |
-| `slack.default_workspace` | `teads` | same |
-| `slack.workspaces` | `["teads","teads-innovation"]` (onboarding asks for a token for each) | same |
+| `slack.workspaces` | none: derived from connected Slack accounts | `acme`, `acme-labs` |
 | `review.requester` | `""` | `""` |
 | `review.min_bump_interval_hours` | 24 | 24 |
 | `review.blocked_review_required_is_ready` | `true` (§7.1 Δ, owner decision) | true |
@@ -666,7 +667,7 @@ Nothing org-specific is hard-coded in Rust or TS logic: org names, workspaces, a
 | `review.bulk_bump_max_threads` | 3 | 3 |
 | `review.also_request_github_team` | `false` (checkbox per preview) | false |
 | `projects.ticket_key_regex` | `([A-Z][A-Z0-9]+-\d+)` | e.g. restrict to the user's Jira keys |
-| mapping seed | `data/seed/team-channel-mapping.csv` (committed, 180 rows) | same |
+| mapping | empty; filled by CSV import, picker, corrections | — |
 
 ## 8. Projects & UI
 
@@ -724,11 +725,11 @@ Sort by last activity, descending. Keyboard: `j/k` move, `x` toggle select, `r` 
 │ Readiness: Ready (note: GitHub BLOCKED, waiting for reviews)                       │
 │ Owners: team-a (exclusive) · platform (optional) · approved: —                       │
 │ Requested on GitHub (info only): @alice                                            │
-│ Last request: 3 days ago in #ask-team-a · Open in Slack                              │
+│ Last request: 3 days ago in #team-a-reviews · Open in Slack                              │
 │                                   [Request review]  [Bump]                         │
 ├───────────────────────────────────────────────┬────────────────────────────────────┤
 │ Why these teams? ▸                            │ Slack                              │
-│ Files (37) ▸                                  │ #ask-team-a · request · 3d           │
+│ Files (37) ▸                                  │ #team-a-reviews · request · 3d           │
 │                                               │   bob: looking tomorrow            │
 └───────────────────────────────────────────────┴────────────────────────────────────┘
 ```
@@ -737,7 +738,7 @@ Sort by last activity, descending. Keyboard: `j/k` move, `x` toggle select, `r` 
 
 ```
 ┌ Request review — 2 messages ──────────────────────────────────────────────────────┐
-│ teads · #ask-team-a  [Change…]  teams: team-a  PRs: #412, #77     Request (new)      │
+│ acme · #team-a-reviews [Change…] teams: team-a PRs: #412, #77   Request (new)     │
 │ ┌──────────────────────────────────────────────────────────────────────────────┐ │
 │ │Hello team                                                                    │ │
 │ │Could someone please review these pull requests?                              │ │
@@ -748,7 +749,7 @@ Sort by last activity, descending. Keyboard: `j/k` move, `x` toggle select, `r` 
 │ │Thanks!                                                                       │ │
 │ └──────────────────────────────────────────────────────────────────────────────┘ │
 │ Extra text: [                                    ]                                │
-│ teads-innovation · #ask-team-b [Change…] teams: team-b PRs: #77  Bump in thread ↗  │
+│ acme-labs · #team-b-reviews [Change…] teams: team-b PRs: #77  Bump in thread ↗    │
 │ Skipped: #398 (blocked: PR is a draft) · platform (approved by @carol)            │
 │ ☐ I confirm only reviews are missing for #77 (GitHub mergeability is unknown)    │
 │ ☐ Also request teams as reviewers on GitHub                                       │
@@ -759,7 +760,7 @@ Sort by last activity, descending. Keyboard: `j/k` move, `x` toggle select, `r` 
 **Projects**: list on the left; on the right, name/color, rules editor (kind, pattern, priority, and a live "matches N open PRs" preview), and linked PRs with their source badges (manual/rule/excluded).
 
 **Settings** tabs:
-- Accounts (GitHub; Slack with one row per workspace, `teads` and `teads-innovation`, each with its own status, re-auth, remove);
+- Accounts (GitHub account plus the **tracked orgs picker**: checkboxes from `viewer.organizations` and orgs seen in search, and a "personal repos" toggle; Slack with one row per connected workspace, each with its own status, re-auth, remove, and an "Add workspace" button);
 - Mappings (table, import/export, dry-run diff);
 - Review (the config keys in §7.12);
 - Sync;
@@ -779,7 +780,7 @@ Detect `X-GitHub-SSO: required; url=…` and show the authorization link.
 
 **Secrets**:
 - Use `keyring` with service `dev.pr-nexus` and **one single entry**, `vault`. It holds a JSON map `{ "<kind>:<external_id>": "<token>" }`, e.g. `github:<node id>` and one `slack:<team_id>:<user_id>` per workspace. The app reads it once at startup and keeps it in memory (`secrecy::SecretString`).
-- **Why one entry:** builds are unsigned (see the caveat below). After each update, macOS asks once per keychain item whether to allow access. With 1 GitHub account and 2 Slack workspaces, separate items would mean 3 prompts per update; one entry means one.
+- **Why one entry:** builds are unsigned (see the caveat below). After each update, macOS asks once per keychain item whether to allow access. With 1 GitHub account and N Slack workspaces, separate items would mean 1+N prompts per update; one entry means one.
 - Never write secrets to SQLite, logs, or the frontend. Commands return only `has_token: bool`.
 - In Linux CI there is no secret service, so tests use the keyring `mock` store behind a feature flag.
 
@@ -886,7 +887,7 @@ harnesstap is a Bun/TypeScript CLI plus a Tauri v2 desktop app in `apps/desktop`
 | No fmt/clippy/test jobs | **Change: add them** | Agents write most of the code. `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, plus `bun run lint`, `tsc --noEmit`, and `vitest` are the cheapest guardrails. |
 | Cargo.lock `--locked` check | **Copy** | Catches lockfile drift. |
 | — | **Add** `cargo deny check` (licenses, advisories, bans) + Dependabot (cargo, npm, github-actions; weekly; grouped) | A desktop app that holds tokens needs supply-chain hygiene. |
-| — | **Add** seed CSV validation test (`data/seed/*.csv` parses, unique keys, ID shape) | The seed is committed data (§7.5). (The earlier org-name grep guard is dropped: the repo is private.) |
+| — | **Add** CSV parser test on placeholder fixtures | No company data in the repo (§7.5, §7.12). (No org-name grep guard: the AGENTS.md rule plus review cover it.) |
 | `ubuntu-26.04` default runner | **Change: pin `ubuntu-24.04`** | Tauri on Linux needs `libwebkit2gtk-4.1-dev`. harnesstap already had to pin 24.04 for webkit2gtk-driver. Use one known-good image. |
 | Playwright visual container, desktop-e2e | **Defer** | v1 tests the frontend with vitest + React Testing Library against mocked commands. Add tauri-driver e2e when the UI stabilises (Linux only; macOS has no WebDriver). |
 | `rust-toolchain@stable` + `Swatinem/rust-cache@v2` + Bun 1.3.x | **Copy** | Pin the toolchain in `rust-toolchain.toml` (stable, with `rustfmt` and `clippy` components). |
@@ -929,7 +930,7 @@ Release runbook (CONTRIBUTING.md):
 1. Merge PRs with fragments.
 2. Dispatch "Tag release".
 3. Watch "Release".
-4. Smoke-test the DMG on a clean user account: `gh release download` → first launch → add accounts (GitHub + both Slack workspaces) → sync → install over the old version and confirm exactly one keychain prompt.
+4. Smoke-test the DMG on a clean user account: `gh release download` → first launch → add accounts (GitHub + two test Slack workspaces) → pick orgs → sync → install over the old version and confirm exactly one keychain prompt.
 
 ## 12. Milestones (each one is a mergeable PR series with acceptance criteria)
 
@@ -940,12 +941,12 @@ Release runbook (CONTRIBUTING.md):
 | **M2** | Store | Migration 0001. Store actor (write thread + read pool) with WAL. Repository functions per table. Tests for migrations, enum round-trip, cascade deletes, and the no-secret-column test. |
 | **M3** | Message builder | 12+ golden fixtures generated from the Python script pass byte for byte. Wire-escaping unit tests. |
 | **M4** | CODEOWNERS + owner decision | The skill's `test_helpers.py` cases are ported and pass, and the Δ1–Δ4 tests pass. Readiness table (§7.1) implemented as a pure function with a test per row. `decide_owners` rules 1–9 tested with fixtures. |
-| **M5** | Mapping | CSV import (seed-replace, user-merge, dry-run diff) and export (effective/user/seed, fixed header, sorted). Layer precedence and tombstone tests. Importing the user's real CSV gives 180 rows: 55 with an ID, 5 name-only, 120 empty. |
-| **M6** | GitHub sync | Accounts (gh token, PAT). Search buckets, client-side org filter, nodes refresh, polling scheduler, rate-limit pause. HTTP fixture tests via `wiremock`. Typed errors mapped (401, 403-SSO, 403-secondary, 404). |
+| **M5** | Mapping | Empty mapping on first run. CSV import (replace, merge, dry-run diff, target-workspace picker for rows without a workspace; the skill's 5-column CSV accepted) and export (effective/user/imported, fixed header, sorted). Layer precedence and tombstone tests on placeholder fixtures. |
+| **M6** | GitHub sync | Accounts (gh token, PAT). Tracked-orgs picker (onboarding + Settings; empty state until orgs are picked). Search buckets, client-side tracked-org filter, nodes refresh, polling scheduler, rate-limit pause. HTTP fixture tests via `wiremock`. Typed errors mapped (401, 403-SSO, 403-secondary, 404). |
 | **M7** | List UI | Grouped list with selection, select-all per section, filters, sorting, keyboard shortcuts. vitest coverage of selection logic (dedupe across sections). |
 | **M8** | Projects | CRUD, rules with live preview, manual/rule/excluded semantics tested. Unassigned section. |
 | **M9** | Ownership inputs | Files (paginated, capped), CODEOWNERS lookup order, `rules/branches`, protection with 403→Unknown, reviews with onBehalfOf, team members cache. Detail view shows readiness, owners, and the rationale. |
-| **M10** | Slack single request/bump | Slack onboarding for **both workspaces** (manifest + token + `auth.test` per workspace; workspace-scoped channel cache and picker; mapping rows routed to the right token). Channel cache and picker. Archived refusal. Dedup (local + search import). Preview → refresh-before-write → post. Bump in thread with `reply_broadcast`. Last-request line. Corrections saved as user rows. Optional GitHub team review request. Tested against `FakeChat`, plus one manual run in a test channel. |
+| **M10** | Slack single request/bump | Slack onboarding for **any number of workspaces** (manifest + token + `auth.test` per workspace; workspace-scoped channel cache and picker; mapping rows routed to the right token). Channel cache and picker. Archived refusal. Dedup (local + search import). Preview → refresh-before-write → post. Bump in thread with `reply_broadcast`. Last-request line. Corrections saved as user rows. Optional GitHub team review request. Tested against `FakeChat`, plus one manual run in a test channel. |
 | **M11** | Bulk | Per-channel grouping, bulk bump grouping (§7.9), result report, retry failed. Planner unit tests for mixed cases. |
 | **M12** | Context panel | Threads for known messages, cache, user names, Mentions opt-in. |
 | **M13** | Polish | Settings complete, log redaction test, "update available" banner (GitHub releases API with the user's token, manual DMG download), keychain re-prompt explainer, onboarding flow, empty states. |
@@ -963,8 +964,8 @@ M0–M1 come first on purpose. Every later PR is then built, linted, and releasa
 ## 14. Open questions: answered (A) and defaults chosen (D)
 
 **Answered by the owner (2026-10-25)**
-- **A1. Repo is private.** Internal names (outbrain/ebuzzing/teads) may appear in data, docs, fixtures, and default settings. The seed CSV is committed as data (§7.5). The CI org-name guard is dropped. Names stay out of logic code (§7.12).
-- **A2. Two Slack workspaces in v1:** `teads` and `teads-innovation`. Per-workspace token in the keyring vault, `slack_workspace` on mapping rows, workspace-scoped channel cache and picker, `(workspace, channel)` grouping (§7.11).
+- **A1. No company names or data in the repo or spec.** GitHub orgs and Slack workspaces are chosen by the user in onboarding and Settings; nothing is hardcoded or defaulted. The team → channel mapping starts empty (no committed seed). Names stay out of code (§7.12).
+- **A2. Multi-workspace Slack in v1 (N workspaces):** per-workspace token in the keyring vault, `slack_workspace` on mapping rows, workspace-scoped channel cache and picker, `(workspace, channel)` grouping (§7.11).
 - **A3. PR ↔ project is many-to-many** (§4.1, §8.1).
 - **A4. GitHub BLOCKED with only reviews missing = Ready.** This is an intentional deviation from the skill (§7.1).
 - **A5. No Apple Developer ID.** Unsigned/ad-hoc macOS builds. Gatekeeper workaround and one keychain re-prompt per update are documented (§9). Signing is optional future work (§11.2).
@@ -978,7 +979,7 @@ M0–M1 come first on purpose. Every later PR is then built, linted, and releasa
 - **D6. Requester suffix:** none by default (`review.requester = ""`), and never on reminders, as in the skill.
 - **D7. GitHub team review request:** offered as a checkbox in the preview, off by default. It is the only GitHub write.
 - **D8. `search.messages` (legacy) is used for dedup import.** Without `search:read`, dedup falls back to local history.
-- **D9. Seed workspace:** every seed row defaults to `teads`. The workspace for `teads-innovation` teams is set through corrections or the CSV `slack_workspace` column.
+- **D9. CSV workspace:** the CSV may carry a `slack_workspace` column. Rows without one get the target workspace the user picks in the import dialog.
 - **D10. No auto-updater in v1:** an "update available" banner, and manual DMG install.
 - **D11. Linux/Windows build in CI only,** with no release assets.
 - **D12. Bump interval:** a warning (not a block) below 24 h.
