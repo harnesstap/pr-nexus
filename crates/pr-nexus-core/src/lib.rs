@@ -1,9 +1,9 @@
-//! Domain types, errors, the provider registry, and the SQLite store.
+//! Domain types, errors, the provider registry, the SQLite store, and review text.
 //!
-//! Network clients stay in `pr-nexus-providers`. The sync engine and the
-//! review-request planner are later milestones.
+//! Network clients stay in `pr-nexus-providers`. The sync engine is a later milestone.
 
 pub mod domain;
 pub mod error;
 pub mod providers;
+pub mod review;
 pub mod store;

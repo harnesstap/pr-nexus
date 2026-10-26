@@ -1,0 +1,11 @@
+Hello team
+Could someone please review these pull requests? (alice)
+- Réparer le loquet 🐛
+https://github.com/acme/widgets/pull/8
+- Fix <a> & <b>
+https://github.com/acme/widgets/pull/9
+- Fix [cache](key) & retries
+https://github.com/acme/widgets/pull/5
+Thanks!
+
+Please take the batch.
