@@ -1,0 +1,3 @@
+kind: Features
+body: 'Request or bump several PRs on Slack at once: one preview with every message grouped by channel and thread, an optional single top-level request per channel or one target channel (DM IDs accepted), paced sends that respect Slack rate limits, and a per-PR result table with Retry failed.'
+time: 2026-10-26T14:30:00.000000Z

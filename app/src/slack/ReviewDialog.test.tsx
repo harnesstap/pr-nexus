@@ -101,10 +101,10 @@ test("without a mapping the channel is entered by hand and errors are shown", as
   });
   render(<ReviewDialog api={api} row={row} onClose={() => undefined} onOpen={() => undefined} onSent={() => undefined} />);
   expect(await screen.findByText(/No mapped channel/)).toBeInTheDocument();
-  fireEvent.change(screen.getByRole("textbox", { name: "Channel ID" }), { target: { value: "C1" } });
+  fireEvent.change(screen.getByRole("textbox", { name: "Channel or DM ID" }), { target: { value: "C1" } });
   fireEvent.click(screen.getByRole("button", { name: "Preview" }));
   expect(await screen.findByText(/such as C0123456789/)).toBeInTheDocument();
-  fireEvent.change(screen.getByRole("textbox", { name: "Channel ID" }), { target: { value: "C0123456789" } });
+  fireEvent.change(screen.getByRole("textbox", { name: "Channel or DM ID" }), { target: { value: "C0123456789" } });
   fireEvent.click(screen.getByRole("button", { name: "Preview" }));
   expect(await screen.findByLabelText("Message preview")).toHaveTextContent("hand");
   expect(screen.getByRole("button", { name: "Send request" })).toBeEnabled();

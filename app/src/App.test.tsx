@@ -69,6 +69,8 @@ function api(): Api {
         bump_count: 0,
         permalink: null,
       }),
+    bulkPreview: () => Promise.resolve({ cards: [], skipped: [] }),
+    sendBulk: () => Promise.resolve({ batch_id: "bulk-1", results: [], indicators: [] }),
     sendReview: (_prId: number, target: ReviewTarget) =>
       Promise.resolve({
         requested_at: new Date().toISOString(),

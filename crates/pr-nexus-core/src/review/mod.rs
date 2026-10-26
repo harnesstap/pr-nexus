@@ -3,6 +3,7 @@
 //! Message text, CODEOWNERS, readiness, and owner routing live here. Mapping
 //! import arrives in a later milestone.
 
+pub mod batch;
 pub mod codeowners;
 pub mod lifecycle;
 pub mod message;

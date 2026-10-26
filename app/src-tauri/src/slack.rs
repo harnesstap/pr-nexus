@@ -195,8 +195,17 @@ pub fn review_targets(
 ) -> Result<Vec<TargetChoice>, AppError> {
     let state = app.inner().as_ref();
     let pr = load_pr(&state.store, pr_id)?;
+    targets_for(&state.store, &pr, &teams)
+}
+
+/// Active requests first, then the mapping rows of `teams` (`org/slug`).
+pub(crate) fn targets_for(
+    store: &Store,
+    pr: &PullRequest,
+    teams: &[String],
+) -> Result<Vec<TargetChoice>, AppError> {
     let mut choices: Vec<TargetChoice> = Vec::new();
-    for request in state.store.list_review_requests(pr.id)? {
+    for request in store.list_review_requests(pr.id)? {
         if request.status != pr_nexus_core::domain::RequestStatus::Active {
             continue;
         }
@@ -211,8 +220,8 @@ pub fn review_targets(
             "request",
         );
     }
-    let rows = state.store.list_mappings()?;
-    for team in &teams {
+    let rows = store.list_mappings()?;
+    for team in teams {
         let Some((org, slug)) = team.trim_start_matches('@').split_once('/') else {
             continue;
         };
@@ -344,27 +353,28 @@ fn plan(
     )?)
 }
 
-fn load_pr(store: &Store, id: i64) -> Result<PullRequest, AppError> {
+pub(crate) fn load_pr(store: &Store, id: i64) -> Result<PullRequest, AppError> {
     store
         .get_pull_request(PrId(id))?
         .ok_or_else(|| AppError::new("not_found", "pull request not found"))
 }
 
 /// Trims, checks the channel ID shape, and names the channel after its ID
-/// when the name is empty.
-fn validate_target(target: ReviewTarget) -> Result<ReviewTarget, AppError> {
+/// when the name is empty. Accepts channels (`C…`), private channels
+/// (`G…`), and direct messages (`D…`, e.g. a DM with yourself for a test).
+pub(crate) fn validate_target(target: ReviewTarget) -> Result<ReviewTarget, AppError> {
     let workspace = target.workspace.trim().to_ascii_lowercase();
     let channel_id = target.channel_id.trim().to_ascii_uppercase();
     if workspace.is_empty() {
         return Err(AppError::new("validation", "Choose a Slack workspace"));
     }
     let id_ok = channel_id.len() >= 9
-        && channel_id.starts_with(['C', 'G'])
+        && channel_id.starts_with(['C', 'G', 'D'])
         && channel_id.chars().all(|c| c.is_ascii_alphanumeric());
     if !id_ok {
         return Err(AppError::new(
             "validation",
-            "Enter a Slack channel ID such as C0123456789 (channel details → About)",
+            "Enter a Slack channel ID such as C0123456789 (channel details → About), or a DM ID starting with D",
         ));
     }
     let name = target
@@ -383,7 +393,10 @@ fn validate_target(target: ReviewTarget) -> Result<ReviewTarget, AppError> {
     })
 }
 
-fn signed_in_account(store: &Store, workspace: &str) -> Result<Option<Account>, AppError> {
+pub(crate) fn signed_in_account(
+    store: &Store,
+    workspace: &str,
+) -> Result<Option<Account>, AppError> {
     Ok(workspace_accounts(store)?.into_iter().find(|account| {
         account.keychain_key.is_some()
             && account
@@ -393,7 +406,10 @@ fn signed_in_account(store: &Store, workspace: &str) -> Result<Option<Account>, 
     }))
 }
 
-fn chat_for(state: &AppState, workspace: &str) -> Result<Arc<dyn ChatProvider>, AppError> {
+pub(crate) fn chat_for(
+    state: &AppState,
+    workspace: &str,
+) -> Result<Arc<dyn ChatProvider>, AppError> {
     if state.demo {
         let account = signed_in_account(&state.store, workspace)?
             .or(crate::state::github_account(&state.store)?)
@@ -550,7 +566,7 @@ impl ChatProvider for DemoChat {
     }
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+pub(crate) fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -575,6 +591,10 @@ mod tests {
         let unnamed = validate_target(target("acme", "C0123456789", " ")).unwrap();
         assert_eq!(unnamed.channel_name, "C0123456789");
         assert!(validate_target(target("acme", "team-reviews", "")).is_err());
+        let dm = validate_target(target("acme", " d0123456789 ", "")).unwrap();
+        assert_eq!(dm, target("acme", "D0123456789", "D0123456789"));
+        assert!(validate_target(target("acme", "U0123456789", "")).is_err());
+        assert!(validate_target(target("acme", "D012", "")).is_err());
         assert!(validate_target(target("", "C0123456789", "")).is_err());
     }
 

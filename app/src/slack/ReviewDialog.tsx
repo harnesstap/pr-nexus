@@ -164,10 +164,10 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen }: Props) {
                   </select>
                 </label>
                 <label className="block">
-                  Channel ID
+                  Channel or DM ID
                   <input
                     className={input}
-                    placeholder="C0123456789"
+                    placeholder="C0123456789 or D0123456789"
                     value={manual.channel_id}
                     onChange={(event) => setManual({ ...manual, channel_id: event.target.value })}
                   />
