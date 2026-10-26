@@ -1,0 +1,55 @@
+---
+source: crates/pr-nexus-core/src/review/owners.rs
+expression: decision
+---
+{
+  "readiness_status": "ready",
+  "head_sha": "abc",
+  "blocking_reasons": [],
+  "unknown_reasons": [],
+  "codeowners_required": "true",
+  "codeowners_required_reason": "branch protection require_code_owner_reviews=true",
+  "mandatory_teams": [],
+  "optional_teams": [],
+  "routing_hints": [],
+  "post_to_teams": [],
+  "ask_about_teams": [],
+  "candidate_teams": [
+    {
+      "org": "acme",
+      "slug": "team-a"
+    }
+  ],
+  "non_actionable_suggestions": [],
+  "approved_teams": [
+    {
+      "org": "acme",
+      "slug": "team-a"
+    }
+  ],
+  "skipped_teams": [
+    {
+      "team": {
+        "org": "acme",
+        "slug": "team-a"
+      },
+      "reviews": [
+        {
+          "reviewer": "alice",
+          "commit": "old"
+        }
+      ]
+    }
+  ],
+  "review_attribution_unknown": [],
+  "needs_user_choice": false,
+  "confirmation_required": false,
+  "no_op": true,
+  "users_ignored_for_slack": [],
+  "requested_teams_informational": [],
+  "rationale": [
+    "codeowners_required=true (branch protection require_code_owner_reviews=true)",
+    "readiness=ready",
+    "all candidate CODEOWNERS teams have effective human approvals"
+  ]
+}

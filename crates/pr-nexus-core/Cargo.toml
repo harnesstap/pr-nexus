@@ -11,10 +11,14 @@ description = "Domain types, errors, and the provider registry for PR-Nexus"
 [dependencies]
 bitflags = "2"
 chrono.workspace = true
+regex = "1.13.1"
 # `bundled` only. Default features pull the wasm SQLite backend, which this
 # desktop crate does not use.
 rusqlite = { version = "0.41", default-features = false, features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }
 thiserror.workspace = true
 
 [dev-dependencies]
+insta = { version = "1.49.0", features = ["json"] }
+proptest = "1.12.0"
 tempfile = "3"

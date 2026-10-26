@@ -7,6 +7,7 @@ use std::fmt;
 use std::str::FromStr;
 
 use chrono::{DateTime, Utc};
+use serde::Serialize;
 
 use crate::error::CoreError;
 
@@ -51,10 +52,48 @@ pub struct RepoRef {
 }
 
 /// GitHub team. `org` is kept so CODEOWNERS can name another org's team.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct TeamRef {
     pub org: String,
     pub slug: String,
+}
+
+impl fmt::Display for TeamRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}/{}", self.org, self.slug)
+    }
+}
+
+/// Three-valued fact. Serialized as `true` / `false` / `unknown`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+pub enum Tri {
+    #[serde(rename = "true")]
+    True,
+    #[serde(rename = "false")]
+    False,
+    #[serde(rename = "unknown")]
+    Unknown,
+}
+
+impl Tri {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::True => "true",
+            Self::False => "false",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// Readiness of a pull request. `Ready` carries notes that do not block sending.
+///
+/// The spec sketch lists `Ready` with no payload. The BLOCKED-waiting-for-reviews
+/// row needs a verbatim note, so that note lives here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub enum Readiness {
+    Ready { notes: Vec<String> },
+    Blocked { reasons: Vec<String> },
+    Unknown { reasons: Vec<String> },
 }
 
 /// Opaque provider handle. Core never parses `id`.

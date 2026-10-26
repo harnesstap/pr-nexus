@@ -1,0 +1,3 @@
+kind: Features
+body: Add CODEOWNERS matching, the readiness gate, and the owner decision, including the four parser fixes.
+time: 2026-10-26T06:20:00.000000Z
