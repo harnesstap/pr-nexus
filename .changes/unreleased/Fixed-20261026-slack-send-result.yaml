@@ -1,0 +1,3 @@
+kind: Fixed
+body: 'Slack sends no longer show as failed when Slack accepted the message: the official MCP result (JSON text with escaped links and message_context) is parsed, an unreadable result is recovered from the channel or reported as "sent, link unknown" and never retried. Settings checks saved Slack sign-ins at startup and offers Reconnect per workspace, and DM targets read as "DM".'
+time: 2026-10-26T14:30:00.000000Z

@@ -21,7 +21,7 @@ use crate::error::{CoreError, ProviderError};
 use crate::providers::{ChatProvider, OutgoingMessage, PostedMessage};
 use crate::store::Store;
 
-use super::lifecycle::{Target, active_request, has_markdown_chars, wire_text};
+use super::lifecycle::{Target, active_request, has_markdown_chars, wire_text, with_link};
 use super::message::{self, MessageMode};
 
 /// Minimum gap between two posts in the same channel. Slack allows about one
@@ -361,9 +361,23 @@ pub fn send_batch(
                     pace.sleep(wait);
                 }
             }
-            let posted = post_with_retry(chat.as_ref(), &card.target, message, pace);
+            let posted = post_with_retry(chat.as_ref(), &card.target, message, pace)
+                .map(|posted| with_link(posted, &card.target));
             last_post.insert(key.clone(), pace.now());
             match posted {
+                // In Slack but unidentified: never `Failed`, so "Retry failed"
+                // cannot post it twice. Nothing is recorded without a `ts`.
+                Err(ProviderError::SentUnconfirmed(_)) => {
+                    for item in &message.items {
+                        results.push(item_result(
+                            item,
+                            &card.target,
+                            SendOutcome::Sent,
+                            SENT_LINK_UNKNOWN,
+                            None,
+                        ));
+                    }
+                }
                 Ok(posted) => {
                     let saved = record(
                         store,
@@ -424,6 +438,10 @@ pub fn send_batch(
     }
     Ok(results)
 }
+
+/// Detail for a message Slack accepted without a readable result.
+pub const SENT_LINK_UNKNOWN: &str =
+    "Sent, link unknown. Check the channel; it is not tracked and will not be retried.";
 
 fn message_label(message: &PlannedMessage) -> &'static str {
     match message.kind {
@@ -589,6 +607,10 @@ mod tests {
         failing: Vec<String>,
         /// Number of `ratelimited` answers before succeeding.
         rate_limited: Mutex<u32>,
+        /// Channels where the post lands but its result is unreadable.
+        unconfirmed: Vec<String>,
+        /// Return only the `ts`, no link.
+        ts_only: bool,
     }
 
     impl ChatProvider for FakeChat {
@@ -629,6 +651,18 @@ mod tests {
                 message.reply_broadcast,
             ));
             let ts = format!("1800000{:03}.000100", posts.len());
+            if self.unconfirmed.iter().any(|c| c == message.channel_id) {
+                return Err(ProviderError::SentUnconfirmed("no ts".into()));
+            }
+            if self.ts_only {
+                return Ok(PostedMessage {
+                    channel_id: message.channel_id.to_owned(),
+                    permalink: None,
+                    thread_ts: message.thread_ts.map(str::to_owned),
+                    ts,
+                    workspace: None,
+                });
+            }
             Ok(PostedMessage {
                 channel_id: message.channel_id.to_owned(),
                 permalink: Some(format!(
@@ -1106,6 +1140,55 @@ mod tests {
         assert!(results[3].detail.contains("not_in_channel"));
         assert_eq!(w.store.list_review_requests(a.id).unwrap().len(), 1);
         assert_eq!(w.store.list_review_requests(b.id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn unreadable_send_results_are_sent_not_failed_and_ts_gets_a_link() {
+        let w = world();
+        let dm = target("acme", "D0LOST");
+        let ok = target("acme", "D0OK");
+        let a = pr(&w, 1, "Fix login");
+        let plan = plan_batch(
+            &w.store,
+            &[input(&a, &[&dm, &ok])],
+            vec![],
+            &options(),
+            at(0),
+        )
+        .unwrap();
+        let chat: Arc<dyn ChatProvider> = Arc::new(FakeChat {
+            account: w.slack.0,
+            unconfirmed: vec!["D0LOST".into()],
+            ts_only: true,
+            ..FakeChat::default()
+        });
+        let results = send_batch(
+            &w.store,
+            &mut |_| Ok(chat.clone()),
+            &plan,
+            &BTreeSet::new(),
+            "b3",
+            &FakePace::new(),
+        )
+        .unwrap();
+        let lost = results
+            .iter()
+            .find(|r| r.target.as_ref().unwrap().channel_id == "D0LOST")
+            .unwrap();
+        assert_eq!(lost.outcome, SendOutcome::Sent);
+        assert_eq!(lost.detail, SENT_LINK_UNKNOWN);
+        assert_eq!(lost.permalink, None);
+        let sent = results
+            .iter()
+            .find(|r| r.target.as_ref().unwrap().channel_id == "D0OK")
+            .unwrap();
+        assert_eq!(
+            sent.permalink.as_deref(),
+            Some("https://acme.slack.com/archives/D0OK/p1800000002000100")
+        );
+        let requests = w.store.list_review_requests(a.id).unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].channel_id, "D0OK");
     }
 
     #[test]

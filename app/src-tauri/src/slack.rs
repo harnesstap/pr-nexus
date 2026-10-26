@@ -18,7 +18,7 @@ use pr_nexus_core::review::lifecycle::{self, Action, Target};
 use pr_nexus_core::settings;
 use pr_nexus_core::store::Store;
 use pr_nexus_providers::slack_mcp::{
-    self, CancelHandle, ConnectConfig, SessionConfig, SlackAuthError,
+    self, CancelHandle, ConnectConfig, SessionConfig, SlackAuthError, TokenState,
 };
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -37,8 +37,10 @@ pub struct SlackWorkspace {
     /// `acme` for `acme.slack.com`.
     pub domain: String,
     pub user_name: String,
-    /// False after Remove kept the row for history, or before a reconnect.
+    /// The grant is saved and Slack has not rejected it.
     pub signed_in: bool,
+    /// Was connected, but the token is gone or rejected: show Reconnect.
+    pub needs_sign_in: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -78,21 +80,70 @@ pub fn workspace_accounts(store: &Store) -> Result<Vec<Account>, CoreError> {
         .collect())
 }
 
-pub fn workspace_dto(account: &Account) -> SlackWorkspace {
+pub fn workspace_dto(state: &AppState, account: &Account) -> SlackWorkspace {
+    let connected = account.keychain_key.is_some();
+    let usable = connected && token_usable(state, account);
     SlackWorkspace {
         id: account.id.0,
         team_name: account.display_name.clone(),
         domain: account.slack_workspace.clone().unwrap_or_default(),
         user_name: account.login.clone(),
-        signed_in: account.keychain_key.is_some(),
+        signed_in: usable,
+        needs_sign_in: connected && !usable,
     }
 }
 
+/// The grant is in the vault and the last check did not reject it. An
+/// in-memory vault loses grants on restart, so the row alone proves nothing.
+fn token_usable(state: &AppState, account: &Account) -> bool {
+    if state.demo {
+        return true;
+    }
+    let Some(key) = &account.keychain_key else {
+        return false;
+    };
+    let rejected = matches!(
+        lock(&state.slack_tokens).get(&account.id.0),
+        Some(TokenState::Missing | TokenState::Rejected)
+    );
+    !rejected && state.vault.get(key).ok().flatten().is_some()
+}
+
+/// Check every saved grant not checked yet with `auth.test` (startup and
+/// the first workspace list).
+pub async fn validate_tokens(state: &AppState) {
+    if state.demo {
+        return;
+    }
+    let Ok(accounts) = workspace_accounts(&state.store) else {
+        return;
+    };
+    for account in accounts {
+        let Some(key) = account.keychain_key.clone() else {
+            continue;
+        };
+        if lock(&state.slack_tokens).contains_key(&account.id.0) {
+            continue;
+        }
+        let checked =
+            slack_mcp::token_state(slack_mcp::SLACK_WEB_API, state.vault.clone(), &key).await;
+        lock(&state.slack_tokens).insert(account.id.0, checked);
+    }
+}
+
+/// Remember that Slack rejected an account's token, so Settings offers Reconnect.
+pub(crate) fn mark_rejected(state: &AppState, account: i64) {
+    lock(&state.chats).remove(&account);
+    lock(&state.slack_tokens).insert(account, TokenState::Rejected);
+}
+
 #[tauri::command]
-pub fn slack_workspaces(app: Shared<'_>) -> Result<Vec<SlackWorkspace>, AppError> {
-    Ok(workspace_accounts(&app.store)?
+pub async fn slack_workspaces(app: Shared<'_>) -> Result<Vec<SlackWorkspace>, AppError> {
+    let state = app.inner().clone();
+    validate_tokens(&state).await;
+    Ok(workspace_accounts(&state.store)?
         .iter()
-        .map(workspace_dto)
+        .map(|account| workspace_dto(&state, account))
         .collect())
 }
 
@@ -152,7 +203,8 @@ pub async fn slack_connect(
         created_at: Utc::now(),
     })?;
     lock(&state.chats).remove(&account.id.0);
-    Ok(workspace_dto(&account))
+    lock(&state.slack_tokens).insert(account.id.0, TokenState::Valid);
+    Ok(workspace_dto(&state, &account))
 }
 
 #[tauri::command]
@@ -274,7 +326,7 @@ pub fn review_preview(
     let pr = load_pr(&state.store, pr_id)?;
     let target = validate_target(target)?;
     let plan = plan(state, &pr, &target)?;
-    let signed_in = state.demo || signed_in_account(&state.store, &target.workspace)?.is_some();
+    let signed_in = state.demo || signed_in_account(state, &target.workspace)?.is_some();
     let (action, bump_count, permalink) = match &plan.action {
         Action::Request => ("request", 0, None),
         Action::Bump { request } => ("bump", request.bump_count, request.permalink.clone()),
@@ -326,7 +378,7 @@ fn send_blocking(
         Ok(request) => Ok(indicator(request)),
         Err(err) => {
             if matches!(err, CoreError::Provider(ProviderError::Unauthorized(_))) {
-                lock(&state.chats).remove(&chat.account_id().0);
+                mark_rejected(state, chat.account_id().0);
             }
             Err(slack_error(err))
         }
@@ -393,17 +445,20 @@ pub(crate) fn validate_target(target: ReviewTarget) -> Result<ReviewTarget, AppE
     })
 }
 
+/// The workspace's account when its grant is usable.
 pub(crate) fn signed_in_account(
-    store: &Store,
+    state: &AppState,
     workspace: &str,
 ) -> Result<Option<Account>, AppError> {
-    Ok(workspace_accounts(store)?.into_iter().find(|account| {
-        account.keychain_key.is_some()
-            && account
-                .slack_workspace
-                .as_deref()
-                .is_some_and(|domain| domain.eq_ignore_ascii_case(workspace))
-    }))
+    Ok(workspace_accounts(&state.store)?
+        .into_iter()
+        .find(|account| {
+            token_usable(state, account)
+                && account
+                    .slack_workspace
+                    .as_deref()
+                    .is_some_and(|domain| domain.eq_ignore_ascii_case(workspace))
+        }))
 }
 
 pub(crate) fn chat_for(
@@ -411,7 +466,7 @@ pub(crate) fn chat_for(
     workspace: &str,
 ) -> Result<Arc<dyn ChatProvider>, AppError> {
     if state.demo {
-        let account = signed_in_account(&state.store, workspace)?
+        let account = signed_in_account(state, workspace)?
             .or(crate::state::github_account(&state.store)?)
             .ok_or_else(|| AppError::new("unauthorized", "No demo account"))?;
         return Ok(Arc::new(DemoChat {
@@ -419,10 +474,10 @@ pub(crate) fn chat_for(
             workspace: workspace.to_owned(),
         }));
     }
-    let account = signed_in_account(&state.store, workspace)?.ok_or_else(|| {
+    let account = signed_in_account(state, workspace)?.ok_or_else(|| {
         AppError::new(
             "unauthorized",
-            format!("Sign in to the {workspace} Slack workspace in Settings first."),
+            format!("Slack sign-in expired. Reconnect the {workspace} workspace in Settings."),
         )
     })?;
     let mut chats = lock(&state.chats);
@@ -520,7 +575,7 @@ fn demo_connect(state: &AppState) -> Result<SlackWorkspace, AppError> {
         keychain_key: Some("slack:T0DEMO:U0DEMO".into()),
         created_at: Utc::now(),
     })?;
-    Ok(workspace_dto(&account))
+    Ok(workspace_dto(state, &account))
 }
 
 /// Demo mode: posts nothing, returns a made-up `acme` permalink.

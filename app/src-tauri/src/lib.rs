@@ -24,6 +24,8 @@ pub fn run() {
             let path = state::database_path(app);
             let shared = Arc::new(state::AppState::open(path)?);
             state::spawn_scheduler(Arc::clone(&shared));
+            let tokens = Arc::clone(&shared);
+            tauri::async_runtime::spawn(async move { slack::validate_tokens(&tokens).await });
             app.manage(shared);
             if let Some(window) = app.get_webview_window("main") {
                 fit_to_monitor(&window);

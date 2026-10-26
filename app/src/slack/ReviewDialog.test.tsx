@@ -23,7 +23,7 @@ function fake(overrides: Partial<Api> = {}) {
   const calls = { targets: [] as string[][], sent: [] as [ReviewTarget, string[]][] };
   const api = {
     prDetail: () => Promise.resolve(detail),
-    slackWorkspaces: () => Promise.resolve([{ id: 3, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true }]),
+    slackWorkspaces: () => Promise.resolve([{ id: 3, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false }]),
     reviewTargets: (_id: number, teams: string[]) => {
       calls.targets.push(teams);
       return Promise.resolve([mapped]);
@@ -108,4 +108,15 @@ test("without a mapping the channel is entered by hand and errors are shown", as
   fireEvent.click(screen.getByRole("button", { name: "Preview" }));
   expect(await screen.findByLabelText("Message preview")).toHaveTextContent("hand");
   expect(screen.getByRole("button", { name: "Send request" })).toBeEnabled();
+});
+
+test("a send whose link is unknown is a notice, not an error, and Send stays off", async () => {
+  const notice = "Sent to Slack, but the link is unknown. Check the channel before sending again.";
+  const { api } = fake({ sendReview: () => Promise.reject({ kind: "sent_unconfirmed", message: notice }) });
+  render(<ReviewDialog api={api} row={row} onClose={() => undefined} onOpen={() => undefined} onSent={() => undefined} />);
+  await screen.findByLabelText("Message preview");
+  fireEvent.click(screen.getByRole("button", { name: "Send request" }));
+  expect(await screen.findByRole("status")).toHaveTextContent(notice);
+  expect(screen.getByRole("button", { name: "Send request" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Close" })).toBeInTheDocument();
 });

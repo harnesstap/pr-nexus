@@ -55,7 +55,10 @@ export interface SlackWorkspace {
   /** `acme` for acme.slack.com. */
   domain: string;
   user_name: string;
+  /** The grant is saved and Slack has not rejected it. */
   signed_in: boolean;
+  /** Was connected, but the token is gone or rejected: offer Reconnect. */
+  needs_sign_in: boolean;
 }
 
 export interface ReviewTarget {
@@ -346,6 +349,18 @@ export const tauriApi: Api = {
   openExternal: (url) => invoke("open_external", { url }),
   prDetail: (id) => invoke("pr_detail", { id }),
 };
+
+/**
+ * How a channel reads in the UI: `#reviews`, or `DM` for a direct message
+ * (IDs starting with D). DM user names are not resolved: that needs im:read.
+ */
+export function channelLabel(target: { channel_id: string; channel_name: string }): string {
+  const name = target.channel_name.trim().replace(/^#/, "");
+  if (target.channel_id.startsWith("D")) {
+    return name && name !== target.channel_id ? `DM · ${name}` : "DM";
+  }
+  return `#${name || target.channel_id}`;
+}
 
 export function errorMessage(err: unknown): string {
   if (typeof err === "string") {

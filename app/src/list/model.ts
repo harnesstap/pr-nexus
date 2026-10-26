@@ -1,4 +1,5 @@
 import type { ListRow, ProjectDto, SyncStatus } from "../api";
+import { channelLabel } from "../api";
 
 export const AUTHOR = 1;
 export const REVIEW_REQUESTED = 2;
@@ -678,7 +679,7 @@ export function slackStatus(slack: ListRow["slack"], now: Date): { label: string
   if (!slack) {
     return null;
   }
-  const where = `${slack.workspace} · #${slack.channel_name}`;
+  const where = `${slack.workspace} · ${channelLabel(slack)}`;
   const requested = `requested ${ago(slack.requested_at, now)}`;
   if (slack.last_bumped_at) {
     const bumps = slack.bump_count === 1 ? "1 bump" : `${slack.bump_count} bumps`;

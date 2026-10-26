@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { Api, ListRow, ReviewPreview, ReviewTarget, SlackIndicator, SlackWorkspace, TargetChoice } from "../api";
-import { errorMessage } from "../api";
+import { channelLabel, errorMessage } from "../api";
 
 interface Props {
   api: Api;
@@ -26,6 +26,8 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen }: Props) {
   const [preview, setPreview] = useState<ReviewPreview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
+  /** The send went through but its link is unknown: never offer a resend. */
+  const [unconfirmed, setUnconfirmed] = useState<string | null>(null);
 
   async function loadPreview(target: ReviewTarget) {
     setPreview(null);
@@ -103,7 +105,11 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen }: Props) {
       const chosen = selected === MANUAL ? null : choices?.[Number(selected)];
       onSent(await api.sendReview(row.id, preview.target, chosen?.teams.length ? chosen.teams : teams));
     } catch (err) {
-      setError(errorMessage(err));
+      if (err && typeof err === "object" && (err as { kind?: unknown }).kind === "sent_unconfirmed") {
+        setUnconfirmed(errorMessage(err));
+      } else {
+        setError(errorMessage(err));
+      }
       setSending(false);
     }
   }
@@ -136,7 +142,7 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen }: Props) {
               <select className={input} value={selected} onChange={(event) => choose(event.target.value)}>
                 {choices.map((choice, index) => (
                   <option key={`${choice.target.workspace}/${choice.target.channel_id}`} value={String(index)}>
-                    {choice.target.workspace} · #{choice.target.channel_name}
+                    {choice.target.workspace} · {channelLabel(choice.target)}
                     {choice.source === "request" ? " (open request)" : choice.teams.length ? ` (${choice.teams.join(", ")})` : ""}
                   </option>
                 ))}
@@ -195,7 +201,7 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen }: Props) {
                 <p className="text-xs text-slate-400">
                   {bump
                     ? `Bump in the existing thread (${preview.bump_count} earlier bump${preview.bump_count === 1 ? "" : "s"}).`
-                    : `New message in #${preview.target.channel_name}.`}
+                    : `New message in ${channelLabel(preview.target)}.`}
                   {bump && preview.permalink && (
                     <>
                       {" "}
@@ -223,14 +229,19 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen }: Props) {
           </div>
         )}
         {error && <p className="mt-3 text-rose-300">{error}</p>}
+        {unconfirmed && (
+          <p className="mt-3 text-amber-300" role="status">
+            {unconfirmed}
+          </p>
+        )}
         <footer className="mt-5 flex justify-end gap-2">
           <button type="button" className="rounded px-3 py-1.5 text-slate-300 hover:bg-slate-800" onClick={onClose}>
-            Cancel
+            {unconfirmed ? "Close" : "Cancel"}
           </button>
           <button
             type="button"
             className="rounded bg-violet-500 px-3 py-1.5 font-medium text-white disabled:opacity-40"
-            disabled={!preview || !preview.signed_in || sending}
+            disabled={!preview || !preview.signed_in || sending || unconfirmed !== null}
             onClick={() => void send()}
           >
             {sending ? "Sending…" : bump ? "Bump in thread" : "Send request"}

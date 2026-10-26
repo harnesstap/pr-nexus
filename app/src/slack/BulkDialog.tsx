@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { Api, BulkCard, BulkPreview, BulkRequest, BulkResult, ChannelKey, ReviewTarget, SlackWorkspace } from "../api";
-import { errorMessage } from "../api";
+import { channelLabel, errorMessage } from "../api";
 
 interface Props {
   api: Api;
@@ -216,12 +216,12 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen }: Props) {
                 {preview.cards.map((card) => (
                   <section
                     key={card.fingerprint}
-                    aria-label={`${card.target.workspace} #${card.target.channel_name}`}
+                    aria-label={`${card.target.workspace} ${channelLabel(card.target)}`}
                     className="rounded border border-slate-700 p-3"
                   >
                     <header className="flex items-center justify-between gap-2">
                       <h3 className="font-medium">
-                        {card.target.workspace} · #{card.target.channel_name}
+                        {card.target.workspace} · {channelLabel(card.target)}
                       </h3>
                       {(card.can_switch || card.single_top_level) && (
                         <label className="flex items-center gap-1 text-xs text-slate-300">
@@ -326,7 +326,7 @@ function Results({ result, onOpen }: { result: BulkResult; onOpen: (url: string)
             <td className="py-1 pr-2">
               #{item.pr.number} {item.pr.title}
             </td>
-            <td className="pr-2">{item.target ? `${item.target.workspace} · #${item.target.channel_name}` : "—"}</td>
+            <td className="pr-2">{item.target ? `${item.target.workspace} · ${channelLabel(item.target)}` : "—"}</td>
             <td className={`pr-2 ${tone[item.outcome]}`}>{item.outcome}</td>
             <td>
               {item.detail}

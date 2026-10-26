@@ -210,6 +210,58 @@ async fn auth_test(base: &str, token: &str) -> Result<AuthTest, String> {
     Ok(body)
 }
 
+/// Whether a saved workspace grant still works (§7.11, checked at startup).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenState {
+    /// `auth.test` accepted the token, or it can be refreshed.
+    Valid,
+    /// Nothing saved under the key, e.g. an in-memory vault after a restart.
+    Missing,
+    /// Slack rejected the token (`invalid_auth`, `token_revoked`, …).
+    Rejected,
+    /// Could not tell (offline). Treated as signed in.
+    Unknown,
+}
+
+/// Check the grant under `key` with one `auth.test`.
+pub async fn token_state(web_api_base: &str, vault: Arc<Vault>, key: &str) -> TokenState {
+    install_tls_provider();
+    let store = KeychainCredentialStore::new(vault, key.to_owned());
+    let token = match store.load().await {
+        Ok(Some(credentials)) => credentials.token_response,
+        Ok(None) => return TokenState::Missing,
+        Err(_) => return TokenState::Unknown,
+    };
+    let Some(token) = token else {
+        return TokenState::Missing;
+    };
+    match auth_test(web_api_base, token.access_token().secret()).await {
+        Ok(_) => TokenState::Valid,
+        Err(err) => classify_auth_test_error(&err, token.refresh_token().is_some()),
+    }
+}
+
+fn classify_auth_test_error(err: &str, refreshable: bool) -> TokenState {
+    let rejected = [
+        "invalid_auth",
+        "not_authed",
+        "token_revoked",
+        "account_inactive",
+    ];
+    if rejected.iter().any(|code| err.contains(code)) {
+        TokenState::Rejected
+    } else if err.contains("token_expired") {
+        // The MCP session refreshes it on the next call.
+        if refreshable {
+            TokenState::Valid
+        } else {
+            TokenState::Rejected
+        }
+    } else {
+        TokenState::Unknown
+    }
+}
+
 /// `https://acme.slack.com/` → `acme`.
 pub fn domain_from_url(url: &str) -> Option<String> {
     let host = url::Url::parse(url).ok()?.host_str()?.to_ascii_lowercase();
@@ -289,6 +341,39 @@ impl CredentialStore for KeychainCredentialStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auth_test_errors_classify() {
+        assert_eq!(
+            classify_auth_test_error("auth.test: invalid_auth", false),
+            TokenState::Rejected
+        );
+        assert_eq!(
+            classify_auth_test_error("auth.test: token_revoked", true),
+            TokenState::Rejected
+        );
+        assert_eq!(
+            classify_auth_test_error("auth.test: token_expired", true),
+            TokenState::Valid
+        );
+        assert_eq!(
+            classify_auth_test_error("auth.test: token_expired", false),
+            TokenState::Rejected
+        );
+        assert_eq!(
+            classify_auth_test_error("connection refused", false),
+            TokenState::Unknown
+        );
+    }
+
+    #[test]
+    fn missing_grant_is_missing() {
+        let vault = Arc::new(Vault::memory("test"));
+        let state = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(token_state("http://127.0.0.1:9", vault, "slack:T0:U0"));
+        assert_eq!(state, TokenState::Missing);
+    }
 
     #[test]
     fn domain_comes_from_the_workspace_url() {

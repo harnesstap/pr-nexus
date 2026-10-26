@@ -76,6 +76,10 @@ impl From<ProviderError> for AppError {
             ProviderError::Api { code, message } => Self::new("api", format!("{code}: {message}")),
             ProviderError::Decode(message) => Self::new("decode", message),
             ProviderError::Unsupported(message) => Self::new("unsupported", message),
+            ProviderError::SentUnconfirmed(_) => Self::new(
+                "sent_unconfirmed",
+                "Sent to Slack, but the link is unknown. Check the channel before sending again.",
+            ),
         }
     }
 }

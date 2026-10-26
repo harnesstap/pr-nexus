@@ -729,7 +729,8 @@ When the user clicks Send, for each affected PR:
 - **Result report** (dialog, then a toast): a table with PR × (channel, outcome `sent|skipped|failed`, detail, permalink). Skipped reasons include: blocked: …, all teams approved, no channel chosen, head changed. A failed message (e.g. `not_in_channel`, `channel_not_found`, `RateLimited`) has a **Retry failed** button that runs the gate again.
 - A mid-batch failure does not roll back messages already sent. Each channel is independent.
 - **Pacing (M11).** Sends are sequential. Posts to the same channel are at least 1.1 s apart (Slack allows about one message per second per channel). On `RateLimited` the sender waits the `Retry-After` once when it is 60 s or less; otherwise the item fails with the time to retry.
-- **Targets.** A typed channel or DM ID (`C…`, `G…`, `D…`) is accepted wherever a channel ID can be entered, including "All to one channel" in the bulk preview.
+- **Targets.** A typed channel or DM ID (`C…`, `G…`, `D…`) is accepted wherever a channel ID can be entered, including "All to one channel" in the bulk preview. A DM target reads as `DM` (or `DM · <typed name>`), never `#D…`. The DM user's name is not resolved: that needs `im:read` and `slack_list_user_channels`, which PR-Nexus does not request.
+- **Sent, link unknown.** When Slack accepted a message but neither its result nor the recovery read (§7.11, Parsing) yields a `ts`, the item is `sent` with detail "Sent, link unknown…": it has no permalink, is not tracked in `review_requests`, and **Retry failed never resends it**. Reporting it as failed would invite a duplicate post.
 
 ### 7.10 Chat context panel (scoped read)
 
@@ -800,6 +801,7 @@ Registration follows the MCP spec's priority order: a **pre-registered client** 
 5. **Storage.** The access token, refresh token, and expiry go into the keychain vault under `slack:<team_id>:<user_id>` (§9).
    - Refresh is automatic.
    - A failed refresh, `invalid_auth`, or `token_revoked` maps to `Unauthorized`. The UI shows "re-auth <workspace>", which reruns this flow for that workspace only.
+   - **Startup check.** An account row alone proves nothing: with the keychain disabled the vault is in memory and loses grants on restart. At startup (and on the first workspace list) each connected account is checked: no grant in the vault → *needs sign-in*; `auth.test` answering `invalid_auth`, `not_authed`, `token_revoked`, or `account_inactive` (or `token_expired` without a refresh token) → *needs sign-in*; a network error leaves the state unknown and the account usable. A send that returns `Unauthorized` also marks it. Settings shows "needs sign-in" with a per-workspace **Reconnect** button that reruns the flow and updates the same row; **Add another workspace** is only for new workspaces. If Slack signs in to a different workspace than the one being reconnected, both rows are kept and the notice says so.
    - **Remove workspace** deletes the local tokens and account row. It never calls `auth.revoke`, because the grant may belong to an app shared with another client (§7.13 R1). When review requests still reference the account, the row stays as "signed out" (tokens deleted) so the history keeps its workspace; signing in again restores it.
 
 **User scopes requested** (the minimum; the Slack app must have them as user scopes):
@@ -815,8 +817,8 @@ The MCP search tools use the `search:read.*` scopes, not the legacy `search:read
 
 | `ChatProvider` | Slack MCP tool | Arguments and notes | Limit |
 |---|---|---|---|
-| `post` | `slack_send_message` | `channel_id`, `message` (**standard Markdown**, not mrkdwn; §7.6), `thread_ts`, `reply_broadcast`, `unfurl_app_links`. Returns the message link. | special |
-| `permalink` | none: taken from results | The link returned by `slack_send_message`. `ts` is parsed from `/archives/<C…>/p<16 digits>` (`p1700000000000100` → `1700000000.000100`), and `thread_ts` from the query string. Discovered messages carry their own link from search. | — |
+| `post` | `slack_send_message` | `channel_id`, `message` (**standard Markdown**, not mrkdwn; §7.6), `thread_ts`, `reply_broadcast`, `unfurl_app_links`. The tool description says only "return the message link to the user"; the result format is below. | special |
+| `permalink` | none: taken from or built from results | A link in the result wins: `ts` is parsed from `/archives/<C…\|G…\|D…>/p<16 digits>` (`p1700000000000100` → `1700000000.000100`), and `thread_ts` from the query string. Otherwise the link is built from the workspace domain, channel, and `ts`: `https://<domain>.slack.com/archives/<channel>/p<ts without the dot>`, plus `?thread_ts=<root>&cid=<channel>` for a reply. There is no permalink tool. Discovered messages carry their own link from search. | — |
 | `search` | `slack_search_public`, then `slack_search_public_and_private` when the target channel may be private | keywords plus `in:<#C…>`, `from:`, `after:` filters, `include_bots=true`, sorted by timestamp | special |
 | `list_channels` | `slack_list_user_channels` (channels the user is in; `team_id` on Enterprise Grid), plus `slack_search_channels` for the picker's search box | Archived channels are included by default. The picker hides them. | T2 |
 | `channel_info` | `slack_search_channels` (by name or ID) | name, public/private, **archive status**. Archived → refuse (§7.3). | T2 |
@@ -824,6 +826,13 @@ The MCP search tools use the `search:read.*` scopes, not the legacy `search:read
 | `whoami`, author names | `slack_read_user_profile` (current user or a user ID) | cached | T4 |
 
 - **Parsing.** Tool results are text/JSON content blocks. Each tool has a typed parser in `providers::slack_mcp::schema`. Unknown fields are ignored. A missing required field is `ProviderError::Decode` naming the tool.
+- **Result format (checked 2026-10-26).** https://docs.slack.dev/ai/slack-mcp-server/ documents tools and inputs but not result shapes, and the tools have no output schema. What the official server returns, from a live `slack_read_channel` read and a third-party client verified live against the server (github.com/scalekit-developers/workflow-agents-demos, `offer-letter-routing-agent/connectors/slack_mcp.py`):
+  - every result is one `text` content block whose text is a **JSON string** (no `structuredContent`), with slashes escaped (`https:\/\/…`), so a literal `https://` search misses links;
+  - `slack_send_message` → `{"message_context":{"message_ts":"<ts>","channel_id":"<channel>"}, …}`;
+  - `slack_read_channel` → `{"messages":"<text>","pagination_info":"<text>"}`, where the messages text is `Channel: <name or DM> (<id>)` followed by blocks `=== Message from <Name> (<user ID>) at <time> ===`, a `Message TS: <ts>` line, and the message in Slack markup (links as `<url|label>`).
+  The send parser therefore looks for, in order: a message link anywhere (escaped or not); a `message_ts`/`ts` key at any depth; a labelled ts in prose (`Message TS: …`). The channel comes from `channel_id`, else the request. Fixtures: `crates/pr-nexus-providers/tests/fixtures/slack-mcp-*.json` (generic data).
+- **Recovery when the result is unreadable.** A successful `slack_send_message` whose result has no readable `ts` is never reported as failed. PR-Nexus calls `slack_read_channel` on the target channel (newest 20 messages, `oldest` = now − 60 s), keeps messages by the signed-in user that match the sent text (every PR URL present, else the first line), and takes the newest. If that read fails or finds nothing, the send is `SentUnconfirmed` ("sent, link unknown"; §7.9). On a DM the read may be refused: PR-Nexus does not request `im:history`, so DM sends with an unreadable result fall back to "sent, link unknown".
+- **Attribution.** Slack appends `*Sent using* <@<app user>|<app name>>` ("Sent using PR-Nexus", or the name of whatever app owns the client ID) to messages posted through MCP. PR-Nexus cannot turn it off; the preview does not show it, and recovery matching ignores it.
 - **Schema pin.** On connect, `tools/list` is compared with the pinned tool names and required input fields. A mismatch shows "Slack MCP changed; update PR-Nexus" and disables writes for that workspace; reads degrade gracefully.
 - **Errors.** MCP tool errors (`isError: true`) and JSON-RPC errors map to `ProviderError` (§4.3):
   - `ratelimited` or HTTP 429 → `RateLimited` (honour `Retry-After` when present, else back off 30 s);
@@ -833,14 +842,14 @@ The MCP search tools use the `search:read.*` scopes, not the legacy `search:read
 - **Throttling.** The client allows at most 1 write per second per channel and 1 in-flight call per tool per workspace. There is one MCP session per workspace, opened lazily and kept while the app runs.
 - **Tools not used:**
   - `slack_send_message_draft`: the in-app preview replaces drafts (D13), and drafts have no `reply_broadcast`;
-  - `slack_read_channel`: no history crawling (§1);
+  - `slack_read_channel`: no history crawling (§1); it is used only to recover the `ts` of a message just sent (above), and is not pinned, so recovery degrades when it disappears;
   - `slack_add_reaction`, `slack_get_reactions`, and `slack_search_users`.
 
 **Multi-workspace (MUST, v1): any number of workspaces.**
 - The user picks which workspaces to use by connecting them in onboarding or Settings → Accounts; no workspace is preconfigured. There is one Slack account per workspace (`accounts.slack_workspace` UNIQUE), each with its own OAuth grant and keychain tokens, and its own MCP session.
 - The `ChatProvider` registry is keyed by workspace. Every write and read picks the provider from the mapping row's `slack_workspace`.
 - Mapping rows carry `slack_workspace`. The channel picker and `slack_channels_cache` are scoped per workspace. Discovery search runs only in the target channel's workspace.
-- The preview card shows `workspace · #channel` (e.g. `acme · #team-reviews`). Bulk grouping is by `(workspace, channel_id)`, so a batch can post to several workspaces in one Send, each with its own token.
+- The preview card shows `workspace · #channel` (e.g. `acme · #team-reviews`), or `workspace · DM` for a DM. Bulk grouping is by `(workspace, channel_id)`, so a batch can post to several workspaces in one Send, each with its own token.
 - A workspace that is missing or unauthorized blocks only its own channels. The other workspaces still send, and the result report says "re-auth <workspace>".
 - There is no default workspace setting. CSV rows without a workspace get the one picked in the import dialog (§7.5); the picker opens on the row's workspace, else the last one used.
 
@@ -1481,6 +1490,7 @@ M0–M1 come first on purpose. Every later PR is then built, linted, and releasa
 - **providers**: `wiremock` HTTP fixtures, recorded once from real responses and scrubbed of names, IDs, and tokens. Each GitHub fixture covers one shape: search page, PR fragment, 403 SSO, secondary rate limit.
 - **Slack MCP contract tests**: recorded `initialize`, `tools/list`, and `tools/call` request/response pairs, replayed by `wiremock` on a fake Streamable HTTP endpoint. One fixture per shape:
   - send (top level, and in a thread with `reply_broadcast`), with permalink parsing;
+  - the official result format (`slack-mcp-send-message.json`: JSON text with `message_context`; `slack-mcp-read-channel.json`: message blocks with escaped links and the "Sent using" attribution), an unreadable send result recovered from `slack_read_channel`, and one that ends as "sent, link unknown";
   - search hit, no hit, and a bot-posted hit;
   - `slack_search_channels` with an archived channel, and a `slack_list_user_channels` page;
   - `slack_read_thread`, `slack_read_user_profile`;

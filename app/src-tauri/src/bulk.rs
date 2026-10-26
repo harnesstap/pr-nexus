@@ -23,7 +23,7 @@ use tauri::State;
 use crate::commands::{SlackIndicator, indicator, pr_detail_blocking};
 use crate::error::AppError;
 use crate::slack::{
-    ReviewTarget, chat_for, load_pr, lock, signed_in_account, targets_for, validate_target,
+    ReviewTarget, chat_for, load_pr, mark_rejected, signed_in_account, targets_for, validate_target,
 };
 use crate::state::AppState;
 
@@ -156,11 +156,13 @@ fn send_blocking(
         chat_for(state, workspace).map_err(|err| CoreError::Validation(err.message))
     };
     let results = batch::send_batch(&state.store, &mut chat, &plan, &stale, &batch_id, &RealPace)?;
-    if results
-        .iter()
-        .any(|result| result.detail.starts_with("Slack sign-in expired"))
-    {
-        lock(&state.chats).clear();
+    for result in &results {
+        if result.detail.starts_with("Slack sign-in expired")
+            && let Some(target) = &result.target
+            && let Some(account) = signed_in_account(state, &target.workspace)?
+        {
+            mark_rejected(state, account.id.0);
+        }
     }
     let mut sent: Vec<PrId> = Vec::new();
     for result in &results {
@@ -338,8 +340,7 @@ fn preview_dto(
 ) -> Result<BulkPreview, AppError> {
     let mut cards = Vec::new();
     for card in &plan.cards {
-        let signed_in =
-            state.demo || signed_in_account(&state.store, &card.target.workspace)?.is_some();
+        let signed_in = state.demo || signed_in_account(state, &card.target.workspace)?.is_some();
         cards.push(BulkCard {
             target: target_dto(card.target.clone()),
             messages: card

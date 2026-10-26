@@ -46,7 +46,6 @@ export function SlackPanel({ api, fields, onFieldsChange, secretSaved, workspace
   const [timedOut, setTimedOut] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const set = (patch: Partial<SlackFields>) => onFieldsChange({ ...fields, ...patch });
-  const signedIn = workspaces.filter((workspace) => workspace.signed_in);
 
   useEffect(() => {
     if (!connecting) {
@@ -67,7 +66,8 @@ export function SlackPanel({ api, fields, onFieldsChange, secretSaved, workspace
     }
   }
 
-  async function connect() {
+  /** Signs in; `expected` is the workspace row being reconnected, if any. */
+  async function connect(expected?: SlackWorkspace) {
     setError(null);
     setNotice(null);
     setTimedOut(false);
@@ -77,7 +77,11 @@ export function SlackPanel({ api, fields, onFieldsChange, secretSaved, workspace
       await api.saveSlack(fields.clientId, fields.clientSecret, fields.redirectUri);
       const workspace = await api.slackConnect();
       onWorkspacesChange([...workspaces.filter((item) => item.id !== workspace.id), workspace]);
-      setNotice(`Connected to ${workspace.team_name}.`);
+      setNotice(
+        expected && expected.id !== workspace.id
+          ? `Connected to ${workspace.team_name}. ${expected.team_name} still needs sign-in: pick it in the Slack browser page.`
+          : `${expected ? "Reconnected" : "Connected"} to ${workspace.team_name}.`,
+      );
     } catch (err) {
       const kind = errorKind(err);
       if (kind === "timeout") {
@@ -163,17 +167,31 @@ export function SlackPanel({ api, fields, onFieldsChange, secretSaved, workspace
                   <span className="font-medium">{workspace.team_name}</span>{" "}
                   <span className="text-slate-400">
                     · {workspace.domain}.slack.com · @{workspace.user_name}
-                    {workspace.signed_in ? "" : " · signed out"}
+                    {workspace.signed_in || workspace.needs_sign_in ? "" : " · signed out"}
                   </span>
+                  {workspace.needs_sign_in && <span className="text-amber-300"> · needs sign-in</span>}
                 </span>
-                <button
-                  type="button"
-                  className="text-xs text-slate-300 underline"
-                  aria-label={`Remove ${workspace.team_name}`}
-                  onClick={() => void remove(workspace)}
-                >
-                  Remove
-                </button>
+                <span className="flex items-center gap-3">
+                  {!workspace.signed_in && (
+                    <button
+                      type="button"
+                      className="text-xs text-violet-300 underline disabled:opacity-40"
+                      aria-label={`Reconnect ${workspace.team_name}`}
+                      disabled={connecting || !fields.clientId.trim()}
+                      onClick={() => void connect(workspace)}
+                    >
+                      Reconnect
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="text-xs text-slate-300 underline"
+                    aria-label={`Remove ${workspace.team_name}`}
+                    onClick={() => void remove(workspace)}
+                  >
+                    Remove
+                  </button>
+                </span>
               </li>
             ))}
           </ul>
@@ -186,7 +204,7 @@ export function SlackPanel({ api, fields, onFieldsChange, secretSaved, workspace
           disabled={connecting || !fields.clientId.trim()}
           onClick={() => void connect()}
         >
-          {connecting ? "Waiting for Slack…" : signedIn.length > 0 ? "Add another workspace" : "Sign in with Slack"}
+          {connecting ? "Waiting for Slack…" : workspaces.length > 0 ? "Add another workspace" : "Sign in with Slack"}
         </button>
         {connecting && (
           <button

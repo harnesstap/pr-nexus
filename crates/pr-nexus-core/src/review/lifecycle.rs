@@ -12,7 +12,7 @@ use crate::domain::{
     ReviewMessageOrigin, ReviewMessagePr, ReviewRequest, ReviewRequestId,
 };
 use crate::error::CoreError;
-use crate::providers::{ChatProvider, OutgoingMessage};
+use crate::providers::{ChatProvider, OutgoingMessage, PostedMessage};
 use crate::store::Store;
 
 use super::message::{self, MessageMode};
@@ -139,6 +139,21 @@ pub fn has_markdown_chars(title: &str) -> bool {
     digits > 0 && title.as_bytes().get(digits) == Some(&b'.')
 }
 
+/// Fill in the message link from the workspace domain when Slack returned
+/// only the `ts` (§7.11).
+pub(crate) fn with_link(mut posted: PostedMessage, target: &Target) -> PostedMessage {
+    if posted.permalink.is_none() && !target.workspace.is_empty() {
+        posted.permalink = Some(super::permalink::build(
+            &target.workspace,
+            &posted.channel_id,
+            &posted.ts,
+            posted.thread_ts.as_deref(),
+        ));
+        posted.workspace = Some(target.workspace.clone());
+    }
+    posted
+}
+
 /// Post the planned message and record it. Returns the active request row.
 ///
 /// Slack is written first. If the store write then fails, the message is
@@ -164,6 +179,7 @@ pub fn send(
             unfurl_app_links: thread_ts.is_none(),
         })
         .map_err(CoreError::Provider)?;
+    let posted = with_link(posted, &plan.target);
     let recorded = (|| {
         let message = store.insert_review_message(ReviewMessage {
             id: 0,
@@ -226,7 +242,7 @@ mod tests {
         MergeStateStatus, Mergeable, PrId, PrState, RepoRef, Repository, ReviewDecision,
     };
     use crate::error::ProviderError;
-    use crate::providers::{ChatChannel, ChatUser, Page, PostedMessage};
+    use crate::providers::{ChatChannel, ChatUser, Page};
 
     /// channel, text, thread_ts, reply_broadcast, unfurl_app_links
     type Post = (String, String, Option<String>, bool, bool);

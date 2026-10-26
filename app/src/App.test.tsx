@@ -55,7 +55,7 @@ function api(): Api {
     slackManifestUrl: () => Promise.resolve("https://api.slack.com/apps?new_app=1"),
     slackWorkspaces: () => Promise.resolve([]),
     slackConnect: () =>
-      Promise.resolve({ id: 9, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true }),
+      Promise.resolve({ id: 9, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false }),
     slackCancelConnect: () => Promise.resolve(),
     slackRemoveWorkspace: () => Promise.resolve(),
     reviewTargets: () => Promise.resolve([]),
