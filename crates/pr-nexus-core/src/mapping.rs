@@ -279,13 +279,16 @@ fn select_rows(rows: &[TeamChannelMapping], mode: ExportMode) -> Vec<CsvRow> {
         ExportMode::Imported => {
             for row in rows
                 .iter()
-                .filter(|row| row.layer == MappingLayer::Imported)
+                .filter(|row| row.layer == MappingLayer::Imported && !row.disabled)
             {
                 by_key.insert(key(row), from_stored(row));
             }
         }
         ExportMode::User => {
-            for row in rows.iter().filter(|row| row.layer == MappingLayer::User) {
+            for row in rows
+                .iter()
+                .filter(|row| row.layer == MappingLayer::User && !row.disabled)
+            {
                 by_key.insert(key(row), from_stored(row));
             }
         }
@@ -754,5 +757,59 @@ acme,team-a,Team A,team-reviews,C0123456789,widgets
         let diff = plan_import(&existing, &incoming, ImportMode::Replace);
         assert_eq!(diff.added.len(), 1);
         assert_eq!(diff.user_shadowed.len(), 1);
+    }
+
+    #[test]
+    fn tombstones_are_omitted_from_csv_and_do_not_round_trip() {
+        let rows = vec![
+            stored(
+                MappingLayer::User,
+                "acme",
+                "team-a",
+                "Hidden",
+                "acme",
+                "C9990001112",
+                "team-reviews",
+                true,
+            ),
+            stored(
+                MappingLayer::Imported,
+                "acme",
+                "team-b",
+                "Team B",
+                "acme",
+                "C0123456789",
+                "team-widgets",
+                false,
+            ),
+            stored(
+                MappingLayer::Imported,
+                "acme",
+                "team-c",
+                "Gone",
+                "acme",
+                "G0123456789",
+                "old",
+                true,
+            ),
+        ];
+        for mode in [
+            ExportMode::Effective,
+            ExportMode::User,
+            ExportMode::Imported,
+        ] {
+            let csv = export_csv(&rows, mode).unwrap();
+            assert!(
+                !csv.contains("team-a") && !csv.contains("team-c"),
+                "{mode:?} kept a tombstone:\n{csv}"
+            );
+        }
+        let exported = export_csv(&rows, ExportMode::Effective).unwrap();
+        let parsed = parse_csv(&exported, None).unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].team_slug, "team-b");
+        let user_only = export_csv(&rows, ExportMode::User).unwrap();
+        let parsed_user = parse_csv(&user_only, Some("acme")).unwrap();
+        assert!(parsed_user.is_empty());
     }
 }

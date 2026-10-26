@@ -16,6 +16,45 @@ bun run tauri dev
 
 `bun run build` writes `app/dist`. `cargo test` and `cargo clippy` need that directory because `tauri-build` embeds it.
 
+## Run on Linux
+
+Install the WebKitGTK packages listed in `.github/actions/linux-tauri-deps/action.yml` (`libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, `patchelf`, and the rest of that list). Then, from the repo root:
+
+```bash
+cd app
+bun install
+bun run build
+bun run tauri dev
+```
+
+`bun run tauri dev` is the day-to-day command. It starts Vite and the Tauri shell. A one-shot binary, after `bun run build`:
+
+```bash
+cargo build -p pr-nexus
+./target/debug/pr-nexus
+```
+
+Development overrides (none of these are required for a normal launch):
+
+| Variable | Effect |
+|---|---|
+| `PR_NEXUS_DB_PATH` | SQLite file. Point it at a temp path so a test run does not touch the app-data database. |
+| `PR_NEXUS_GITHUB_TOKEN` | GitHub token for this process. Preferred over `gh` and the keychain. Never written to the vault or to SQLite. |
+| `PR_NEXUS_DISABLE_KEYRING=1` | Skip the secret service and keep tokens in memory. The window shows a warning. |
+| `PR_NEXUS_GITHUB_OAUTH_CLIENT_ID` | OAuth client id for the device flow. Empty by default; `gh` and a pasted PAT still work. |
+| `PR_NEXUS_DEMO=1` | Seed invented `acme` data and skip the wizard when the database has no accounts. |
+
+If the keyring probe fails or times out (common on a desktop without a secret service), the app does not crash. The vault stays in memory and the wizard or list shows the warning. Example:
+
+```bash
+PR_NEXUS_DB_PATH=/tmp/pr-nexus.db \
+PR_NEXUS_GITHUB_TOKEN="$TOKEN" \
+PR_NEXUS_DISABLE_KEYRING=1 \
+  cargo run -p pr-nexus
+```
+
+`cargo run -p pr-nexus` needs `app/dist` from `bun run build`. `bun run tauri dev` rebuilds the frontend itself.
+
 ## Changelog
 
 Do not edit `CHANGELOG.md` by hand. Install [Changie](https://changie.dev/) and add a fragment:

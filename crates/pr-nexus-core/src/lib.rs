@@ -5,6 +5,9 @@
 pub mod domain;
 pub mod error;
 pub mod mapping;
+pub mod onboarding;
 pub mod providers;
 pub mod review;
+pub mod settings;
 pub mod store;
+pub mod sync;

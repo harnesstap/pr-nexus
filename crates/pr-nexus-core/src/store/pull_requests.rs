@@ -33,6 +33,10 @@ impl Store {
         })
     }
 
+    pub fn upsert_repository(&self, repo: Repository) -> Result<Repository, CoreError> {
+        self.write(move |conn| upsert_repository(conn, &repo))
+    }
+
     pub fn delete_repository(&self, id: i64) -> Result<(), CoreError> {
         self.write(move |conn| {
             conn.execute("DELETE FROM repositories WHERE id = ?1", [id])
@@ -77,6 +81,44 @@ impl Store {
         })
     }
 
+    pub fn list_pull_requests_for_account(
+        &self,
+        account_id: AccountId,
+    ) -> Result<Vec<PullRequest>, CoreError> {
+        self.read(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT pr.id FROM pull_requests pr
+                     JOIN repositories r ON r.id = pr.repo_id
+                     WHERE r.account_id = ?1
+                     ORDER BY pr.updated_at DESC, pr.number DESC",
+                )
+                .map_err(db)?;
+            let ids = stmt
+                .query_map([account_id.0], |row| row.get::<_, i64>(0))
+                .map_err(db)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(db)?;
+            ids.into_iter()
+                .map(|id| {
+                    load_pull_request(conn, PrId(id))?
+                        .ok_or_else(|| CoreError::Store(format!("pull request {id} disappeared")))
+                })
+                .collect()
+        })
+    }
+
+    pub fn set_pull_request_hidden(&self, id: PrId, hidden: bool) -> Result<(), CoreError> {
+        self.write(move |conn| {
+            conn.execute(
+                "UPDATE pull_requests SET hidden = ?1 WHERE id = ?2",
+                params![sql_bool(hidden), id.0],
+            )
+            .map_err(db)?;
+            Ok(())
+        })
+    }
+
     pub fn delete_pull_request(&self, id: PrId) -> Result<(), CoreError> {
         self.write(move |conn| {
             conn.execute("DELETE FROM pull_requests WHERE id = ?1", [id.0])
@@ -84,6 +126,31 @@ impl Store {
             Ok(())
         })
     }
+}
+
+fn upsert_repository(conn: &Connection, repo: &Repository) -> Result<Repository, CoreError> {
+    let id: i64 = conn
+        .query_row(
+            "INSERT INTO repositories (account_id, owner, name, node_id, default_branch, archived)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(account_id, owner, name) DO UPDATE SET
+                node_id = excluded.node_id,
+                default_branch = excluded.default_branch,
+                archived = excluded.archived
+             RETURNING id",
+            params![
+                repo.account_id.0,
+                repo.owner,
+                repo.name,
+                repo.node_id,
+                repo.default_branch,
+                sql_bool(repo.archived),
+            ],
+            |row| row.get(0),
+        )
+        .map_err(db)?;
+    load_repository(conn, id)?
+        .ok_or_else(|| CoreError::Store("upserted repository disappeared".to_owned()))
 }
 
 fn insert_repository(conn: &Connection, repo: &Repository) -> Result<Repository, CoreError> {

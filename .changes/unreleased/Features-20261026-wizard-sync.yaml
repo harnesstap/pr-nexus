@@ -1,0 +1,3 @@
+kind: Features
+body: Add the setup wizard and GitHub GraphQL sync, with keychain fallback and a temp-database override for Linux.
+time: 2026-10-26T06:30:00.000000Z

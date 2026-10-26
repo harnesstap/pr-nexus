@@ -1,0 +1,87 @@
+query SearchPullRequests($query: String!, $cursor: String) {
+  rateLimit {
+    limit
+    remaining
+    resetAt
+    cost
+  }
+  search(type: ISSUE, query: $query, first: 50, after: $cursor) {
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+    nodes {
+      ... on PullRequest {
+        ...PrFields
+      }
+    }
+  }
+}
+
+fragment PrFields on PullRequest {
+  id
+  number
+  title
+  url
+  bodyText
+  isDraft
+  state
+  createdAt
+  updatedAt
+  author {
+    login
+  }
+  headRefName
+  baseRefName
+  headRefOid
+  repository {
+    id
+    owner {
+      login
+    }
+    name
+    isArchived
+    defaultBranchRef {
+      name
+    }
+  }
+  labels(first: 20) {
+    nodes {
+      name
+    }
+  }
+  reviewDecision
+  mergeable
+  mergeStateStatus
+  commits(last: 1) {
+    nodes {
+      commit {
+        committedDate
+        statusCheckRollup {
+          state
+        }
+      }
+    }
+  }
+  reviewRequests(first: 20) {
+    nodes {
+      requestedReviewer {
+        ... on User {
+          login
+        }
+        ... on Team {
+          slug
+          organization {
+            login
+          }
+        }
+      }
+    }
+  }
+  reviewThreads(first: 100) {
+    totalCount
+    nodes {
+      isResolved
+    }
+  }
+}
