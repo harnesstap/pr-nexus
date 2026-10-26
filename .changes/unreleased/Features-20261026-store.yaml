@@ -1,0 +1,3 @@
+kind: Features
+body: Add the SQLite store with migration 0001, a writer thread, a read pool, and repository helpers for every table.
+time: 2026-10-26T05:10:00.000000Z

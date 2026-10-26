@@ -9,5 +9,12 @@ publish.workspace = true
 description = "Domain types, errors, and the provider registry for PR-Nexus"
 
 [dependencies]
+bitflags = "2"
 chrono.workspace = true
+# `bundled` only. Default features pull the wasm SQLite backend, which this
+# desktop crate does not use.
+rusqlite = { version = "0.41", default-features = false, features = ["bundled"] }
 thiserror.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
