@@ -1,8 +1,22 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Api, SlackWorkspace } from "../api";
 import { errorMessage } from "../api";
 
 export const DEFAULT_REDIRECT = "http://127.0.0.1:47821/mcp/oauth/callback";
+
+/** Mirrors `CALLBACK_TIMEOUT` in the providers crate (§7.11 step 3). */
+export const SIGN_IN_TIMEOUT_SECONDS = 600;
+/** After this many seconds the status switches to "Still waiting". */
+const STILL_WAITING_AFTER_SECONDS = 30;
+
+function formatLeft(seconds: number): string {
+  const clamped = Math.max(0, seconds);
+  return `${Math.floor(clamped / 60)}:${String(clamped % 60).padStart(2, "0")}`;
+}
+
+function errorKind(err: unknown): unknown {
+  return err && typeof err === "object" && "kind" in err ? (err as { kind?: unknown }).kind : null;
+}
 
 export interface SlackFields {
   clientId: string;
@@ -29,8 +43,19 @@ export function SlackPanel({ api, fields, onFieldsChange, secretSaved, workspace
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [timedOut, setTimedOut] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
   const set = (patch: Partial<SlackFields>) => onFieldsChange({ ...fields, ...patch });
   const signedIn = workspaces.filter((workspace) => workspace.signed_in);
+
+  useEffect(() => {
+    if (!connecting) {
+      return;
+    }
+    const started = Date.now();
+    const timer = window.setInterval(() => setElapsed(Math.floor((Date.now() - started) / 1000)), 1000);
+    return () => window.clearInterval(timer);
+  }, [connecting]);
 
   async function openManifest() {
     setError(null);
@@ -45,6 +70,8 @@ export function SlackPanel({ api, fields, onFieldsChange, secretSaved, workspace
   async function connect() {
     setError(null);
     setNotice(null);
+    setTimedOut(false);
+    setElapsed(0);
     setConnecting(true);
     try {
       await api.saveSlack(fields.clientId, fields.clientSecret, fields.redirectUri);
@@ -52,8 +79,10 @@ export function SlackPanel({ api, fields, onFieldsChange, secretSaved, workspace
       onWorkspacesChange([...workspaces.filter((item) => item.id !== workspace.id), workspace]);
       setNotice(`Connected to ${workspace.team_name}.`);
     } catch (err) {
-      const kind = err && typeof err === "object" && "kind" in err ? (err as { kind?: unknown }).kind : null;
-      if (kind !== "cancelled") {
+      const kind = errorKind(err);
+      if (kind === "timeout") {
+        setTimedOut(true);
+      } else if (kind !== "cancelled") {
         setError(errorMessage(err));
       }
     } finally {
@@ -169,13 +198,18 @@ export function SlackPanel({ api, fields, onFieldsChange, secretSaved, workspace
           </button>
         )}
       </div>
-      <p className="text-xs text-slate-400" role="status">
+      <p className="text-xs text-slate-400" role="status" aria-label="Slack sign-in status">
         {connecting
-          ? "Finish signing in in your browser. This times out after 2 minutes."
+          ? `${elapsed >= STILL_WAITING_AFTER_SECONDS ? "Still waiting for Slack. " : ""}Finish signing in in your browser · ${formatLeft(SIGN_IN_TIMEOUT_SECONDS - elapsed)} left.`
           : fields.clientId.trim()
             ? "Opens your default browser. Sign in to one workspace at a time."
             : "Enter the client ID to sign in."}
       </p>
+      {timedOut && !connecting && (
+        <button type="button" className="block text-sm text-amber-300 underline" onClick={() => void connect()}>
+          Sign-in timed out, click to retry.
+        </button>
+      )}
       {notice && <p className="text-sm text-emerald-300">{notice}</p>}
       {error && <p className="text-sm text-rose-300">{error}</p>}
     </div>

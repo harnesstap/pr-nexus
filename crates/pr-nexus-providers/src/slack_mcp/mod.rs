@@ -72,7 +72,7 @@ pub enum SlackAuthError {
     Discovery(String),
     #[error("Could not open the browser: {0}")]
     Browser(String),
-    #[error("Slack sign-in timed out after 2 minutes. Try again.")]
+    #[error("Slack sign-in timed out after 10 minutes. Try again.")]
     Timeout,
     #[error("Slack sign-in was cancelled.")]
     Cancelled,

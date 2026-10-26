@@ -153,7 +153,15 @@ async fn connect_runs_pkce_with_secret_and_stores_the_grant() {
     assert_eq!(query["client_id"], CLIENT_ID);
     assert_eq!(query["code_challenge_method"], "S256");
     assert_eq!(query["redirect_uri"], config.redirect_uri);
-    assert!(query["scope"].contains("chat:write"));
+    // On the `v2_user` endpoint the user scopes go in `scope`; `user_scope`
+    // belongs to the `v2/authorize` bot-install flow and must not be sent.
+    for scope in USER_SCOPES {
+        assert!(
+            query["scope"].split([' ', ',']).any(|s| s == *scope),
+            "missing {scope}"
+        );
+    }
+    assert!(!query.contains_key("user_scope"));
     assert!(
         !query.contains_key("client_secret"),
         "secret never goes to the browser"
