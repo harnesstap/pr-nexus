@@ -2,9 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import type { Api, Bootstrap, OnboardingState } from "../api";
 import { errorMessage } from "../api";
 import { OrgOption } from "../orgs";
+import { DEFAULT_REDIRECT, SlackPanel, type SlackFields } from "../slack/SlackPanel";
 import { backEnabled, nextEnabled, nextHint, nextLabel, showSkip, stepTitle, type StepModel } from "./logic";
-
-const DEFAULT_REDIRECT = "http://127.0.0.1:47821/mcp/oauth/callback";
 
 const ARM_DELAY_MS = 800;
 
@@ -36,9 +35,12 @@ export function Wizard({ api, boot, onFinished }: Props) {
   const [mode, setMode] = useState<"gh_cli" | "pat" | "device">(boot.gh_ready ? "gh_cli" : "pat");
   const [pat, setPat] = useState("");
   const [deviceCode, setDeviceCode] = useState<string | null>(null);
-  const [clientId, setClientId] = useState(boot.slack_client_id);
-  const [clientSecret, setClientSecret] = useState("");
-  const [redirectUri, setRedirectUri] = useState(boot.slack_redirect_uri || DEFAULT_REDIRECT);
+  const [slackFields, setSlackFields] = useState<SlackFields>({
+    clientId: boot.slack_client_id,
+    clientSecret: "",
+    redirectUri: boot.slack_redirect_uri || DEFAULT_REDIRECT,
+  });
+  const [workspaces, setWorkspaces] = useState(boot.slack_workspaces);
   const [csv, setCsv] = useState("");
   const [workspace, setWorkspace] = useState("");
   const [mappingNote, setMappingNote] = useState(
@@ -95,6 +97,7 @@ export function Wizard({ api, boot, onFinished }: Props) {
     personal,
     syncSettled,
     csvFilled: csv.trim().length > 0,
+    slackConnected: workspaces.some((item) => item.signed_in),
   };
   const hint = busy ? null : nextHint(step, model);
   const canNext = nextEnabled(step, model) && !busy;
@@ -129,7 +132,7 @@ export function Wizard({ api, boot, onFinished }: Props) {
         await api.saveOrgs(orgs, personal);
       }
       if (step === "connect_chat") {
-        await api.saveSlack(clientId, clientSecret, redirectUri);
+        await api.saveSlack(slackFields.clientId, slackFields.clientSecret, slackFields.redirectUri);
       }
       if (step === "chat_mapping") {
         if (csv.trim()) {
@@ -250,16 +253,6 @@ export function Wizard({ api, boot, onFinished }: Props) {
       setError(errorMessage(err));
     } finally {
       setBusy(false);
-    }
-  }
-
-  async function openManifest() {
-    setError(null);
-    try {
-      const url = await api.slackManifestUrl(redirectUri);
-      await api.openExternal(url);
-    } catch (err) {
-      setError(errorMessage(err));
     }
   }
 
@@ -414,59 +407,14 @@ export function Wizard({ api, boot, onFinished }: Props) {
           </div>
         )}
         {step === "connect_chat" && (
-          <div className="space-y-4">
-            <p className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-100">
-              Slack sign-in isn't available in this version yet. Save your Slack app details now and PR-Nexus will
-              use them once sign-in is available, or skip this step and add them later in Settings.
-            </p>
-            <button type="button" className="text-sm text-violet-300 underline" onClick={() => void openManifest()}>
-              Create your Slack app
-            </button>
-            <p className="text-sm text-slate-400">
-              The link opens Slack with the PR-Nexus manifest (name, user scopes, redirect URI, MCP on).
-              No client id ships with the app.
-            </p>
-            <label className="block text-sm">
-              Client ID
-              <input
-                className="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2"
-                value={clientId}
-                onChange={(event) => setClientId(event.target.value)}
-              />
-            </label>
-            <label className="block text-sm">
-              Client secret
-              <input
-                className="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2"
-                type="password"
-                autoComplete="off"
-                placeholder="optional · keychain"
-                value={clientSecret}
-                onChange={(event) => setClientSecret(event.target.value)}
-              />
-            </label>
-            <label className="block text-sm">
-              Redirect URI
-              <input
-                className="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2"
-                value={redirectUri}
-                onChange={(event) => setRedirectUri(event.target.value)}
-              />
-            </label>
-            <div>
-              <button
-                type="button"
-                className="rounded border border-slate-600 px-3 py-2 text-sm opacity-50"
-                disabled
-                aria-describedby="add-workspace-hint"
-              >
-                Add another workspace
-              </button>
-              <p id="add-workspace-hint" className="mt-1 text-xs text-slate-400">
-                Extra workspaces are added by signing in to each one, so this unlocks with Slack sign-in.
-              </p>
-            </div>
-          </div>
+          <SlackPanel
+            api={api}
+            fields={slackFields}
+            onFieldsChange={setSlackFields}
+            secretSaved={boot.slack_secret_saved}
+            workspaces={workspaces}
+            onWorkspacesChange={setWorkspaces}
+          />
         )}
         {step === "chat_mapping" && (
           <div className="space-y-3">
@@ -517,7 +465,16 @@ export function Wizard({ api, boot, onFinished }: Props) {
             <p className="text-slate-300">You're all set. Here's what PR-Nexus will use:</p>
             <p>GitHub: {login ? `@${login}` : "not connected"} · {orgs.length} orgs · personal repos {personal ? "on" : "off"}</p>
             <p>
-              Slack: {slackSkipped ? "skipped" : "settings saved"} · mapping:{" "}
+              Slack:{" "}
+              {workspaces.some((item) => item.signed_in)
+                ? workspaces
+                    .filter((item) => item.signed_in)
+                    .map((item) => item.team_name)
+                    .join(", ")
+                : slackSkipped
+                  ? "skipped"
+                  : "not connected"}{" "}
+              · mapping:{" "}
               {mappingSkipped ? "skipped" : mappingNote || "imported"}
             </p>
             <p className="text-slate-300">First sync: {syncMessage}</p>

@@ -27,6 +27,9 @@ pub const SLACK_CLIENT_ID: &str = "slack.mcp.client_id";
 pub const SLACK_REDIRECT: &str = "slack.mcp.redirect_uri";
 pub const BLOCKED_IS_READY: &str = "review.blocked_review_required_is_ready";
 pub const TICKET_KEY_REGEX: &str = "projects.ticket_key_regex";
+pub const SLACK_MCP_URL: &str = "slack.mcp.url";
+pub const REVIEW_REQUESTER: &str = "review.requester";
+pub const MIN_BUMP_INTERVAL: &str = "review.min_bump_interval_hours";
 
 pub const DEFAULT_REDIRECT: &str = "http://127.0.0.1:47821/mcp/oauth/callback";
 
@@ -106,6 +109,27 @@ pub fn slack_redirect_uri(store: &Store) -> Result<String, CoreError> {
 
 pub fn set_slack_redirect_uri(store: &Store, value: &str) -> Result<(), CoreError> {
     put_json(store, SLACK_REDIRECT, &value)
+}
+
+pub const DEFAULT_SLACK_MCP_URL: &str = "https://mcp.slack.com/mcp";
+
+pub fn slack_mcp_url(store: &Store) -> Result<String, CoreError> {
+    let url = json_or(store, SLACK_MCP_URL, DEFAULT_SLACK_MCP_URL.to_owned())?;
+    Ok(if url.trim().is_empty() {
+        DEFAULT_SLACK_MCP_URL.to_owned()
+    } else {
+        url
+    })
+}
+
+/// `review.requester`: empty means no suffix (D6).
+pub fn review_requester(store: &Store) -> Result<Option<String>, CoreError> {
+    let value: String = json_or(store, REVIEW_REQUESTER, String::new())?;
+    Ok(Some(value.trim().to_owned()).filter(|value| !value.is_empty()))
+}
+
+pub fn min_bump_interval_hours(store: &Store) -> Result<i64, CoreError> {
+    json_or(store, MIN_BUMP_INTERVAL, 24)
 }
 
 pub fn oauth_client_id(store: &Store) -> Result<String, CoreError> {

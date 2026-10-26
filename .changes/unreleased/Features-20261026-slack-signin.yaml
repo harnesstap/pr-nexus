@@ -1,0 +1,3 @@
+kind: Features
+body: Sign in to Slack workspaces through the official Slack MCP server (browser OAuth with PKCE and an optional client secret) from the setup wizard or Settings, then request or bump review on Slack from a PR with a message preview; the list shows Requested/Bumped with elapsed time and a link to the thread.
+time: 2026-10-26T12:30:00.000000Z

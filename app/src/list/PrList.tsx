@@ -57,6 +57,8 @@ interface Props {
   onLinkPrs: (projectId: number, prIds: number[]) => void;
   /** Opens the readiness and code-owner details for one row. */
   onDetails: (row: ListRow) => void;
+  /** Opens the Slack request/bump preview for one row. */
+  onRequestReview: (row: ListRow) => void;
 }
 
 const GROUPINGS: { id: Grouping; label: string }[] = [
@@ -89,6 +91,7 @@ export function PrList({
   onEditProject,
   onLinkPrs,
   onDetails,
+  onRequestReview,
 }: Props) {
   const [query, setQuery] = useState("");
   const [debounced, setDebounced] = useState("");
@@ -99,7 +102,6 @@ export function PrList({
   const [editing, setEditing] = useState<Editing | null>(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const [deleteFor, setDeleteFor] = useState<Section | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
   const [focusIndex, setFocusIndex] = useState(0);
   const searchRef = useRef<HTMLInputElement>(null);
   const commitRename = useRef(false);
@@ -124,6 +126,7 @@ export function PrList({
   const ids = visibleIds(sections);
   const hidden = hiddenSelectedCount(selected, ids);
   const global = checkState(ids, selected);
+  const singleSelected = selected.size === 1 ? (rows.find((row) => selected.has(row.id)) ?? null) : null;
 
   function setSelected(next: Set<number>) {
     setSelectedByView((current) => ({ ...current, [viewKey]: [...next] }));
@@ -181,7 +184,10 @@ export function PrList({
         event.preventDefault();
         setSelected(toggleParent(ids, selected));
       } else if (event.key === "r") {
-        setNotice("Sending Slack requests isn't available in this version yet.");
+        const current = flat[focusIndex];
+        if (current) {
+          onRequestReview(current.row);
+        }
       } else if (event.key === "s") {
         const link = flat[focusIndex]?.row.slack?.permalink;
         if (link) {
@@ -437,7 +443,13 @@ export function PrList({
             <span>
               {bulkIds(selected).length} selected{hidden > 0 ? ` (${hidden} hidden)` : ""}
             </span>
-            <button type="button" className="rounded bg-violet-500/40 px-3 py-1 text-white" disabled title="Sending Slack requests isn't available in this version yet">
+            <button
+              type="button"
+              className="rounded bg-violet-500 px-3 py-1 text-white disabled:bg-violet-500/40"
+              disabled={singleSelected === null}
+              title={singleSelected === null ? "Select one PR to request or bump on Slack" : undefined}
+              onClick={() => singleSelected && onRequestReview(singleSelected)}
+            >
               Request / bump on Slack
             </button>
             <button type="button" onClick={() => setSelected(new Set())}>
@@ -468,7 +480,6 @@ export function PrList({
           </div>
         </dialog>
       )}
-      {notice && <p className="px-4 pb-2 text-sm text-amber-200">{notice}</p>}
     </div>
   );
 

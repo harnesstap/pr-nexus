@@ -47,6 +47,7 @@ function Harness({
   onLinkPrs = () => undefined,
   onEditProject = () => undefined,
   onDetails = () => undefined,
+  onRequestReview = () => undefined,
 }: {
   rows: ListRow[];
   projects?: ProjectDto[];
@@ -55,6 +56,7 @@ function Harness({
   onLinkPrs?: (projectId: number, ids: number[]) => void;
   onEditProject?: (id: number) => void;
   onDetails?: (row: ListRow) => void;
+  onRequestReview?: (row: ListRow) => void;
 }) {
   const [view, setView] = useState<SavedView>(defaultView());
   return (
@@ -72,6 +74,7 @@ function Harness({
       onEditProject={onEditProject}
       onLinkPrs={onLinkPrs}
       onDetails={onDetails}
+      onRequestReview={onRequestReview}
     />
   );
 }
@@ -100,13 +103,17 @@ test("section and global tri-state checkboxes select only visible rows", () => {
 });
 
 test("a pull request in two projects is selected in both and counted once", () => {
-  render(<Harness rows={rows} />);
+  const requested: number[] = [];
+  render(<Harness rows={rows} onRequestReview={(row) => requested.push(row.id)} />);
   const copies = screen.getAllByRole("checkbox", { name: "Select Migrate login" });
   expect(copies).toHaveLength(2);
   fireEvent.click(copies[0]!);
   expect(copies[1]).toBeChecked();
   expect(screen.getByRole("checkbox", { name: "Select Billing" })).toBeChecked();
   expect(screen.getByText("1 selected")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Request / bump on Slack" }));
+  expect(requested).toEqual([1]);
+  fireEvent.click(screen.getByRole("checkbox", { name: "Select Add passkeys" }));
   expect(screen.getByRole("button", { name: "Request / bump on Slack" })).toBeDisabled();
 });
 
@@ -217,6 +224,7 @@ test("rows show labelled threads, a review pill, and the Slack request status", 
       onEditProject={() => undefined}
       onLinkPrs={() => undefined}
       onDetails={() => undefined}
+      onRequestReview={() => undefined}
     />,
   );
   expect(screen.getByText("Requested · 2d ago")).toBeInTheDocument();

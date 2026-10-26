@@ -9,9 +9,14 @@ export interface StepModel {
   syncSettled: boolean;
   /** True when the mapping step has CSV text to import. */
   csvFilled?: boolean;
+  /** At least one Slack workspace is signed in. */
+  slackConnected?: boolean;
 }
 
-/** Slack sign-in is not available yet, so that screen can be skipped; mapping is optional. */
+/**
+ * Mapping is optional. Slack can be skipped too, so PR-Nexus stays usable
+ * when a workspace has no approved Slack app yet (§7.13 R7).
+ */
 export function showSkip(step: StepId): boolean {
   return step === "connect_chat" || step === "chat_mapping";
 }
@@ -31,7 +36,7 @@ export function nextEnabled(step: StepId, model: StepModel): boolean {
     case "choose_vcs_scope":
       return model.orgCount > 0 || model.personal;
     case "connect_chat":
-      return true;
+      return model.slackConnected === true;
     case "chat_mapping":
       return true;
     case "done":
@@ -53,6 +58,8 @@ export function nextHint(step: StepId, model: StepModel): string | null {
       return "Connect GitHub above to continue.";
     case "choose_vcs_scope":
       return "Pick at least one org, or include your personal repos, to continue.";
+    case "connect_chat":
+      return "Sign in to a Slack workspace above, or Skip and connect later in Settings.";
     case "done":
       return "Waiting for the first sync to finish…";
     default:

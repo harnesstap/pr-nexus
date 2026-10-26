@@ -4,6 +4,8 @@
 //! import arrives in a later milestone.
 
 pub mod codeowners;
+pub mod lifecycle;
 pub mod message;
 pub mod owners;
+pub mod permalink;
 pub mod readiness;

@@ -15,7 +15,15 @@ keyring = { version = "3.6", features = ["apple-native", "windows-native", "asyn
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+rmcp = { version = "3.7", default-features = false, features = ["client", "auth", "transport-streamable-http-client-reqwest", "reqwest-tls-no-provider"] }
+reqwest013 = { package = "reqwest", version = "0.13", default-features = false, features = ["json", "rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time", "sync", "io-util"] }
+url = "2"
+async-trait = "0.1"
+http = "1"
+thiserror.workspace = true
+oauth2 = { version = "5", default-features = false }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 wiremock = "0.6"

@@ -125,6 +125,33 @@ impl Store {
         })
     }
 
+    /// §7.4: a bump only moves `last_bumped_at` and `bump_count` on the
+    /// active row. It never creates a row.
+    pub fn record_bump(
+        &self,
+        id: ReviewRequestId,
+        at: DateTime<Utc>,
+    ) -> Result<ReviewRequest, CoreError> {
+        let at = format_ts(at);
+        self.write(move |conn| {
+            let changed = conn
+                .execute(
+                    "UPDATE review_requests
+                     SET last_bumped_at = ?1, bump_count = bump_count + 1
+                     WHERE id = ?2 AND status = 'active'",
+                    params![at, id.0],
+                )
+                .map_err(db)?;
+            if changed == 0 {
+                return Err(CoreError::Validation(
+                    "review request is not active".to_owned(),
+                ));
+            }
+            load_request(conn, id)?
+                .ok_or_else(|| CoreError::Store("bumped review request disappeared".to_owned()))
+        })
+    }
+
     pub fn upsert_discovery_run(&self, run: DiscoveryRun) -> Result<(), CoreError> {
         self.write(move |conn| {
             conn.execute(

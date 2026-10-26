@@ -1,6 +1,7 @@
 mod commands;
 mod demo;
 mod error;
+mod slack;
 mod slack_link;
 mod state;
 
@@ -47,6 +48,13 @@ pub fn run() {
             commands::poll_device_flow,
             commands::save_orgs,
             commands::save_slack_settings,
+            slack::slack_workspaces,
+            slack::slack_connect,
+            slack::slack_cancel_connect,
+            slack::slack_remove_workspace,
+            slack::review_targets,
+            slack::review_preview,
+            slack::send_review,
             commands::slack_manifest_url,
             commands::import_mapping,
             commands::finish_onboarding,
@@ -146,6 +154,5 @@ mod tests {
             "token".into(),
         );
         assert!(built.is_ok());
-        assert!(pr_nexus_providers::build_chat(pr_nexus_core::domain::ChatKind::Slack).is_err());
     }
 }

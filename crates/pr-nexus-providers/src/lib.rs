@@ -1,14 +1,16 @@
 //! Provider factories.
 //!
-//! GitHub is a blocking GraphQL client. Slack stays an empty module until M10.
-//! The transport is the official Slack MCP server; see `slack`.
+//! GitHub is a blocking GraphQL client. Slack goes through the official
+//! Slack MCP server; see [`slack_mcp`].
 
 use pr_nexus_core::domain::{AccountId, ChatKind, VcsKind};
 use pr_nexus_core::error::ProviderError;
-use pr_nexus_core::providers::VcsProvider;
+use std::sync::Arc;
+
+use pr_nexus_core::providers::{ChatProvider, ChatUser, VcsProvider};
 
 pub mod github;
-pub mod slack;
+pub mod slack_mcp;
 pub mod vault;
 
 pub use github::GithubClient;
@@ -33,14 +35,21 @@ pub fn build_vcs(
     }
 }
 
-/// Build the chat client for `kind`.
+/// Build the chat client for one signed-in workspace.
 ///
-/// Slack returns unsupported on purpose. The MCP client lands in M10.
-pub fn build_chat(kind: ChatKind) -> Result<(), ProviderError> {
+/// Slack talks to the official MCP server with the keychain grant. Discord
+/// and Mattermost are coming soon.
+pub fn build_chat(
+    kind: ChatKind,
+    account: AccountId,
+    user: ChatUser,
+    session: slack_mcp::SessionConfig,
+    vault: Arc<vault::Vault>,
+) -> Result<Box<dyn ChatProvider>, ProviderError> {
     match kind {
-        ChatKind::Slack => Err(ProviderError::Unsupported(
-            "Slack provider is not implemented yet".to_owned(),
-        )),
+        ChatKind::Slack => Ok(Box::new(slack_mcp::SlackMcpChatProvider::connect(
+            session, vault, account, user,
+        )?)),
         ChatKind::Discord => Err(ProviderError::Unsupported(
             "Discord is not available yet".to_owned(),
         )),
@@ -58,7 +67,29 @@ mod tests {
     fn github_factory_builds_and_other_kinds_stay_unsupported() {
         assert!(build_vcs(VcsKind::GitHub, AccountId(1), "token".into()).is_ok());
         assert!(build_vcs(VcsKind::GitLab, AccountId(1), "token".into()).is_err());
-        assert!(build_chat(ChatKind::Slack).is_err());
-        assert!(build_chat(ChatKind::Discord).is_err());
+        let session = slack_mcp::SessionConfig {
+            mcp_url: slack_mcp::SLACK_MCP_URL.into(),
+            client_id: "1.2".into(),
+            client_secret: None,
+            redirect_uri: "http://127.0.0.1:47821/mcp/oauth/callback".into(),
+            keychain_key: "slack:T1:U1".into(),
+        };
+        let vault = Arc::new(vault::Vault::memory("test"));
+        let user = ChatUser {
+            id: "U1".into(),
+            name: "me".into(),
+        };
+        // Building opens nothing: the MCP session starts on the first call.
+        assert!(
+            build_chat(
+                ChatKind::Slack,
+                AccountId(1),
+                user.clone(),
+                session.clone(),
+                vault.clone()
+            )
+            .is_ok()
+        );
+        assert!(build_chat(ChatKind::Discord, AccountId(1), user, session, vault).is_err());
     }
 }

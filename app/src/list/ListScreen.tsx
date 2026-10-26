@@ -7,6 +7,8 @@ import { DRAG_MIME, defaultView, parseDragIds, parseViewState, renameError, sync
 import { PrList } from "./PrList";
 import { PrDetailDialog } from "./PrDetailDialog";
 import { ProjectDialog } from "./ProjectDialog";
+import { SlackSettings } from "../slack/SlackSettings";
+import { ReviewDialog } from "../slack/ReviewDialog";
 
 interface Props {
   api: Api;
@@ -29,6 +31,7 @@ export function ListScreen({ api, boot, onBoot }: Props) {
   const [draft, setDraft] = useState<{ name: string; error: string | null } | null>(null);
   const [editingProject, setEditingProject] = useState<number | null>(null);
   const [detailId, setDetailId] = useState<number | null>(null);
+  const [reviewId, setReviewId] = useState<number | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const view = views[viewKey] ?? defaultView();
   const needsOrgs = orgs.length === 0 && !personal;
@@ -142,6 +145,7 @@ export function ListScreen({ api, boot, onBoot }: Props) {
   const activeProjects = projects.filter((project) => !project.archived);
   const dialogProject = projects.find((project) => project.id === editingProject) ?? null;
   const detailRow = rows.find((row) => row.id === detailId) ?? null;
+  const reviewRow = rows.find((row) => row.id === reviewId) ?? null;
   const syncTone = sync.phase === "error" || sync.paused || sync.phase === "paused" ? "bg-amber-400" : sync.phase === "syncing" ? "bg-sky-400" : "bg-emerald-400";
 
   async function saveOrgs() {
@@ -290,6 +294,7 @@ export function ListScreen({ api, boot, onBoot }: Props) {
             <button type="button" className="mt-4 rounded bg-violet-500 px-3 py-2 text-sm" onClick={() => void saveOrgs()}>
               Save orgs
             </button>
+            {viewKey === "settings" && <SlackSettings api={api} boot={boot} />}
           </section>
         ) : (
           <PrList
@@ -314,6 +319,7 @@ export function ListScreen({ api, boot, onBoot }: Props) {
             onEditProject={setEditingProject}
             onLinkPrs={(projectId, ids) => void linkPrs(projectId, ids)}
             onDetails={(row) => setDetailId(row.id)}
+            onRequestReview={(row) => setReviewId(row.id)}
           />
         )}
         {notice && (
@@ -331,7 +337,26 @@ export function ListScreen({ api, boot, onBoot }: Props) {
               // The detail may have resolved code-owner status the list row now uses.
               void reload();
             }}
-            onOpen={(url) => void api.openExternal(url)} />
+            onOpen={(url) => void api.openExternal(url)}
+            onRequestReview={() => {
+              setDetailId(null);
+              setReviewId(detailRow.id);
+            }} />
+        )}
+        {reviewRow && (
+          <ReviewDialog
+            key={reviewRow.id}
+            api={api}
+            row={reviewRow}
+            onClose={() => setReviewId(null)}
+            onOpen={(url) => void api.openExternal(url)}
+            onSent={(slack) => {
+              const id = reviewRow.id;
+              setRows((current) => current.map((row) => (row.id === id ? { ...row, slack } : row)));
+              setReviewId(null);
+              setNotice(slack.bump_count > 0 ? "Bumped on Slack." : "Review requested on Slack.");
+            }}
+          />
         )}
         {dialogProject && (
           <ProjectDialog api={api} project={dialogProject} rows={rows} onClose={() => setEditingProject(null)} onChanged={reload} />
