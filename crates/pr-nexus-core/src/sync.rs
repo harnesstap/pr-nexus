@@ -345,6 +345,7 @@ mod tests {
                 id: "U_1".into(),
                 login: "ada".into(),
                 organizations: vec!["acme".into()],
+                organizations_needing_sso: Vec::new(),
             })
         }
         fn search_pull_requests(

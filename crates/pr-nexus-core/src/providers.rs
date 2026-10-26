@@ -257,7 +257,11 @@ pub struct SyncedPullRequest {
 pub struct VcsUser {
     pub id: String,
     pub login: String,
+    /// Every org the user belongs to, including ones the token cannot read yet.
     pub organizations: Vec<String>,
+    /// Orgs listed by membership but hidden from the token, usually because
+    /// the org enforces SAML SSO and the token is not authorized for it.
+    pub organizations_needing_sso: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

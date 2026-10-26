@@ -1,0 +1,3 @@
+kind: Fixed
+body: List every GitHub org the user belongs to, including SAML SSO orgs the token is not authorized for (flagged with an authorization hint); explain disabled Next buttons, drop milestone wording and the placeholder Slack subtitle, clarify the mapping step with a CSV example, always show the Done step, and open a 1280×800 window with a minimum size.
+time: 2026-10-26T08:00:00.000000Z

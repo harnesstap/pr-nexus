@@ -167,3 +167,57 @@ fn device_flow_start_and_poll() {
         other => panic!("{other:?}"),
     }
 }
+
+#[test]
+fn viewer_adds_orgs_hidden_from_graphql_as_needing_sso() {
+    let server = server();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async {
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"data":{"rateLimit":{"limit":5000,"remaining":4999,"resetAt":"2026-10-26T01:00:00Z","cost":1},
+                   "viewer":{"login":"ada","id":"U_1","organizations":{"nodes":[{"login":"acme"}]}}}}"#,
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/user/orgs"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"[{"login":"acme"},{"login":"acme-sso"},{"login":"other-sso"}]"#,
+            ))
+            .mount(&server)
+            .await;
+    });
+    let client = GithubClient::with_base(server.uri(), AccountId(1), "token").unwrap();
+    let viewer = client.viewer().unwrap();
+    assert_eq!(viewer.organizations, vec!["acme", "acme-sso", "other-sso"]);
+    assert_eq!(
+        viewer.organizations_needing_sso,
+        vec!["acme-sso", "other-sso"]
+    );
+}
+
+#[test]
+fn viewer_keeps_graphql_orgs_when_rest_fails() {
+    let server = server();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async {
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"data":{"viewer":{"login":"ada","id":"U_1","organizations":{"nodes":[{"login":"acme"}]}}}}"#,
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/user/orgs"))
+            .respond_with(ResponseTemplate::new(403).set_body_string(r#"{"message":"forbidden"}"#))
+            .mount(&server)
+            .await;
+    });
+    let client = GithubClient::with_base(server.uri(), AccountId(1), "token").unwrap();
+    let viewer = client.viewer().unwrap();
+    assert_eq!(viewer.organizations, vec!["acme"]);
+    assert!(viewer.organizations_needing_sso.is_empty());
+}

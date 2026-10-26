@@ -40,6 +40,7 @@ pub struct Bootstrap {
     pub tracked_orgs: Vec<String>,
     pub include_personal: bool,
     pub org_choices: Vec<String>,
+    pub orgs_needing_sso: Vec<String>,
     pub slack_client_id: String,
     pub slack_redirect_uri: String,
     pub mapping_count: i64,
@@ -54,6 +55,7 @@ pub struct Bootstrap {
 pub struct GithubSession {
     pub login: String,
     pub organizations: Vec<String>,
+    pub organizations_needing_sso: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -183,6 +185,7 @@ pub fn bootstrap(app: State<'_, std::sync::Arc<AppState>>) -> Result<Bootstrap, 
         tracked_orgs: settings::tracked_orgs(&state.store)?,
         include_personal: settings::include_personal_repos(&state.store)?,
         org_choices: orgs,
+        orgs_needing_sso: settings::sso_orgs(&state.store)?,
         slack_client_id: settings::slack_client_id(&state.store)?,
         slack_redirect_uri: settings::slack_redirect_uri(&state.store)?,
         mapping_count: state.store.mapping_count()?,
@@ -362,9 +365,11 @@ fn store_github(
         created_at: Utc::now(),
     })?;
     settings::set_viewer_orgs(&state.store, &viewer.organizations)?;
+    settings::set_sso_orgs(&state.store, &viewer.organizations_needing_sso)?;
     Ok(GithubSession {
         login: viewer.login,
         organizations: viewer.organizations,
+        organizations_needing_sso: viewer.organizations_needing_sso,
     })
 }
 

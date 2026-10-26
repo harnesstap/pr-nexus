@@ -35,6 +35,7 @@ export interface Bootstrap {
   tracked_orgs: string[];
   include_personal: boolean;
   org_choices: string[];
+  orgs_needing_sso: string[];
   slack_client_id: string;
   slack_redirect_uri: string;
   mapping_count: number;
@@ -48,6 +49,7 @@ export interface Bootstrap {
 export interface GithubSession {
   login: string;
   organizations: string[];
+  organizations_needing_sso: string[];
 }
 
 export interface DevicePrompt {

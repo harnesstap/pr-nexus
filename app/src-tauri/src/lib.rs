@@ -17,6 +17,9 @@ pub fn run() {
             let shared = Arc::new(state::AppState::open(path)?);
             state::spawn_scheduler(Arc::clone(&shared));
             app.manage(shared);
+            if let Some(window) = app.get_webview_window("main") {
+                fit_to_monitor(&window);
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -53,9 +56,45 @@ pub fn run() {
         .expect("error while running PR-Nexus");
 }
 
+/// Keeps the default 1280×800 window inside small screens (90% of the monitor).
+fn fit_to_monitor(window: &tauri::WebviewWindow) {
+    let Ok(Some(monitor)) = window.current_monitor() else {
+        return;
+    };
+    let scale = monitor.scale_factor();
+    let screen = monitor.size().to_logical::<f64>(scale);
+    let (width, height) = fitted_size(screen.width, screen.height);
+    if width < DEFAULT_SIZE.0 || height < DEFAULT_SIZE.1 {
+        let _ = window.set_size(tauri::LogicalSize::new(width, height));
+        let _ = window.center();
+    }
+}
+
+const DEFAULT_SIZE: (f64, f64) = (1280.0, 800.0);
+const MIN_SIZE: (f64, f64) = (960.0, 600.0);
+
+fn fitted_size(screen_width: f64, screen_height: f64) -> (f64, f64) {
+    let width = DEFAULT_SIZE
+        .0
+        .min(screen_width * 0.9)
+        .max(MIN_SIZE.0.min(screen_width));
+    let height = DEFAULT_SIZE
+        .1
+        .min(screen_height * 0.9)
+        .max(MIN_SIZE.1.min(screen_height));
+    (width, height)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_defaults_to_1280_by_800_and_shrinks_on_small_screens() {
+        assert_eq!(fitted_size(1920.0, 1200.0), (1280.0, 800.0));
+        assert_eq!(fitted_size(1280.0, 720.0), (1152.0, 648.0));
+        assert_eq!(fitted_size(800.0, 500.0), (800.0, 500.0));
+    }
 
     #[test]
     fn slack_manifest_link_is_built_from_the_asset() {
