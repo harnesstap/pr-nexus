@@ -112,6 +112,7 @@ bitflags! { pub struct Involvement: u8 { const AUTHOR = 1; const REVIEW_REQUESTE
 pub struct PullRequest {
     pub id: PrId, pub remote: ProviderRef, pub repo: RepoRef, pub number: u64,
     pub title: String, pub url: String, pub author_login: String,
+    pub body: String,                         // bodyText, capped at 8 KB; used only by the search bar (§8.2)
     pub state: PrState, pub is_draft: bool,
     pub head_ref: String, pub base_ref: String, pub head_sha: String,
     pub labels: Vec<String>,
@@ -138,6 +139,26 @@ pub struct ChatMessage {
     pub reply_count: u32, pub permalink: Option<String>,
 }
 
+// ---- review requests (source of truth for "is this PR already requested?", §7.4) ----
+pub struct ReviewRequestId(pub i64);
+pub enum RequestSource { App, DiscoveredViaSearch }
+pub enum RequestStatus { Active, Closed(CloseReason) }
+pub enum CloseReason { PrMerged, PrClosed, Dismissed, Superseded, ChannelArchived }
+pub struct ReviewRequest {
+    pub id: ReviewRequestId, pub pr: PrId,
+    pub workspace: String, pub channel_id: String, pub channel_name: String,
+    pub root: ProviderRef,                    // the top-level request message (bumps reply in its thread)
+    pub permalink: Option<String>,
+    pub requested_at: DateTime<Utc>, pub last_bumped_at: Option<DateTime<Utc>>, pub bump_count: u32,
+    pub status: RequestStatus, pub source: RequestSource,
+}
+/// The single contextual Slack action for a PR (§7.7). Derived, never stored.
+pub enum SlackAction {
+    Request,                                   // no active request for this PR
+    Bump { requested_at: DateTime<Utc>, last_bumped_at: Option<DateTime<Utc>> },
+    Disabled { reason: String },               // blocked, all owners approved, not your PR, …
+}
+
 // ---- projects -------------------------------------------------------------
 pub struct Project { pub id: ProjectId, pub name: String, pub description: String,
                      pub color: String, pub archived: bool, pub sort_order: i32 }
@@ -151,7 +172,8 @@ These changes fix the original design doc:
 - `thread_ts` leaves the generic model; the Slack handle lives inside `ProviderRef.id`.
 - PR↔project links have a single source of truth: the `pr_projects` join table. `GenericPR.linked_project_id` and `ProjectFeatureMapping.pr_ids` are both removed.
 - `chat_channel_ids` on projects is dropped. Channels come from team ownership, not from projects.
-- New PR fields: CI rollup, requested reviewers/teams, head/base, labels, `is_draft` separate from state, mergeability, last activity, and owning teams (via the ownership cache).
+- Review requests become a first-class entity (`ReviewRequest`, `review_requests` table), so the app always knows whether a PR has already been requested. The original doc only had a `thread_ts` on the PR.
+- New PR fields: body (for search), CI rollup, requested reviewers/teams, head/base, labels, `is_draft` separate from state, mergeability, last activity, and owning teams (via the ownership cache).
 
 **PR ↔ project cardinality: many-to-many.** A PR can belong to several projects (e.g. a shared-lib PR for two initiatives). In the grouped list it shows in each section, with a `+1` badge. Selection is keyed by `PrId`, so bulk actions dedupe automatically.
 
@@ -176,7 +198,7 @@ CREATE TABLE repositories (
 CREATE TABLE pull_requests (
   id INTEGER PRIMARY KEY, repo_id INTEGER NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
   number INTEGER NOT NULL, node_id TEXT NOT NULL UNIQUE, title TEXT NOT NULL, url TEXT NOT NULL,
-  author_login TEXT NOT NULL, state TEXT NOT NULL, is_draft INTEGER NOT NULL,
+  author_login TEXT NOT NULL, body TEXT NOT NULL DEFAULT '', state TEXT NOT NULL, is_draft INTEGER NOT NULL,
   head_ref TEXT NOT NULL, base_ref TEXT NOT NULL, head_sha TEXT NOT NULL,
   review_decision TEXT, checks_state TEXT NOT NULL, mergeable TEXT NOT NULL, merge_state TEXT NOT NULL,
   unresolved_threads INTEGER NOT NULL, total_threads INTEGER NOT NULL, involvement INTEGER NOT NULL,
@@ -223,7 +245,8 @@ CREATE TABLE team_members_cache (github_org TEXT NOT NULL, team_slug TEXT NOT NU
   members_json TEXT NOT NULL, complete INTEGER NOT NULL, fetched_at TEXT NOT NULL,
   PRIMARY KEY (github_org, team_slug));
 
--- Slack messages PR-Nexus posted or imported from search. One message can cover several PRs (batch).
+-- Message log: every Slack message PR-Nexus posted or discovered. One message can cover several PRs (batch).
+-- It feeds the context panel and auditing. Request state lives in review_requests, not here.
 CREATE TABLE review_messages (
   id INTEGER PRIMARY KEY, slack_account_id INTEGER NOT NULL REFERENCES accounts(id),
   channel_id TEXT NOT NULL, channel_name TEXT NOT NULL, ts TEXT NOT NULL,
@@ -236,6 +259,25 @@ CREATE TABLE review_message_prs (
   message_id INTEGER NOT NULL REFERENCES review_messages(id) ON DELETE CASCADE,
   pr_id INTEGER NOT NULL REFERENCES pull_requests(id) ON DELETE CASCADE,
   head_sha TEXT, teams_json TEXT NOT NULL DEFAULT '[]', PRIMARY KEY (message_id, pr_id));
+
+-- Source of truth: does this PR have a review request, where, and how old is it (§7.4).
+-- One row per (PR, workspace, channel, root message). A batch message creates one row per PR.
+CREATE TABLE review_requests (
+  id INTEGER PRIMARY KEY,
+  pr_id INTEGER NOT NULL REFERENCES pull_requests(id) ON DELETE CASCADE,
+  slack_workspace TEXT NOT NULL, channel_id TEXT NOT NULL, channel_name TEXT NOT NULL,
+  root_ts TEXT NOT NULL, permalink TEXT,
+  requested_at TEXT NOT NULL, last_bumped_at TEXT, bump_count INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL CHECK (status IN ('active','closed')),
+  close_reason TEXT CHECK (close_reason IN ('pr_merged','pr_closed','dismissed','superseded','channel_archived')),
+  closed_at TEXT,
+  source TEXT NOT NULL CHECK (source IN ('app','discovered_via_search')),
+  CHECK ((status = 'active') = (close_reason IS NULL)),
+  UNIQUE (pr_id, slack_workspace, channel_id, root_ts));
+CREATE UNIQUE INDEX rr_one_active ON review_requests(pr_id, slack_workspace, channel_id) WHERE status = 'active';
+CREATE TABLE discovery_runs (pr_id INTEGER NOT NULL REFERENCES pull_requests(id) ON DELETE CASCADE,
+  slack_workspace TEXT NOT NULL, ran_at TEXT NOT NULL, outcome TEXT NOT NULL,   -- found | none | skipped_no_scope | error
+  PRIMARY KEY (pr_id, slack_workspace));
 CREATE TABLE send_attempts (id INTEGER PRIMARY KEY, batch_id TEXT NOT NULL, pr_id INTEGER, channel_id TEXT,
   origin TEXT NOT NULL DEFAULT 'ui', outcome TEXT NOT NULL CHECK (outcome IN ('sent','skipped','failed')),
   detail TEXT NOT NULL, at TEXT NOT NULL);
@@ -245,7 +287,9 @@ CREATE TABLE chat_thread_cache (slack_account_id INTEGER NOT NULL, channel_id TE
   PRIMARY KEY (slack_account_id, channel_id, thread_root_ts));
 
 CREATE TABLE sync_state (key TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_at TEXT NOT NULL); -- watermarks, rate limits
-CREATE TABLE settings (key TEXT PRIMARY KEY, value_json TEXT NOT NULL);                            -- §7.11
+CREATE TABLE settings (key TEXT PRIMARY KEY, value_json TEXT NOT NULL);                            -- §7.12
+-- Per-view grouping, ordering, visible columns, filters (§8.2). view_key: 'mine' | 'to_review' | 'project:<id>'
+CREATE TABLE view_state (view_key TEXT PRIMARY KEY, state_json TEXT NOT NULL, updated_at TEXT NOT NULL);
 ```
 
 Rules:
@@ -339,7 +383,7 @@ All methods return typed errors (no `String`). The original `list_repositories` 
 
 ```graphql
 fragment PrFields on PullRequest {
-  id number title url isDraft state createdAt updatedAt
+  id number title url bodyText isDraft state createdAt updatedAt
   author { login } headRefName baseRefName headRefOid
   repository { id owner { login } name isArchived defaultBranchRef { name } }
   labels(first: 20) { nodes { name } }
@@ -359,7 +403,7 @@ Unresolved threads come from counting `reviewThreads.nodes[].isResolved == false
 - every 3 min while the window is focused, every 15 min while unfocused or minimised, and never while the app is quit;
 - immediately when a PR detail view opens (that one PR, plus its ownership inputs if `head_sha` changed);
 - **always** right before any Slack write for the affected PRs (§7.8);
-- a manual "Sync now" button.
+- the manual refresh button in the sidebar footer (§8.2), which also shows sync status: `Synced · 2m ago`, `Syncing…`, or an error such as `Rate limited · resets 14:32` (time from `resetAt`, shown in local time) or `Sync failed · <reason>`.
 
 **Rate limits.**
 - Read `rateLimit { remaining resetAt cost }` in every GraphQL query and the REST `x-ratelimit-*` headers.
@@ -404,7 +448,7 @@ Computed from synced fields. Re-computed in the pre-send refresh.
 | file list truncated (≥3000) | Unknown | `PR file list may be truncated (≥3000 files); confirm additional owners` |
 | evidence fetch failed | Unknown | the provider error |
 
-- **Blocked** PRs: the Request/Bump button is disabled and the tooltip lists the reasons. Blocked PRs cannot be overridden in v1. The skill says "never override", and a red CI is a bad reason to page a team.
+- **Blocked** PRs: the Slack action button (§7.7) is disabled and the tooltip lists the reasons. Blocked PRs cannot be overridden in v1. The skill says "never override", and a red CI is a bad reason to page a team.
 - **Unknown** PRs: the preview shows the reasons and requires an explicit "I confirm only reviews are missing" checkbox. The confirmation is scoped to `(head_sha, reasons)`. If either changes, the confirmation is invalidated.
 - **Δ BLOCKED: intentional deviation from the skill (decided by the owner).** The skill marks every `BLOCKED` PR as Unknown. Nearly every PR that waits for review reports `BLOCKED`, so the skill asks for confirmation on almost every request. PR-Nexus treats a `BLOCKED` PR as **Ready** when only reviews are missing:
   - `reviewDecision = REVIEW_REQUIRED` (or null with code-owner review pending);
@@ -466,17 +510,37 @@ Channel IDs are only unique within a workspace. Every lookup, dedup, post, and c
 
 The mapping **starts empty**: no company data ships with the app or the repo. Most teams get a channel on first use through the picker, or in bulk through CSV import (§7.5). The picker and correction flow is therefore the main path, not an edge case.
 
-### 7.4 Dedup and "last request"
+### 7.4 Review-request state: source of truth, discovery, lifecycle
 
-The goal is to know, for each (PR, channel), whether a request already exists, and its `ts` and permalink.
-1. **Local first.** `review_messages ⋈ review_message_prs`, for messages PR-Nexus posted. This is authoritative and free.
-2. **Import second** (on the first request for a PR, or when the user clicks "Search Slack"). Call `search.messages` with this exact template, inherited from the skill:
-   `in:<#CHANNEL_ID> "github.com/ORG/REPO/pull/N"`
-   - Match hits whose text contains `https://github.com/ORG/REPO/pull/N` followed by a non-digit or end of text. (`/pull/4` must not match `/pull/42`.)
-   - Store matches as `origin='imported'`, with `thread_root_ts` = the hit's `thread_ts`, if any, else its `ts`.
-   - `search.messages` is a legacy API (Tier 2, user token, `search:read`), but it is the only way to find messages posted by other tools. It includes bot messages. If the scope is missing, skip the import and show "dedup: local history only".
-3. The PR detail shows **"Last request: <relative time> in #channel · Open in Slack"**, from the newest request or bump per channel.
+The app must always know whether a PR already has a review request. **`review_requests` is the source of truth.** `review_messages` is only the message log.
 
+**How rows get created**
+- **`source='app'`.** A successful top-level request post inserts one `active` row per (PR, workspace, channel), pointing to the posted message's `ts` (`root_ts`) and permalink.
+  - A bump updates the matching active rows: `last_bumped_at = now`, `bump_count += 1`. It never creates a row.
+  - If the bump fell back to a new top-level message (§7.9, >3 roots), the old rows are closed as `superseded` and new active rows point to the new message.
+- **`source='discovered_via_search'`.** Requests posted outside the app (by hand, or by the skill) are found with `search.messages` and stored the same way.
+  - When it runs: in the background, once per open authored PR that has no active request, per connected workspace, at most every 24 h (`discovery_runs`), throttled to 10 calls/min per workspace (`search.messages` is Tier 2). It also runs right before opening the preview for any selected PR with no active row (bypassing the 24 h cooldown), and when the user clicks "Search Slack".
+  - Background query (the target channels are not known yet): `"github.com/ORG/REPO/pull/N"` across the workspace. Pre-preview query, once channels are resolved, uses the skill's exact template: `in:<#CHANNEL_ID> "github.com/ORG/REPO/pull/N"`.
+  - Match hits whose text contains `https://github.com/ORG/REPO/pull/N` followed by a non-digit or end of text (`/pull/4` must not match `/pull/42`). Keep only hits in channels that some mapping row points to, or that the user picks in the preview.
+  - Per (PR, workspace, channel), the oldest matching top-level message is the root: the hit's `thread_ts` if it is a reply, else its `ts`. `requested_at` = root time. Later matching messages in the same thread count as bumps (`last_bumped_at`, `bump_count`).
+  - A hit whose root matches a **closed** row is ignored. The `UNIQUE` key prevents resurrection, so a dismissed request stays dismissed.
+  - If `search:read` is missing, discovery is skipped and the PR shows "Slack history: app only".
+
+**When a request stops being active (closed).** This decides whether the action is Request or Bump.
+
+| Event | Effect |
+|---|---|
+| The PR is merged or closed (seen by sync) | all its active rows → `pr_merged` / `pr_closed` |
+| The user clicks **Dismiss request** (PR detail, per channel) | that row → `dismissed`. The next action for that channel is a new Request. |
+| A new top-level message is posted to the same (workspace, channel) for this PR (user chose "new top-level message", or the >3-roots fallback) | old row → `superseded` |
+| The channel is archived (seen on `conversations.info`) | row → `channel_archived`. The next action is a Request to the replacement channel. |
+| All owning teams approved | **Not closed.** The action is disabled ("All owning teams approved ✓"). |
+| New commits after approval, or the approval is dismissed | **Not closed.** The request stays active, so the action is **Bump**: the re-review belongs in the same thread. |
+| The PR is reopened | Closed rows stay closed. The next action is a Request. |
+
+There is no age-based expiry. An old request is still the right thread to bump; the label shows its age.
+
+**What the UI shows.** For each PR, the newest active row per channel gives: "requested 3d ago · bumped 1d ago (2×) in #team-a-reviews · Open in Slack". The list shows the compact indicator `Requested 2d ago · bumped 5h ago ↗` (§8.2).
 ### 7.5 Mapping store: imported + user layers, CSV import/export
 
 - The mapping starts **empty**. It is filled by CSV import, by the channel picker, and by corrections in the preview. Nothing is bundled or committed.
@@ -545,23 +609,33 @@ Thanks!
 - **Wire escaping is separate from the text.** The Slack provider escapes `&`→`&amp;`, `<`→`&lt;`, `>`→`&gt;` in the outgoing `text`, which Slack requires for literal characters. The rendered message is identical to the script's text. The preview shows the unescaped text. The `review_messages.text` column stores the unescaped text.
 - `settings.review.requester` defaults to empty, so no requester is added, matching the skill's default.
 
-### 7.7 Request vs bump
+### 7.7 One contextual action: Request review or Bump request
 
-| | Request | Bump |
+There is never a separate Request button and Bump button. **In the list**, rows have no action buttons; the floating bar's single **Request / bump on Slack** action applies to the selection (§7.9), and rows only show a request indicator with a link to the original message (§8.2). **In the PR detail**, one contextual button covers the single-PR case. Its label comes from `SlackAction` (§4.1):
+- **Request review**: the PR has no active `review_requests` row.
+- **Bump request**, next to `requested 2d ago · bumped 5h ago`: the PR has at least one active row.
+- **Disabled** with a tooltip: Blocked readiness, all owners approved, not authored by you (D4), or no Slack workspace connected. In bulk, such PRs are not refused at selection time; the preview lists them as skipped.
+
+The preview decides per channel. A PR with an active request in one channel and a newly needed owner team in another channel gets a bump in the first and a request in the second.
+
+| | Request (per channel) | Bump (per channel) |
 |---|---|---|
-| Enabled when | the gate allows it, and there is no known prior request for this (PR, channel), or the user chooses "new top-level message" | there is a prior request or bump for this (PR, channel) |
-| Text | request template | remind template |
-| Slack call | `chat.postMessage(channel, text, unfurl_links=true)` | `chat.postMessage(channel, text, thread_ts=<root of the original request>, reply_broadcast=true)`: posted in the thread **and** in the channel, same as the skill |
-| Stored | `review_messages(kind='request', thread_root_ts=NULL)` | `kind='bump', thread_root_ts=<root>` |
+| When | no active row for this (PR, workspace, channel), or the user picks "new top-level message instead" in the preview | an active row exists for this (PR, workspace, channel) |
+| Text | request template (§7.6) | remind template |
+| Slack call | `chat.postMessage(channel, text, unfurl_links=true)` | `chat.postMessage(channel, text, thread_ts=<root_ts>, reply_broadcast=true)`: posted in the thread **and** in the channel, same as the skill |
+| Stored | `review_messages(kind='request')` + new active `review_requests` rows (`source='app'`) | `review_messages(kind='bump', thread_root_ts=<root>)` + `last_bumped_at`, `bump_count` on the active rows |
 | Guard | — | Warn (not block) if the last request or bump in this channel is less than `review.min_bump_interval_hours` old (default 24, default D12). |
 
-The PR view shows the buttons **[Request review]** and **[Bump]**. Bump is shown only once a prior message exists. Both open the same **preview dialog**:
-- one card per target channel, showing: channel (with a **Change…** button that opens the picker), the teams routed to it, the PRs included, the exact message text (read-only, plus an optional "extra" text field), and Request vs Bump with the thread link for a bump;
-- gate notes: Unknown reasons with the confirm checkbox, and approved teams skipped with the reviewer's login;
-- the GitHub option "Also request <team> as reviewer on GitHub" (M10, default off);
-- the buttons **Send N messages** and Cancel.
+Both kinds open the same **preview modal** (wireframe and mockup in §8.2):
+- one card per `workspace · #channel`, with a **Change channel** dropdown (the picker) and a **Save as mapping correction** checkbox (checked by default; unchecked = only for this message);
+- each card is labeled **Request** or **Bump**. A request renders as a new message. A bump renders as a **thread reply under the existing message** (root excerpt plus "Open thread ↗");
+- a Slack-style rendering of the exact text (§7.6), unescaped;
+- inline warnings for PRs skipped for that channel (`acme/web#91 skipped: CI failing`) and approved teams skipped (with the reviewer's login);
+- gate notes: Unknown reasons with the confirm checkbox;
+- the GitHub option "Also request <team> as reviewer on GitHub" (default off, D7);
+- footer: **Cancel** and primary **Send N messages**.
 
-Changing a channel in the preview saves a **user correction** for that team (`layer='user'`), unless "only for this message" is ticked.
+Changing a channel saves a **user correction** for that team (`layer='user'`) when "Save as mapping correction" is checked.
 
 There is no Slack draft step (Δ). The skill posts drafts first because an agent should not post unseen text. The in-app preview with an explicit Send button serves that purpose, with less friction (default D13).
 
@@ -577,28 +651,28 @@ When the user clicks Send, for each affected PR:
 
 ### 7.9 Bulk (list view)
 
-- Select PRs with checkboxes (per row, with select-all per project section), then choose **Request selected** or **Bump selected**.
+- Select PRs with checkboxes (per row, with select-all per project section). A floating bulk bar appears at the bottom: `N selected · [Request / bump on Slack] · [Clear]`. There is **one** bulk action. The planner sorts each PR into a request or a bump per channel, using `review_requests`.
 - Pipeline:
   1. gate each PR, dropping Blocked ones with their reason;
   2. run `decide_owners` per PR;
   3. resolve channels;
   4. **group by `(workspace, channel)`: one message per channel lists every selected PR routed to it**. A batch can span several workspaces;
-  5. show the preview, with one card per channel;
+  5. show the preview, with one card per channel. Inside a card, PRs are split into **Requests** (new top-level message) and **Bumps** (thread replies), so a card can hold one of each;
   6. send sequentially;
   7. show per-PR results.
 - **Why one message per channel**, not one per PR or per team: this is the skill's hard rule ("never one message per PR link"). It is also kinder to a team channel and keeps Slack writes well below rate limits. Teams that share a channel share one message.
 - **Bulk bump grouping.** For each channel, collect the prior thread root of each selected PR.
   - All share one root → a single bump reply in that thread (`reply_broadcast=true`) covering all of them.
   - ≤3 distinct roots → one bump reply per root, each listing only its own PRs. (Δ: the skill falls back to a new top-level message as soon as the roots differ. That loses the thread context the bump exists for.)
-  - >3 roots, or a mix of requested and never-requested PRs → one new **top-level** message using the remind template for the previously requested PRs, plus a separate request message for the new ones. The preview shows this choice explicitly, and the user can switch to "one top-level request for all" (default D5).
+  - >3 roots → one new **top-level** message using the remind template; its PRs' old rows become `superseded`. A mix of requested and never-requested PRs in one channel → bump replies (rules above) for the requested ones, plus one new request message for the others. The preview shows this choice explicitly, and the user can switch to "one top-level request for all" (default D5).
 - Each Send creates a `batch_id`. Results are recorded in `send_attempts`.
 - **Result report** (dialog, then a toast): a table with PR × (channel, outcome `sent|skipped|failed`, detail, permalink). Skipped reasons include: blocked: …, all teams approved, no channel chosen, head changed. A failed message (e.g. `not_in_channel`, `channel_not_found`, `RateLimited`) has a **Retry failed** button that runs the gate again.
 - A mid-batch failure does not roll back messages already sent. Each channel is independent.
 
 ### 7.10 Chat context panel (scoped read)
 
-The PR detail has a right-hand panel titled "Slack". It shows **only** threads PR-Nexus knows about for this PR: rows in `review_messages` (posted and imported). For each thread root, it calls `conversations.replies(channel, ts, limit=50)` and caches the result in `chat_thread_cache` for 5 min. It renders replies with the author's name (`users.info`, cached), time, and text, and links to the permalink.
-- There is no channel browsing, no history crawling, and no posting from the panel in v1. (Posting is only through Request/Bump.)
+The PR detail has a right-hand panel titled "Slack". It shows **only** threads PR-Nexus knows about for this PR: the roots of its `review_requests` rows (active first, then closed, labeled with the close reason) and their `review_messages`. For each thread root, it calls `conversations.replies(channel, ts, limit=50)` and caches the result in `chat_thread_cache` for 5 min. It renders replies with the author's name (`users.info`, cached), time, and text, and links to the permalink.
+- There is no channel browsing, no history crawling, and no posting from the panel in v1. (Posting is only through the Slack preview.)
 - Optional "Mentions" (off by default): `search.messages "github.com/ORG/REPO/pull/N"` across the workspace, limited to 20 results, to find discussions in other channels. It is one call per click, not polled.
 
 ### 7.11 Slack auth, methods, scopes, rate limits
@@ -621,7 +695,7 @@ The PR detail has a right-hand panel titled "Slack". It shows **only** threads P
 | `conversations.list` | T2 | channel picker cache (refreshed daily or on demand) | `channels:read`, `groups:read` |
 | `conversations.info` | T3 | archived check, name | `channels:read`, `groups:read` |
 | `conversations.replies` | T3 (internal app) | context panel | `channels:history`, `groups:history` |
-| `search.messages` | T2 (legacy) | dedup import, Mentions | `search:read` |
+| `search.messages` | T2 (legacy) | review-request discovery (§7.4), Mentions | `search:read` |
 | `users.info` | T4 | author names in panel | `users:read` |
 
 **App manifest** (shipped as `docs/slack-app-manifest.yaml`; the onboarding copies it to the clipboard):
@@ -642,7 +716,7 @@ settings:
 **Multi-workspace (MUST, v1): any number of workspaces.**
 - The user picks which workspaces to use by connecting them in onboarding or Settings → Accounts; no workspace is preconfigured. There is one Slack account per workspace (`accounts.slack_workspace` UNIQUE), each with its own keychain token.
 - The `ChatProvider` registry is keyed by workspace. Every write and read picks the provider from the mapping row's `slack_workspace`.
-- Mapping rows carry `slack_workspace`. The channel picker and `slack_channels_cache` are scoped per workspace. Dedup search runs only in the target channel's workspace.
+- Mapping rows carry `slack_workspace`. The channel picker and `slack_channels_cache` are scoped per workspace. Discovery search runs only in the target channel's workspace.
 - The preview card shows `workspace · #channel` (e.g. `acme · #team-reviews`). Bulk grouping is by `(workspace, channel_id)`, so a batch can post to several workspaces in one Send, each with its own token.
 - A workspace that is missing or unauthorized blocks only its own channels. The other workspaces still send, and the result report says "re-auth <workspace>".
 - There is no default workspace setting. CSV rows without a workspace get the one picked in the import dialog (§7.5); the picker opens on the row's workspace, else the last one used.
@@ -663,7 +737,7 @@ Nothing org-specific is hard-coded or shipped: GitHub orgs, Slack workspaces, te
 | `review.requester` | `""` | `""` |
 | `review.min_bump_interval_hours` | 24 | 24 |
 | `review.blocked_review_required_is_ready` | `true` (§7.1 Δ, owner decision) | true |
-| `review.dedup_search` | `true` (if `search:read` is granted) | true |
+| `review.discovery_search` | `true` (if `search:read` is granted) | true |
 | `review.bulk_bump_max_threads` | 3 | 3 |
 | `review.also_request_github_team` | `false` (checkbox per preview) | false |
 | `projects.ticket_key_regex` | `([A-Z][A-Z0-9]+-\d+)` | e.g. restrict to the user's Jira keys |
@@ -690,72 +764,150 @@ Nothing org-specific is hard-coded or shipped: GitHub orgs, Slack workspaces, te
 
 ### 8.2 Views (wireframes)
 
-**List (home)**: grouped by project. Each section header has a select-all checkbox.
+**Visual style.** Dark, Linear-like, dense:
+- compact rows (about 44 px, two lines: title, then `owner/repo · CI`);
+- collapsible project sections with a count and a select-all checkbox;
+- a row checkbox on every PR;
+- a **floating bulk action bar** at the bottom center that appears only while something is selected;
+- muted text, one accent color (violet) for the primary action and the selection, status pills for review decision.
+
+Approved mockups (AI-generated; style references, not pixel specs):
+- [`docs/ui/list-view.jpg`](ui/list-view.jpg): list, filter menu, sync footer, bulk bar. Known differences, where the spec wins:
+  - the **per-row Request/Bump buttons are superseded**: rows have no action buttons, only the request indicator below;
+  - it omits the unresolved-thread count, **which must still be shown** (💬 n);
+  - the filter menu anchors **under the funnel button** (in the mockup it floats near the `⋯` button).
+- [`docs/ui/slack-preview.jpg`](ui/slack-preview.jpg): the Slack preview modal. The list behind it is filler. The rendered message is illustrative: the real text is the §7.6 template, byte-exact, and the sender shown is **you** (messages are posted with your user token), not an "APP" bot.
+
+**Layout.**
+- **Sidebar** (navigation only, no persistent filters): My PRs, To review, Projects, Settings. There is no org checkbox list here; orgs are a filter in the menu.
+- **Sidebar footer:** sync status plus a refresh button: `● Synced · 2m ago  ⟳`, `◌ Syncing…`, `▲ Rate limited · resets 14:32  ⟳`, or `▲ Sync failed · <reason>  ⟳` (§6). Clicking the text shows per-account detail.
+- **Header:** view title and subtitle (`8 open PRs across 3 projects`), the **search bar**, a single small **filter icon button** (funnel), and `⋯`.
+
+**List (home)**:
 
 ```
-┌ PR-Nexus ─────────────────────────────────────────────────────────────────────────────┐
-│ [Mine ▾] [Org: all ▾] [Ready only ☐] [Search…]            Synced 1m ago ⟳   ⚙        │
-├───────────────────────────────────────────────────────────────────────────────────────┤
-│ ☐ ▾ Billing revamp (4)                                    [Request selected] [Bump]   │
-│   ☐ ● repo-a #412  Add retry budget          ✓CI  0/3 💬  REVIEW_REQ  team-a 2h  🔔3d  │
-│   ☐ ● repo-b #77   Fix token refresh         ⏳CI  1 💬    —           —    5h        │
-│   ☐ ◐ repo-a #398  Draft: split module       draft         —           —    1d        │
-│ ☐ ▸ Infra cleanup (2)                                                                 │
-│ ☐ ▾ Unassigned (3)                                                                    │
-└───────────────────────────────────────────────────────────────────────────────────────┘
- ● ready ◐ unknown/blocked · 💬 unresolved/total threads · 🔔 last Slack request age
+┌──────────────────┬──────────────────────────────────────────────────────────────────────────┐
+│ ◆ PR-Nexus       │ Pull Requests                        [🔍 Search projects, PRs… ] [⏷] [⋯] │
+│                  │ 8 open PRs across 3 projects                                             │
+│ ⌂ My PRs       ● │ ┌ ▾ ☐ Auth V2 (3) ─────────────────────────────────────────────────────┐ │
+│ ◷ To review      │ │ ☑ #142 Migrate login to new auth  ✓Approved 💬0/2  Requested 2d ↗    │ │
+│ ▤ Projects       │ │   acme/webapp · ● Passing                           bumped 5h ago    │ │
+│ ⚙ Settings       │ │ ☑ #138 Add passkeys support       ● Review  💬1/4                    │ │
+│                  │ │   acme/auth-service · ● Passing                                      │ │
+│                  │ │ ☐ #135 Refresh token rotation     ✕ Changes 💬3/3                    │ │
+│                  │ │   acme/auth-service · ● Failing                                      │ │
+│                  │ └──────────────────────────────────────────────────────────────────────┘ │
+│                  │ ▸ ☐ Billing revamp (2) · collapsed                                       │
+│                  │ ┌ ▾ ☐ Unassigned (1) ──────────────────────────────────────────────────┐ │
+│                  │ │ ☐ #23  Fix tax calculation        ● Review  💬0/0  Requested 5d ↗    │ │
+│                  │ │   acme/billing · ● Passing                                           │ │
+│                  │ └──────────────────────────────────────────────────────────────────────┘ │
+│ ● Synced · 2m  ⟳ │      ┌ 2 selected │ [Request / bump on Slack] │ [✕ Clear] ┐              │
+└──────────────────┴──────────────────────────────────────────────────────────────────────────┘
+ 💬 unresolved/total threads · ↗ opens the original Slack request/thread · no per-row action buttons
 ```
 
-Columns:
-- repo#num, title, readiness dot, CI;
-- unresolved/total threads;
-- review decision;
-- owning teams (once computed, otherwise "—" until the detail is opened or the PR is selected);
-- last activity;
-- last request age.
+**Rows have no action buttons.** A row is selected only with its checkbox (or `x`). The **only** Slack action in the list is the floating bar's **Request / bump on Slack**, which decides request vs bump per PR and per channel from `review_requests` (§7.7, §7.9).
 
-Sort by last activity, descending. Keyboard: `j/k` move, `x` toggle select, `r` request, `b` bump, `o` open in browser.
+Row content, each part toggled under **Show**: number and title; `owner/repo`; CI; review-decision pill; 💬 unresolved/total threads (default on); owning teams; last activity; project badges (`+1` when in several projects); the **Slack request indicator**.
+
+**Slack request indicator** (from the newest active `review_requests` row):
+- `Requested 2d ago`, plus `· bumped 5h ago` when `last_bumped_at` is set. Tooltip: `workspace · #channel`, bump count, and source (app or discovered). With several active channels: `Requested 2d ago · 2 channels`, with a hover list.
+- A small **link icon ↗** opens the **original request message/thread**. It tries the Slack app first with `slack://channel?team=<team_id>&id=<channel_id>&message=<root_ts>`, where `team_id` comes from the Slack account's `external_id`. If no handler is registered (`tauri-plugin-opener` errors), it opens the stored https `permalink` in the browser. Verify the deep-link format in M10; if Slack ignores `message`, use the permalink directly, since the desktop app intercepts Slack https links when installed.
+- Rows without an active request show nothing by default. Show → "Not requested label" adds a subtle grey `Not requested`.
+
+**Filter menu** (funnel button; opens a menu like Linear/Cursor, with submenus on hover/→):
+
+```
+ [⏷]
+ ┌──────────────────────────────┐   ┌─────────────────┐
+ │ Grouping          Project  › │──▶│ ✓ Project       │
+ │ Ordering          Updated  › │   │   Repository    │
+ │ Show                       › │   │   Org           │
+ ├──────────────────────────────┤   │   Status        │
+ │ Filters               Reset  │   │   Updated       │
+ │ Org                        › │   └─────────────────┘
+ │ Status / draft             › │
+ │ Review decision            › │
+ │ CI                         › │
+ │ Slack request              › │
+ │ Archived                   ☐ │
+ └──────────────────────────────┘
+```
+
+- **Grouping:** Project (default), Repository, Org, Status (readiness), Updated (Today / This week / Older). Many-to-many PRs appear in each project group.
+- **Ordering:** Updated (default, desc), Created, Last Slack request, Readiness, Number; each with asc/desc.
+- **Show:** toggles for the row parts listed above.
+- **Filters:** multi-select submenus, each listing values with counts:
+  - Org: tracked orgs only;
+  - Status / draft: Ready, Unknown, Blocked, Draft;
+  - Review decision: Approved, Changes requested, Review required, None;
+  - CI: Passing, Failing, Pending, None;
+  - Slack request: None, Requested, Bumped, Bump due (last request or bump older than `review.min_bump_interval_hours`);
+  - Archived: show PRs in archived projects and hidden closed PRs.
+  **Reset** clears filters only, not grouping, ordering, or Show.
+- The funnel shows a dot when any filter is active. There is no other persistent filter UI.
+- **Persistence:** grouping, ordering, Show, and filters are saved **per view** in `view_state` (`mine`, `to_review`, `project:<id>`) and restored on launch.
+
+**Search bar:** always visible. Filters the current view as you type (150 ms debounce), case- and accent-insensitive, whitespace-separated terms ANDed. It matches project name, PR title, PR body (`bodyText`), `owner/repo`, and number (`#142` or `142`). It runs in core over the cached rows (a few hundred PRs; no FTS needed). It combines with the menu filters. `/` focuses it, and `Esc` clears it.
+
+Keyboard: `j/k` move, `x` toggle select, `r` open the Slack preview for the selection (or the focused row if nothing is selected), `s` open the focused row's Slack request, `o` open in browser, `f` open the filter menu.
 
 **PR detail**:
 
 ```
-┌ acme/repo-a #412 · Add retry budget ────────────────────────── [Open in GitHub] ┐
+┌ acme/repo-a #412 · Add retry budget ────────────────────────── [Open in GitHub] ───┐
 │ main ← feat/PROJ-123-retry   by you · updated 2h ago   Projects: [Billing ×] [+]   │
-│ CI ✓ success · Mergeable ✓ · Review: REVIEW_REQUIRED · Threads 0/3 unresolved     │
+│ CI ✓ success · Mergeable ✓ · Review: REVIEW_REQUIRED · Threads 0/3 unresolved      │
 │ Readiness: Ready (note: GitHub BLOCKED, waiting for reviews)                       │
-│ Owners: team-a (exclusive) · platform (optional) · approved: —                       │
+│ Owners: team-a (exclusive) · platform (optional) · approved: —                     │
 │ Requested on GitHub (info only): @alice                                            │
-│ Last request: 3 days ago in #team-a-reviews · Open in Slack                              │
-│                                   [Request review]  [Bump]                         │
+│ Slack: requested 3d ago · bumped 1d ago (1×) in acme · #team-a-reviews             │
+│        Open in Slack ↗ · Dismiss request                       [Bump request]      │
 ├───────────────────────────────────────────────┬────────────────────────────────────┤
 │ Why these teams? ▸                            │ Slack                              │
-│ Files (37) ▸                                  │ #team-a-reviews · request · 3d           │
+│ Files (37) ▸                                  │ #team-a-reviews · request · 3d     │
 │                                               │   bob: looking tomorrow            │
 └───────────────────────────────────────────────┴────────────────────────────────────┘
 ```
 
-**Preview / confirm**:
+**Slack preview modal** (approved design, centered; see `docs/ui/slack-preview.jpg`):
 
 ```
-┌ Request review — 2 messages ──────────────────────────────────────────────────────┐
-│ acme · #team-a-reviews [Change…] teams: team-a PRs: #412, #77   Request (new)     │
-│ ┌──────────────────────────────────────────────────────────────────────────────┐ │
-│ │Hello team                                                                    │ │
-│ │Could someone please review these pull requests?                              │ │
-│ │- Add retry budget                                                            │ │
-│ │https://github.com/…/pull/412                                                 │ │
-│ │- Fix token refresh                                                           │ │
-│ │https://github.com/…/pull/77                                                  │ │
-│ │Thanks!                                                                       │ │
-│ └──────────────────────────────────────────────────────────────────────────────┘ │
-│ Extra text: [                                    ]                                │
-│ acme-labs · #team-b-reviews [Change…] teams: team-b PRs: #77  Bump in thread ↗    │
-│ Skipped: #398 (blocked: PR is a draft) · platform (approved by @carol)            │
-│ ☐ I confirm only reviews are missing for #77 (GitHub mergeability is unknown)    │
+┌ Preview Slack messages (2 channels, 3 PRs) ───────────────────────────────────────┐
+│ Review the messages below before sending to Slack.                                │
+│ ┌───────────────────────────────────────────────────────────────────────────────┐ │
+│ │ acme · #team-a-reviews                  REQUEST  [Change channel ▾]           │ │
+│ │                                                  ☑ Save as mapping correction │ │
+│ │  (you)  10:42                                                                 │ │
+│ │  Hello team                                                                   │ │
+│ │  Could someone please review these pull requests?                             │ │
+│ │  - Migrate login to new auth flow                                             │ │
+│ │  https://github.com/acme/webapp/pull/142                                      │ │
+│ │  - Add passkeys support                                                       │ │
+│ │  https://github.com/acme/auth-service/pull/138                                │ │
+│ │  Thanks!                                                                      │ │
+│ │  Extra text: [                                    ]                           │ │
+│ ├───────────────────────────────────────────────────────────────────────────────┤ │
+│ │ acme · #team-b-reviews                  BUMP     [Change channel ▾]           │ │
+│ │                                                  ☑ Save as mapping correction │ │
+│ │  ┊ (you) 3d ago: Hello team … /pull/23                     Open thread ↗      │ │
+│ │  └─ (you) 10:42 · reply, also sent to channel                                 │ │
+│ │     Hello, I'm still looking for a review on Fix tax calculation edge case    │ │
+│ │     when you have a moment :pray:                                             │ │
+│ │     https://github.com/acme/billing/pull/23                                   │ │
+│ │     Thanks!                                                                   │ │
+│ │  ⚠ acme/web#91 skipped: CI failing                                            │ │
+│ └───────────────────────────────────────────────────────────────────────────────┘ │
+│ ☐ I confirm only reviews are missing for #77 (GitHub mergeability is unknown)     │
 │ ☐ Also request teams as reviewers on GitHub                                       │
-│                                               [Cancel]  [Send 2 messages]         │
+│                                               [Cancel]  [Send 2 messages ➤]       │
 └───────────────────────────────────────────────────────────────────────────────────┘
 ```
+
+- The title counts channels and distinct PRs. "Send N messages" counts Slack posts: a channel with both requests and bumps counts 2, and a bump split over several threads counts one per thread.
+- A card that holds both kinds shows a **Request** section, then a **Bump** section.
+- Skipped PRs show as inline yellow warnings in the card of the channel they would have gone to, or in a "Not sent" card if no channel was resolved.
 
 **Projects**: list on the left; on the right, name/color, rules editor (kind, pattern, priority, and a live "matches N open PRs" preview), and linked PRs with their source badges (manual/rule/excluded).
 
@@ -809,16 +961,16 @@ Detect `X-GitHub-SSO: required; url=…` and show the authorization link.
 
 - **Shape.** A separate sidecar binary crate, `crates/pr-nexus-mcp`, built on `rmcp` 3.x (the official Rust SDK). The Tauri app ships it as `bundle.externalBin`.
 - **Transports.** stdio, so Claude Desktop/Cursor can spawn it, and **Streamable HTTP** bound to `127.0.0.1` with a random bearer token shown in Settings. Not SSE, which the MCP spec deprecated in favour of Streamable HTTP.
-- **Data.** It opens the **same SQLite file** in WAL mode, with readers plus one short-lived writer, so it works whether or not the app is open. It reads tokens from the same keychain entries.
+- **Data.** It opens the **same SQLite file** in WAL mode, with readers plus one short-lived writer, so it works whether or not the app is open. It reads tokens from the same `vault` keychain entry.
 - **Read tools** (enabled by default):
   - `list_prs(filter)`;
-  - `get_pr(id)` with readiness, owners, and last request;
+  - `get_pr(id)` with readiness, owners, and review-request state;
   - `list_projects`;
   - `get_mapping(team)`;
   - `get_slack_thread(pr)`.
 - **Write tools**, **disabled by default**, each toggled separately in Settings:
-  - `request_review(pr_ids, dry_run=true)`;
-  - `bump_review(pr_ids, dry_run=true)`;
+  - `request_or_bump(pr_ids, dry_run=true)`: same planner as the bulk bar, so request vs bump comes from `review_requests`;
+  - `dismiss_request(pr_id, channel)`;
   - `link_pr_to_project`;
   - `upsert_mapping`.
 - **Write-tool rules.** Writes go through the exact same core pipeline: gate, refresh-before-write, one message per channel. They are allowed only to channels on a **channel allowlist** (empty by default). `dry_run` defaults to true and returns the preview text. Every call is logged to `send_attempts` with `origin='mcp'`.
@@ -938,16 +1090,16 @@ Release runbook (CONTRIBUTING.md):
 |---|---|---|
 | **M0** | Bootstrap + CI | Workspace layout (§3) compiles. Tauri window shows "Hello". `ci.yml` is green with fmt/clippy/test/web/build-check on 3 OSes/deny/guards/validate. AGENTS.md, CONTRIBUTING.md, `.changie.yaml`, Dependabot, `rust-toolchain.toml`. The ruleset is documented. |
 | **M1** | Release pipeline (unsigned) | `tag-release.yml` and `release.yml` produce a draft→published GitHub release `v0.1.0` with an ad-hoc-sealed arm64 DMG that launches on a clean Mac (via `gh release download`, or Open Anyway after a browser download; §9). Re-running the release is idempotent. |
-| **M2** | Store | Migration 0001. Store actor (write thread + read pool) with WAL. Repository functions per table. Tests for migrations, enum round-trip, cascade deletes, and the no-secret-column test. |
+| **M2** | Store | Migration 0001. Store actor (write thread + read pool) with WAL. Repository functions per table. Tests for migrations, enum round-trip, cascade deletes, the no-secret-column test, the `review_requests` constraints (one active row per (PR, workspace, channel); `close_reason` set iff closed), and `view_state` round-trip. |
 | **M3** | Message builder | 12+ golden fixtures generated from the Python script pass byte for byte. Wire-escaping unit tests. |
 | **M4** | CODEOWNERS + owner decision | The skill's `test_helpers.py` cases are ported and pass, and the Δ1–Δ4 tests pass. Readiness table (§7.1) implemented as a pure function with a test per row. `decide_owners` rules 1–9 tested with fixtures. |
 | **M5** | Mapping | Empty mapping on first run. CSV import (replace, merge, dry-run diff, target-workspace picker for rows without a workspace; the skill's 5-column CSV accepted) and export (effective/user/imported, fixed header, sorted). Layer precedence and tombstone tests on placeholder fixtures. |
 | **M6** | GitHub sync | Accounts (gh token, PAT). Tracked-orgs picker (onboarding + Settings; empty state until orgs are picked). Search buckets, client-side tracked-org filter, nodes refresh, polling scheduler, rate-limit pause. HTTP fixture tests via `wiremock`. Typed errors mapped (401, 403-SSO, 403-secondary, 404). |
-| **M7** | List UI | Grouped list with selection, select-all per section, filters, sorting, keyboard shortcuts. vitest coverage of selection logic (dedupe across sections). |
+| **M7** | List UI | Dark compact style (§8.2). Sidebar navigation with the sync-status footer and refresh button. Grouped, collapsible list with checkbox selection, select-all per section, and no per-row action buttons. Floating bulk bar. Slack request indicator with link icon. Filter menu (Grouping, Ordering, Show, Filters with Reset), persisted per view in `view_state`. Search bar over project name, title, body, repo, and number. Keyboard shortcuts. vitest: selection dedupe across sections, filter and search predicates, view-state restore. |
 | **M8** | Projects | CRUD, rules with live preview, manual/rule/excluded semantics tested. Unassigned section. |
 | **M9** | Ownership inputs | Files (paginated, capped), CODEOWNERS lookup order, `rules/branches`, protection with 403→Unknown, reviews with onBehalfOf, team members cache. Detail view shows readiness, owners, and the rationale. |
-| **M10** | Slack single request/bump | Slack onboarding for **any number of workspaces** (manifest + token + `auth.test` per workspace; workspace-scoped channel cache and picker; mapping rows routed to the right token). Channel cache and picker. Archived refusal. Dedup (local + search import). Preview → refresh-before-write → post. Bump in thread with `reply_broadcast`. Last-request line. Corrections saved as user rows. Optional GitHub team review request. Tested against `FakeChat`, plus one manual run in a test channel. |
-| **M11** | Bulk | Per-channel grouping, bulk bump grouping (§7.9), result report, retry failed. Planner unit tests for mixed cases. |
+| **M10** | Slack single request/bump | Slack onboarding for **any number of workspaces** (manifest + token + `auth.test` per workspace; workspace-scoped channel cache and picker; mapping rows routed to the right token). Channel cache and picker. Archived refusal. `review_requests` lifecycle: created on request; bump updates; closed on merge/close, dismiss, supersede, or archived channel. Discovery via search (background with throttle and cooldown, plus before the preview) stores `source='discovered_via_search'`. The PR detail's contextual Request review / Bump request button. Preview modal with Request/Bump cards → refresh-before-write → post. Bump in thread with `reply_broadcast`. Request indicator deep link (`slack://` with https permalink fallback). Corrections saved as user rows. Optional GitHub team review request. Tested against `FakeChat`, plus one manual run in a test channel. |
+| **M11** | Bulk | Single bulk action **Request / bump on Slack**. Per-channel grouping with request and bump sections per card, bulk bump grouping (§7.9), result report, retry failed. Planner unit tests for mixed cases (requested + never requested in one channel, 1/≤3/>3 roots, mixed workspaces, a closed request → new request). |
 | **M12** | Context panel | Threads for known messages, cache, user names, Mentions opt-in. |
 | **M13** | Polish | Settings complete, log redaction test, "update available" banner (GitHub releases API with the user's token, manual DMG download), keychain re-prompt explainer, onboarding flow, empty states. |
 
@@ -957,8 +1109,9 @@ M0–M1 come first on purpose. Every later PR is then built, linted, and releasa
 
 - **core**: pure unit tests and golden files (messages, CODEOWNERS, decisions, mapping CSV). `insta` snapshots for `OwnerDecision` JSON. Property tests (`proptest`) for the CODEOWNERS matcher against a small reference implementation of gitignore-style matching.
 - **providers**: `wiremock` HTTP fixtures, recorded once from real responses and scrubbed of names and tokens. Each fixture covers one shape: search page, PR fragment, 403 SSO, secondary rate limit, Slack `ratelimited` with `Retry-After`, `not_in_channel`.
+- **review requests**: table-driven lifecycle tests in core: sync sees merged/closed → closed; dismiss → next action Request; new commits after approval → still Bump; reopened PR → Request; discovery hit on a closed root → ignored; `/pull/4` vs `/pull/42`; oldest root wins; thread replies count as bumps.
 - **app**: command-level tests with `FakeVcs`/`FakeChat` and a temp DB. Frontend tests with vitest + Testing Library against a mocked `invoke`.
-- **Manual pre-release checklist**: request and bump in a private test channel; verify link rendering, thread plus channel broadcast, and permalink.
+- **Manual pre-release checklist**: request and bump in a private test channel; verify link rendering, thread plus channel broadcast, permalink, and that the row's ↗ opens the original message in the Slack app.
 - There is no live-API test in CI.
 
 ## 14. Open questions: answered (A) and defaults chosen (D)
@@ -974,13 +1127,16 @@ M0–M1 come first on purpose. Every later PR is then built, linted, and releasa
 - **D1. GitHub auth:** the `gh` CLI token is the default, with PAT and then device flow as fallbacks. SSO errors show the authorization link.
 - **D2. Readiness otherwise follows the skill:** `BEHIND`, pending CI, and failed CI block. Blocked cannot be overridden in v1.
 - **D3. Ticket regex:** generic `([A-Z][A-Z0-9]+-\d+)` from branch and title. The user narrows it per project rule.
-- **D4. "To review" filter ships in v1,** backed by the `review_requested` bucket. Request/Bump stays disabled for PRs you did not author.
+- **D4. "To review" filter ships in v1,** backed by the `review_requested` bucket. The Slack action is disabled for PRs you did not author, and they are skipped in bulk.
 - **D5. Bulk bump with different threads:** one reply per thread (≤3 per channel), otherwise one top-level reminder. The preview can switch to a single top-level message.
 - **D6. Requester suffix:** none by default (`review.requester = ""`), and never on reminders, as in the skill.
 - **D7. GitHub team review request:** offered as a checkbox in the preview, off by default. It is the only GitHub write.
-- **D8. `search.messages` (legacy) is used for dedup import.** Without `search:read`, dedup falls back to local history.
+- **D8. `search.messages` (legacy) is used to discover requests posted outside the app** (§7.4). Without `search:read`, only app-posted requests are known.
 - **D9. CSV workspace:** the CSV may carry a `slack_workspace` column. Rows without one get the target workspace the user picks in the import dialog.
 - **D10. No auto-updater in v1:** an "update available" banner, and manual DMG install.
 - **D11. Linux/Windows build in CI only,** with no release assets.
 - **D12. Bump interval:** a warning (not a block) below 24 h.
 - **D13. No Slack drafts:** the in-app preview plus an explicit Send replaces the skill's draft-first flow.
+- **D14. Review-request lifecycle:** a request is closed only by merge/close, explicit dismiss, being superseded by a new top-level message in the same channel, or an archived channel. Approvals and new commits do not close it, and there is no age expiry (§7.4).
+- **D15. Discovery cadence:** background search at most once per PR per workspace every 24 h, ≤10 calls/min per workspace, plus a forced check before the preview (§7.4).
+- **D16. List actions:** no per-row action buttons; the bulk bar is the only list action, and the PR detail keeps a contextual button (§7.7, §8.2).
