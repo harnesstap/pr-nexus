@@ -320,6 +320,9 @@ export function ago(iso: string, now: Date): string {
 }
 
 export function syncLabel(sync: SyncStatus, now: Date): string {
+  if (sync.phase === "demo") {
+    return "Demo data · sync off";
+  }
   if (sync.phase === "syncing") {
     return "Syncing…";
   }

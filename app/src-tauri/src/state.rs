@@ -33,6 +33,15 @@ impl SyncStatus {
             paused: false,
         }
     }
+
+    fn demo() -> Self {
+        Self {
+            phase: "demo".into(),
+            message: "Demo data · sync disabled".into(),
+            synced_at: None,
+            paused: false,
+        }
+    }
 }
 
 pub struct DeviceSession {
@@ -47,24 +56,36 @@ pub struct AppState {
     pub device: Mutex<Option<DeviceSession>>,
     pub focused: AtomicBool,
     pub wake: Arc<(Mutex<bool>, Condvar)>,
+    /// `PR_NEXUS_DEMO=1`: seeded local data only, never talk to GitHub.
+    pub demo: bool,
 }
 
 impl AppState {
     pub fn open(path: PathBuf) -> Result<Self, AppError> {
         let store = Store::open(&path)?;
         let vault = Vault::open();
-        if std::env::var("PR_NEXUS_DEMO").ok().as_deref() == Some("1") {
+        let demo = demo_enabled();
+        if demo {
             crate::demo::seed_if_empty(&store)?;
         }
         Ok(Self {
             store,
             vault,
-            sync: Mutex::new(SyncStatus::idle()),
+            sync: Mutex::new(if demo {
+                SyncStatus::demo()
+            } else {
+                SyncStatus::idle()
+            }),
             device: Mutex::new(None),
             focused: AtomicBool::new(true),
             wake: Arc::new((Mutex::new(false), Condvar::new())),
+            demo,
         })
     }
+}
+
+pub fn demo_enabled() -> bool {
+    std::env::var("PR_NEXUS_DEMO").ok().as_deref() == Some("1")
 }
 
 pub fn database_path(app: &tauri::App) -> PathBuf {
@@ -146,6 +167,17 @@ pub fn validity(state: &AppState, saved: &OnboardingState) -> Result<StepValidit
 }
 
 pub fn run_sync(state: &AppState, kind: SyncKind) -> Result<sync::SyncReport, AppError> {
+    if state.demo {
+        *state.sync.lock().expect("sync status") = SyncStatus::demo();
+        return Ok(sync::SyncReport {
+            fetched: 0,
+            stored: 0,
+            refreshed: 0,
+            hidden: 0,
+            paused: false,
+            message: "Demo data · sync disabled".into(),
+        });
+    }
     {
         let mut status = state.sync.lock().expect("sync status");
         status.phase = "syncing".into();
@@ -197,6 +229,9 @@ pub fn run_sync(state: &AppState, kind: SyncKind) -> Result<sync::SyncReport, Ap
 }
 
 pub fn spawn_scheduler(state: Arc<AppState>) {
+    if state.demo {
+        return;
+    }
     thread::Builder::new()
         .name("pr-nexus-sync".into())
         .spawn(move || {
@@ -247,4 +282,30 @@ pub fn registry_steps() -> Vec<SetupStep> {
         pr_nexus_core::domain::VcsKind::GitHub,
         pr_nexus_core::domain::ChatKind::Slack,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn demo_state_never_syncs_and_reports_demo_phase() {
+        let path = std::env::temp_dir().join(format!("pr-nexus-demo-{}.db", std::process::id()));
+        let state = AppState {
+            store: Store::open(&path).unwrap(),
+            vault: Vault::memory("test"),
+            sync: Mutex::new(SyncStatus::demo()),
+            device: Mutex::new(None),
+            focused: AtomicBool::new(true),
+            wake: Arc::new((Mutex::new(false), Condvar::new())),
+            demo: true,
+        };
+        let report = run_sync(&state, SyncKind::Manual).unwrap();
+        assert_eq!(report.fetched, 0);
+        let status = state.sync.lock().unwrap();
+        assert_eq!(status.phase, "demo");
+        assert!(!status.message.contains("failed"));
+        drop(status);
+        let _ = std::fs::remove_file(&path);
+    }
 }

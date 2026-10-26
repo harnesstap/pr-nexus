@@ -10,6 +10,7 @@ import {
   matchesSearch,
   parseViewState,
   renameError,
+  syncLabel,
   resetFilters,
   rowsForNav,
   toggleParent,
@@ -155,4 +156,13 @@ test("nav views and saved view state round-trip", () => {
   expect(saved.filters.slack).toEqual(["bumped"]);
   expect(saved.show.threads).toBe(true);
   expect(parseViewState("not json").grouping).toBe("project");
+});
+
+test("demo mode shows a neutral sync label instead of an error", () => {
+  const now = new Date("2026-10-26T00:00:00Z");
+  const demo = { phase: "demo", message: "Demo data · sync disabled", synced_at: null, paused: false };
+  expect(syncLabel(demo, now)).toBe("Demo data · sync off");
+  expect(syncLabel({ ...demo, phase: "error", message: "Sync failed · boom" }, now)).toBe(
+    "Sync failed · boom",
+  );
 });
