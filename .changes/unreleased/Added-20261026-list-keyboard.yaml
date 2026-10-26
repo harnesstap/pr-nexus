@@ -1,0 +1,3 @@
+kind: Added
+body: 'List keyboard: Esc clears the selection, r requests the selection when there is one, the focused row scrolls into view and is announced to screen readers.'
+time: 2026-10-26T05:40:00.000000-10:00

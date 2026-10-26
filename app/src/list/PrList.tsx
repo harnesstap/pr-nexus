@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ListRow, ProjectDto } from "../api";
 import { CommentIcon, ExternalIcon, FunnelIcon, SearchIcon, SlackIcon } from "../icons";
+import { isPlainShortcut, wantsRowEnter } from "./keys";
 import {
   ago,
   bulkIds,
@@ -130,9 +131,31 @@ export function PrList({
   const hidden = hiddenSelectedCount(selected, ids);
   const global = checkState(ids, selected);
   const singleSelected = selected.size === 1 ? (rows.find((row) => selected.has(row.id)) ?? null) : null;
+  // The focused row stays in range when filters or a sync shrink the list.
+  const focus = flat.length === 0 ? -1 : Math.min(focusIndex, flat.length - 1);
+  const listRef = useRef<HTMLDivElement>(null);
+  const inView = useMemo(
+    () => visibleRows(rows, projects, viewKey, resetFilters(view), "", now).length,
+    [rows, projects, viewKey, view, now],
+  );
+
+  useEffect(() => {
+    const element = listRef.current?.querySelector<HTMLElement>('[data-focused="true"]');
+    element?.scrollIntoView?.({ block: "nearest" });
+  }, [focus]);
 
   function setSelected(next: Set<number>) {
     setSelectedByView((current) => ({ ...current, [viewKey]: [...next] }));
+  }
+
+  /** The bulk bar's action: one PR opens the single preview, several open the bulk one (§7.9). */
+  function requestSelection() {
+    const ids = bulkIds(selected);
+    if (singleSelected && ids.length === 1) {
+      onRequestReview(singleSelected);
+    } else if (ids.length > 0) {
+      onBulkReview(ids);
+    }
   }
 
   function toggleRow(id: number) {
@@ -164,50 +187,65 @@ export function PrList({
       if (typing) {
         return;
       }
-      if (event.key === "j" || event.key === "k") {
+      if (event.key === "Escape") {
+        if (sectionMenu !== null) {
+          setSectionMenu(null);
+        } else if (selected.size > 0) {
+          setSelected(new Set());
+        }
+        return;
+      }
+      if (event.key === "a" && (event.metaKey || event.ctrlKey) && !event.altKey) {
+        event.preventDefault();
+        setSelected(toggleParent(ids, selected));
+        return;
+      }
+      // Cmd+R, Ctrl+F and the like belong to the system, not to the list.
+      if (!isPlainShortcut(event)) {
+        return;
+      }
+      const current = focus >= 0 ? flat[focus] : undefined;
+      // Shift+x reports "X" in a browser.
+      const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
+      if ((key === "j" || key === "k") && !event.shiftKey) {
         event.preventDefault();
         setFocusIndex((index) => {
           if (flat.length === 0) {
             return 0;
           }
-          const delta = event.key === "j" ? 1 : -1;
-          return Math.min(flat.length - 1, Math.max(0, index + delta));
+          const delta = key === "j" ? 1 : -1;
+          return Math.min(flat.length - 1, Math.max(0, Math.min(index, flat.length - 1) + delta));
         });
-      } else if (event.key === "x" && event.shiftKey) {
-        const current = flat[focusIndex];
+      } else if (key === "x" && event.shiftKey) {
         if (current) {
           setSelected(toggleParent(sectionIds(current.section), selected));
         }
-      } else if (event.key === "x") {
-        const current = flat[focusIndex];
+      } else if (key === "x") {
         if (current) {
           toggleRow(current.row.id);
         }
-      } else if (event.key === "a" && (event.metaKey || event.ctrlKey)) {
-        event.preventDefault();
-        setSelected(toggleParent(ids, selected));
-      } else if (event.key === "r") {
-        const current = flat[focusIndex];
-        if (current) {
+      } else if (key === "r") {
+        if (selected.size > 0) {
+          requestSelection();
+        } else if (current) {
           onRequestReview(current.row);
         }
-      } else if (event.key === "s") {
-        const link = flat[focusIndex]?.row.slack?.permalink;
+      } else if (key === "s") {
+        const link = current?.row.slack?.permalink;
         if (link) {
           onOpen(link);
         }
-      } else if (event.key === "Enter") {
-        const current = flat[focusIndex];
+      } else if (event.key === "Enter" && wantsRowEnter(target)) {
         if (current) {
           event.preventDefault();
           onDetails(current.row);
         }
-      } else if (event.key === "o") {
-        const url = flat[focusIndex]?.row.url;
+      } else if (key === "o") {
+        const url = current?.row.url;
         if (url) {
           onOpen(url);
         }
-      } else if (event.key === "f") {
+      } else if (key === "f") {
         setMenu((open) => (open ? null : "root"));
       }
     }
@@ -216,7 +254,9 @@ export function PrList({
   });
 
   const header =
-    checkState(ids, selected) === "none" && hidden === 0 ? `${ids.length} PRs` : `${selectedCount(ids, selected)} of ${ids.length} selected`;
+    checkState(ids, selected) === "none" && hidden === 0
+      ? `${ids.length} open ${ids.length === 1 ? "PR" : "PRs"}`
+      : `${selectedCount(ids, selected)} of ${ids.length} selected`;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -267,7 +307,7 @@ export function PrList({
         <TriCheckbox label="Select all" state={global} onToggle={() => setSelected(toggleParent(ids, selected))} />
         <span>{header}</span>
       </div>
-      <div className="min-h-0 flex-1 overflow-auto px-3 py-2">
+      <div ref={listRef} className="min-h-0 flex-1 overflow-auto px-3 pb-20 pt-2" aria-label="Pull requests" role="region">
         {sections.map((section) => {
           const open = !collapsed[section.key];
           const state = checkState(sectionIds(section), selected);
@@ -385,7 +425,11 @@ export function PrList({
                         event.dataTransfer.effectAllowed = "link";
                       }}
                       onDragEnd={() => setDropTarget(null)}
-                      className={`flex items-center gap-3 border-t border-slate-800 px-2 py-1.5 ${index === focusIndex ? "bg-slate-900" : ""}`}
+                      onMouseDown={() => setFocusIndex(index)}
+                      aria-label={`#${row.number} ${row.title}`}
+                      aria-current={index === focus ? "true" : undefined}
+                      data-focused={index === focus ? "true" : undefined}
+                      className={`flex items-center gap-3 border-t border-l-2 border-t-slate-800 px-2 py-1.5 ${index === focus ? "border-l-violet-400 bg-slate-900" : "border-l-transparent"}`}
                     >
                       <TriCheckbox
                         label={`Select ${row.title}`}
@@ -438,30 +482,45 @@ export function PrList({
             </section>
           );
         })}
-        {sections.length === 0 && <p className="px-2 py-6 text-sm text-slate-500">No pull requests match.</p>}
+        {sections.length === 0 && (
+          <EmptyList
+            title={viewTitle(viewKey, projects)}
+            inView={inView}
+            query={query}
+            filtered={filtersActive(view.filters)}
+            onClearSearch={() => setQuery("")}
+            onResetFilters={() => onViewChange(resetFilters(view))}
+          />
+        )}
       </div>
       {selected.size > 0 && (
-        <div className="pointer-events-none absolute inset-x-0 bottom-14 flex justify-center">
-          <div className="pointer-events-auto flex items-center gap-3 rounded-full border border-slate-700 bg-slate-900 px-4 py-2 text-sm shadow-lg">
-            <span>
+        <div className="pointer-events-none absolute inset-x-0 bottom-4 flex justify-center">
+          <div
+            role="region"
+            aria-label="Selection actions"
+            className="pointer-events-auto flex items-center gap-4 rounded-lg border border-slate-700 bg-slate-900 px-5 py-2.5 text-sm shadow-lg"
+          >
+            <span aria-live="polite" className="text-slate-300">
               {bulkIds(selected).length} selected{hidden > 0 ? ` (${hidden} hidden)` : ""}
             </span>
+            <span aria-hidden="true" className="h-6 w-px bg-slate-700" />
             <button
               type="button"
-              className="rounded bg-violet-500 px-3 py-1 text-white disabled:bg-violet-500/40"
+              title="Request / bump on Slack (r)"
+              className="flex items-center gap-2 rounded-md bg-violet-600 px-4 py-1.5 font-medium text-white hover:bg-violet-500 disabled:bg-violet-500/40"
               disabled={bulkIds(selected).length === 0}
-              onClick={() => {
-                const ids = bulkIds(selected);
-                if (singleSelected && ids.length === 1) {
-                  onRequestReview(singleSelected);
-                } else if (ids.length > 0) {
-                  onBulkReview(ids);
-                }
-              }}
+              onClick={requestSelection}
             >
+              <SlackIcon />
               Request / bump on Slack
             </button>
-            <button type="button" onClick={() => setSelected(new Set())}>
+            <button
+              type="button"
+              title="Clear selection (Esc)"
+              className="flex items-center gap-1.5 rounded-md border border-slate-700 px-4 py-1.5 text-slate-200 hover:bg-slate-800"
+              onClick={() => setSelected(new Set())}
+            >
+              <span aria-hidden="true">✕</span>
               Clear
             </button>
           </div>
@@ -511,6 +570,49 @@ export function PrList({
       commitRename.current = false;
     }
   }
+}
+
+/** Why the list is empty, and the way out (§8.2). */
+function EmptyList({
+  title,
+  inView,
+  query,
+  filtered,
+  onClearSearch,
+  onResetFilters,
+}: {
+  title: string;
+  inView: number;
+  query: string;
+  filtered: boolean;
+  onClearSearch: () => void;
+  onResetFilters: () => void;
+}) {
+  if (inView === 0 && query.trim() === "") {
+    return (
+      <div className="px-2 py-10 text-center text-sm text-slate-400">
+        <p className="font-medium text-slate-300">No open pull requests in {title}.</p>
+        <p className="mt-1 text-xs text-slate-500">New ones appear after the next sync. Refresh from the sidebar to sync now.</p>
+      </div>
+    );
+  }
+  return (
+    <div className="px-2 py-10 text-center text-sm text-slate-400">
+      <p className="font-medium text-slate-300">No pull requests match {query.trim() !== "" && filtered ? "your search and filters" : query.trim() !== "" ? "your search" : "your filters"}.</p>
+      <div className="mt-3 flex justify-center gap-2">
+        {query.trim() !== "" && (
+          <button type="button" className="rounded border border-slate-700 px-3 py-1 hover:bg-slate-800" onClick={onClearSearch}>
+            Clear search
+          </button>
+        )}
+        {filtered && (
+          <button type="button" className="rounded border border-slate-700 px-3 py-1 hover:bg-slate-800" onClick={onResetFilters}>
+            Reset filters
+          </button>
+        )}
+      </div>
+    </div>
+  );
 }
 
 interface Editing {
@@ -657,6 +759,7 @@ function TriCheckbox({ label, state, onToggle }: { label: string; state: CheckSt
   return (
     <input
       type="checkbox"
+      className="h-4 w-4 shrink-0 accent-violet-500"
       aria-label={label}
       aria-checked={state === "all" ? "true" : state === "partial" ? "mixed" : "false"}
       checked={state === "all"}

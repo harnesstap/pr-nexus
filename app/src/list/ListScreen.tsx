@@ -302,7 +302,13 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
             Settings
           </NavButton>
           <div className="mt-1 flex items-center justify-between gap-2 px-2 text-xs text-slate-400">
-            <button type="button" className="flex items-center gap-2 text-left" onClick={() => setDetail((open) => !open)}>
+            <button
+              type="button"
+              aria-expanded={detail}
+              title="Sync details"
+              className="flex items-center gap-2 text-left"
+              onClick={() => setDetail((open) => !open)}
+            >
               <span aria-hidden="true" className={`h-2 w-2 rounded-full ${syncTone}`} />
               {syncLabel(sync, now)}
             </button>

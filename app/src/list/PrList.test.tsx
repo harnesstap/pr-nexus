@@ -49,6 +49,7 @@ function Harness({
   onDetails = () => undefined,
   onRequestReview = () => undefined,
   onBulkReview = () => undefined,
+  onOpen = () => undefined,
 }: {
   rows: ListRow[];
   projects?: ProjectDto[];
@@ -59,6 +60,7 @@ function Harness({
   onDetails?: (row: ListRow) => void;
   onRequestReview?: (row: ListRow) => void;
   onBulkReview?: (ids: number[]) => void;
+  onOpen?: (url: string) => void;
 }) {
   const [view, setView] = useState<SavedView>(defaultView());
   return (
@@ -69,7 +71,7 @@ function Harness({
       view={view}
       onViewChange={setView}
       now={now}
-      onOpen={() => undefined}
+      onOpen={onOpen}
       onRename={onRename}
       onArchive={() => undefined}
       onDelete={() => undefined}
@@ -334,4 +336,86 @@ test("the title button and Enter open a row's details", () => {
   expect(onDetails).toHaveBeenLastCalledWith(expect.objectContaining({ id: 3 }));
   fireEvent.keyDown(window, { key: "Enter" });
   expect(onDetails).toHaveBeenCalledTimes(2);
+});
+
+function focused(): string | null {
+  return document.querySelector('article[aria-current="true"]')?.getAttribute("aria-label") ?? null;
+}
+
+test("j and k move the focused row, x and Shift+x select, Esc clears", () => {
+  render(<Harness rows={rows} />);
+  const order = Array.from(document.querySelectorAll("article")).map((element) => element.getAttribute("aria-label"));
+  expect(focused()).toBe(order[0]);
+  fireEvent.keyDown(window, { key: "j" });
+  expect(focused()).toBe(order[1]);
+  fireEvent.keyDown(window, { key: "k" });
+  fireEvent.keyDown(window, { key: "k" });
+  expect(focused()).toBe(order[0]);
+  fireEvent.keyDown(window, { key: "x" });
+  expect(screen.getByText("1 selected")).toBeInTheDocument();
+  fireEvent.keyDown(window, { key: "Escape" });
+  expect(screen.queryByRole("region", { name: "Selection actions" })).not.toBeInTheDocument();
+  // A browser reports Shift+x as "X": it toggles the focused row's section.
+  fireEvent.keyDown(window, { key: "X", shiftKey: true });
+  const auth = screen.getByRole("region", { name: "Auth" });
+  expect(within(auth).getByRole("checkbox", { name: "Select Auth" })).toBeChecked();
+  fireEvent.keyDown(window, { key: "a", metaKey: true });
+  expect(screen.getByRole("checkbox", { name: "Select all" })).toBeChecked();
+});
+
+test("r requests the selection or the focused row, and system shortcuts are left alone", () => {
+  const onRequestReview = vi.fn();
+  const onBulkReview = vi.fn();
+  const onOpen = vi.fn();
+  render(<Harness rows={rows} onRequestReview={onRequestReview} onBulkReview={onBulkReview} onOpen={onOpen} />);
+  fireEvent.keyDown(window, { key: "r", metaKey: true });
+  fireEvent.keyDown(window, { key: "r", ctrlKey: true });
+  fireEvent.keyDown(window, { key: "o", ctrlKey: true });
+  expect(onRequestReview).not.toHaveBeenCalled();
+  expect(onOpen).not.toHaveBeenCalled();
+  fireEvent.keyDown(window, { key: "r" });
+  expect(onRequestReview).toHaveBeenCalledTimes(1);
+  fireEvent.keyDown(window, { key: "o" });
+  expect(onOpen).toHaveBeenCalledWith(expect.stringMatching(/^https:\/\/github.com\/acme\/widgets\/pull\//));
+  fireEvent.click(screen.getByRole("checkbox", { name: "Select Add passkeys" }));
+  fireEvent.click(screen.getByRole("checkbox", { name: "Select Fix tax rounding" }));
+  fireEvent.keyDown(window, { key: "r" });
+  expect(onBulkReview).toHaveBeenCalledWith(expect.arrayContaining([2, 3]));
+  expect(onRequestReview).toHaveBeenCalledTimes(1);
+});
+
+test("Enter on a button keeps its own action instead of opening the focused row", () => {
+  const onDetails = vi.fn();
+  render(<Harness rows={rows} onDetails={onDetails} />);
+  fireEvent.click(screen.getByRole("checkbox", { name: "Select Add passkeys" }));
+  const clear = screen.getByRole("button", { name: "Clear" });
+  fireEvent.keyDown(clear, { key: "Enter" });
+  expect(onDetails).not.toHaveBeenCalled();
+});
+
+test("the empty list says why and offers the way out", async () => {
+  vi.useFakeTimers();
+  const { unmount } = render(<Harness rows={[]} projects={[]} />);
+  expect(screen.getByText("No open pull requests in My PRs.")).toBeInTheDocument();
+  unmount();
+  render(<Harness rows={rows} />);
+  fireEvent.change(screen.getByRole("textbox", { name: "Search" }), { target: { value: "zzz-nothing" } });
+  act(() => {
+    vi.advanceTimersByTime(200);
+  });
+  expect(screen.getByText("No pull requests match your search.")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Clear search" }));
+  act(() => {
+    vi.advanceTimersByTime(200);
+  });
+  expect(screen.getAllByRole("article")).toHaveLength(4);
+});
+
+test("the header and the bulk bar follow the mockup wording", () => {
+  render(<Harness rows={rows} />);
+  expect(screen.getByText("3 open PRs")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("checkbox", { name: "Select Add passkeys" }));
+  const bar = screen.getByRole("region", { name: "Selection actions" });
+  expect(within(bar).getByText("1 selected")).toBeInTheDocument();
+  expect(within(bar).getByRole("button", { name: "Request / bump on Slack" })).toBeEnabled();
 });
