@@ -222,6 +222,97 @@ pub fn export_csv(rows: &[TeamChannelMapping], mode: ExportMode) -> Result<Strin
     String::from_utf8(bytes).map_err(|err| CoreError::Validation(format!("mapping csv: {err}")))
 }
 
+/// One line of Settings → Mappings: the row that wins for a team, and
+/// whether an imported row sits under a user edit (so it can be reset).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MappingEntry {
+    pub row: CsvRow,
+    pub layer: MappingLayer,
+    pub disabled: bool,
+    pub has_imported: bool,
+}
+
+/// The Settings table: one entry per `(org, slug)`, sorted. A user row wins,
+/// even a disabled one (it hides the import).
+pub fn mapping_table(rows: &[TeamChannelMapping]) -> Vec<MappingEntry> {
+    let mut by_key: BTreeMap<(String, String), MappingEntry> = BTreeMap::new();
+    for row in rows {
+        let entry = by_key.entry(key(row)).or_insert_with(|| MappingEntry {
+            row: from_stored(row),
+            layer: row.layer,
+            disabled: row.disabled,
+            has_imported: false,
+        });
+        if row.layer == MappingLayer::Imported {
+            entry.has_imported = true;
+        }
+        if row.layer == MappingLayer::User {
+            entry.row = from_stored(row);
+            entry.layer = MappingLayer::User;
+            entry.disabled = row.disabled;
+        }
+    }
+    by_key.into_values().collect()
+}
+
+/// Save an edit from Settings as a user-layer row, which wins over the import.
+/// `disabled` hides the team (no channel suggested).
+pub fn save_user_mapping(
+    store: &Store,
+    row: CsvRow,
+    disabled: bool,
+    now: DateTime<Utc>,
+) -> Result<(), CoreError> {
+    let row = CsvRow {
+        github_org: row.github_org.trim().to_owned(),
+        team_slug: row.team_slug.trim().to_owned(),
+        team_name: row.team_name.trim().to_owned(),
+        slack_channel_name: row
+            .slack_channel_name
+            .trim()
+            .trim_start_matches('#')
+            .to_owned(),
+        slack_channel_id: row.slack_channel_id.trim().to_owned(),
+        slack_workspace: row.slack_workspace.trim().to_owned(),
+    };
+    if row.github_org.is_empty() || row.team_slug.is_empty() {
+        return Err(CoreError::Validation(
+            "github_org and github_team_slug are required".into(),
+        ));
+    }
+    if !row.slack_channel_id.is_empty() && !valid_channel_id(&row.slack_channel_id) {
+        return Err(CoreError::Validation(
+            "slack_channel_id must look like C… or G…".into(),
+        ));
+    }
+    if !disabled && row.slack_channel_id.is_empty() && row.slack_channel_name.is_empty() {
+        return Err(CoreError::Validation(
+            "give a channel name or id, or disable the team".into(),
+        ));
+    }
+    store
+        .upsert_mapping(to_stored(
+            &row,
+            MappingLayer::User,
+            disabled,
+            String::new(),
+            now,
+        ))
+        .map(|_| ())
+}
+
+/// Drop the user row for a team so the imported row applies again.
+pub fn reset_to_imported(store: &Store, org: &str, slug: &str) -> Result<bool, CoreError> {
+    let rows = store.list_mappings()?;
+    let Some(user) = rows.iter().find(|row| {
+        row.layer == MappingLayer::User && row.github_org == org && row.team_slug == slug
+    }) else {
+        return Ok(false);
+    };
+    store.delete_mapping(user.id)?;
+    Ok(true)
+}
+
 /// User layer wins for `(org, slug)` regardless of workspace. A disabled user
 /// row hides the imported row. Slug is tried first, then an exact team name.
 pub fn lookup_mapping<'a>(
@@ -654,6 +745,58 @@ acme,team-a,Team A,team-reviews,C0123456789,widgets
                 .team_slug,
             "other-slug"
         );
+    }
+
+    #[test]
+    fn settings_table_edits_win_and_reset_restores_the_import() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("nexus.sqlite")).unwrap();
+        let imported = parse_csv(
+            "github_org,github_team_slug,github_team_name,slack_channel_name,slack_channel_id\n\
+             acme,team-a,Team A,team-reviews,C0123456789\n",
+            Some("acme"),
+        )
+        .unwrap();
+        apply_import(&store, &imported, ImportMode::Replace, now()).unwrap();
+        let mut edit = imported[0].clone();
+        edit.slack_channel_name = "#team-widgets".into();
+        edit.slack_channel_id = String::new();
+        save_user_mapping(&store, edit, false, now()).unwrap();
+
+        let table = mapping_table(&store.list_mappings().unwrap());
+        assert_eq!(table.len(), 1);
+        assert_eq!(table[0].layer, MappingLayer::User);
+        assert!(table[0].has_imported);
+        assert_eq!(table[0].row.slack_channel_name, "team-widgets");
+
+        assert!(reset_to_imported(&store, "acme", "team-a").unwrap());
+        let table = mapping_table(&store.list_mappings().unwrap());
+        assert_eq!(table[0].layer, MappingLayer::Imported);
+        assert_eq!(table[0].row.slack_channel_name, "team-reviews");
+        assert!(!reset_to_imported(&store, "acme", "team-a").unwrap());
+    }
+
+    #[test]
+    fn settings_edit_rejects_a_bad_channel_or_an_empty_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("nexus.sqlite")).unwrap();
+        let row = CsvRow {
+            github_org: "acme".into(),
+            team_slug: "team-a".into(),
+            team_name: String::new(),
+            slack_channel_name: String::new(),
+            slack_channel_id: "X123".into(),
+            slack_workspace: "acme".into(),
+        };
+        assert!(save_user_mapping(&store, row.clone(), false, now()).is_err());
+        let empty = CsvRow {
+            slack_channel_id: String::new(),
+            ..row
+        };
+        assert!(save_user_mapping(&store, empty.clone(), false, now()).is_err());
+        save_user_mapping(&store, empty, true, now()).unwrap();
+        let table = mapping_table(&store.list_mappings().unwrap());
+        assert!(table[0].disabled && !table[0].has_imported);
     }
 
     #[test]

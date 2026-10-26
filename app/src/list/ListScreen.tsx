@@ -10,14 +10,20 @@ import { ProjectDialog } from "./ProjectDialog";
 import { SlackSettings } from "../slack/SlackSettings";
 import { BulkDialog } from "../slack/BulkDialog";
 import { ReviewDialog } from "../slack/ReviewDialog";
+import { SettingsScreen } from "../settings/SettingsScreen";
+import type { SettingsTab } from "../settings/tabs";
+import { MappingHint, UpdateBanner } from "./Banners";
+import { showMappingHint } from "./hints";
 
 interface Props {
   api: Api;
   boot: Bootstrap;
   onBoot: (boot: Bootstrap) => void;
+  /** Settings → About → Re-run setup. */
+  onRerunSetup?: () => void;
 }
 
-export function ListScreen({ api, boot, onBoot }: Props) {
+export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
   const [rows, setRows] = useState<ListRow[]>([]);
   const [projects, setProjects] = useState<ProjectDto[]>([]);
   const [viewKey, setViewKey] = useState("mine");
@@ -29,6 +35,11 @@ export function ListScreen({ api, boot, onBoot }: Props) {
   const [orgs, setOrgs] = useState(boot.tracked_orgs);
   const [personal, setPersonal] = useState(boot.include_personal);
   const [error, setError] = useState<string | null>(null);
+  /** First load of the list: null while loading, then "ready" or the error. */
+  const [listState, setListState] = useState<{ phase: "loading" } | { phase: "ready" } | { phase: "error"; message: string }>({ phase: "loading" });
+  const [attempt, setAttempt] = useState(0);
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("accounts");
+  const [mappingHint, setMappingHint] = useState(() => showMappingHint(boot.mapping_count, boot.slack_workspaces.length));
   const [draft, setDraft] = useState<{ name: string; error: string | null } | null>(null);
   const [editingProject, setEditingProject] = useState<number | null>(null);
   const [detailId, setDetailId] = useState<number | null>(null);
@@ -60,17 +71,18 @@ export function ListScreen({ api, boot, onBoot }: Props) {
         if (!cancel) {
           setRows(nextRows);
           setProjects(nextProjects);
+          setListState({ phase: "ready" });
         }
       })
       .catch((err: unknown) => {
         if (!cancel) {
-          setError(errorMessage(err));
+          setListState({ phase: "error", message: errorMessage(err) });
         }
       });
     return () => {
       cancel = true;
     };
-  }, [api]);
+  }, [api, attempt]);
 
   useEffect(() => {
     let cancel = false;
@@ -151,6 +163,41 @@ export function ListScreen({ api, boot, onBoot }: Props) {
   const detailRow = rows.find((row) => row.id === detailId) ?? null;
   const reviewRow = rows.find((row) => row.id === reviewId) ?? null;
   const syncTone = sync.phase === "error" || sync.paused || sync.phase === "paused" ? "bg-amber-400" : sync.phase === "syncing" ? "bg-sky-400" : "bg-emerald-400";
+
+  const orgPicker = (inSettings: boolean) => (
+    <div>
+      {inSettings ? (
+        <h2 className="text-base font-semibold">Tracked orgs</h2>
+      ) : (
+        <h1 className="text-lg font-semibold">Choose orgs to track</h1>
+      )}
+      <p className="mt-2 text-sm text-slate-400">
+        Nothing is selected by default. The list stays empty until you pick at least one org or include personal repos.
+      </p>
+      <ul className="mt-4 space-y-2">
+        {boot.org_choices.map((org) => (
+          <li key={org}>
+            <OrgOption
+              org={org}
+              checked={orgs.includes(org)}
+              needsSso={boot.orgs_needing_sso.includes(org)}
+              onToggle={() =>
+                setOrgs((current) => (current.includes(org) ? current.filter((item) => item !== org) : [...current, org]))
+              }
+              onOpen={(url) => void api.openExternal(url)}
+            />
+          </li>
+        ))}
+      </ul>
+      <label className="mt-4 flex items-center gap-2">
+        <input type="checkbox" checked={personal} onChange={(event) => setPersonal(event.target.checked)} />
+        Include my personal repos
+      </label>
+      <button type="button" className="mt-4 rounded bg-violet-500 px-3 py-2 text-sm" onClick={() => void saveOrgs()}>
+        Save orgs
+      </button>
+    </div>
+  );
 
   async function saveOrgs() {
     setError(null);
@@ -267,46 +314,72 @@ export function ListScreen({ api, boot, onBoot }: Props) {
         </footer>
       </aside>
       <main className="relative flex min-w-0 flex-1 flex-col">
+        <UpdateBanner api={api} />
+        {mappingHint && viewKey !== "settings" && (
+          <MappingHint
+            onOpen={() => {
+              setSettingsTab("mappings");
+              setViewKey("settings");
+            }}
+            onDismiss={() => setMappingHint(false)}
+          />
+        )}
         {boot.keyring_warning && (
           <p className="border-b border-amber-500/40 bg-amber-500/10 px-4 py-2 text-sm text-amber-100">{boot.keyring_warning}</p>
         )}
-        {viewKey === "settings" || needsOrgs ? (
-          <section className="max-w-xl px-6 py-8">
-            <h1 className="text-lg font-semibold">Choose orgs to track</h1>
-            <p className="mt-2 text-sm text-slate-400">
-              Nothing is selected by default. The list stays empty until you pick at least one org or include personal repos.
-            </p>
-            <ul className="mt-4 space-y-2">
-              {boot.org_choices.map((org) => (
-                <li key={org}>
-                  <OrgOption
-                    org={org}
-                    checked={orgs.includes(org)}
-                    needsSso={boot.orgs_needing_sso.includes(org)}
-                    onToggle={() =>
-                      setOrgs((current) => (current.includes(org) ? current.filter((item) => item !== org) : [...current, org]))
-                    }
-                    onOpen={(url) => void api.openExternal(url)}
-                  />
-                </li>
-              ))}
-            </ul>
-            <label className="mt-4 flex items-center gap-2">
-              <input type="checkbox" checked={personal} onChange={(event) => setPersonal(event.target.checked)} />
-              Include my personal repos
-            </label>
-            <button type="button" className="mt-4 rounded bg-violet-500 px-3 py-2 text-sm" onClick={() => void saveOrgs()}>
-              Save orgs
-            </button>
-            {viewKey === "settings" && (
-              <SlackSettings
-                api={api}
-                boot={boot}
-                onMentionsChange={(scope) => onBoot({ ...boot, slack_mentions: scope })}
-                onBroadcastChange={(on) => onBoot({ ...boot, bump_broadcast: on })}
-              />
-            )}
+        {viewKey === "settings" ? (
+          <section className="min-h-0 flex-1 overflow-auto px-6 py-8">
+            <h1 className="mx-auto mb-4 max-w-3xl text-lg font-semibold">Settings</h1>
+            <SettingsScreen
+              api={api}
+              boot={boot}
+              onBoot={(next) => {
+                onBoot(next);
+                setMappingHint(showMappingHint(next.mapping_count, next.slack_workspaces.length));
+              }}
+              tab={settingsTab}
+              onTabChange={setSettingsTab}
+              onRerunSetup={() => onRerunSetup?.()}
+              accounts={
+                <div className="space-y-8">
+                  <section aria-labelledby="accounts-providers">
+                    <h2 id="accounts-providers" className="text-base font-semibold">
+                      Providers
+                    </h2>
+                    <p className="mt-2 text-sm text-slate-300">
+                      GitHub{boot.github_login ? ` · signed in as ${boot.github_login}` : ""} · Slack
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      GitLab, Jira and Linear are planned. To change the GitHub account, use About → Re-run setup.
+                    </p>
+                  </section>
+                  {orgPicker(true)}
+                  <SlackSettings api={api} boot={boot} onMentionsChange={(scope) => onBoot({ ...boot, slack_mentions: scope })} />
+                </div>
+              }
+            />
           </section>
+        ) : needsOrgs ? (
+          <section className="max-w-xl px-6 py-8">{orgPicker(false)}</section>
+        ) : listState.phase === "loading" ? (
+          <p role="status" className="px-6 py-8 text-sm text-slate-400">
+            Loading pull requests…
+          </p>
+        ) : listState.phase === "error" ? (
+          <div role="alert" className="px-6 py-8 text-sm">
+            <p className="font-medium text-rose-200">Could not load your pull requests.</p>
+            <p className="mt-1 text-slate-400">{listState.message}</p>
+            <button
+              type="button"
+              className="mt-3 rounded border border-slate-700 px-3 py-1.5 hover:bg-slate-800"
+              onClick={() => {
+                setListState({ phase: "loading" });
+                setAttempt((value) => value + 1);
+              }}
+            >
+              Try again
+            </button>
+          </div>
         ) : (
           <PrList
             rows={rows}

@@ -3,6 +3,7 @@ import { expect, test, vi } from "vitest";
 import type { Api, Bootstrap, ProjectDto, ReviewTarget } from "../api";
 import { ListScreen } from "./ListScreen";
 import { memoryProjectApi } from "../memoryProjects";
+import { fakeSettingsApi } from "../settings/fakes";
 
 const boot: Bootstrap = {
   onboarding: { step: "done", completed: [], mapping_skipped: true, slack_skipped: true, finished_at: "2026-10-26T00:00:00Z" },
@@ -94,7 +95,7 @@ function api(projects: ProjectDto[]): Api {
     prSlackContext: () => Promise.resolve([]),
     prSlackMentions: () => Promise.resolve([]),
     saveSlackMentions: () => Promise.resolve(),
-    saveBumpBroadcast: () => Promise.resolve(),
+    ...fakeSettingsApi(),
   };
 }
 
@@ -129,4 +130,26 @@ test("dropping PRs on a sidebar project links them and confirms", async () => {
   fireEvent.drop(target, { dataTransfer });
   await waitFor(() => expect(fake.linkPrs).toHaveBeenCalledWith(1, [4, 5]));
   expect(await screen.findByRole("status")).toHaveTextContent("Added 2 PRs to Checkout");
+});
+
+test("a failed first load shows the error with Try again", async () => {
+  let fail = true;
+  const fake: Api = {
+    ...api([]),
+    listRows: () => (fail ? Promise.reject(new Error("database is locked")) : Promise.resolve([])),
+  };
+  render(<ListScreen api={fake} boot={boot} onBoot={() => undefined} />);
+  expect(await screen.findByRole("alert")).toHaveTextContent(/database is locked/);
+  fail = false;
+  fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+  await waitFor(() => expect(screen.queryByText(/database is locked/)).not.toBeInTheDocument());
+});
+
+test("the skipped-mapping hint opens Settings → Mappings", async () => {
+  window.localStorage.clear();
+  const slack = { ...boot, slack_workspaces: [{ id: 1, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false }] };
+  render(<ListScreen api={api([])} boot={slack} onBoot={() => undefined} />);
+  fireEvent.click(await screen.findByRole("button", { name: "Map team channels" }));
+  expect(await screen.findByRole("tab", { name: "Mappings" })).toHaveAttribute("aria-selected", "true");
+  expect(await screen.findByText("No team channels mapped yet.")).toBeInTheDocument();
 });

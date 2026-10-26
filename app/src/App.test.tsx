@@ -1,8 +1,9 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { expect, test } from "vitest";
 import App from "./App";
 import type { Api, Bootstrap, ReviewTarget } from "./api";
 import { memoryProjectApi } from "./memoryProjects";
+import { fakeSettingsApi } from "./settings/fakes";
 
 const boot: Bootstrap = {
   onboarding: {
@@ -104,7 +105,7 @@ function api(): Api {
     prSlackContext: () => Promise.resolve([]),
     prSlackMentions: () => Promise.resolve([]),
     saveSlackMentions: () => Promise.resolve(),
-    saveBumpBroadcast: () => Promise.resolve(),
+    ...fakeSettingsApi(),
   };
 }
 
@@ -112,4 +113,28 @@ test("first launch opens the setup wizard on one step", async () => {
   render(<App api={api()} />);
   expect(await screen.findByRole("heading", { name: /Step 1 of 7 · Git provider/ })).toBeInTheDocument();
   expect(screen.queryByRole("heading", { name: /Communication provider/ })).not.toBeInTheDocument();
+});
+
+test("Settings → About → Re-run setup opens the wizard at step 1 and Back returns to the list", async () => {
+  const finished = { ...boot, onboarding: { ...boot.onboarding, step: "done" as const, finished_at: "2026-10-26T00:00:00Z" }, resume_step: "done" as const, tracked_orgs: ["acme"] };
+  const saved: (string | null)[] = [];
+  const fake: Api = {
+    ...api(),
+    bootstrap: () => Promise.resolve(finished),
+    saveOnboarding: (patch) => {
+      saved.push(patch.finished_at);
+      return Promise.resolve();
+    },
+  };
+  render(<App api={fake} />);
+  fireEvent.click(await screen.findByRole("button", { name: /Settings/ }));
+  fireEvent.click(await screen.findByRole("tab", { name: "About" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Re-run setup" }));
+  expect(await screen.findByRole("heading", { name: /Step 1 of 7/ })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Next" }));
+  await waitFor(() => expect(saved.length).toBeGreaterThan(0));
+  expect(saved.every((value) => value === "2026-10-26T00:00:00Z")).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "Back to PR-Nexus" }));
+  expect(await screen.findByRole("button", { name: "My PRs" })).toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: /Step 1 of 7/ })).not.toBeInTheDocument();
 });

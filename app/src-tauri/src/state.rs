@@ -232,6 +232,7 @@ pub fn run_sync(state: &AppState, kind: SyncKind) -> Result<sync::SyncReport, Ap
             status.synced_at = Some(Utc::now());
         }
         Ok(report) => {
+            tracing::info!(kind = ?kind, message = %report.message, "sync done");
             status.phase = "ok".into();
             status.message = if report.message == "Choose orgs to track" {
                 report.message.clone()
@@ -242,6 +243,7 @@ pub fn run_sync(state: &AppState, kind: SyncKind) -> Result<sync::SyncReport, Ap
             status.synced_at = Some(Utc::now());
         }
         Err(err) => {
+            tracing::warn!(kind = ?kind, error = %err, "sync failed");
             status.phase = if err.kind == "rate_limited" {
                 "paused"
             } else {

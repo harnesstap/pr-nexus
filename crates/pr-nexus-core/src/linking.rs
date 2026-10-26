@@ -98,6 +98,11 @@ fn glob(pattern: &str) -> Result<Regex, CoreError> {
         .map_err(|err| CoreError::Validation(format!("Invalid pattern: {err}")))
 }
 
+/// Check a `projects.ticket_key_regex` value before it is saved.
+pub fn validate_ticket_regex(pattern: &str) -> Result<(), CoreError> {
+    ticket_regex(pattern).map(|_| ())
+}
+
 fn ticket_regex(pattern: &str) -> Result<Regex, CoreError> {
     // Branch names are often lower-case (`feat/proj-123-retry`), so keys are
     // extracted case-insensitively and then compared case-insensitively (§8.1).

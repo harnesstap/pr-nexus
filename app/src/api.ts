@@ -52,6 +52,61 @@ export interface Bootstrap {
   gh_detail: string;
 }
 
+/** Settings → Review and Sync (§7.12). Intervals are seconds. */
+export interface Preferences {
+  review_requester: string;
+  min_bump_interval_hours: number;
+  bulk_bump_max_threads: number;
+  bump_broadcast: boolean;
+  blocked_review_required_is_ready: boolean;
+  ticket_key_regex: string;
+  focused_interval_s: number;
+  unfocused_interval_s: number;
+  keep_closed_days: number;
+}
+
+export interface MappingRow {
+  github_org: string;
+  team_slug: string;
+  team_name: string;
+  slack_workspace: string;
+  slack_channel_name: string;
+  slack_channel_id: string;
+}
+
+export interface MappingEntry {
+  row: MappingRow;
+  /** `user`: edited in Settings or merged from a CSV; wins over `imported`. */
+  source: "user" | "imported";
+  disabled: boolean;
+  has_imported: boolean;
+}
+
+export type ImportMode = "merge" | "replace";
+export type ExportMode = "effective" | "user" | "imported";
+
+export interface ImportPreview {
+  added: MappingRow[];
+  changed: { row: MappingRow; changes: { field: string; before: string; after: string }[] }[];
+  unchanged: number;
+  user_shadowed: MappingRow[];
+}
+
+export interface AppInfo {
+  version: string;
+  repository: string;
+  db_path: string;
+  log_dir: string;
+  keyring_in_memory: boolean;
+  os: string;
+}
+
+export interface UpdateInfo {
+  version: string;
+  url: string;
+  command: string;
+}
+
 /** `off` (default), `public` channels, or `all` (also private channels and DMs). */
 export type MentionsScope = "off" | "public" | "all";
 
@@ -355,7 +410,17 @@ export interface Api {
   prSlackContext(prId: number, refresh: boolean): Promise<ContextThread[]>;
   prSlackMentions(prId: number): Promise<MentionGroup[]>;
   saveSlackMentions(scope: MentionsScope): Promise<void>;
-  saveBumpBroadcast(on: boolean): Promise<void>;
+  loadPreferences(): Promise<Preferences>;
+  savePreferences(prefs: Preferences): Promise<Preferences>;
+  listMappings(): Promise<MappingEntry[]>;
+  saveMapping(row: MappingRow, disabled: boolean): Promise<void>;
+  resetMapping(org: string, slug: string): Promise<boolean>;
+  previewMappingImport(csv: string, workspace: string, mode: ImportMode): Promise<ImportPreview>;
+  applyMappingImport(csv: string, workspace: string, mode: ImportMode): Promise<{ rows: number }>;
+  exportMapping(mode: ExportMode): Promise<string>;
+  appInfo(): Promise<AppInfo>;
+  /** Latest GitHub release when it is newer than this build; null otherwise. */
+  checkUpdate(): Promise<UpdateInfo | null>;
 }
 
 export const tauriApi: Api = {
@@ -409,7 +474,16 @@ export const tauriApi: Api = {
   prSlackContext: (prId, refresh) => invoke("pr_slack_context", { prId, refresh }),
   prSlackMentions: (prId) => invoke("pr_slack_mentions", { prId }),
   saveSlackMentions: (scope) => invoke("save_slack_mentions", { scope }),
-  saveBumpBroadcast: (on) => invoke("save_bump_broadcast", { on }),
+  loadPreferences: () => invoke("load_preferences"),
+  savePreferences: (prefs) => invoke("save_preferences", { prefs }),
+  listMappings: () => invoke("list_mappings"),
+  saveMapping: (row, disabled) => invoke("save_mapping", { row, disabled }),
+  resetMapping: (org, slug) => invoke("reset_mapping", { org, slug }),
+  previewMappingImport: (csv, workspace, mode) => invoke("preview_mapping_import", { csv, workspace, mode }),
+  applyMappingImport: (csv, workspace, mode) => invoke("apply_mapping_import", { csv, workspace, mode }),
+  exportMapping: (mode) => invoke("export_mapping", { mode }),
+  appInfo: () => invoke("app_info"),
+  checkUpdate: () => invoke("check_update"),
 };
 
 /**

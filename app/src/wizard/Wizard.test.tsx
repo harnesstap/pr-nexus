@@ -3,6 +3,7 @@ import { expect, test, vi } from "vitest";
 import type { Api, Bootstrap, ReviewTarget } from "../api";
 import { Wizard } from "./Wizard";
 import { memoryProjectApi } from "../memoryProjects";
+import { fakeSettingsApi } from "../settings/fakes";
 
 const boot: Bootstrap = {
   onboarding: {
@@ -104,7 +105,7 @@ function api(overrides: Partial<Api> = {}): Api {
     prSlackContext: () => Promise.resolve([]),
     prSlackMentions: () => Promise.resolve([]),
     saveSlackMentions: () => Promise.resolve(),
-    saveBumpBroadcast: () => Promise.resolve(),
+    ...fakeSettingsApi(),
     ...overrides,
   };
 }
