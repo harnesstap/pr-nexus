@@ -157,6 +157,8 @@ const previewThreads: ContextThread[] = [
     status: "active",
     close_reason: null,
     requested_at: "2023-11-14T22:13:20Z",
+    last_bumped_at: null,
+    bump_count: 0,
     messages: [
       { ts: "1700000000.000100", at: "2023-11-14T22:13:20Z", author: "Ada Acme", user_id: "U0ACME0001", text: "Hello team\nCould someone please review this?\n<https://github.com/acme/web/pull/1|github.com/acme/web/pull/1>", permalink: "https://acme.slack.com/archives/C0123456789/p1700000000000100", is_bot: false },
       { ts: "1700000300.000200", at: "2023-11-14T22:18:20Z", author: "Bob Acme", user_id: "U0ACME0002", text: "On it, <@U0ACME0001>", permalink: null, is_bot: false },

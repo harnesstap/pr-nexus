@@ -13,7 +13,8 @@ use chrono::{DateTime, Duration, TimeZone, Utc};
 use serde::Serialize;
 
 use crate::domain::{
-    ChatThreadCacheEntry, CloseReason, PrId, RequestStatus, ReviewMessage, ReviewRequest,
+    AccountId, AccountKind, ChatThreadCacheEntry, CloseReason, PrId, RequestStatus, ReviewMessage,
+    ReviewRequest,
 };
 use crate::error::{CoreError, ProviderError};
 use crate::providers::{ChatProvider, SearchHit, ThreadMessage, ThreadReplies};
@@ -51,6 +52,11 @@ pub struct ContextThread {
     pub close_reason: Option<String>,
     #[serde(serialize_with = "rfc3339")]
     pub requested_at: Option<DateTime<Utc>>,
+    /// Stored with the request, so the card can say "Bumped · 9h ago" even
+    /// when Slack cannot be read.
+    #[serde(serialize_with = "rfc3339")]
+    pub last_bumped_at: Option<DateTime<Utc>>,
+    pub bump_count: u32,
     /// Parent first, then replies.
     pub messages: Vec<ContextMessage>,
     pub has_more: bool,
@@ -99,6 +105,8 @@ struct Root {
     status: ThreadStatus,
     close_reason: Option<CloseReason>,
     requested_at: Option<DateTime<Utc>>,
+    last_bumped_at: Option<DateTime<Utc>>,
+    bump_count: u32,
     sort_at: DateTime<Utc>,
 }
 
@@ -141,6 +149,8 @@ fn collect_roots(
                 status,
                 close_reason,
                 requested_at: Some(request.requested_at),
+                last_bumped_at: request.last_bumped_at,
+                bump_count: request.bump_count,
                 sort_at: request.closed_at.unwrap_or(request.requested_at),
             }
         })
@@ -171,6 +181,8 @@ fn collect_roots(
             status: ThreadStatus::Posted,
             close_reason: None,
             requested_at: Some(message.posted_at),
+            last_bumped_at: None,
+            bump_count: 0,
             sort_at: message.posted_at,
         });
     }
@@ -224,6 +236,8 @@ fn read_root(
             .close_reason
             .map(|reason| close_reason_label(reason).to_owned()),
         requested_at: root.requested_at,
+        last_bumped_at: root.last_bumped_at,
+        bump_count: root.bump_count,
         messages: Vec::new(),
         has_more: false,
         fetched_at: None,
@@ -234,17 +248,18 @@ fn read_root(
     let chat = match chat_for(&root.workspace) {
         Ok(chat) => chat,
         Err(err) => {
+            // Signed out: still show the last copy read with this workspace.
             thread.error = Some(core_message(err));
+            if let Some(account) = slack_account_for(store, &root.workspace)?
+                && let Some((replies, fetched_at)) = cached_replies(store, account, root)?
+            {
+                fill(&mut thread, &replies, fetched_at, true);
+            }
             return Ok(thread);
         }
     };
     let account = chat.account_id();
-    let cached = store.get_chat_thread(account, root.channel_id.clone(), root.root_ts.clone())?;
-    let cached = cached.and_then(|entry| {
-        serde_json::from_str::<ThreadReplies>(&entry.messages_json)
-            .ok()
-            .map(|replies| (replies, entry.fetched_at))
-    });
+    let cached = cached_replies(store, account, root)?;
     if let Some((replies, fetched_at)) = &cached
         && !refresh
         && now - *fetched_at < Duration::minutes(THREAD_CACHE_TTL_MINUTES)
@@ -273,6 +288,36 @@ fn read_root(
         }
     }
     Ok(thread)
+}
+
+fn cached_replies(
+    store: &Store,
+    account: AccountId,
+    root: &Root,
+) -> Result<Option<(ThreadReplies, DateTime<Utc>)>, CoreError> {
+    let cached = store.get_chat_thread(account, root.channel_id.clone(), root.root_ts.clone())?;
+    Ok(cached.and_then(|entry| {
+        serde_json::from_str::<ThreadReplies>(&entry.messages_json)
+            .ok()
+            .map(|replies| (replies, entry.fetched_at))
+    }))
+}
+
+fn slack_account_for(store: &Store, workspace: &str) -> Result<Option<AccountId>, CoreError> {
+    if workspace.is_empty() {
+        return Ok(None);
+    }
+    Ok(store
+        .list_accounts()?
+        .into_iter()
+        .find(|account| {
+            account.kind == AccountKind::Slack
+                && account
+                    .slack_workspace
+                    .as_deref()
+                    .is_some_and(|name| name.eq_ignore_ascii_case(workspace))
+        })
+        .map(|account| account.id))
 }
 
 fn core_message(err: CoreError) -> String {

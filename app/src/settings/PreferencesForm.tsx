@@ -119,7 +119,7 @@ export function PreferencesForm({ api, prefs, section, onSaved }: Props) {
               onChange={(event) => patch({ unfocused_interval_s: Number(event.target.value) * 60 })}
             />
           </Field>
-          <Field label="Keep closed PRs (days)" help="Merged and closed PRs stay in the list this long, then are hidden. 0 hides them at the next sync.">
+          <Field label="Keep closed PRs (days)" help="Merged and closed PRs leave the open list at the next sync. Filters → Archived and closed still shows them this long. 0 drops them right away.">
             <input
               className={input}
               type="number"

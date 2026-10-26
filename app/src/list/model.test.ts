@@ -134,6 +134,7 @@ test("menu filters combine and reset clears only filters", () => {
     row({ id: 1, title: "Open", owner: "acme", readiness: "ready", checks: "success" }),
     row({ id: 2, title: "Draft", owner: "other", is_draft: true, readiness: "blocked", project_ids: [2] }),
     row({ id: 3, title: "Old", hidden: true, owner: "acme" }),
+    row({ id: 4, title: "Shipped", state: "merged", owner: "acme" }),
   ];
   const filtered = {
     ...defaultView(),
@@ -147,7 +148,26 @@ test("menu filters combine and reset clears only filters", () => {
   expect(filtersActive(reset.filters)).toBe(false);
   expect(visibleRows(rows, projects, "mine", reset, "", now).map((item) => item.id)).toEqual([1]);
   const withArchived = { ...reset, filters: { ...reset.filters, archived: true } };
-  expect(visibleRows(rows, projects, "mine", withArchived, "", now).map((item) => item.id).sort()).toEqual([1, 2, 3]);
+  // Archived brings back archived projects and recently merged/closed PRs, not
+  // rows past keep_closed_days (hidden by sync).
+  expect(visibleRows(rows, projects, "mine", withArchived, "", now).map((item) => item.id).sort()).toEqual([1, 2, 4]);
+});
+
+test("merged and closed PRs leave the open list and the header count", () => {
+  const rows = [
+    row({ id: 1, title: "Live", project_ids: [1] }),
+    row({ id: 2, title: "Shipped", state: "merged", project_ids: [1] }),
+    row({ id: 3, title: "Dropped", state: "closed" }),
+  ];
+  const view = defaultView();
+  const shown = visibleRows(rows, [auth], "mine", view, "", now);
+  expect(shown.map((item) => item.id)).toEqual([1]);
+  expect(headerSummary(shown, [auth], "mine", view.filters)).toBe("1 open PR across 1 project");
+  expect(visibleRows(rows, [auth], "to_review", view, "shipped", now)).toEqual([]);
+  const archived = { ...view, filters: { ...view.filters, archived: true } };
+  const all = visibleRows(rows, [auth], "mine", archived, "", now);
+  expect(all.map((item) => item.id)).toEqual([1, 2, 3]);
+  expect(headerSummary(all, [auth], "mine", archived.filters)).toBe("1 open PR across 1 project · 2 merged or closed · 1 unassigned");
 });
 
 test("nav views and saved view state round-trip", () => {

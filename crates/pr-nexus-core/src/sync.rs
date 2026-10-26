@@ -4,7 +4,10 @@
 
 use chrono::{DateTime, Utc};
 
-use crate::domain::{AccountId, AccountKind, PrState, ProviderRef, PullRequest, Repository};
+use crate::domain::{
+    AccountId, AccountKind, CloseReason, PrState, ProviderRef, PullRequest, Repository,
+    RequestStatus,
+};
 use crate::error::CoreError;
 use crate::providers::{PrQuery, RateBudget, SearchBucket, SyncedPullRequest, VcsProvider};
 use crate::settings;
@@ -180,6 +183,7 @@ pub fn sync_account(
     let existing = store.list_pull_requests_for_account(account_id)?;
     let mut hidden = 0usize;
     for pr in existing {
+        close_requests_of_finished(store, &pr, now)?;
         let out_of_scope = !in_scope(&pr.repo.owner, &scope);
         let expired = should_hide_closed(pr.state, pr.updated_at, now, keep_days);
         let next = out_of_scope || expired;
@@ -199,6 +203,26 @@ pub fn sync_account(
         paused: false,
         message: format!("{stored} pull requests"),
     })
+}
+
+/// §7.4: once sync sees a PR merged or closed, its active review requests close
+/// with that reason, so the list and the Slack panel stop offering a bump.
+fn close_requests_of_finished(
+    store: &Store,
+    pr: &PullRequest,
+    now: DateTime<Utc>,
+) -> Result<(), CoreError> {
+    let reason = match pr.state {
+        PrState::Open => return Ok(()),
+        PrState::Merged => CloseReason::PrMerged,
+        PrState::Closed => CloseReason::PrClosed,
+    };
+    for request in store.list_review_requests(pr.id)? {
+        if request.status == RequestStatus::Active {
+            store.close_review_request(request.id, reason, now)?;
+        }
+    }
+    Ok(())
 }
 
 fn remember_org(orgs: &mut Vec<String>, owner: &str, viewer: &str) {
@@ -509,6 +533,72 @@ mod tests {
         assert!(closed.hidden);
         let open = rows.iter().find(|row| row.number == 1).unwrap();
         assert!(!open.hidden);
+    }
+
+    #[test]
+    fn a_pr_merged_since_the_last_sync_leaves_the_open_list_and_closes_its_request() {
+        let (_dir, store, account) = open_store();
+        let live = pr("N1", "acme", 1, Involvement::AUTHOR);
+        let merged_pr = pr("N2", "acme", 2, Involvement::AUTHOR);
+        let first = Fake {
+            mine: vec![live.clone(), merged_pr.clone()],
+            review: Vec::new(),
+            refresh: Vec::new(),
+            budget: sample_budget(5000, 4000),
+        };
+        sync_account(&store, &first, account, SyncKind::Manual, ts(20)).unwrap();
+        let stored = store.list_pull_requests_for_account(account).unwrap();
+        let tracked = stored.iter().find(|row| row.number == 2).unwrap();
+        assert_eq!(tracked.state, PrState::Open);
+        let request = store
+            .insert_review_request(crate::domain::ReviewRequest {
+                id: crate::domain::ReviewRequestId(0),
+                pr: tracked.id,
+                root: ProviderRef {
+                    account,
+                    id: "1700000001.000100".into(),
+                },
+                workspace: "acme".into(),
+                channel_id: "C0123456789".into(),
+                channel_name: "reviews".into(),
+                root_ts: "1700000001.000100".into(),
+                permalink: None,
+                requested_at: ts(20),
+                last_bumped_at: None,
+                bump_count: 0,
+                status: RequestStatus::Active,
+                closed_at: None,
+                source: crate::domain::RequestSource::App,
+            })
+            .unwrap();
+
+        // Merged an hour later: `is:open` search drops it, the nodes refresh
+        // returns its final state.
+        let mut done = merged_pr;
+        done.pull_request.state = PrState::Merged;
+        done.pull_request.updated_at = ts(60);
+        let second = Fake {
+            mine: vec![live],
+            review: Vec::new(),
+            refresh: vec![done],
+            budget: sample_budget(5000, 4000),
+        };
+        let report = sync_account(&store, &second, account, SyncKind::Manual, ts(70)).unwrap();
+        assert_eq!(report.refreshed, 1);
+        let rows = store.list_pull_requests_for_account(account).unwrap();
+        let gone = rows.iter().find(|row| row.number == 2).unwrap();
+        assert_eq!(gone.state, PrState::Merged);
+        // Within keep_closed_days the row is kept (the Archived filter shows it),
+        // but it is no longer open.
+        assert!(!gone.hidden);
+        let open: Vec<u64> = rows
+            .iter()
+            .filter(|row| row.state == PrState::Open && !row.hidden)
+            .map(|row| row.number)
+            .collect();
+        assert_eq!(open, vec![1]);
+        let closed = store.get_review_request(request.id).unwrap().unwrap();
+        assert_eq!(closed.status, RequestStatus::Closed(CloseReason::PrMerged));
     }
 
     #[test]

@@ -131,6 +131,9 @@ export interface ContextThread {
   status: "active" | "closed" | "posted";
   close_reason: string | null;
   requested_at: string | null;
+  /** Stored with the request; shown even when Slack cannot be read. */
+  last_bumped_at: string | null;
+  bump_count: number;
   messages: ContextMessage[];
   has_more: boolean;
   fetched_at: string | null;

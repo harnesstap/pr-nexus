@@ -1,0 +1,3 @@
+kind: Fixed
+body: Merged and closed PRs leave the open list at the next sync (the Archived and closed filter still shows them with a badge), and sync closes their active Slack review requests.
+time: 2026-10-26T13:20:00.000000-10:00
