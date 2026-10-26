@@ -11,6 +11,7 @@ description = "Domain types, errors, and the provider registry for PR-Nexus"
 [dependencies]
 bitflags = "2"
 chrono.workspace = true
+csv = "1.4"
 regex = "1.13.1"
 # `bundled` only. Default features pull the wasm SQLite backend, which this
 # desktop crate does not use.

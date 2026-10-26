@@ -1,0 +1,3 @@
+kind: Features
+body: Add mapping CSV import and export, with replace and merge modes, a dry-run diff, and user-over-imported lookup.
+time: 2026-10-26T06:40:00.000000Z

@@ -4,6 +4,7 @@
 
 pub mod domain;
 pub mod error;
+pub mod mapping;
 pub mod providers;
 pub mod review;
 pub mod store;

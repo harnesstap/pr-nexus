@@ -37,6 +37,30 @@ impl Store {
         })
     }
 
+    /// Delete every imported row and insert `rows`, in one write.
+    /// User-layer rows are left in place.
+    pub fn replace_imported_mappings(
+        &self,
+        rows: Vec<TeamChannelMapping>,
+    ) -> Result<(), CoreError> {
+        self.write(move |conn| {
+            conn.execute(
+                "DELETE FROM team_channel_mappings WHERE layer = 'imported'",
+                [],
+            )
+            .map_err(db)?;
+            for row in &rows {
+                if row.layer != MappingLayer::Imported {
+                    return Err(CoreError::Validation(
+                        "replace_imported_mappings only inserts imported rows".into(),
+                    ));
+                }
+                upsert_mapping(conn, row)?;
+            }
+            Ok(())
+        })
+    }
+
     pub fn mapping_count(&self) -> Result<i64, CoreError> {
         self.read(|conn| {
             conn.query_row("SELECT COUNT(*) FROM team_channel_mappings", [], |row| {
