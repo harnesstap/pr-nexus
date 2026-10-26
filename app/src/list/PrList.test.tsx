@@ -48,6 +48,7 @@ function Harness({
   onEditProject = () => undefined,
   onDetails = () => undefined,
   onRequestReview = () => undefined,
+  onBulkReview = () => undefined,
 }: {
   rows: ListRow[];
   projects?: ProjectDto[];
@@ -57,6 +58,7 @@ function Harness({
   onEditProject?: (id: number) => void;
   onDetails?: (row: ListRow) => void;
   onRequestReview?: (row: ListRow) => void;
+  onBulkReview?: (ids: number[]) => void;
 }) {
   const [view, setView] = useState<SavedView>(defaultView());
   return (
@@ -75,6 +77,7 @@ function Harness({
       onLinkPrs={onLinkPrs}
       onDetails={onDetails}
       onRequestReview={onRequestReview}
+      onBulkReview={onBulkReview}
     />
   );
 }
@@ -104,7 +107,8 @@ test("section and global tri-state checkboxes select only visible rows", () => {
 
 test("a pull request in two projects is selected in both and counted once", () => {
   const requested: number[] = [];
-  render(<Harness rows={rows} onRequestReview={(row) => requested.push(row.id)} />);
+  const bulk: number[][] = [];
+  render(<Harness rows={rows} onRequestReview={(row) => requested.push(row.id)} onBulkReview={(ids) => bulk.push(ids)} />);
   const copies = screen.getAllByRole("checkbox", { name: "Select Migrate login" });
   expect(copies).toHaveLength(2);
   fireEvent.click(copies[0]!);
@@ -114,7 +118,9 @@ test("a pull request in two projects is selected in both and counted once", () =
   fireEvent.click(screen.getByRole("button", { name: "Request / bump on Slack" }));
   expect(requested).toEqual([1]);
   fireEvent.click(screen.getByRole("checkbox", { name: "Select Add passkeys" }));
-  expect(screen.getByRole("button", { name: "Request / bump on Slack" })).toBeDisabled();
+  fireEvent.click(screen.getByRole("button", { name: "Request / bump on Slack" }));
+  expect(requested).toEqual([1]);
+  expect(bulk.map((ids) => [...ids].sort())).toEqual([[1, 2]]);
 });
 
 test("search excludes hidden rows from the parent toggle and keeps a hidden selection", async () => {
@@ -225,6 +231,7 @@ test("rows show labelled threads, a review pill, and the Slack request status", 
       onLinkPrs={() => undefined}
       onDetails={() => undefined}
       onRequestReview={() => undefined}
+      onBulkReview={() => undefined}
     />,
   );
   expect(screen.getByText("Requested · 2d ago")).toBeInTheDocument();

@@ -806,7 +806,7 @@ pub async fn pr_detail(
         .map_err(|err| AppError::new("internal", err.to_string()))?
 }
 
-fn pr_detail_blocking(state: &AppState, id: PrId) -> Result<PrDetail, AppError> {
+pub(crate) fn pr_detail_blocking(state: &AppState, id: PrId) -> Result<PrDetail, AppError> {
     let pr = state
         .store
         .get_pull_request(id)?

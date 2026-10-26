@@ -8,6 +8,7 @@ import { PrList } from "./PrList";
 import { PrDetailDialog } from "./PrDetailDialog";
 import { ProjectDialog } from "./ProjectDialog";
 import { SlackSettings } from "../slack/SlackSettings";
+import { BulkDialog } from "../slack/BulkDialog";
 import { ReviewDialog } from "../slack/ReviewDialog";
 
 interface Props {
@@ -32,6 +33,7 @@ export function ListScreen({ api, boot, onBoot }: Props) {
   const [editingProject, setEditingProject] = useState<number | null>(null);
   const [detailId, setDetailId] = useState<number | null>(null);
   const [reviewId, setReviewId] = useState<number | null>(null);
+  const [bulkIds, setBulkIds] = useState<number[] | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const view = views[viewKey] ?? defaultView();
   const needsOrgs = orgs.length === 0 && !personal;
@@ -320,6 +322,7 @@ export function ListScreen({ api, boot, onBoot }: Props) {
             onLinkPrs={(projectId, ids) => void linkPrs(projectId, ids)}
             onDetails={(row) => setDetailId(row.id)}
             onRequestReview={(row) => setReviewId(row.id)}
+            onBulkReview={setBulkIds}
           />
         )}
         {notice && (
@@ -355,6 +358,18 @@ export function ListScreen({ api, boot, onBoot }: Props) {
               setRows((current) => current.map((row) => (row.id === id ? { ...row, slack } : row)));
               setReviewId(null);
               setNotice(slack.bump_count > 0 ? "Bumped on Slack." : "Review requested on Slack.");
+            }}
+          />
+        )}
+        {bulkIds && (
+          <BulkDialog
+            api={api}
+            prIds={bulkIds}
+            onClose={() => setBulkIds(null)}
+            onOpen={(url) => void api.openExternal(url)}
+            onSent={(indicators) => {
+              const byId = new Map(indicators.map((item) => [item.pr_id, item.indicator]));
+              setRows((current) => current.map((row) => (byId.has(row.id) ? { ...row, slack: byId.get(row.id) ?? null } : row)));
             }}
           />
         )}

@@ -30,6 +30,7 @@ pub const TICKET_KEY_REGEX: &str = "projects.ticket_key_regex";
 pub const SLACK_MCP_URL: &str = "slack.mcp.url";
 pub const REVIEW_REQUESTER: &str = "review.requester";
 pub const MIN_BUMP_INTERVAL: &str = "review.min_bump_interval_hours";
+pub const BULK_BUMP_MAX_THREADS: &str = "review.bulk_bump_max_threads";
 
 pub const DEFAULT_REDIRECT: &str = "http://127.0.0.1:47821/mcp/oauth/callback";
 
@@ -130,6 +131,12 @@ pub fn review_requester(store: &Store) -> Result<Option<String>, CoreError> {
 
 pub fn min_bump_interval_hours(store: &Store) -> Result<i64, CoreError> {
     json_or(store, MIN_BUMP_INTERVAL, 24)
+}
+
+/// `review.bulk_bump_max_threads`: above this many distinct roots in one
+/// channel, a bulk bump becomes one top-level remind (§7.9). At least 1.
+pub fn bulk_bump_max_threads(store: &Store) -> Result<usize, CoreError> {
+    Ok(json_or::<usize>(store, BULK_BUMP_MAX_THREADS, 3)?.max(1))
 }
 
 pub fn oauth_client_id(store: &Store) -> Result<String, CoreError> {

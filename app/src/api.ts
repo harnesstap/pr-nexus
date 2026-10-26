@@ -82,6 +82,61 @@ export interface ReviewPreview {
 
 export type SlackIndicator = NonNullable<ListRow["slack"]>;
 
+export interface ChannelKey {
+  workspace: string;
+  channel_id: string;
+}
+
+/** Bulk request/bump (§7.9). `target` sends everything to one channel. */
+export interface BulkRequest {
+  pr_ids: number[];
+  target: ReviewTarget | null;
+  single_top_level: ChannelKey[];
+}
+
+export interface BulkPr {
+  pr_id: number;
+  number: number;
+  title: string;
+  repo: string;
+}
+
+export interface BulkMessage {
+  action: "request" | "bump" | "remind";
+  prs: BulkPr[];
+  text: string;
+  permalink: string | null;
+}
+
+export interface BulkCard {
+  target: ReviewTarget;
+  messages: BulkMessage[];
+  warnings: string[];
+  signed_in: boolean;
+  single_top_level: boolean;
+  can_switch: boolean;
+  fingerprint: string;
+}
+
+export interface BulkPreview {
+  cards: BulkCard[];
+  skipped: { pr: BulkPr; detail: string }[];
+}
+
+export interface BulkOutcome {
+  pr: BulkPr;
+  target: ReviewTarget | null;
+  outcome: "sent" | "skipped" | "failed";
+  detail: string;
+  permalink: string | null;
+}
+
+export interface BulkResult {
+  batch_id: string;
+  results: BulkOutcome[];
+  indicators: { pr_id: number; indicator: SlackIndicator | null }[];
+}
+
 export interface GithubSession {
   login: string;
   organizations: string[];
@@ -215,6 +270,8 @@ export interface Api {
   reviewTargets(prId: number, teams: string[]): Promise<TargetChoice[]>;
   reviewPreview(prId: number, target: ReviewTarget): Promise<ReviewPreview>;
   sendReview(prId: number, target: ReviewTarget, teams: string[]): Promise<SlackIndicator>;
+  bulkPreview(request: BulkRequest): Promise<BulkPreview>;
+  sendBulk(request: BulkRequest, fingerprints: string[]): Promise<BulkResult>;
   importMapping(csv: string, workspace: string): Promise<{ rows: number }>;
   finish(): Promise<SyncStatus>;
   syncNow(): Promise<SyncStatus>;
@@ -263,6 +320,8 @@ export const tauriApi: Api = {
   reviewTargets: (prId, teams) => invoke("review_targets", { prId, teams }),
   reviewPreview: (prId, target) => invoke("review_preview", { prId, target }),
   sendReview: (prId, target, teams) => invoke("send_review", { prId, target, teams }),
+  bulkPreview: (request) => invoke("bulk_preview", { request }),
+  sendBulk: (request, fingerprints) => invoke("send_bulk", { request, fingerprints }),
   importMapping: (csv, workspace) => invoke("import_mapping", { csv, workspace }),
   finish: () => invoke("finish_onboarding"),
   syncNow: () => invoke("sync_now"),

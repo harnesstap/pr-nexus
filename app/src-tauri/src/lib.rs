@@ -1,3 +1,4 @@
+mod bulk;
 mod commands;
 mod demo;
 mod error;
@@ -55,6 +56,8 @@ pub fn run() {
             slack::review_targets,
             slack::review_preview,
             slack::send_review,
+            bulk::bulk_preview,
+            bulk::send_bulk,
             commands::slack_manifest_url,
             commands::import_mapping,
             commands::finish_onboarding,

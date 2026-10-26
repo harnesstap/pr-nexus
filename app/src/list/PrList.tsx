@@ -59,6 +59,8 @@ interface Props {
   onDetails: (row: ListRow) => void;
   /** Opens the Slack request/bump preview for one row. */
   onRequestReview: (row: ListRow) => void;
+  /** Two or more PRs from the bottom bar (§7.9). */
+  onBulkReview: (ids: number[]) => void;
 }
 
 const GROUPINGS: { id: Grouping; label: string }[] = [
@@ -92,6 +94,7 @@ export function PrList({
   onLinkPrs,
   onDetails,
   onRequestReview,
+  onBulkReview,
 }: Props) {
   const [query, setQuery] = useState("");
   const [debounced, setDebounced] = useState("");
@@ -446,9 +449,15 @@ export function PrList({
             <button
               type="button"
               className="rounded bg-violet-500 px-3 py-1 text-white disabled:bg-violet-500/40"
-              disabled={singleSelected === null}
-              title={singleSelected === null ? "Select one PR to request or bump on Slack" : undefined}
-              onClick={() => singleSelected && onRequestReview(singleSelected)}
+              disabled={bulkIds(selected).length === 0}
+              onClick={() => {
+                const ids = bulkIds(selected);
+                if (singleSelected && ids.length === 1) {
+                  onRequestReview(singleSelected);
+                } else if (ids.length > 0) {
+                  onBulkReview(ids);
+                }
+              }}
             >
               Request / bump on Slack
             </button>
