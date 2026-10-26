@@ -18,7 +18,7 @@ jobs:
       contents: write
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -162,7 +162,7 @@ jobs:
 
       - name: Upload tag-release result
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: tag-release-result
           path: /tmp/tag-release-result/result.env

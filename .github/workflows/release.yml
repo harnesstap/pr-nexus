@@ -45,7 +45,7 @@ jobs:
       dry_run: ${{ steps.resolve.outputs.dry_run }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           ref: ${{ github.event.workflow_run.head_sha || github.ref }}
@@ -69,7 +69,7 @@ jobs:
       - name: Download Tag release result
         if: github.event_name == 'workflow_run'
         continue-on-error: true
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: tag-release-result
           run-id: ${{ github.event.workflow_run.id }}
@@ -131,7 +131,7 @@ jobs:
         shell: bash
     steps:
       - name: Check out tagged sources
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.prepare.outputs.tag }}
 
@@ -197,7 +197,7 @@ jobs:
       contents: write
     steps:
       - name: Check out scripts
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Verify the DMG and publish
         env:
