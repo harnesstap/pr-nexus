@@ -812,13 +812,11 @@ Nothing org-specific is hard-coded or shipped: GitHub orgs, Slack workspaces, te
 - muted text, one accent color (violet) for the primary action and the selection, status pills for review decision.
 
 Approved mockups (AI-generated; style references, not pixel specs):
-- [`docs/ui/list-view.jpg`](ui/list-view.jpg): list, filter menu, sync footer, bulk bar. Known differences, where the spec wins:
-  - the **per-row Request/Bump buttons are superseded**: rows have no action buttons, only the request indicator below;
-  - it omits the unresolved-thread count, **which must still be shown** (💬 n);
-  - the filter menu anchors **under the funnel button** (in the mockup it floats near a header `⋯` button);
-  - the header `⋯` overflow button is **removed**;
-  - it lacks the global tri-state checkbox in the list header.
-- [`docs/ui/slack-preview.jpg`](ui/slack-preview.jpg): the Slack preview modal. The list behind it is filler. The rendered message is illustrative: the real text is the §7.6 template, byte-exact, and the sender shown is **you** (messages are posted with your user token), not an "APP" bot.
+- [`docs/ui/list-view.jpg`](ui/list-view.jpg): list, sync footer, bulk bar, per-row request indicator (Slack icon + `Requested · 2d ago` / `Bumped · 5h ago` / dimmed `Not requested`; no action buttons on rows). Known differences, where the spec wins:
+  - the **funnel filter button** next to the search bar is missing in the mockup but required;
+  - project section headers need their own tri-state checkbox (the mockup only shows the collapse chevron);
+  - the request indicator also carries the ↗ link to the original Slack message.
+- [`docs/ui/slack-preview.jpg`](ui/slack-preview.jpg): the Slack preview modal only (cropped; in the app it sits centered over the dimmed list view). The rendered message is illustrative: the real text is the §7.6 template, byte-exact, and the sender shown is **you** (messages are posted with your user token), not an "APP" bot. Bumps appear in a separate "Bump · thread reply" group per channel.
 
 **Layout.**
 - **Sidebar** (navigation only, no persistent filters): My PRs, To review, Projects, Settings. There is no org checkbox list here; orgs are a filter in the menu.
