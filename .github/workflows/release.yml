@@ -1,0 +1,167 @@
+name: Release
+
+# Publish the ad-hoc sealed macOS arm64 DMG.
+# Tag pushes made with GITHUB_TOKEN do not trigger workflows, so a successful
+# "Tag release" run starts this one via workflow_run. A tag pushed by a person
+# or a fine-grained token still takes the push path. Re-runs are idempotent:
+# the draft is reused, uploads use --clobber, and publish only flips the draft
+# bit once the expected asset is present.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to release, for example v0.1.0
+        required: true
+        type: string
+      dry_run:
+        description: Verify the tag and version without creating or publishing a release
+        type: boolean
+        default: false
+  workflow_run:
+    workflows: ["Tag release"]
+    types: [completed]
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    name: gate
+    # workflow_run cannot filter on conclusion. A failed or cancelled Tag
+    # release skips the rest of this workflow instead of failing it.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Continue
+        run: echo "release gate open"
+
+  prepare:
+    name: prepare
+    needs: gate
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+      dry_run: ${{ steps.resolve.outputs.dry_run }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Download the tag-release result
+        if: github.event_name == 'workflow_run'
+        uses: actions/download-artifact@v7
+        with:
+          name: tag-release-result
+          path: tag-release-result
+          github-token: ${{ github.token }}
+          run-id: ${{ github.event.workflow_run.id }}
+      - name: Resolve the tag
+        id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          RESULT_DIR: tag-release-result
+        run: ./scripts/resolve-release-tag.sh
+      - name: Check out the tag
+        if: steps.resolve.outputs.check_tree == 'true'
+        env:
+          TAG: ${{ steps.resolve.outputs.tag }}
+        run: git checkout --detach "${TAG}"
+      - name: Verify version stamps and ensure a draft release
+        if: steps.resolve.outputs.check_tree == 'true'
+        env:
+          TAG: ${{ steps.resolve.outputs.tag }}
+          VERSION: ${{ steps.resolve.outputs.version }}
+          DRY_RUN: ${{ steps.resolve.outputs.dry_run }}
+        run: |
+          set -euo pipefail
+          cargo_version="$(python3 scripts/workspace_version.py read)"
+          if [[ "${cargo_version}" != "${VERSION}" ]]; then
+            echo "Cargo.toml version ${cargo_version} does not match ${VERSION}" >&2
+            exit 1
+          fi
+          if [[ "${DRY_RUN}" == "true" ]]; then
+            echo "dry run: ${TAG} matches Cargo.toml"
+            exit 0
+          fi
+          ./scripts/ensure-draft-release.sh
+      - name: Skip the tree check for a tag-release dry run
+        if: steps.resolve.outputs.check_tree != 'true'
+        env:
+          TAG: ${{ steps.resolve.outputs.tag }}
+        run: echo "tag-release dry run for ${TAG}; no tag was pushed"
+
+  macos:
+    name: macos
+    needs: prepare
+    if: needs.prepare.outputs.dry_run != 'true'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - name: Detect Apple signing secrets
+        id: apple
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${APPLE_CERTIFICATE}" ]]; then
+            echo "enabled=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "enabled=false" >> "${GITHUB_OUTPUT}"
+          fi
+      - name: Build the macOS app and DMG
+        working-directory: app
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+          bun run tauri build --bundles app,dmg
+      - name: Developer ID sign and notarize
+        if: steps.apple.outputs.enabled == 'true'
+        run: ./scripts/sign-macos-developer-id.sh
+      - name: Ad-hoc reseal
+        if: steps.apple.outputs.enabled != 'true'
+        run: ./scripts/reseal-macos-app.sh
+      - name: Upload the DMG
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          asset="target/release/bundle/dmg/PR-Nexus_${VERSION}_aarch64.dmg"
+          if [[ ! -f "${asset}" ]]; then
+            echo "missing ${asset}" >&2
+            find target/release/bundle -type f -print >&2 || true
+            exit 1
+          fi
+          gh release upload "${TAG}" "${asset}" --clobber
+
+  publish:
+    name: publish
+    needs: [prepare, macos]
+    if: needs.prepare.outputs.dry_run != 'true' && needs.macos.result == 'success'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+      - name: Publish when the expected asset exists
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: ./scripts/publish-release.sh

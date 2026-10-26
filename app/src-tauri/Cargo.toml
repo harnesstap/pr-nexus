@@ -1,0 +1,26 @@
+[package]
+name = "pr-nexus"
+description = "PR-Nexus desktop shell."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[lib]
+# The `_lib` suffix keeps the library name distinct from the binary. Windows
+# rejects a staticlib/cdylib whose name matches the package. See rust-lang/cargo#8519.
+name = "pr_nexus_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+pr-nexus-core = { workspace = true }
+pr-nexus-providers = { workspace = true }
+tauri = { version = "2.12", features = [] }
+tauri-plugin-opener = "2"
+
+[features]
+keyring-mock = ["pr-nexus-providers/keyring-mock"]

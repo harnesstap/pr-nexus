@@ -1,0 +1,75 @@
+name: Tag release
+
+# Dispatch on main. Batches Changie fragments, stamps the workspace version,
+# and pushes a Release commit plus the vX.Y.Z tag as github-actions[bot].
+# The tag push uses GITHUB_TOKEN, which does not start other workflows.
+# release.yml also listens for this workflow completing.
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Batch and stamp without committing or tagging
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    name: tag
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require main
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "Tag release is dispatched from main" >&2
+          exit 1
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: main
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install changie
+        run: ./scripts/install-changie.sh
+      - name: Batch and merge the changelog
+        id: changelog
+        run: |
+          set -euo pipefail
+          changie batch auto
+          version="$(changie latest --remove-prefix)"
+          changie merge
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "batched ${version}"
+      - name: Stamp the workspace version
+        env:
+          VERSION: ${{ steps.changelog.outputs.version }}
+        run: ./scripts/stamp-release-version.sh "${VERSION}"
+      - name: Verify Cargo.lock
+        run: cargo update --workspace --locked
+      - name: Commit and push the tag
+        if: inputs.dry_run != true
+        env:
+          VERSION: ${{ steps.changelog.outputs.version }}
+        run: ./scripts/commit-release.sh "${VERSION}"
+      - name: Write the tag-release result
+        env:
+          VERSION: ${{ steps.changelog.outputs.version }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/tag-release-result"
+          printf '%s\n' "${VERSION}" > "${RUNNER_TEMP}/tag-release-result/version"
+          printf 'v%s\n' "${VERSION}" > "${RUNNER_TEMP}/tag-release-result/tag"
+          if [[ "${DRY_RUN}" == "true" ]]; then
+            printf 'true\n' > "${RUNNER_TEMP}/tag-release-result/dry_run"
+          else
+            printf 'false\n' > "${RUNNER_TEMP}/tag-release-result/dry_run"
+          fi
+      - name: Upload the tag-release result
+        uses: actions/upload-artifact@v7
+        with:
+          name: tag-release-result
+          path: ${{ runner.temp }}/tag-release-result
+          retention-days: 7

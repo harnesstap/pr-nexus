@@ -1,0 +1,17 @@
+[package]
+name = "pr-nexus-providers"
+description = "GitHub and Slack provider implementations for PR-Nexus."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+pr-nexus-core = { workspace = true }
+
+[features]
+# Linux CI has no secret service. Later milestones select the keyring mock
+# store when this feature is enabled (`docs/SPEC.md` §9). The flag is a stub
+# until the vault lands, so tests can already opt into it.
+keyring-mock = []

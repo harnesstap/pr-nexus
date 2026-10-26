@@ -1,0 +1,21 @@
+name: Nightly
+
+# Full CI against the newest compatible dependencies. Opens no issues.
+# The cron lives here rather than on CI so the required pull-request workflow
+# stays a locked check.
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  ci:
+    name: ci
+    uses: ./.github/workflows/ci.yml
+    with:
+      locked: false
+      full: true

@@ -1,0 +1,29 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/pr-nexus-core",
+  "crates/pr-nexus-providers",
+  "app/src-tauri",
+]
+
+# The product version lives only here. tauri.conf.json omits `version` on purpose
+# so the Tauri CLI reads this value. app/package.json is private and is not stamped.
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "UNLICENSED"
+publish = false
+rust-version = "1.90"
+
+[workspace.dependencies]
+pr-nexus-core = { path = "crates/pr-nexus-core" }
+pr-nexus-providers = { path = "crates/pr-nexus-providers" }
+thiserror = "2"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true

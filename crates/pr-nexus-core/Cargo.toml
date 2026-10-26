@@ -1,0 +1,17 @@
+[package]
+name = "pr-nexus-core"
+description = "Domain types, errors, and local logic for PR-Nexus. No network I/O."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+chrono = { workspace = true }
+thiserror = { workspace = true }
+
+[features]
+# Present so `cargo test --workspace --features keyring-mock` resolves.
+# The mock keyring store itself lives with the providers crate.
+keyring-mock = []

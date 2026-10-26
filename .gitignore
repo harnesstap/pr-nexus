@@ -1,0 +1,19 @@
+# Rust
+/target
+**/*.rs.bk
+
+# Frontend
+app/node_modules
+app/dist
+app/dist-ssr
+
+# Tauri
+app/src-tauri/target
+app/src-tauri/gen/schemas
+
+# Local env and OS
+.DS_Store
+*.local
+.idea
+.vscode/*
+!.vscode/extensions.json
