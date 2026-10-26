@@ -47,6 +47,7 @@ pr-nexus/
 ├─ app/
 │  ├─ package.json, vite.config.ts, src/ (React + TS + Tailwind)
 │  └─ src-tauri/                 # bin crate `pr-nexus`: Tauri commands, app state, poll scheduler
+├─ assets/slack-app-manifest.json # template for "Create your Slack app" (§7.11)
 ├─ docs/SPEC.md, AGENTS.md, CONTRIBUTING.md
 ├─ .changes/ (Changie), .changie.yaml, CHANGELOG.md
 └─ .github/workflows/ ci.yml, nightly.yml, tag-release.yml, release.yml
@@ -730,7 +731,11 @@ Facts checked on 2026-10-25 (https://docs.slack.dev/ai/slack-mcp-server and the 
   - `code_challenge_methods_supported: [S256]`;
   - grants `authorization_code` and `refresh_token`.
   An unauthenticated call returns `401` with `WWW-Authenticate: Bearer resource_metadata=…`.
-- Client authentication: the docs describe confidential OAuth (`client_id` + `client_secret`) and say PKCE is available for desktop clients. The metadata lists only `client_secret_post` as the token-endpoint auth method. Desktop MCP clients configure only a client ID and a callback port, so PKCE without a secret works for apps set up for it. PR-Nexus uses that public-client PKCE flow. M10 starts with a spike that proves the code exchange without a secret for the configured app (§7.13 R2).
+- Client authentication: the docs describe confidential OAuth (`client_id` + `client_secret`) and say PKCE is available for desktop clients. The metadata lists only `client_secret_post` as the token-endpoint auth method. Slack's PKCE guide (https://docs.slack.dev/authentication/using-pkce) adds:
+  - an app is a public client only after `oauth_config.pkce_enabled` is turned on, which is one-way;
+  - only then are `localhost` redirects treated as desktop redirects, whose code exchange and refresh need no `client_secret`;
+  - refresh tokens of PKCE-enabled apps expire after 30 days.
+  So PR-Nexus supports both modes. It always sends PKCE S256, and sends the **client secret when one is configured**. An app created from PR-Nexus's manifest is confidential (secret required). A client ID alone works only for an app that has PKCE enabled. M10's spike proves both exchanges (§7.13 R2).
 - Rate limits: the Web API limits of the underlying method apply, per tool:
   - send message: special (about 1 per second per channel);
   - search messages: special;
@@ -746,15 +751,15 @@ Facts checked on 2026-10-25 (https://docs.slack.dev/ai/slack-mcp-server and the 
 - automatic token refresh;
 - `AuthClient`, which wraps the streamable HTTP transport. It refreshes once on a rejected token and otherwise surfaces `AuthRequired`.
 
-Registration follows the MCP spec's priority order: a **pre-registered client** (`AuthorizationRequest::with_preregistered_client(client_id)`, secret optional) wins over Client ID Metadata Documents and DCR. That is exactly what Slack needs, because it has no DCR. Tokens go through a custom credential store backed by the keychain vault (§9). No hand-written OAuth is needed.
+Registration follows the MCP spec's priority order: a **pre-registered client** (`AuthorizationRequest::with_preregistered_client(client_id)`, plus `with_client_secret(secret)` when a secret is configured) wins over Client ID Metadata Documents and DCR. That is exactly what Slack needs, because it has no DCR. Tokens go through a custom credential store backed by the keychain vault (§9). No hand-written OAuth is needed.
 
 *Fallback if the spike shows a gap* (for example, rmcp refusing to exchange without a secret because the metadata lists only `client_secret_post`, or not exposing the token response's `team`/`authed_user`): run the authorization-code + PKCE exchange by hand with `oauth2` 5 against the two endpoints above (a small module). Then give the access token to the rmcp transport as a static bearer header, and refresh on `AuthRequired`. The rest of the design does not change.
 
 **OAuth flow, one workspace at a time** (wizard step 5, §8.3, or Settings → Accounts → Add workspace):
 1. **Client settings are user data.** Read `slack.mcp.client_id` and `slack.mcp.redirect_uri` (§7.12): global, with an optional per-workspace override.
    - The redirect URI is a loopback URI that must exactly match one registered on the Slack app, e.g. `http://127.0.0.1:<port>/mcp/oauth/callback`. The port is part of the match.
-   - No client ID ships with the app, the repo, fixtures, or docs; the wizard asks for it.
-   - An optional client secret is accepted only for an app that requires one. It lives in the keychain vault, never in `settings`.
+   - No client ID ships with the app, the repo, fixtures, or docs; the wizard asks for it (D20).
+   - **Client secret: a first-class optional field** next to the client ID. It is needed for a confidential app, which includes every app created from PR-Nexus's manifest, and left empty for a PKCE-enabled public app. It lives in the keychain vault (`slack-client:<client_id>`, §9), never in `settings`, logs, or the webview after it is saved: the field then shows "Saved in keychain · [Replace] [Clear]".
 2. **Listen and open the browser.** PR-Nexus binds a one-shot HTTP listener on exactly that host and port (`127.0.0.1` only). It builds the authorize URL with `state`, PKCE S256, `redirect_uri`, and the user scopes below, and opens it in the system browser from Rust. Slack shows its workspace picker and consent screen, and the user picks one workspace.
 3. **Callback.** PR-Nexus checks `state` and exchanges the code. The listener closes after the first valid callback, on Cancel, or after 2 minutes.
    - If the port is already taken, the step says so ("Port <port> is in use. Finish or close the other app's Slack sign-in, or change the redirect URI.") instead of falling back to another port, which Slack would reject.
@@ -806,6 +811,29 @@ The MCP search tools use the `search:read.*` scopes, not the legacy `search:read
 - A workspace that is missing or unauthorized blocks only its own channels. The other workspaces still send, and the result report says "re-auth <workspace>".
 - There is no default workspace setting. CSV rows without a workspace get the one picked in the import dialog (§7.5); the picker opens on the row's workspace, else the last one used.
 
+**Create your Slack app (link in wizard step 5 and Settings → Accounts).** No client ID ships with PR-Nexus (D20). Instead, a **Create your Slack app** link opens Slack's create-from-manifest flow, prefilled with the manifest committed at `assets/slack-app-manifest.json`.
+- **URL format** (https://docs.slack.dev/app-manifests/configuring-apps-with-app-manifests/, "Sharing manifests"): `https://api.slack.com/apps?new_app=1&manifest_json=<URL-encoded JSON>`. Slack also accepts `manifest_yaml=`; PR-Nexus uses JSON.
+- **Building the link:**
+  - At runtime, PR-Nexus loads the manifest (embedded with `include_str!`).
+  - It replaces `oauth_config.redirect_urls` with the current redirect URI (the global setting, or the workspace override being edited).
+  - It serializes the manifest compactly and percent-encodes every reserved character (`encodeURIComponent` semantics).
+  - It opens the link in the system browser from Rust. The default link is about 930 characters long.
+- **Manifest contents** (generic, no company data):
+  - `display_information.name` = `PR-Nexus`, with a one-line description;
+  - `oauth_config.redirect_urls` = `["http://127.0.0.1:47821/mcp/oauth/callback"]`, the default of `slack.mcp.redirect_uri`;
+  - `oauth_config.scopes.user` = the user scopes listed above, with `search:read.private` repeated in `user_optional` (optional scopes must also appear in `user`); no bot scopes and no bot user;
+  - `oauth_config.pkce_enabled` = `false`, so the app stays confidential: enabling PKCE is one-way, so the user decides that in the app settings, not the manifest;
+  - `settings`: `is_mcp_enabled: true` (the manifest form of App settings → Agents → "Slack Model Context Protocol (MCP) Server"), and `org_deploy_enabled`, `socket_mode_enabled`, and `token_rotation_enabled` all `false`;
+  - `_metadata.major_version` = `1`.
+- **Help text under the link** (wizard and Settings):
+  > 1. Click **Create your Slack app**, pick the workspace, and confirm. Slack prefills name, scopes, redirect URL, and MCP access.
+  > 2. In the new app, check **Agents → Slack Model Context Protocol (MCP) Server** is **On**. Turn it on if it is off.
+  > 3. Copy the **Client ID** and **Client Secret** from **Basic Information** and paste them here. The secret is stored in your system keychain, never in PR-Nexus settings.
+  > 4. Install the app to the workspace. Slack lets only **internal** apps (created in your workspace, not distributed) or **Slack Marketplace** apps use MCP, and your workspace admin may need to approve it first.
+  >
+  > Already have an MCP-enabled Slack app approved in your org? Paste its client ID instead (and its secret, unless the app uses PKCE), and set the redirect URI to one registered on that app.
+- **Several workspaces:** an internal app belongs to one workspace. To connect another workspace, create a second app there and put its client ID and secret in that workspace's override (§7.12). Enterprise Grid org-wide apps (`org_deploy_enabled`) are out of scope for the manifest.
+
 **Fallback and future option: direct Web API (documented, not built in v1).** If a workspace cannot use the Slack MCP server (for example, its admins approve no MCP-enabled app), a `SlackWebApiChatProvider` can implement the same trait. It is the same `ChatKind::Slack`, selected by `accounts.auth_mode='slack_user_token'`, so the core, planner, and UI do not change.
 - **Auth:** a user token (`xoxp-…`) from an internal Slack app the user creates in that workspace from a manifest, pasted into PR-Nexus and checked with `auth.test`.
 - **Methods:**
@@ -819,8 +847,8 @@ The MCP search tools use the `search:read.*` scopes, not the legacy `search:read
 
 | # | Risk | Impact | Mitigation |
 |---|---|---|---|
-| R1 | **Reusing another app's client ID.** The user may point PR-Nexus at an MCP-enabled Slack app their org already approved for another MCP client. | That app's name appears on the consent screen, in the workspace's connected apps and audit logs, and as the app shown on messages posted through it. PR-Nexus depends on that app staying approved, on its registered redirect URI and port, and on its scopes. Its owner can change or revoke it at any time. Slack issues one user grant per app and user, so the two clients may share it. | Temporary and configurable: the client ID and redirect URI are settings, never in the repo. Remove workspace never revokes the grant. Long term, register a dedicated internal PR-Nexus Slack app with MCP enabled; only settings change. |
-| R2 | **PKCE without a client secret is not proven** for a given app (the metadata lists only `client_secret_post`). | Sign-in fails at the code exchange. | M10 spike first. Optional client secret in the keychain. Manual exchange fallback (§7.11). |
+| R1 | **Reusing another app's client ID.** The user may point PR-Nexus at an MCP-enabled Slack app their org already approved for another MCP client. | That app's name appears on the consent screen, in the workspace's connected apps and audit logs, and as the app shown on messages posted through it. PR-Nexus depends on that app staying approved, on its registered redirect URI and port, and on its scopes. Its owner can change or revoke it at any time. Slack issues one user grant per app and user, so the two clients may share it. | Configurable: the client ID and redirect URI are settings, never in the repo. Remove workspace never revokes the grant. The recommended path is the user's own app from the **Create your Slack app** link (§7.11); switching only changes settings. |
+| R2 | **Client authentication varies by app.** Apps created from the manifest are confidential and need the secret. A client ID alone works only for a PKCE-enabled app. Slack's acceptance of PKCE parameters alongside a secret on a non-PKCE app is not documented. | Sign-in fails at the code exchange. | M10 spike proves both: secret + PKCE on a manifest-created app, and PKCE-only on a PKCE-enabled app. First-class client secret field (keychain). Clear error naming the missing secret on `invalid_client`/`bad_client_secret`. Manual exchange fallback (§7.11), which can drop the PKCE parameters if Slack rejects them. |
 | R3 | **MCP rate limits are only partly documented.** Search and send are "special". Limits are per app, so they are shared with the other client when an app is reused. | Discovery or sends get `ratelimited`. | Discovery is self-throttled to ≤10 calls/min per workspace with a 24 h cooldown (D15). Backoff on `RateLimited`. Background discovery pauses first; user-initiated sends keep priority. |
 | R4 | **Loopback port collision.** A reused app has one registered redirect URI, so PR-Nexus and the other client share the same port. | If both run a Slack sign-in at once, one cannot bind, or receives the other's callback. | Bind only during sign-in. Never fall back to another port. Clear port-in-use error. A callback with a foreign `state` is rejected and the flow keeps waiting. |
 | R5 | **Tool schema drift.** The Slack MCP tools are not versioned. | Calls fail, or results parse wrong. | Pinned tool names and required fields, checked against `tools/list` on connect (writes disabled on mismatch). Contract tests replay recorded, scrubbed fixtures (§13). A manual check against the live server is on the pre-release checklist. |
@@ -843,9 +871,9 @@ Nothing org-specific is hard-coded or shipped: GitHub orgs, Slack workspaces, te
 | `sync.keep_closed_days` | 7 | same |
 | `slack.workspaces` | none: derived from connected Slack accounts | `acme`, `acme-labs` |
 | `slack.mcp.url` | `https://mcp.slack.com/mcp` | same |
-| `slack.mcp.client_id` | unset: the wizard asks for it (no client ID ships with the app) | `<client ID of an MCP-enabled Slack app>` |
-| `slack.mcp.redirect_uri` | unset: entered with the client ID; must match the app's registered redirect URI exactly | `http://127.0.0.1:<port>/mcp/oauth/callback` |
-| `slack.mcp.workspace_overrides` | `{}`: every workspace uses the global client | `{"T0000000":{"client_id":"<…>","redirect_uri":"http://127.0.0.1:<port>/mcp/oauth/callback"}}` |
+| `slack.mcp.client_id` | unset: the wizard asks for it; no client ID ships with the app (D20). The client secret is not a setting: it lives in the keychain (§9). | `<client ID of the user's Slack app>` |
+| `slack.mcp.redirect_uri` | `http://127.0.0.1:47821/mcp/oauth/callback`, the same value as in `assets/slack-app-manifest.json` (a unit test keeps them equal); must match a redirect URL registered on the app exactly | `http://127.0.0.1:<port>/mcp/oauth/callback` for an existing app |
+| `slack.mcp.workspace_overrides` | `{}`: every workspace uses the global client | `{"T0000000":{"client_id":"<…>","redirect_uri":"http://127.0.0.1:<port>/mcp/oauth/callback"}}` (secret in the keychain under that client ID) |
 | `review.requester` | `""` | `""` |
 | `review.min_bump_interval_hours` | 24 | 24 |
 | `review.blocked_review_required_is_ready` | `true` (§7.1 Δ, owner decision) | true |
@@ -1041,7 +1069,7 @@ Keyboard: `j/k` move, `x` toggle select, `Shift+x` toggle the focused row's sect
 **Projects**: list on the left; on the right, name/color, rules editor (kind, pattern, priority, and a live "matches N open PRs" preview), and linked PRs with their source badges (manual/rule/excluded).
 
 **Settings** tabs:
-- Accounts. It starts with a **Providers** row showing the chosen git and communication providers (from the registry; other providers are listed as Coming soon, so there is nothing to switch to in v1). Then: the GitHub account (re-connect with any of the three auth modes) plus the **tracked orgs picker**: checkboxes from `viewer.organizations` and orgs seen in search, and a "personal repos" toggle; Slack with the MCP client settings (client ID, redirect URI; §7.11), one row per connected workspace, each with its own status, re-auth, remove, and an optional client override, and an "Add workspace" button);
+- Accounts. It starts with a **Providers** row showing the chosen git and communication providers (from the registry; other providers are listed as Coming soon, so there is nothing to switch to in v1). Then: the GitHub account (re-connect with any of the three auth modes) plus the **tracked orgs picker**: checkboxes from `viewer.organizations` and orgs seen in search, and a "personal repos" toggle; Slack with the MCP client settings (the **Create your Slack app** link and its help text, client ID, client secret stored in the keychain, redirect URI; §7.11), one row per connected workspace, each with its own status, re-auth, remove, and an optional client override, and an "Add workspace" button);
 - Mappings (table, import/export, dry-run diff; this is where a mapping skipped in the wizard is done later);
 - Review (the config keys in §7.12);
 - Sync;
@@ -1059,7 +1087,7 @@ Onboarding is a **wizard of separate screens, shown one step at a time**, not a 
 | 2 | Choose communication provider | Cards: **Slack** (enabled), Discord and Mattermost (disabled, "Coming soon"). | a provider is selected (Slack preselected) |
 | 3 | Connect GitHub | The three auth modes of §9 in order: `gh` CLI token (preselected when `gh auth status` succeeds), PAT, device flow. Validates with `viewer` and shows the login and scope check; SSO errors show the authorization link. | the account is verified |
 | 4 | Choose orgs to track | Checkboxes from `viewer.organizations` (plus orgs seen in search), a filter box, and the **Include my personal repos** toggle. Writes `github.tracked_orgs` and `github.include_personal_repos`. | at least one org is checked or personal repos is on |
-| 5 | Connect Slack workspace(s) | The Slack MCP client fields (client ID and redirect URI, pre-filled from settings and required once), the list of connected workspaces, then **Sign in with Slack** for **one workspace at a time**: browser OAuth against the Slack MCP server (PKCE, loopback callback; §7.11), with tokens saved to the keychain. "Add another workspace" repeats the sign-in. An optional per-workspace client override sits under "Advanced". | at least one workspace is connected |
+| 5 | Connect Slack workspace(s) | The **Create your Slack app** link with its help text (§7.11), then the Slack MCP client fields: client ID (required once, empty by default: no client ID ships), client secret (optional, saved to the keychain; needed for apps created from the link), and redirect URI (pre-filled with the default that the manifest registers). Below them come the list of connected workspaces, then **Sign in with Slack** for **one workspace at a time**: browser OAuth against the Slack MCP server (PKCE, loopback callback; §7.11), with tokens saved to the keychain. "Add another workspace" repeats the sign-in. An optional per-workspace client override sits under "Advanced". | at least one workspace is connected |
 | 6 | Team → channel mapping | CSV import with the target-workspace picker and dry-run preview (§7.5), or **Skip**. A note says it can be done later in Settings → Mappings or from the preview's "Change channel". | always (Import & next, or Skip) |
 | 7 | Done | Summary (account, orgs, workspaces, mapping rows or "skipped") and the **first sync** starting, with live progress. "Open PR-Nexus" goes to My PRs. | — |
 
@@ -1147,9 +1175,14 @@ Step 5:
 ┌ PR-Nexus setup ────────────────────────────────────────────────────────────┐
 │ ● ● ● ● ● ○ ○   Step 5 of 7 · Connect Slack                                │
 │                                                                            │
-│ Slack MCP client (an MCP-enabled Slack app your admin approved):           │
-│   Client ID     [ ________________________ ]                               │
-│   Redirect URI  [ http://127.0.0.1:<port>/mcp/oauth/callback ]             │
+│ Your Slack app (no app ships with PR-Nexus):                               │
+│   [Create your Slack app ↗]  prefilled: name, scopes, redirect, MCP on     │
+│   Then check Agents → Slack MCP Server is On, install the app (an          │
+│   admin may need to approve it), and copy the credentials from Basic       │
+│   Information. Or paste the ID of an MCP app your org already approved.    │
+│   Client ID      [ ________________________ ]                              │
+│   Client secret  [ ________________________ ]  optional · keychain         │
+│   Redirect URI   [ http://127.0.0.1:47821/mcp/oauth/callback ]             │
 │                                                                            │
 │ Connected workspaces:                                                      │
 │   ✓ acme · @you                                         [Remove]           │
@@ -1207,13 +1240,13 @@ Step 7:
 
 Detect `X-GitHub-SSO: required; url=…` and show the authorization link.
 
-**Slack auth:** OAuth 2.1 authorization code + PKCE against the Slack MCP server, with a user-configured client ID and loopback redirect URI (§7.11).
+**Slack auth:** OAuth 2.1 authorization code + PKCE against the Slack MCP server, with a user-configured client ID, an optional client secret (keychain), and a loopback redirect URI (§7.11).
 - The authorize URL is opened from Rust, not from the webview.
 - The callback listener binds `127.0.0.1` on the configured port only while a sign-in is running. It accepts one callback with a matching `state`.
 - The PKCE verifier and the code never leave memory.
 
 **Secrets**:
-- Use `keyring` with service `dev.pr-nexus` and **one single entry**, `vault`. It holds a JSON map `{ "<kind>:<external_id>": <secret> }`, e.g. `github:<node id>` → token, and one `slack:<team_id>:<user_id>` per workspace → `{access_token, refresh_token?, expires_at?, client_secret?}`. The app reads it once at startup and keeps it in memory (`secrecy::SecretString`).
+- Use `keyring` with service `dev.pr-nexus` and **one single entry**, `vault`. It holds a JSON map `{ "<kind>:<external_id>": <secret> }`, e.g. `github:<node id>` → token, one `slack:<team_id>:<user_id>` per workspace → `{access_token, refresh_token?, expires_at?}`, and one `slack-client:<client_id>` per configured Slack app → `{client_secret}`, entered before the first sign-in and shared by the workspaces that use that client. The app reads it once at startup and keeps it in memory (`secrecy::SecretString`).
 - **Why one entry:** builds are unsigned (see the caveat below). After each update, macOS asks once per keychain item whether to allow access. With 1 GitHub account and N Slack workspaces, separate items would mean 1+N prompts per update; one entry means one.
 - Never write secrets to SQLite, logs, or the frontend. Commands return only `has_token: bool`.
 - In Linux CI there is no secret service, so tests use the keyring `mock` store behind a feature flag.
@@ -1382,7 +1415,7 @@ Release runbook (CONTRIBUTING.md):
 | **M7** | List UI | Dark compact style (§8.2). Sidebar navigation with the sync-status footer and refresh button. Grouped, collapsible list with three-level tri-state selection (global, section, row) and no per-row action buttons. No header overflow button. Inline project rename by double-click. Minimal section `⋯` menu (auto-link rules, archive, delete). Floating bulk bar. Slack request indicator with link icon. Filter menu (Grouping, Ordering, Show, Filters with Reset), persisted per view in `view_state`. Search bar over project name, title, body, repo, and number. Keyboard shortcuts. vitest: tri-state derivation (none/partial/all) for section and global; parent toggle selects or deselects only visible children; a filter or search excludes hidden rows from parent toggles; checking a multi-project PR updates every section containing it; bulk count and planner input dedupe by `PrId`; hidden-selected count; inline rename (Enter saves, Esc cancels, empty or duplicate name rejected, Unassigned not editable); filter and search predicates; view-state restore. |
 | **M8** | Projects | CRUD, rules with live preview, manual/rule/excluded semantics tested. Unassigned section. |
 | **M9** | Ownership inputs | Files (paginated, capped), CODEOWNERS lookup order, `rules/branches`, protection with 403→Unknown, reviews with onBehalfOf, team members cache. Detail view shows readiness, owners, and the rationale. |
-| **M10** | Slack single request/bump | **Spike first** (throwaway branch, findings written into §7.11): against the configured client ID, prove the PKCE code exchange without a secret, read `team.id`/`authed_user.id` from the token response (or via `slack_read_user_profile`), confirm refresh behaviour, and snapshot `tools/list`; record the Markdown read-back result that decides `md_escape_titles` (§7.6). Then wizard steps 5 and 6 (connect workspaces one at a time; mapping import or skip) and the same flows in Settings. Slack onboarding for **any number of workspaces** through the Slack MCP server: client ID and redirect URI settings (global, optional per-workspace override, none committed); browser OAuth with a loopback listener on the configured port, `state` check, 2-minute timeout, port-in-use error; tokens and refresh in the keychain vault; per-workspace re-auth; Remove never revokes. `SlackMcpChatProvider` on `rmcp` with the tool mapping of §7.11, the pinned-schema check on connect, and the typed error mapping. Workspace-scoped channel cache and picker (`slack_list_user_channels`, `slack_search_channels`); mapping rows routed to the right workspace session. Archived refusal from the archive status. `review_requests` lifecycle: created on request; bump updates; closed on merge/close, dismiss, supersede, or archived channel. Discovery via the MCP search tools with `include_bots=true` (background with throttle and cooldown, plus before the preview) stores `source='discovered_via_search'`. The PR detail's contextual Request review / Bump request button. Preview modal with Request/Bump cards → refresh-before-write → `slack_send_message`; permalink parsed from the send result. Bump in thread with `reply_broadcast`. Request indicator deep link (`slack://` with https permalink fallback). Corrections saved as user rows. Optional GitHub team review request. Tested against `FakeChat`, MCP contract fixtures, and OAuth tests (§13), plus one manual run in a test channel. No client ID, workspace, or company name in code, fixtures, or docs. |
+| **M10** | Slack single request/bump | **Spike first** (throwaway branch, findings written into §7.11): create an app from the **Create your Slack app** link and prove the code exchange with its client secret plus PKCE. Keep the PKCE-only check: on an app with PKCE enabled, prove the exchange without a secret. Then confirm that `127.0.0.1` loopback redirects are accepted, read `team.id`/`authed_user.id` from the token response (or via `slack_read_user_profile`), confirm refresh behaviour, and snapshot `tools/list`; record the Markdown read-back result that decides `md_escape_titles` (§7.6). Then wizard steps 5 and 6 (connect workspaces one at a time; mapping import or skip) and the same flows in Settings. Slack onboarding for **any number of workspaces** through the Slack MCP server: the **Create your Slack app** link in wizard step 5 and Settings, which opens `https://api.slack.com/apps?new_app=1&manifest_json=…` prefilled with `assets/slack-app-manifest.json` and the configured redirect URI, plus its help text; client ID, optional client secret (keychain), and redirect URI settings (global, optional per-workspace override, no client ID committed or shipped); the manifest validated in CI against Slack's vendored JSON schema plus the structure and link tests (§13); browser OAuth with a loopback listener on the configured port, `state` check, 2-minute timeout, port-in-use error; tokens and refresh in the keychain vault; per-workspace re-auth; Remove never revokes. `SlackMcpChatProvider` on `rmcp` with the tool mapping of §7.11, the pinned-schema check on connect, and the typed error mapping. Workspace-scoped channel cache and picker (`slack_list_user_channels`, `slack_search_channels`); mapping rows routed to the right workspace session. Archived refusal from the archive status. `review_requests` lifecycle: created on request; bump updates; closed on merge/close, dismiss, supersede, or archived channel. Discovery via the MCP search tools with `include_bots=true` (background with throttle and cooldown, plus before the preview) stores `source='discovered_via_search'`. The PR detail's contextual Request review / Bump request button. Preview modal with Request/Bump cards → refresh-before-write → `slack_send_message`; permalink parsed from the send result. Bump in thread with `reply_broadcast`. Request indicator deep link (`slack://` with https permalink fallback). Corrections saved as user rows. Optional GitHub team review request. Tested against `FakeChat`, MCP contract fixtures, and OAuth tests (§13), plus one manual run in a test channel. No client ID, workspace, or company name in code, fixtures, or docs. |
 | **M11** | Bulk | Single bulk action **Request / bump on Slack**. Per-channel grouping with request and bump sections per card, bulk bump grouping (§7.9), result report, retry failed. Planner unit tests for mixed cases (requested + never requested in one channel, 1/≤3/>3 roots, mixed workspaces, a closed request → new request). |
 | **M12** | Context panel | Threads for known messages, cache, user names, Mentions opt-in. |
 | **M13** | Polish | Settings complete, log redaction test, "update available" banner (GitHub releases API with the user's token, manual DMG download), keychain re-prompt explainer, Settings → About → Re-run setup, the skipped-mapping hint, empty states. |
@@ -1405,13 +1438,18 @@ M0–M1 come first on purpose. Every later PR is then built, linted, and releasa
   - the discovery documents;
   - the authorize URL (PKCE S256, `state`, scopes, `redirect_uri` exactly as configured);
   - a callback with the wrong `state` is rejected;
-  - token exchange with and without a client secret, and refresh;
+  - token exchange with and without a client secret, and refresh; the secret is sent as `client_secret_post` only when configured and never appears in logs;
   - port-in-use error;
   - tokens land only in the (mock) keyring.
+- **Slack app manifest** (runs in `cargo test`, so in CI, offline):
+  - `assets/slack-app-manifest.json` validates against Slack's published JSON schema, vendored at `assets/schemas/slack-manifest.schema.1.0.0.json` from `slackapi/manifest-schema` (MIT), pinned to a tag (v0.6.0 includes `settings.is_mcp_enabled`, `oauth_config.pkce_enabled`, and `scopes.user_optional`), with the `jsonschema` crate (0.60);
+  - a structure test checks that the name is `PR-Nexus`; that `scopes.user` equals the scope list of §7.11 and `user_optional ⊆ user`; that there are no bot scopes and no bot user; that `is_mcp_enabled` is `true` and `pkce_enabled` is `false`; that `redirect_urls[0]` equals the `slack.mcp.redirect_uri` default; and that it contains no client ID, team ID, or company name;
+  - a link test decodes the built URL, checks the `https://api.slack.com/apps?new_app=1&manifest_json=` prefix, round-trips the JSON, and checks the configured redirect URI replaced the default;
+  - `apps.manifest.validate` needs an app configuration token, so it stays a manual pre-release step, not CI.
 - **wizard**: core tests for `setup_steps` (order, only `ChatMapping` skippable, Coming-soon providers contribute no steps) and for the resume logic (state round-trip, resume at the stored step, fall back to the first step whose re-validation fails). vitest: one step rendered at a time, Next disabled until the step's condition holds, Back disabled on step 1, Skip only on the mapping step, disabled Coming-soon cards cannot be selected, adding a second Slack workspace.
 - **review requests**: table-driven lifecycle tests in core: sync sees merged/closed → closed; dismiss → next action Request; new commits after approval → still Bump; reopened PR → Request; discovery hit on a closed root → ignored; `/pull/4` vs `/pull/42`; oldest root wins; thread replies count as bumps.
 - **app**: command-level tests with `FakeVcs`/`FakeChat` and a temp DB. Frontend tests with vitest + Testing Library against a mocked `invoke`.
-- **Manual pre-release checklist**: sign in to a test workspace through the Slack MCP server; request and bump in a private test channel; verify link rendering, Markdown-active characters in a title, thread plus channel broadcast, permalink, and that the row's ↗ opens the original message in the Slack app; run the pinned-schema check against the live server.
+- **Manual pre-release checklist**: open **Create your Slack app**, confirm Slack shows the prefilled manifest (name, user scopes, redirect URL, MCP on), and run `apps.manifest.validate` on it; sign in to a test workspace through the Slack MCP server; request and bump in a private test channel; verify link rendering, Markdown-active characters in a title, thread plus channel broadcast, permalink, and that the row's ↗ opens the original message in the Slack app; run the pinned-schema check against the live server.
 - There is no live-API test in CI.
 
 ## 14. Open questions: answered (A) and defaults chosen (D)
@@ -1442,4 +1480,5 @@ M0–M1 come first on purpose. Every later PR is then built, linted, and releasa
 - **D16. List actions:** no per-row action buttons and no header overflow button; the bulk bar is the only list action, and the PR detail keeps a contextual button. Projects are renamed by double-clicking the title (§7.7, §8.2).
 - **D17. Selection:** three-level tri-state checkboxes over visible rows, keyed by `PrId` across sections, session-only (§8.2).
 - **D18. Setup wizard:** separate screens, one step at a time, driven by the provider registry; GitHub and Slack are the only available providers, the others show as Coming soon; only the mapping step is skippable; progress is persisted and resumable (§5.1, §8.3).
-- **D19. Slack transport = the official Slack MCP server** (`https://mcp.slack.com/mcp`). PR-Nexus is an `rmcp` client with OAuth 2.1 + PKCE and a loopback redirect. The client ID and redirect URI are user settings (global, or per workspace); none is committed. Direct Web API with a per-workspace internal app is the documented fallback, not built in v1 (§7.11, §7.13).
+- **D19. Slack transport = the official Slack MCP server** (`https://mcp.slack.com/mcp`). PR-Nexus is an `rmcp` client with OAuth 2.1 + PKCE and a loopback redirect. The client ID, client secret (keychain), and redirect URI are user configuration (global, or per workspace). Direct Web API with a per-workspace internal app is the documented fallback, not built in v1 (§7.11, §7.13).
+- **D20. No default Slack client ID ships** in the app, the repo, fixtures, or docs. The client ID field starts empty. Users create their own app with the **Create your Slack app** link (a manifest committed at `assets/slack-app-manifest.json`), or paste the client ID of an MCP-enabled app their org already approved (§7.11).
