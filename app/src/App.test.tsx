@@ -65,6 +65,7 @@ function api(): Api {
     loadViewState: () => Promise.resolve(null),
     saveViewState: () => Promise.resolve(),
     openExternal: () => Promise.resolve(),
+    prDetail: () => Promise.reject(new Error("unused")),
   };
 }
 

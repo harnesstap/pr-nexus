@@ -71,6 +71,7 @@ pub fn run() {
             commands::load_view_state,
             commands::save_view_state,
             commands::open_external,
+            commands::pr_detail,
         ])
         .run(tauri::generate_context!())
         .expect("error while running PR-Nexus");

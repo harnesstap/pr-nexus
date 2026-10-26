@@ -1,0 +1,22 @@
+query OwnershipFiles($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+  rateLimit {
+    limit
+    remaining
+    resetAt
+    cost
+  }
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      changedFiles
+      files(first: 100, after: $cursor) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        nodes {
+          path
+        }
+      }
+    }
+  }
+}

@@ -456,7 +456,7 @@ Unresolved threads come from counting `reviewThreads.nodes[].isResolved == false
 - On a secondary limit (403/429 with `retry-after`), return `RateLimited{secondary:true}` and back off exponentially starting at `retry-after`.
 - Send at most 2 concurrent requests per host.
 
-**Ownership inputs.** These are fetched lazily, only for PRs the user opens or selects for a request. They are cached in `ownership_cache` keyed by `(head_sha, base_ref, codeowners_oid)`.
+**Ownership inputs.** These are fetched lazily: for PRs the user opens or selects for a request, plus a capped post-sync pass for BLOCKED PRs with no review decision (below). They are cached in `ownership_cache` keyed by `(head_sha, base_ref, codeowners_oid)`.
 
 | Input | Source | Failure → |
 |---|---|---|
@@ -468,6 +468,14 @@ Unresolved threads come from counting `reviewThreads.nodes[].isResolved == false
 | Team membership | REST `GET /orgs/{org}/teams/{slug}/members` (paginated), cached 24 h | 403 → attribution unknown for that team |
 
 `codeowners_required` = `True` if either source says true. It is `False` if `rules/branches` says false **and** protection is known to be false or absent (404 when the caller is an admin). Otherwise it is `Unknown`.
+
+**Probe, inputs, and cache (M9).**
+- Each resolve starts with one GraphQL **probe**: `headRefOid`, `baseRefName`, the three aliased CODEOWNERS blobs (`oid`, `text`, `isTruncated`), `latestOpinionatedReviews(writersOnly:true)` with `onBehalfOf`, and `viewerPermission`. A truncated CODEOWNERS blob is a load error, not a partial file.
+- The probe gives the cache key `(head_sha, base_ref, codeowners_oid)`. Files, `rules/branches`, and protection are fetched only on a cache miss, so a cached PR costs one call. Reviews are never cached; they change without a new head.
+- Team membership is fetched only for candidate teams whose approvals lack `onBehalfOf`, at most 20 teams per resolve, and cached 24 h in `team_members_cache`. 403/404, more than 10 pages, or a transient error give attribution unknown for that team. Only complete lists are cached. Rate-limit and auth errors stop the resolve.
+- Classic protection that the caller cannot read stays `Unknown` and never turns the requirement into `False`. A 404 means "absent" only when `viewerPermission = ADMIN`.
+- **Null review decision.** When `mergeStateStatus = BLOCKED`, `reviewDecision` is null, and nothing else blocks, readiness depends on the code-owner status from the cache. A code-owner review known to be pending gives Ready with the BLOCKED note. An unknown status gives Unknown (§7.1). A known non-pending status gives the generic BLOCKED Unknown.
+- The list reads cached facts only. Opening the PR detail resolves that PR off the UI thread. After each sync, PRs whose list readiness is the null-decision Unknown are resolved too, at most 10 per sync. A rate-limit or auth error stops the pass. This keeps the null-decision rule from leaving the list Unknown until each PR is opened.
 
 ## 7. Slack review-request workflow (reimplementation of `request-slack-review`)
 
@@ -488,6 +496,7 @@ Computed from synced fields. Re-computed in the pre-send refresh.
 | a human's latest opinionated review is CHANGES_REQUESTED | Blocked | `human reviewer <login> requested changes` |
 | mergeable UNKNOWN, merge state UNKNOWN/HAS_HOOKS/UNSTABLE | Unknown | `GitHub mergeability is unknown` … |
 | mergeStateStatus BLOCKED and only reviews are missing (definition below) | **Ready** (intentional deviation, see below) | note: `GitHub reports BLOCKED: waiting for reviews` |
+| mergeStateStatus BLOCKED, `reviewDecision` null, otherwise clean, code-owner review status not known yet | Unknown | `GitHub reports BLOCKED with no review decision; code-owner review status is unknown` |
 | mergeStateStatus BLOCKED otherwise | Unknown | `GitHub reports BLOCKED for a reason other than missing reviews` |
 | file list truncated (≥3000) | Unknown | `PR file list may be truncated (≥3000 files); confirm additional owners` |
 | evidence fetch failed | Unknown | the provider error |

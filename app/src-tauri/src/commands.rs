@@ -1,15 +1,13 @@
 use chrono::Utc;
 use pr_nexus_core::domain::{
-    Account, AccountId, AccountKind, AuthMode, ChecksState, LinkSource, PrId, Project, ProjectId,
-    ProjectRule, PullRequest, RequestStatus, ReviewDecision, RuleKind, ViewState,
+    Account, AccountId, AccountKind, AuthMode, LinkSource, PrId, Project, ProjectId, ProjectRule,
+    PullRequest, RequestStatus, RuleKind, ViewState,
 };
 use pr_nexus_core::linking;
 use pr_nexus_core::mapping::{self, ImportMode};
 use pr_nexus_core::onboarding::{self, OnboardingState};
+use pr_nexus_core::ownership::{self, OwnershipReport};
 use pr_nexus_core::providers::{SetupStep, VcsProvider};
-use pr_nexus_core::review::readiness::{
-    CheckSnapshot, Evidence, ReadinessSnapshot, ReviewSnapshot, decide_readiness_with,
-};
 use pr_nexus_core::settings::{self, DEFAULT_REDIRECT};
 use pr_nexus_core::sync::SyncKind;
 use pr_nexus_providers::github::{self, GithubClient};
@@ -733,6 +731,148 @@ pub fn restore_pr(
     relink_all(state)
 }
 
+#[derive(Serialize)]
+pub struct TeamGap {
+    pub team: String,
+    pub reasons: Vec<String>,
+}
+
+#[derive(Serialize)]
+pub struct FileOwners {
+    pub path: String,
+    pub teams: Vec<String>,
+}
+
+/// The detail view: readiness, owners, and why (§6, §7.2).
+#[derive(Serialize)]
+pub struct PrDetail {
+    pub id: i64,
+    pub readiness: String,
+    pub readiness_notes: Vec<String>,
+    pub head_sha: String,
+    pub base_ref: String,
+    pub codeowners_path: Option<String>,
+    pub codeowners_error: Option<String>,
+    /// `true`, `false`, or `unknown`.
+    pub codeowners_required: String,
+    pub codeowners_required_reason: String,
+    pub code_owner_review_pending: Option<bool>,
+    pub mandatory_teams: Vec<String>,
+    pub optional_teams: Vec<String>,
+    pub approved_teams: Vec<String>,
+    pub candidate_teams: Vec<String>,
+    pub attribution_unknown: Vec<TeamGap>,
+    pub requested_teams: Vec<String>,
+    pub users_ignored: Vec<String>,
+    pub rationale: Vec<String>,
+    pub files: Vec<FileOwners>,
+    pub files_truncated: bool,
+    pub rules_error: Option<String>,
+    pub protection: String,
+    pub from_cache: bool,
+}
+
+/// Resolves ownership off the UI thread. Demo mode uses the fixture provider.
+#[tauri::command]
+pub async fn pr_detail(
+    app: State<'_, std::sync::Arc<AppState>>,
+    id: i64,
+) -> Result<PrDetail, AppError> {
+    let state = app.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || pr_detail_blocking(&state, PrId(id)))
+        .await
+        .map_err(|err| AppError::new("internal", err.to_string()))?
+}
+
+fn pr_detail_blocking(state: &AppState, id: PrId) -> Result<PrDetail, AppError> {
+    let pr = state
+        .store
+        .get_pull_request(id)?
+        .ok_or_else(|| AppError::new("not_found", "pull request not found"))?;
+    let flag = settings::blocked_review_required_is_ready(&state.store)?;
+    let report = if state.demo {
+        ownership::resolve(
+            &state.store,
+            &crate::demo::DemoProvider,
+            &pr,
+            flag,
+            Utc::now(),
+        )?
+    } else {
+        let account = state::github_account(&state.store)?
+            .ok_or_else(|| AppError::new("unauthorized", "Connect GitHub first"))?;
+        let token = state::resolve_github_token(state, Some(&account))?;
+        let client = GithubClient::new(account.id, token)?;
+        ownership::resolve(&state.store, &client, &pr, flag, Utc::now())?
+    };
+    Ok(detail_dto(pr.id, report))
+}
+
+fn detail_dto(id: PrId, report: OwnershipReport) -> PrDetail {
+    use pr_nexus_core::domain::{Readiness, TeamRef};
+    use pr_nexus_core::providers::ClassicProtection;
+    let names = |teams: &[TeamRef]| teams.iter().map(ToString::to_string).collect::<Vec<_>>();
+    let (readiness, readiness_notes) = match report.readiness {
+        Readiness::Ready { notes } => ("ready", notes),
+        Readiness::Blocked { reasons } => ("blocked", reasons),
+        Readiness::Unknown { reasons } => ("unknown", reasons),
+    };
+    let decision = report.decision;
+    PrDetail {
+        id: id.0,
+        readiness: readiness.into(),
+        readiness_notes,
+        head_sha: report.head_sha,
+        base_ref: report.base_ref,
+        codeowners_path: report.codeowners_path,
+        codeowners_error: report.codeowners_error,
+        codeowners_required: match decision.codeowners_required {
+            pr_nexus_core::domain::Tri::True => "true",
+            pr_nexus_core::domain::Tri::False => "false",
+            pr_nexus_core::domain::Tri::Unknown => "unknown",
+        }
+        .into(),
+        codeowners_required_reason: decision.codeowners_required_reason,
+        code_owner_review_pending: report.code_owner_review_pending,
+        mandatory_teams: names(&decision.mandatory_teams),
+        optional_teams: names(&decision.optional_teams),
+        approved_teams: names(&decision.approved_teams),
+        candidate_teams: names(&decision.candidate_teams),
+        attribution_unknown: decision
+            .review_attribution_unknown
+            .into_iter()
+            .map(|gap| TeamGap {
+                team: gap.team.to_string(),
+                reasons: gap.reasons,
+            })
+            .collect(),
+        requested_teams: decision.requested_teams_informational,
+        users_ignored: decision.users_ignored_for_slack,
+        rationale: decision.rationale,
+        files: report
+            .files
+            .into_iter()
+            .map(|file| FileOwners {
+                path: file.path,
+                teams: names(&file.teams),
+            })
+            .collect(),
+        files_truncated: report.files_truncated,
+        rules_error: report.rules_error,
+        protection: match report.protection {
+            ClassicProtection::Present {
+                require_code_owner_reviews: true,
+            } => "Branch protection requires code-owner reviews".into(),
+            ClassicProtection::Present {
+                require_code_owner_reviews: false,
+            } => "Branch protection does not require code-owner reviews".into(),
+            ClassicProtection::Absent => "No classic branch protection".into(),
+            ClassicProtection::Unknown { reason } => format!("Unknown: {reason}"),
+        },
+        from_cache: report.from_cache,
+    }
+}
+
 #[tauri::command]
 pub fn load_view_state(
     app: State<'_, std::sync::Arc<AppState>>,
@@ -778,7 +918,7 @@ fn to_row(state: &AppState, pr: &PullRequest, flag: bool) -> Result<ListRow, App
             root_ts: request.root_ts,
             source: request.source.as_str().to_owned(),
         });
-    let readiness = readiness_of(pr, flag);
+    let readiness = ownership::cached_readiness(&state.store, pr, flag)?;
     let (label, notes) = match readiness {
         pr_nexus_core::domain::Readiness::Ready { notes } => ("ready", notes),
         pr_nexus_core::domain::Readiness::Blocked { reasons } => ("blocked", reasons),
@@ -812,56 +952,6 @@ fn to_row(state: &AppState, pr: &PullRequest, flag: bool) -> Result<ListRow, App
         readiness_notes: notes,
         slack,
     })
-}
-
-fn readiness_of(pr: &PullRequest, flag: bool) -> pr_nexus_core::domain::Readiness {
-    let checks = match pr.checks {
-        ChecksState::Success => Some(pass("pass")),
-        ChecksState::Failure | ChecksState::Error => Some(pass("fail")),
-        ChecksState::Pending | ChecksState::Expected => Some(pass("pending")),
-        ChecksState::None => None,
-    };
-    let reviews = Some(Evidence {
-        complete: true,
-        error: None,
-        items: if pr.review_decision == Some(ReviewDecision::ChangesRequested) {
-            vec![ReviewSnapshot {
-                state: "CHANGES_REQUESTED".into(),
-                author_login: "reviewer".into(),
-                author_is_human: true,
-            }]
-        } else {
-            Vec::new()
-        },
-    });
-    decide_readiness_with(
-        &ReadinessSnapshot {
-            state: Some(pr.state),
-            is_draft: Some(pr.is_draft),
-            merge_state: Some(pr.merge_state),
-            mergeable: Some(pr.mergeable),
-            head_sha: Some(pr.head_sha.clone()),
-            review_decision: pr.review_decision,
-            checks_rollup: Some(pr.checks),
-            checks,
-            reviews,
-            native_error: None,
-            snapshot_changed: false,
-            files_truncated: false,
-        },
-        flag,
-    )
-}
-
-fn pass(bucket: &str) -> Evidence<Vec<CheckSnapshot>> {
-    Evidence {
-        complete: true,
-        error: None,
-        items: vec![CheckSnapshot {
-            name: "ci".into(),
-            bucket: bucket.into(),
-        }],
-    }
 }
 
 fn reqwest_client() -> Result<reqwest::blocking::Client, AppError> {

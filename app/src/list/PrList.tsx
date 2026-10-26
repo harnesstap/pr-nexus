@@ -55,6 +55,8 @@ interface Props {
   onEditProject: (id: number) => void;
   /** Manual links from dropping rows on a project section. */
   onLinkPrs: (projectId: number, prIds: number[]) => void;
+  /** Opens the readiness and code-owner details for one row. */
+  onDetails: (row: ListRow) => void;
 }
 
 const GROUPINGS: { id: Grouping; label: string }[] = [
@@ -86,6 +88,7 @@ export function PrList({
   onDelete,
   onEditProject,
   onLinkPrs,
+  onDetails,
 }: Props) {
   const [query, setQuery] = useState("");
   const [debounced, setDebounced] = useState("");
@@ -183,6 +186,12 @@ export function PrList({
         const link = flat[focusIndex]?.row.slack?.permalink;
         if (link) {
           onOpen(link);
+        }
+      } else if (event.key === "Enter") {
+        const current = flat[focusIndex];
+        if (current) {
+          event.preventDefault();
+          onDetails(current.row);
         }
       } else if (event.key === "o") {
         const url = flat[focusIndex]?.row.url;
@@ -377,9 +386,14 @@ export function PrList({
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2 text-sm">
                           {view.show.numberTitle && (
-                            <span className="truncate">
+                            <button
+                              type="button"
+                              className="truncate text-left hover:underline"
+                              title="Readiness and code owners (Enter)"
+                              onClick={() => onDetails(row)}
+                            >
                               <span className="text-slate-500">#{row.number}</span> {row.title}
-                            </span>
+                            </button>
                           )}
                           {view.show.badges && row.project_ids.length > 1 && (
                             <span

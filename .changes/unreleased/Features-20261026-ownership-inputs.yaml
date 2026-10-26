@@ -1,0 +1,3 @@
+kind: Features
+body: Fetch ownership inputs (changed files, CODEOWNERS, branch rules, protection, reviews with onBehalfOf, team members) with a cache, and add a PR detail view that shows readiness, owners, and the reasons. A BLOCKED PR with no review decision is Ready only when a code-owner review is known to be pending.
+time: 2026-10-26T11:20:00.000000Z

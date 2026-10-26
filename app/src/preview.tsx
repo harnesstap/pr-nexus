@@ -1,6 +1,6 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import type { Api, Bootstrap, ListRow, ProjectDto } from "./api";
+import type { Api, Bootstrap, ListRow, PrDetail, ProjectDto } from "./api";
 import "./index.css";
 import { ListScreen } from "./list/ListScreen";
 import { memoryProjectApi } from "./memoryProjects";
@@ -142,6 +142,34 @@ const rows: ListRow[] = [
   }),
 ];
 
+function previewDetail(id: number): PrDetail {
+  return {
+    id,
+    readiness: "ready",
+    readiness_notes: [],
+    head_sha: "0123456789abcdef",
+    base_ref: "main",
+    codeowners_path: ".github/CODEOWNERS",
+    codeowners_error: null,
+    codeowners_required: "true",
+    codeowners_required_reason: "A branch rule requires code-owner review.",
+    code_owner_review_pending: true,
+    mandatory_teams: ["@acme/platform"],
+    optional_teams: [],
+    approved_teams: [],
+    candidate_teams: ["@acme/platform"],
+    attribution_unknown: [],
+    requested_teams: ["@acme/platform"],
+    users_ignored: [],
+    rationale: ["src/app.ts is owned by @acme/platform"],
+    files: [{ path: "src/app.ts", teams: ["@acme/platform"] }],
+    files_truncated: false,
+    rules_error: null,
+    protection: "Classic branch protection is only visible to repository admins.",
+    from_cache: false,
+  };
+}
+
 const api: Api = {
   bootstrap: () => Promise.resolve(boot),
   saveProviders: () => Promise.resolve(),
@@ -166,6 +194,7 @@ const api: Api = {
   loadViewState: () => Promise.resolve(JSON.stringify({ show: { notRequested: true } })),
   saveViewState: () => Promise.resolve(),
   openExternal: () => Promise.resolve(),
+  prDetail: (id) => Promise.resolve(previewDetail(id)),
 };
 
 document.body.style.margin = "0";

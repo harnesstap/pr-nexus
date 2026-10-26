@@ -1,0 +1,67 @@
+query OwnershipProbe(
+  $owner: String!
+  $name: String!
+  $number: Int!
+  $githubDir: String!
+  $root: String!
+  $docs: String!
+) {
+  rateLimit {
+    limit
+    remaining
+    resetAt
+    cost
+  }
+  repository(owner: $owner, name: $name) {
+    viewerPermission
+    githubDir: object(expression: $githubDir) {
+      ... on Blob {
+        oid
+        text
+        isTruncated
+      }
+    }
+    root: object(expression: $root) {
+      ... on Blob {
+        oid
+        text
+        isTruncated
+      }
+    }
+    docs: object(expression: $docs) {
+      ... on Blob {
+        oid
+        text
+        isTruncated
+      }
+    }
+    pullRequest(number: $number) {
+      headRefOid
+      baseRefName
+      latestOpinionatedReviews(first: 100, writersOnly: true) {
+        pageInfo {
+          hasNextPage
+        }
+        nodes {
+          id
+          state
+          commit {
+            oid
+          }
+          author {
+            __typename
+            login
+          }
+          onBehalfOf(first: 10) {
+            nodes {
+              slug
+              organization {
+                login
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

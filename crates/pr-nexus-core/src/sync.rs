@@ -368,17 +368,28 @@ mod tests {
                 .cloned()
                 .collect())
         }
+        fn ownership_probe(
+            &self,
+            _pr: &PullRequest,
+        ) -> Result<crate::providers::OwnershipProbe, ProviderError> {
+            Err(ProviderError::Unsupported(
+                "sync never reads ownership".into(),
+            ))
+        }
         fn ownership_inputs(
             &self,
             _pr: &PullRequest,
+            _probe: &crate::providers::OwnershipProbe,
         ) -> Result<crate::providers::OwnershipInputs, ProviderError> {
-            Err(ProviderError::Unsupported("ownership is M9".into()))
+            Err(ProviderError::Unsupported(
+                "sync never reads ownership".into(),
+            ))
         }
         fn team_members(
             &self,
             _team: &crate::domain::TeamRef,
         ) -> Result<crate::providers::TeamMembers, ProviderError> {
-            Err(ProviderError::Unsupported("team members are M9".into()))
+            Err(ProviderError::Unsupported("sync never reads teams".into()))
         }
         fn rate_limit(&self) -> Result<RateBudget, ProviderError> {
             Ok(self.budget.clone())
