@@ -193,6 +193,106 @@ pub fn bulk_bump_max_threads(store: &Store) -> Result<usize, CoreError> {
     Ok(json_or::<usize>(store, BULK_BUMP_MAX_THREADS, 3)?.max(1))
 }
 
+/// The user-editable settings behind Settings → Review and Sync (§7.12).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Preferences {
+    pub review_requester: String,
+    pub min_bump_interval_hours: i64,
+    pub bulk_bump_max_threads: usize,
+    pub bump_broadcast: bool,
+    pub blocked_review_required_is_ready: bool,
+    pub ticket_key_regex: String,
+    pub focused_interval_s: u64,
+    pub unfocused_interval_s: u64,
+    pub keep_closed_days: i64,
+}
+
+pub const MIN_BUMP_HOURS: std::ops::RangeInclusive<i64> = 1..=168;
+pub const BULK_THREADS: std::ops::RangeInclusive<usize> = 1..=20;
+pub const FOCUSED_SECS: std::ops::RangeInclusive<u64> = 60..=3600;
+pub const UNFOCUSED_SECS: std::ops::RangeInclusive<u64> = 60..=86_400;
+pub const KEEP_CLOSED: std::ops::RangeInclusive<i64> = 0..=90;
+
+pub fn preferences(store: &Store) -> Result<Preferences, CoreError> {
+    Ok(Preferences {
+        review_requester: review_requester(store)?.unwrap_or_default(),
+        min_bump_interval_hours: min_bump_interval_hours(store)?,
+        bulk_bump_max_threads: bulk_bump_max_threads(store)?,
+        bump_broadcast: bump_broadcast(store)?,
+        blocked_review_required_is_ready: blocked_review_required_is_ready(store)?,
+        ticket_key_regex: ticket_key_regex(store)?,
+        focused_interval_s: focused_interval_s(store)?,
+        unfocused_interval_s: unfocused_interval_s(store)?,
+        keep_closed_days: keep_closed_days(store)?,
+    })
+}
+
+/// Validate every field, then write them. Nothing is written when a field
+/// is out of range. An empty ticket regex restores the default.
+pub fn save_preferences(store: &Store, prefs: &Preferences) -> Result<Preferences, CoreError> {
+    fn check<T: PartialOrd + std::fmt::Display>(
+        name: &str,
+        value: T,
+        range: std::ops::RangeInclusive<T>,
+    ) -> Result<(), CoreError> {
+        if range.contains(&value) {
+            Ok(())
+        } else {
+            Err(CoreError::Validation(format!(
+                "{name} must be between {} and {}",
+                range.start(),
+                range.end()
+            )))
+        }
+    }
+    check(
+        "Minimum hours between bumps",
+        prefs.min_bump_interval_hours,
+        MIN_BUMP_HOURS,
+    )?;
+    check(
+        "Threads per bulk bump",
+        prefs.bulk_bump_max_threads,
+        BULK_THREADS,
+    )?;
+    check(
+        "Focused sync interval",
+        prefs.focused_interval_s,
+        FOCUSED_SECS,
+    )?;
+    check(
+        "Background sync interval",
+        prefs.unfocused_interval_s,
+        UNFOCUSED_SECS,
+    )?;
+    check(
+        "Days to keep closed PRs",
+        prefs.keep_closed_days,
+        KEEP_CLOSED,
+    )?;
+    let regex = prefs.ticket_key_regex.trim();
+    let regex = if regex.is_empty() {
+        crate::linking::DEFAULT_TICKET_KEY_REGEX
+    } else {
+        regex
+    };
+    crate::linking::validate_ticket_regex(regex)?;
+    put_json(store, REVIEW_REQUESTER, prefs.review_requester.trim())?;
+    put_json(store, MIN_BUMP_INTERVAL, &prefs.min_bump_interval_hours)?;
+    put_json(store, BULK_BUMP_MAX_THREADS, &prefs.bulk_bump_max_threads)?;
+    put_json(store, BUMP_BROADCAST, &prefs.bump_broadcast)?;
+    put_json(
+        store,
+        BLOCKED_IS_READY,
+        &prefs.blocked_review_required_is_ready,
+    )?;
+    put_json(store, TICKET_KEY_REGEX, regex)?;
+    put_json(store, FOCUSED_INTERVAL, &prefs.focused_interval_s)?;
+    put_json(store, UNFOCUSED_INTERVAL, &prefs.unfocused_interval_s)?;
+    put_json(store, KEEP_CLOSED_DAYS, &prefs.keep_closed_days)?;
+    preferences(store)
+}
+
 pub fn oauth_client_id(store: &Store) -> Result<String, CoreError> {
     json_or(store, OAUTH_CLIENT_ID, String::new())
 }
@@ -291,4 +391,73 @@ fn get_json<T: for<'de> Deserialize<'de>>(
     serde_json::from_str(&entry.value_json)
         .map(Some)
         .map_err(|err| CoreError::Store(format!("decode {key}: {err}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn store() -> (tempfile::TempDir, Store) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("nexus.sqlite")).unwrap();
+        (dir, store)
+    }
+
+    #[test]
+    fn preferences_default_to_the_spec_values() {
+        let (_dir, store) = store();
+        let prefs = preferences(&store).unwrap();
+        assert_eq!(prefs.review_requester, "");
+        assert_eq!(prefs.min_bump_interval_hours, 24);
+        assert_eq!(prefs.bulk_bump_max_threads, 3);
+        assert!(prefs.bump_broadcast);
+        assert!(prefs.blocked_review_required_is_ready);
+        assert_eq!(
+            prefs.ticket_key_regex,
+            crate::linking::DEFAULT_TICKET_KEY_REGEX
+        );
+        assert_eq!(
+            (prefs.focused_interval_s, prefs.unfocused_interval_s),
+            (180, 900)
+        );
+        assert_eq!(prefs.keep_closed_days, 7);
+    }
+
+    #[test]
+    fn saving_round_trips_and_an_empty_regex_restores_the_default() {
+        let (_dir, store) = store();
+        let prefs = Preferences {
+            review_requester: "  for Ada Acme ".into(),
+            min_bump_interval_hours: 4,
+            bulk_bump_max_threads: 5,
+            bump_broadcast: false,
+            blocked_review_required_is_ready: false,
+            ticket_key_regex: "   ".into(),
+            focused_interval_s: 120,
+            unfocused_interval_s: 1800,
+            keep_closed_days: 14,
+        };
+        let saved = save_preferences(&store, &prefs).unwrap();
+        assert_eq!(saved.review_requester, "for Ada Acme");
+        assert_eq!(
+            saved.ticket_key_regex,
+            crate::linking::DEFAULT_TICKET_KEY_REGEX
+        );
+        assert!(!bump_broadcast(&store).unwrap());
+        assert_eq!(focused_interval_s(&store).unwrap(), 120);
+        assert_eq!(saved, preferences(&store).unwrap());
+    }
+
+    #[test]
+    fn an_invalid_field_writes_nothing() {
+        let (_dir, store) = store();
+        let mut prefs = preferences(&store).unwrap();
+        prefs.bump_broadcast = false;
+        prefs.focused_interval_s = 5;
+        assert!(save_preferences(&store, &prefs).is_err());
+        prefs.focused_interval_s = 180;
+        prefs.ticket_key_regex = "([A-Z".into();
+        assert!(save_preferences(&store, &prefs).is_err());
+        assert!(bump_broadcast(&store).unwrap());
+    }
 }

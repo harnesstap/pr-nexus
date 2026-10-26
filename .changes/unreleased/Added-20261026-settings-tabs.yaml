@@ -1,0 +1,3 @@
+kind: Added
+body: 'Settings tabs: Accounts, Mappings (inline edit, reset to imported, CSV import with a dry-run diff, export), Review, Sync and About (paths, keychain explainer, Re-run setup).'
+time: 2026-10-26T05:30:00.000000-10:00

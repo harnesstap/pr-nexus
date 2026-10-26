@@ -16,10 +16,14 @@ interface Props {
   api: Api;
   boot: Bootstrap;
   onFinished: () => void;
+  /** Set when re-running setup from Settings: shows Back to PR-Nexus, and keeps setup marked finished meanwhile. */
+  onCancel?: () => void;
 }
 
-export function Wizard({ api, boot, onFinished }: Props) {
+export function Wizard({ api, boot, onFinished, onCancel }: Props) {
   const steps = boot.steps;
+  // A re-run must not drop the user back into setup on the next launch if they quit halfway.
+  const finishedAt = onCancel ? boot.onboarding.finished_at : null;
   const start = Math.max(0, steps.indexOf(boot.resume_step));
   const [index, setIndex] = useState(start);
   const [completed, setCompleted] = useState<string[]>(boot.onboarding.completed);
@@ -113,7 +117,7 @@ export function Wizard({ api, boot, onFinished }: Props) {
       completed,
       mapping_skipped: extra?.mapping_skipped ?? mappingSkipped,
       slack_skipped: extra?.slack_skipped ?? slackSkipped,
-      finished_at: null,
+      finished_at: finishedAt,
     };
     await api.saveOnboarding(state);
   }
@@ -154,7 +158,7 @@ export function Wizard({ api, boot, onFinished }: Props) {
         completed: done,
         mapping_skipped: mappingSkipped,
         slack_skipped: slackSkipped,
-        finished_at: null,
+        finished_at: finishedAt,
       });
       setIndex(next);
     } catch (err) {
@@ -194,7 +198,7 @@ export function Wizard({ api, boot, onFinished }: Props) {
         completed: done,
         mapping_skipped: step === "chat_mapping" ? true : mappingSkipped,
         slack_skipped: step === "connect_chat" ? true : slackSkipped,
-        finished_at: null,
+        finished_at: finishedAt,
       });
       setIndex(next);
     } catch (err) {
@@ -259,7 +263,14 @@ export function Wizard({ api, boot, onFinished }: Props) {
   return (
     <main className="mx-auto flex min-h-screen max-w-3xl flex-col px-6 py-8 text-slate-100">
       <header>
-        <p className="text-sm text-slate-400">PR-Nexus setup</p>
+        <div className="flex items-center justify-between">
+          <p className="text-sm text-slate-400">PR-Nexus setup</p>
+          {onCancel && (
+            <button type="button" className="rounded px-2 py-1 text-sm text-slate-300 hover:bg-slate-800" onClick={onCancel}>
+              Back to PR-Nexus
+            </button>
+          )}
+        </div>
         <div className="mt-3 flex items-center gap-2" aria-hidden="true">
           {steps.map((item, dot) => (
             <span

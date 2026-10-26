@@ -8,11 +8,10 @@ interface Props {
   boot: Bootstrap;
   /** The saved scope, so the PR detail's Slack panel picks it up without a restart. */
   onMentionsChange?: (scope: MentionsScope) => void;
-  onBroadcastChange?: (on: boolean) => void;
 }
 
 /** Settings → Slack: the same fields and sign-in as wizard step 5, plus Save. */
-export function SlackSettings({ api, boot, onMentionsChange, onBroadcastChange }: Props) {
+export function SlackSettings({ api, boot, onMentionsChange }: Props) {
   const [fields, setFields] = useState<SlackFields>({
     clientId: boot.slack_client_id,
     clientSecret: "",
@@ -22,24 +21,6 @@ export function SlackSettings({ api, boot, onMentionsChange, onBroadcastChange }
   const [status, setStatus] = useState<string | null>(null);
   const [mentions, setMentions] = useState<MentionsScope>(boot.slack_mentions);
   const [mentionsStatus, setMentionsStatus] = useState<string | null>(null);
-  const [broadcast, setBroadcast] = useState(boot.bump_broadcast);
-  const [broadcastStatus, setBroadcastStatus] = useState<string | null>(null);
-
-  function changeBroadcast(on: boolean) {
-    setBroadcast(on);
-    setBroadcastStatus(null);
-    api
-      .saveBumpBroadcast(on)
-      .then(() => {
-        setBroadcastStatus("Saved.");
-        onBroadcastChange?.(on);
-      })
-      .catch((err: unknown) => {
-        setBroadcast(!on);
-        setBroadcastStatus(errorMessage(err));
-      });
-  }
-
   function changeMentions(scope: MentionsScope) {
     const previous = mentions;
     setMentions(scope);
@@ -105,17 +86,6 @@ export function SlackSettings({ api, boot, onMentionsChange, onBroadcastChange }
         <p className="mt-1 text-xs text-slate-500">
           Searches Slack for the PR link when you click Find mentions, one search per signed-in workspace.
           {mentions === "all" && " Results can include private channels and DMs you are in; they stay on this computer."}
-        </p>
-      </div>
-      <div className="mt-6">
-        <label className="flex items-center gap-2 text-sm">
-          <input type="checkbox" checked={broadcast} onChange={(event) => changeBroadcast(event.target.checked)} />
-          Also post bumps to the channel
-          {broadcastStatus && <span className="text-slate-300">{broadcastStatus}</span>}
-        </label>
-        <p className="mt-1 text-xs text-slate-500">
-          A bump is always a reply in the request's thread. With this on, Slack also shows it in the channel so reviewers who
-          left the thread see it.
         </p>
       </div>
     </section>

@@ -10,6 +10,7 @@ interface Props {
 export default function App({ api = tauriApi }: Props) {
   const [boot, setBoot] = useState<Bootstrap | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [rerun, setRerun] = useState(false);
 
   useEffect(() => {
     void api
@@ -35,5 +36,13 @@ export default function App({ api = tauriApi }: Props) {
   if (!boot.onboarding.finished_at) {
     return <Wizard api={api} boot={boot} onFinished={() => void api.bootstrap().then(setBoot)} />;
   }
-  return <ListScreen api={api} boot={boot} onBoot={setBoot} />;
+  if (rerun) {
+    const back = () =>
+      void api.bootstrap().then((next) => {
+        setBoot(next);
+        setRerun(false);
+      });
+    return <Wizard api={api} boot={{ ...boot, resume_step: boot.steps[0] ?? boot.resume_step }} onFinished={back} onCancel={back} />;
+  }
+  return <ListScreen api={api} boot={boot} onBoot={setBoot} onRerunSetup={() => setRerun(true)} />;
 }

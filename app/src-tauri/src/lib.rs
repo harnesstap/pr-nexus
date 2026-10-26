@@ -3,6 +3,8 @@ mod commands;
 mod context;
 mod demo;
 mod error;
+mod logging;
+mod preferences;
 mod slack;
 mod slack_link;
 mod state;
@@ -23,6 +25,18 @@ pub fn run() {
         )
         .setup(|app| {
             let path = state::database_path(app);
+            let logs = app
+                .path()
+                .app_log_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from("logs"));
+            if let Err(err) = logging::init(&logs) {
+                eprintln!("pr-nexus: file logs disabled: {err}");
+            }
+            tracing::info!(version = env!("CARGO_PKG_VERSION"), "PR-Nexus started");
+            app.manage(preferences::AppPaths {
+                db: path.clone(),
+                logs,
+            });
             let shared = Arc::new(state::AppState::open(path)?);
             state::spawn_scheduler(Arc::clone(&shared));
             let tokens = Arc::clone(&shared);
@@ -64,7 +78,16 @@ pub fn run() {
             context::pr_slack_context,
             context::pr_slack_mentions,
             context::save_slack_mentions,
-            context::save_bump_broadcast,
+            preferences::load_preferences,
+            preferences::save_preferences,
+            preferences::list_mappings,
+            preferences::save_mapping,
+            preferences::reset_mapping,
+            preferences::preview_mapping_import,
+            preferences::apply_mapping_import,
+            preferences::export_mapping,
+            preferences::app_info,
+            preferences::check_update,
             commands::slack_manifest_url,
             commands::import_mapping,
             commands::finish_onboarding,

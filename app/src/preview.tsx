@@ -5,6 +5,7 @@ import "./index.css";
 import { ListScreen } from "./list/ListScreen";
 import { memoryProjectApi } from "./memoryProjects";
 import { Wizard } from "./wizard/Wizard";
+import { fakeSettingsApi } from "./settings/fakes";
 
 const steps = [
   "choose_vcs",
@@ -254,7 +255,7 @@ const api: Api = {
   prSlackContext: () => Promise.resolve(previewThreads),
   prSlackMentions: () => Promise.resolve([]),
   saveSlackMentions: () => Promise.resolve(),
-  saveBumpBroadcast: () => Promise.resolve(),
+  ...fakeSettingsApi(),
 };
 
 document.body.style.margin = "0";
