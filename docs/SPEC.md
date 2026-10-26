@@ -175,7 +175,7 @@ These changes fix the original design doc:
 - Review requests become a first-class entity (`ReviewRequest`, `review_requests` table), so the app always knows whether a PR has already been requested. The original doc only had a `thread_ts` on the PR.
 - New PR fields: body (for search), CI rollup, requested reviewers/teams, head/base, labels, `is_draft` separate from state, mergeability, last activity, and owning teams (via the ownership cache).
 
-**PR ↔ project cardinality: many-to-many.** A PR can belong to several projects (e.g. a shared-lib PR for two initiatives). In the grouped list it shows in each section, with a `+1` badge. Selection is keyed by `PrId`, so bulk actions dedupe automatically.
+**PR ↔ project cardinality: many-to-many.** A PR can belong to several projects (e.g. a shared-lib PR for two initiatives). In the grouped list it shows in each section, with a `+1` badge. Selection is keyed by `PrId`: checking it in one section checks it in every section, and bulk actions dedupe automatically (§8.2).
 
 ### 4.2 SQLite schema (migration 0001)
 
@@ -651,7 +651,7 @@ When the user clicks Send, for each affected PR:
 
 ### 7.9 Bulk (list view)
 
-- Select PRs with checkboxes (per row, with select-all per project section). A floating bulk bar appears at the bottom: `N selected · [Request / bump on Slack] · [Clear]`. There is **one** bulk action. The planner sorts each PR into a request or a bump per channel, using `review_requests`.
+- Select PRs with the three-level tri-state checkboxes (global, per project section, per row; §8.2). A floating bulk bar appears at the bottom: `N selected · [Request / bump on Slack] · [Clear]`. There is **one** bulk action. The planner sorts each PR into a request or a bump per channel, using `review_requests`.
 - Pipeline:
   1. gate each PR, dropping Blocked ones with their reason;
   2. run `decide_owners` per PR;
@@ -766,7 +766,7 @@ Nothing org-specific is hard-coded or shipped: GitHub orgs, Slack workspaces, te
 
 **Visual style.** Dark, Linear-like, dense:
 - compact rows (about 44 px, two lines: title, then `owner/repo · CI`);
-- collapsible project sections with a count and a select-all checkbox;
+- collapsible project sections with a count and a tri-state checkbox;
 - a row checkbox on every PR;
 - a **floating bulk action bar** at the bottom center that appears only while something is selected;
 - muted text, one accent color (violet) for the primary action and the selection, status pills for review decision.
@@ -775,37 +775,56 @@ Approved mockups (AI-generated; style references, not pixel specs):
 - [`docs/ui/list-view.jpg`](ui/list-view.jpg): list, filter menu, sync footer, bulk bar. Known differences, where the spec wins:
   - the **per-row Request/Bump buttons are superseded**: rows have no action buttons, only the request indicator below;
   - it omits the unresolved-thread count, **which must still be shown** (💬 n);
-  - the filter menu anchors **under the funnel button** (in the mockup it floats near the `⋯` button).
+  - the filter menu anchors **under the funnel button** (in the mockup it floats near a header `⋯` button);
+  - the header `⋯` overflow button is **removed**;
+  - it lacks the global tri-state checkbox in the list header.
 - [`docs/ui/slack-preview.jpg`](ui/slack-preview.jpg): the Slack preview modal. The list behind it is filler. The rendered message is illustrative: the real text is the §7.6 template, byte-exact, and the sender shown is **you** (messages are posted with your user token), not an "APP" bot.
 
 **Layout.**
 - **Sidebar** (navigation only, no persistent filters): My PRs, To review, Projects, Settings. There is no org checkbox list here; orgs are a filter in the menu.
 - **Sidebar footer:** sync status plus a refresh button: `● Synced · 2m ago  ⟳`, `◌ Syncing…`, `▲ Rate limited · resets 14:32  ⟳`, or `▲ Sync failed · <reason>  ⟳` (§6). Clicking the text shows per-account detail.
-- **Header:** view title and subtitle (`8 open PRs across 3 projects`), the **search bar**, a single small **filter icon button** (funnel), and `⋯`.
+- **Header:** view title and subtitle (`8 open PRs across 3 projects`), the **search bar**, and a single small **filter icon button** (funnel). There is **no** overflow `⋯` button in the header.
+- **List header:** a global tri-state checkbox with `N of M selected` (or `M PRs` when nothing is selected).
 
 **List (home)**:
 
 ```
 ┌──────────────────┬──────────────────────────────────────────────────────────────────────────┐
-│ ◆ PR-Nexus       │ Pull Requests                        [🔍 Search projects, PRs… ] [⏷] [⋯] │
-│                  │ 8 open PRs across 3 projects                                             │
-│ ⌂ My PRs       ● │ ┌ ▾ ☐ Auth V2 (3) ─────────────────────────────────────────────────────┐ │
-│ ◷ To review      │ │ ☑ #142 Migrate login to new auth  ✓Approved 💬0/2  Requested 2d ↗    │ │
-│ ▤ Projects       │ │   acme/webapp · ● Passing                           bumped 5h ago    │ │
-│ ⚙ Settings       │ │ ☑ #138 Add passkeys support       ● Review  💬1/4                    │ │
+│ ◆ PR-Nexus       │ Pull Requests              [🔍 Search projects, PRs, descriptions… ] [⏷] │
+│                  │ 5 open PRs across 2 projects                                             │
+│ ⌂ My PRs       ● │ ⊟ 2 of 5 selected                                                        │
+│ ◷ To review      │ ┌ ▾ ⊟ Auth V2 (3) ────────────────────────────────────────────────── ⋯ ┐ │
+│ ▤ Projects       │ │ ☑ #142 Migrate login to new auth +1 ✓Approved 💬0/2  Requested 2d ↗  │ │
+│ ⚙ Settings       │ │   acme/webapp · ● Passing                            bumped 5h ago   │ │
+│                  │ │ ☑ #138 Add passkeys support       ● Review  💬1/4                    │ │
 │                  │ │   acme/auth-service · ● Passing                                      │ │
 │                  │ │ ☐ #135 Refresh token rotation     ✕ Changes 💬3/3                    │ │
 │                  │ │   acme/auth-service · ● Failing                                      │ │
 │                  │ └──────────────────────────────────────────────────────────────────────┘ │
-│                  │ ▸ ☐ Billing revamp (2) · collapsed                                       │
+│                  │ ▸ ⊟ Billing revamp (2) · collapsed                                    ⋯  │
 │                  │ ┌ ▾ ☐ Unassigned (1) ──────────────────────────────────────────────────┐ │
 │                  │ │ ☐ #23  Fix tax calculation        ● Review  💬0/0  Requested 5d ↗    │ │
 │                  │ │   acme/billing · ● Passing                                           │ │
 │                  │ └──────────────────────────────────────────────────────────────────────┘ │
 │ ● Synced · 2m  ⟳ │      ┌ 2 selected │ [Request / bump on Slack] │ [✕ Clear] ┐              │
 └──────────────────┴──────────────────────────────────────────────────────────────────────────┘
- 💬 unresolved/total threads · ↗ opens the original Slack request/thread · no per-row action buttons
+ ☐ none · ⊟ partly selected · ☑ all · 💬 unresolved/total threads · ↗ original Slack request
+ ⋯ project actions (auto-link rules) · double-click a project title to rename · no per-row buttons
 ```
+
+**Project sections.**
+- Header: collapse chevron, tri-state checkbox, project name, count, and (for real projects, not Unassigned) a small `⋯` menu at the right.
+- **Rename:** double-click the project title to edit it inline. `Enter` saves (trimmed, non-empty, unique; otherwise an inline error and the editor stays open), `Esc` or clicking away cancels and restores the old name. It calls `rename_project`. Unassigned cannot be renamed.
+- The section `⋯` menu holds **project-level actions only**, kept minimal: Edit auto-link rules (§8.1), Archive project, Delete project (with confirmation). It has no Rename entry (use double-click) and no Select all entry (use the checkbox).
+
+**Selection: three levels, tri-state.**
+- Levels: the **global** checkbox in the list header, one per **project section** header, one per **row**.
+- Selection is a set of `PrId`s held in the view's frontend state; section and global states are derived, never stored.
+- A parent shows ☑ when all its visible children are selected, ⊟ (indeterminate, `aria-checked="mixed"`) when some are, ☐ when none are.
+- Toggling a parent: if it is ☑ it deselects all its visible children; otherwise (☐ or ⊟) it selects all of them.
+- **Visible** means passing the current filters and search. The global checkbox covers all visible rows across sections, collapsed sections included. Rows hidden by a filter or search are never selected by a parent toggle. Rows already selected that a later filter hides stay selected; the bar then reads `3 selected (1 hidden)`, and `Clear` drops them too.
+- **Identity, not position:** a PR in several projects appears in several sections. Checking it in one section checks it in all of them, and every section containing it recomputes its state (a collapsed section can show ⊟ because of it). Counts and bulk actions use distinct `PrId`s, so the bar's `N selected` and the preview never double-count.
+- Selection is per view and session-only (not saved in `view_state`); switching views keeps each view's selection until the app quits.
 
 **Rows have no action buttons.** A row is selected only with its checkbox (or `x`). The **only** Slack action in the list is the floating bar's **Request / bump on Slack**, which decides request vs bump per PR and per channel from `review_requests` (§7.7, §7.9).
 
@@ -851,7 +870,7 @@ Row content, each part toggled under **Show**: number and title; `owner/repo`; C
 
 **Search bar:** always visible. Filters the current view as you type (150 ms debounce), case- and accent-insensitive, whitespace-separated terms ANDed. It matches project name, PR title, PR body (`bodyText`), `owner/repo`, and number (`#142` or `142`). It runs in core over the cached rows (a few hundred PRs; no FTS needed). It combines with the menu filters. `/` focuses it, and `Esc` clears it.
 
-Keyboard: `j/k` move, `x` toggle select, `r` open the Slack preview for the selection (or the focused row if nothing is selected), `s` open the focused row's Slack request, `o` open in browser, `f` open the filter menu.
+Keyboard: `j/k` move, `x` toggle select, `Shift+x` toggle the focused row's section, `Cmd/Ctrl+A` toggle the global checkbox, `r` open the Slack preview for the selection (or the focused row if nothing is selected), `s` open the focused row's Slack request, `o` open in browser, `f` open the filter menu.
 
 **PR detail**:
 
@@ -937,7 +956,7 @@ Detect `X-GitHub-SSO: required; url=…` and show the authorization link.
 - In Linux CI there is no secret service, so tests use the keyring `mock` store behind a feature flag.
 
 **Webview hardening**:
-- Tauri v2 capabilities give the main window only `core:default`, `opener:allow-open-url` limited to `https://github.com/*` and `https://*.slack.com/*`, and the app's own commands.
+- Tauri v2 capabilities give the main window only `core:default`, `opener:allow-open-url` limited to `https://github.com/*`, `https://*.slack.com/*`, and `slack://*` (request deep links, §8.2), and the app's own commands.
 - No shell or fs plugins in the webview.
 - CSP: `default-src 'self'; img-src 'self' https://avatars.githubusercontent.com data:; connect-src ipc: http://ipc.localhost`. All network access happens in Rust.
 - Message text, titles, and Slack replies render as text, never as HTML.
@@ -1095,7 +1114,7 @@ Release runbook (CONTRIBUTING.md):
 | **M4** | CODEOWNERS + owner decision | The skill's `test_helpers.py` cases are ported and pass, and the Δ1–Δ4 tests pass. Readiness table (§7.1) implemented as a pure function with a test per row. `decide_owners` rules 1–9 tested with fixtures. |
 | **M5** | Mapping | Empty mapping on first run. CSV import (replace, merge, dry-run diff, target-workspace picker for rows without a workspace; the skill's 5-column CSV accepted) and export (effective/user/imported, fixed header, sorted). Layer precedence and tombstone tests on placeholder fixtures. |
 | **M6** | GitHub sync | Accounts (gh token, PAT). Tracked-orgs picker (onboarding + Settings; empty state until orgs are picked). Search buckets, client-side tracked-org filter, nodes refresh, polling scheduler, rate-limit pause. HTTP fixture tests via `wiremock`. Typed errors mapped (401, 403-SSO, 403-secondary, 404). |
-| **M7** | List UI | Dark compact style (§8.2). Sidebar navigation with the sync-status footer and refresh button. Grouped, collapsible list with checkbox selection, select-all per section, and no per-row action buttons. Floating bulk bar. Slack request indicator with link icon. Filter menu (Grouping, Ordering, Show, Filters with Reset), persisted per view in `view_state`. Search bar over project name, title, body, repo, and number. Keyboard shortcuts. vitest: selection dedupe across sections, filter and search predicates, view-state restore. |
+| **M7** | List UI | Dark compact style (§8.2). Sidebar navigation with the sync-status footer and refresh button. Grouped, collapsible list with three-level tri-state selection (global, section, row) and no per-row action buttons. No header overflow button. Inline project rename by double-click. Minimal section `⋯` menu (auto-link rules, archive, delete). Floating bulk bar. Slack request indicator with link icon. Filter menu (Grouping, Ordering, Show, Filters with Reset), persisted per view in `view_state`. Search bar over project name, title, body, repo, and number. Keyboard shortcuts. vitest: tri-state derivation (none/partial/all) for section and global; parent toggle selects or deselects only visible children; a filter or search excludes hidden rows from parent toggles; checking a multi-project PR updates every section containing it; bulk count and planner input dedupe by `PrId`; hidden-selected count; inline rename (Enter saves, Esc cancels, empty or duplicate name rejected, Unassigned not editable); filter and search predicates; view-state restore. |
 | **M8** | Projects | CRUD, rules with live preview, manual/rule/excluded semantics tested. Unassigned section. |
 | **M9** | Ownership inputs | Files (paginated, capped), CODEOWNERS lookup order, `rules/branches`, protection with 403→Unknown, reviews with onBehalfOf, team members cache. Detail view shows readiness, owners, and the rationale. |
 | **M10** | Slack single request/bump | Slack onboarding for **any number of workspaces** (manifest + token + `auth.test` per workspace; workspace-scoped channel cache and picker; mapping rows routed to the right token). Channel cache and picker. Archived refusal. `review_requests` lifecycle: created on request; bump updates; closed on merge/close, dismiss, supersede, or archived channel. Discovery via search (background with throttle and cooldown, plus before the preview) stores `source='discovered_via_search'`. The PR detail's contextual Request review / Bump request button. Preview modal with Request/Bump cards → refresh-before-write → post. Bump in thread with `reply_broadcast`. Request indicator deep link (`slack://` with https permalink fallback). Corrections saved as user rows. Optional GitHub team review request. Tested against `FakeChat`, plus one manual run in a test channel. |
@@ -1139,4 +1158,5 @@ M0–M1 come first on purpose. Every later PR is then built, linted, and releasa
 - **D13. No Slack drafts:** the in-app preview plus an explicit Send replaces the skill's draft-first flow.
 - **D14. Review-request lifecycle:** a request is closed only by merge/close, explicit dismiss, being superseded by a new top-level message in the same channel, or an archived channel. Approvals and new commits do not close it, and there is no age expiry (§7.4).
 - **D15. Discovery cadence:** background search at most once per PR per workspace every 24 h, ≤10 calls/min per workspace, plus a forced check before the preview (§7.4).
-- **D16. List actions:** no per-row action buttons; the bulk bar is the only list action, and the PR detail keeps a contextual button (§7.7, §8.2).
+- **D16. List actions:** no per-row action buttons and no header overflow button; the bulk bar is the only list action, and the PR detail keeps a contextual button. Projects are renamed by double-clicking the title (§7.7, §8.2).
+- **D17. Selection:** three-level tri-state checkboxes over visible rows, keyed by `PrId` across sections, session-only (§8.2).
