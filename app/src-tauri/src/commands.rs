@@ -1,8 +1,9 @@
 use chrono::Utc;
 use pr_nexus_core::domain::{
-    Account, AccountId, AccountKind, AuthMode, ChecksState, Project, ProjectId, PullRequest,
-    RequestStatus, ReviewDecision, ViewState,
+    Account, AccountId, AccountKind, AuthMode, ChecksState, LinkSource, PrId, Project, ProjectId,
+    ProjectRule, PullRequest, RequestStatus, ReviewDecision, RuleKind, ViewState,
 };
+use pr_nexus_core::linking;
 use pr_nexus_core::mapping::{self, ImportMode};
 use pr_nexus_core::onboarding::{self, OnboardingState};
 use pr_nexus_core::providers::{SetupStep, VcsProvider};
@@ -541,6 +542,195 @@ pub fn delete_project(app: State<'_, std::sync::Arc<AppState>>, id: i64) -> Resu
     let state = app.inner().as_ref();
     state.store.delete_project(ProjectId(id))?;
     Ok(())
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct RuleDto {
+    pub id: Option<i64>,
+    pub project_id: i64,
+    pub kind: String,
+    pub pattern: String,
+    pub priority: i32,
+}
+
+#[derive(Serialize)]
+pub struct LinkDto {
+    pub pr_id: i64,
+    pub source: String,
+    pub rule_id: Option<i64>,
+}
+
+fn rule_dto(rule: ProjectRule) -> RuleDto {
+    RuleDto {
+        id: Some(rule.id),
+        project_id: rule.project.0,
+        kind: rule.kind.as_str().to_owned(),
+        pattern: rule.pattern,
+        priority: rule.priority,
+    }
+}
+
+fn parse_kind(kind: &str) -> Result<RuleKind, AppError> {
+    kind.parse::<RuleKind>()
+        .map_err(|_| AppError::new("validation", format!("Unknown rule kind {kind}")))
+}
+
+fn account_prs(state: &AppState) -> Result<Vec<PullRequest>, AppError> {
+    Ok(match state::github_account(&state.store)? {
+        Some(account) => state.store.list_pull_requests_for_account(account.id)?,
+        None => Vec::new(),
+    })
+}
+
+fn relink_all(state: &AppState) -> Result<(), AppError> {
+    linking::relink(&state.store, &account_prs(state)?)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_project_color(
+    app: State<'_, std::sync::Arc<AppState>>,
+    id: i64,
+    color: String,
+) -> Result<ProjectDto, AppError> {
+    let state = app.inner().as_ref();
+    Ok(project_dto(
+        state.store.set_project_color(ProjectId(id), color)?,
+    ))
+}
+
+#[tauri::command]
+pub fn list_project_rules(
+    app: State<'_, std::sync::Arc<AppState>>,
+    project_id: i64,
+) -> Result<Vec<RuleDto>, AppError> {
+    let state = app.inner().as_ref();
+    let mut rules = state.store.list_project_rules(ProjectId(project_id))?;
+    rules.sort_by(|a, b| b.priority.cmp(&a.priority).then(a.id.cmp(&b.id)));
+    Ok(rules.into_iter().map(rule_dto).collect())
+}
+
+/// Creates (`id: null`) or updates a rule, then re-evaluates every rule (§8.1).
+#[tauri::command]
+pub fn save_project_rule(
+    app: State<'_, std::sync::Arc<AppState>>,
+    rule: RuleDto,
+) -> Result<RuleDto, AppError> {
+    let state = app.inner().as_ref();
+    let kind = parse_kind(&rule.kind)?;
+    let pattern = linking::validate(kind, &rule.pattern)?;
+    let value = ProjectRule {
+        id: rule.id.unwrap_or(0),
+        project: ProjectId(rule.project_id),
+        kind,
+        pattern,
+        priority: rule.priority,
+    };
+    let saved = match rule.id {
+        Some(_) => state.store.update_project_rule(value)?,
+        None => state.store.insert_project_rule(value)?,
+    };
+    relink_all(state)?;
+    Ok(rule_dto(saved))
+}
+
+#[tauri::command]
+pub fn delete_project_rule(
+    app: State<'_, std::sync::Arc<AppState>>,
+    id: i64,
+) -> Result<(), AppError> {
+    let state = app.inner().as_ref();
+    state.store.delete_project_rule(id)?;
+    relink_all(state)
+}
+
+/// Live preview: how many open PRs `kind`/`pattern` would link.
+#[tauri::command]
+pub fn preview_rule(
+    app: State<'_, std::sync::Arc<AppState>>,
+    kind: String,
+    pattern: String,
+) -> Result<usize, AppError> {
+    let state = app.inner().as_ref();
+    let kind = parse_kind(&kind)?;
+    Ok(linking::preview_count(
+        &state.store,
+        &account_prs(state)?,
+        kind,
+        &pattern,
+    )?)
+}
+
+#[tauri::command]
+pub fn list_project_links(
+    app: State<'_, std::sync::Arc<AppState>>,
+    project_id: i64,
+) -> Result<Vec<LinkDto>, AppError> {
+    let state = app.inner().as_ref();
+    Ok(state
+        .store
+        .list_project_links(ProjectId(project_id))?
+        .into_iter()
+        .map(|link| {
+            let (source, rule_id) = match link.source {
+                LinkSource::Manual => ("manual", None),
+                LinkSource::Rule(id) => ("rule", Some(id)),
+                LinkSource::Excluded => ("excluded", None),
+            };
+            LinkDto {
+                pr_id: link.pr.0,
+                source: source.to_owned(),
+                rule_id,
+            }
+        })
+        .collect())
+}
+
+/// Manual links: drag-and-drop onto a project, or "Add pull request" in the project dialog.
+#[tauri::command]
+pub fn link_prs(
+    app: State<'_, std::sync::Arc<AppState>>,
+    project_id: i64,
+    pr_ids: Vec<i64>,
+) -> Result<usize, AppError> {
+    let state = app.inner().as_ref();
+    let project = ProjectId(project_id);
+    if state.store.get_project(project)?.is_none() {
+        return Err(AppError::new("validation", "Project not found"));
+    }
+    Ok(state
+        .store
+        .link_manual(project, pr_ids.into_iter().map(PrId).collect(), Utc::now())?)
+}
+
+#[tauri::command]
+pub fn unlink_pr(
+    app: State<'_, std::sync::Arc<AppState>>,
+    project_id: i64,
+    pr_id: i64,
+) -> Result<(), AppError> {
+    let state = app.inner().as_ref();
+    let project = ProjectId(project_id);
+    let pr = PrId(pr_id);
+    let rule_matches = match state.store.get_pull_request(pr)? {
+        Some(value) => linking::rule_matches(&state.store, &value, project)?,
+        None => false,
+    };
+    state
+        .store
+        .unlink_pr(project, pr, rule_matches, Utc::now())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn restore_pr(
+    app: State<'_, std::sync::Arc<AppState>>,
+    project_id: i64,
+    pr_id: i64,
+) -> Result<(), AppError> {
+    let state = app.inner().as_ref();
+    state.store.restore_pr(ProjectId(project_id), PrId(pr_id))?;
+    relink_all(state)
 }
 
 #[tauri::command]

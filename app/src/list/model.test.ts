@@ -8,6 +8,10 @@ import {
   defaultView,
   filtersActive,
   groupRows,
+  dragIds,
+  headerSummary,
+  keptEmptyProjects,
+  parseDragIds,
   hiddenSelectedCount,
   matchesSearch,
   parseViewState,
@@ -187,4 +191,30 @@ test("slack status prefers the latest bump and threads label explains the count"
   expect(slackStatus({ ...slack, bump_count: 1, last_bumped_at: "2026-10-26T07:00:00Z" }, now)?.label).toBe("Bumped · 5h ago");
   expect(threadsLabel(2, 5)).toEqual({ text: "2", title: "2 unresolved of 5 review threads" });
   expect(threadsLabel(120, 130).text).toBe("100+");
+});
+
+test("empty project sections stay only without search or filters, and per project view", () => {
+  const projects: ProjectDto[] = [
+    { id: 1, name: "Auth", color: "#7c5cbf", archived: false, description: "", sort_order: 0 },
+    { id: 2, name: "Empty", color: "#3f6f8f", archived: false, description: "", sort_order: 1 },
+    { id: 3, name: "Old", color: "#3f6f8f", archived: true, description: "", sort_order: 2 },
+  ];
+  const view = defaultView();
+  expect([...keptEmptyProjects(projects, "mine", view.filters, "")]).toEqual([1, 2]);
+  expect([...keptEmptyProjects(projects, "mine", view.filters, "login")]).toEqual([]);
+  expect([...keptEmptyProjects(projects, "project:2", view.filters, "")]).toEqual([2]);
+  const sections = groupRows([row({ id: 1, title: "A", project_ids: [1] })], projects, view, now, new Set([2]));
+  expect(sections.map((section) => [section.title, section.rows.length])).toEqual([
+    ["Auth", 1],
+    ["Empty", 0],
+  ]);
+  expect(headerSummary([row({ id: 1, title: "A", project_ids: [1] })], projects, "mine", view.filters)).toBe("1 open PR across 2 projects");
+  expect(headerSummary([], projects, "project:2", view.filters)).toBe("0 open PRs in this project");
+});
+
+test("dragging a selected row carries the selection", () => {
+  expect(dragIds(3, new Set([2, 3]))).toEqual([2, 3]);
+  expect(dragIds(4, new Set([2, 3]))).toEqual([4]);
+  expect(parseDragIds("[1,2.5,\"x\",3]")).toEqual([1, 3]);
+  expect(parseDragIds("nope")).toEqual([]);
 });

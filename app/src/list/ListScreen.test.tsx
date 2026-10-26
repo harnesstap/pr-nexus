@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { expect, test, vi } from "vitest";
 import type { Api, Bootstrap, ProjectDto } from "../api";
 import { ListScreen } from "./ListScreen";
+import { memoryProjectApi } from "../memoryProjects";
 
 const boot: Bootstrap = {
   onboarding: { step: "done", completed: [], mapping_skipped: true, slack_skipped: true, finished_at: "2026-10-26T00:00:00Z" },
@@ -50,6 +51,7 @@ function api(projects: ProjectDto[]): Api {
     renameProject: () => Promise.resolve(),
     archiveProject: () => Promise.resolve(),
     deleteProject: () => Promise.resolve(),
+    ...memoryProjectApi([], []),
     loadViewState: () => Promise.resolve(null),
     saveViewState: () => Promise.resolve(),
     openExternal: () => Promise.resolve(),
@@ -74,4 +76,17 @@ test("an empty Projects section offers to create one, and Settings lives in the 
   await waitFor(() => expect(fake.createProject).toHaveBeenCalledWith("Checkout"));
   expect(await within(projects).findByRole("button", { name: "Checkout" })).toHaveAttribute("aria-current", "page");
   expect(within(projects).queryByText(/No projects yet/)).not.toBeInTheDocument();
+});
+
+test("dropping PRs on a sidebar project links them and confirms", async () => {
+  const fake = api([{ id: 1, name: "Checkout", color: "#7c5cbf", archived: false, description: "", sort_order: 0 }]);
+  fake.linkPrs = vi.fn(() => Promise.resolve(2));
+  render(<ListScreen api={fake} boot={boot} onBoot={() => undefined} />);
+  const target = await within(screen.getByRole("region", { name: "Projects" })).findByRole("button", { name: "Checkout" });
+  const data = new Map([["application/x-pr-nexus-prs", "[4,5]"]]);
+  const dataTransfer = { types: [...data.keys()], getData: (type: string) => data.get(type) ?? "", dropEffect: "none" };
+  fireEvent.dragOver(target, { dataTransfer });
+  fireEvent.drop(target, { dataTransfer });
+  await waitFor(() => expect(fake.linkPrs).toHaveBeenCalledWith(1, [4, 5]));
+  expect(await screen.findByRole("status")).toHaveTextContent("Added 2 PRs to Checkout");
 });

@@ -1,0 +1,3 @@
+kind: Fixed
+body: Count existing projects in the list header, keep empty project sections renamable, open the window maximized then restore its geometry, and hide the native context menu in release builds.
+time: 2026-10-26T08:31:00.000000Z

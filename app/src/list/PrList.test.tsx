@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, expect, test, vi } from "vitest";
 import type { ListRow, ProjectDto } from "../api";
@@ -43,17 +43,23 @@ function Harness({
   rows,
   projects = [auth, billing],
   onRename = () => Promise.resolve(),
+  viewKey = "mine",
+  onLinkPrs = () => undefined,
+  onEditProject = () => undefined,
 }: {
   rows: ListRow[];
   projects?: ProjectDto[];
   onRename?: (id: number, name: string) => Promise<void>;
+  viewKey?: string;
+  onLinkPrs?: (projectId: number, ids: number[]) => void;
+  onEditProject?: (id: number) => void;
 }) {
   const [view, setView] = useState<SavedView>(defaultView());
   return (
     <PrList
       rows={rows}
       projects={projects}
-      viewKey="mine"
+      viewKey={viewKey}
       view={view}
       onViewChange={setView}
       now={now}
@@ -61,6 +67,8 @@ function Harness({
       onRename={onRename}
       onArchive={() => undefined}
       onDelete={() => undefined}
+      onEditProject={onEditProject}
+      onLinkPrs={onLinkPrs}
     />
   );
 }
@@ -203,6 +211,8 @@ test("rows show labelled threads, a review pill, and the Slack request status", 
       onRename={() => Promise.resolve()}
       onArchive={() => undefined}
       onDelete={() => undefined}
+      onEditProject={() => undefined}
+      onLinkPrs={() => undefined}
     />,
   );
   expect(screen.getByText("Requested · 2d ago")).toBeInTheDocument();
@@ -216,4 +226,84 @@ test("rows show labelled threads, a review pill, and the Slack request status", 
   fireEvent.click(screen.getByRole("button", { name: "Open Slack request for Requested one" }));
   expect(onOpen).toHaveBeenCalledWith(slack.permalink);
   expect(screen.queryByRole("button", { name: "Open Slack request for Quiet one" })).not.toBeInTheDocument();
+});
+
+function dataTransfer() {
+  const store = new Map<string, string>();
+  return {
+    get types() {
+      return [...store.keys()];
+    },
+    setData: (type: string, value: string) => store.set(type, value),
+    getData: (type: string) => store.get(type) ?? "",
+    dropEffect: "none",
+    effectAllowed: "all",
+  };
+}
+
+test("the header counts existing projects, and a project view counts its own PRs", () => {
+  const { unmount } = render(<Harness rows={rows} />);
+  expect(screen.getByText("3 open PRs across 2 projects · 1 unassigned")).toBeInTheDocument();
+  unmount();
+  render(<Harness rows={rows.filter((item) => item.project_ids.includes(2))} viewKey="project:2" />);
+  expect(screen.getByRole("heading", { level: 1, name: "Billing" })).toBeInTheDocument();
+  expect(screen.getByText("1 open PR in this project")).toBeInTheDocument();
+});
+
+test("an empty project keeps its section, renames on double-click, and opens its dialog", async () => {
+  const empty: ProjectDto = { id: 3, name: "Search", color: "#2f855a", archived: false, description: "", sort_order: 2 };
+  const onRename = vi.fn(() => Promise.resolve());
+  const onEditProject = vi.fn();
+  render(<Harness rows={rows} projects={[auth, billing, empty]} onRename={onRename} onEditProject={onEditProject} />);
+  const section = screen.getByRole("region", { name: "Search" });
+  expect(within(section).getByText(/Drag PRs onto this project/)).toBeInTheDocument();
+  fireEvent.doubleClick(within(section).getByText("Search"));
+  const input = screen.getByRole("textbox", { name: "Rename Search" });
+  fireEvent.change(input, { target: { value: "Discovery" } });
+  fireEvent.keyDown(input, { key: "Enter" });
+  await act(async () => undefined);
+  expect(onRename).toHaveBeenCalledWith(3, "Discovery");
+
+  fireEvent.change(screen.getByPlaceholderText(/Search projects/), { target: { value: "passkeys" } });
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  });
+  expect(screen.queryByRole("region", { name: "Search" })).not.toBeInTheDocument();
+  fireEvent.change(screen.getByPlaceholderText(/Search projects/), { target: { value: "" } });
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  });
+  fireEvent.click(within(screen.getByRole("region", { name: "Search" })).getByRole("button", { name: "Actions for Search" }));
+  fireEvent.click(screen.getByRole("button", { name: "Edit auto-link rules" }));
+  expect(onEditProject).toHaveBeenCalledWith(3);
+});
+
+test("the project view title renames on double-click", async () => {
+  const onRename = vi.fn(() => Promise.resolve());
+  render(<Harness rows={rows.filter((item) => item.project_ids.includes(2))} viewKey="project:2" onRename={onRename} />);
+  fireEvent.doubleClick(screen.getByRole("heading", { level: 1, name: "Billing" }));
+  const input = screen.getByRole("textbox", { name: "Rename Billing" });
+  fireEvent.change(input, { target: { value: "Payments" } });
+  fireEvent.keyDown(input, { key: "Enter" });
+  await act(async () => undefined);
+  expect(onRename).toHaveBeenCalledWith(2, "Payments");
+});
+
+test("dragging a selected row onto a project section links the whole selection", () => {
+  const onLinkPrs = vi.fn();
+  render(<Harness rows={rows} onLinkPrs={onLinkPrs} />);
+  fireEvent.click(screen.getByRole("checkbox", { name: /Select Add passkeys/ }));
+  fireEvent.click(screen.getByRole("checkbox", { name: /Select Fix tax rounding/ }));
+  const transfer = dataTransfer();
+  const dragged = screen.getAllByText("Fix tax rounding")[0].closest("article")!;
+  fireEvent.dragStart(dragged, { dataTransfer: transfer });
+  const billingSection = screen.getByRole("region", { name: "Billing" });
+  fireEvent.dragOver(billingSection, { dataTransfer: transfer });
+  fireEvent.drop(billingSection, { dataTransfer: transfer });
+  expect(onLinkPrs).toHaveBeenCalledWith(2, [2, 3]);
+
+  const single = dataTransfer();
+  fireEvent.dragStart(screen.getAllByText("Migrate login")[0].closest("article")!, { dataTransfer: single });
+  fireEvent.drop(billingSection, { dataTransfer: single });
+  expect(onLinkPrs).toHaveBeenLastCalledWith(2, [1]);
 });

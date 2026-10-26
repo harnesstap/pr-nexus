@@ -6,6 +6,12 @@ import {
   bulkIds,
   checkState,
   ciLabel,
+  DRAG_MIME,
+  dragIds,
+  headerSummary,
+  keptEmptyProjects,
+  parseDragIds,
+  projectIdOf,
   ciTone,
   filtersActive,
   groupRows,
@@ -45,6 +51,10 @@ interface Props {
   onRename: (id: number, name: string) => Promise<void>;
   onArchive: (id: number) => void;
   onDelete: (id: number) => void;
+  /** Opens the project dialog (rules, linked PRs) from the section ⋯ menu. */
+  onEditProject: (id: number) => void;
+  /** Manual links from dropping rows on a project section. */
+  onLinkPrs: (projectId: number, prIds: number[]) => void;
 }
 
 const GROUPINGS: { id: Grouping; label: string }[] = [
@@ -63,15 +73,28 @@ const ORDERINGS: { id: Ordering; label: string }[] = [
   { id: "number", label: "Number" },
 ];
 
-export function PrList({ rows, projects, viewKey, view, onViewChange, now, onOpen, onRename, onArchive, onDelete }: Props) {
+export function PrList({
+  rows,
+  projects,
+  viewKey,
+  view,
+  onViewChange,
+  now,
+  onOpen,
+  onRename,
+  onArchive,
+  onDelete,
+  onEditProject,
+  onLinkPrs,
+}: Props) {
   const [query, setQuery] = useState("");
   const [debounced, setDebounced] = useState("");
   const [selectedByView, setSelectedByView] = useState<Record<string, number[]>>({});
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [menu, setMenu] = useState<string | null>(null);
   const [sectionMenu, setSectionMenu] = useState<string | null>(null);
-  const [editing, setEditing] = useState<{ id: number; name: string; error: string | null } | null>(null);
-  const [rulesFor, setRulesFor] = useState<string | null>(null);
+  const [editing, setEditing] = useState<Editing | null>(null);
+  const [dropTarget, setDropTarget] = useState<string | null>(null);
   const [deleteFor, setDeleteFor] = useState<Section | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [focusIndex, setFocusIndex] = useState(0);
@@ -88,7 +111,12 @@ export function PrList({ rows, projects, viewKey, view, onViewChange, now, onOpe
     () => visibleRows(rows, projects, viewKey, view, debounced, now),
     [rows, projects, viewKey, view, debounced, now],
   );
-  const sections = useMemo(() => groupRows(shown, projects, view, now), [shown, projects, view, now]);
+  const keepEmpty = useMemo(
+    () => keptEmptyProjects(projects, viewKey, view.filters, debounced),
+    [projects, viewKey, view.filters, debounced],
+  );
+  const sections = useMemo(() => groupRows(shown, projects, view, now, keepEmpty), [shown, projects, view, now, keepEmpty]);
+  const currentProject = projectIdOf(viewKey);
   const flat = useMemo(() => sections.flatMap((section) => section.rows.map((row) => ({ section, row }))), [sections]);
   const ids = visibleIds(sections);
   const hidden = hiddenSelectedCount(selected, ids);
@@ -111,7 +139,10 @@ export function PrList({ rows, projects, viewKey, view, onViewChange, now, onOpe
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
       const target = event.target instanceof HTMLElement ? event.target : null;
-      const typing = target?.tagName === "INPUT" || target?.tagName === "TEXTAREA";
+      const typing = target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.tagName === "SELECT";
+      if (document.querySelector('[role="dialog"][aria-modal="true"]')) {
+        return;
+      }
       if (event.key === "/" && !typing) {
         event.preventDefault();
         searchRef.current?.focus();
@@ -166,7 +197,6 @@ export function PrList({ rows, projects, viewKey, view, onViewChange, now, onOpe
     return () => window.removeEventListener("keydown", onKey);
   });
 
-  const projectCount = new Set(shown.flatMap((row) => row.project_ids)).size;
   const header =
     checkState(ids, selected) === "none" && hidden === 0 ? `${ids.length} PRs` : `${selectedCount(ids, selected)} of ${ids.length} selected`;
 
@@ -174,10 +204,31 @@ export function PrList({ rows, projects, viewKey, view, onViewChange, now, onOpe
     <div className="flex min-h-0 flex-1 flex-col">
       <header className="flex items-start justify-between gap-4 px-4 py-3">
         <div>
-          <h1 className="text-lg font-semibold">{viewTitle(viewKey, projects)}</h1>
-          <p className="text-sm text-slate-400">
-            {shown.length} open {shown.length === 1 ? "PR" : "PRs"} across {projectCount} {projectCount === 1 ? "project" : "projects"}
-          </p>
+          {currentProject !== null && editing?.id === currentProject && editing.where === "title" ? (
+            <RenameField
+              label={`Rename ${viewTitle(viewKey, projects)}`}
+              editing={editing}
+              className="text-lg font-semibold"
+              onChange={setEditing}
+              onCommit={() => void commit(currentProject)}
+              onCancel={() => setEditing(null)}
+              committing={commitRename}
+            />
+          ) : (
+            <h1
+              className="text-lg font-semibold"
+              title={currentProject !== null ? "Double-click to rename" : undefined}
+              onDoubleClick={() => {
+                if (currentProject !== null && projects.some((project) => project.id === currentProject)) {
+                  setEditing({ id: currentProject, where: "title", name: viewTitle(viewKey, projects), error: null });
+                }
+              }}
+            >
+              {viewTitle(viewKey, projects)}
+            </h1>
+          )}
+          {editing?.error && editing.where === "title" && <p className="text-xs text-rose-300">{editing.error}</p>}
+          <p className="text-sm text-slate-400">{headerSummary(shown, projects, viewKey, view.filters)}</p>
         </div>
         <div className="flex items-center gap-2">
           <label className="flex w-80 items-center gap-2 rounded-md border border-slate-700 bg-slate-900 px-3 py-1.5 text-sm focus-within:border-violet-400">
@@ -203,7 +254,31 @@ export function PrList({ rows, projects, viewKey, view, onViewChange, now, onOpe
           const open = !collapsed[section.key];
           const state = checkState(sectionIds(section), selected);
           return (
-            <section key={section.key} className="mb-2 rounded-lg border border-slate-800">
+            <section
+              key={section.key}
+              aria-label={section.title}
+              className={`mb-2 rounded-lg border ${dropTarget === section.key ? "border-violet-400 bg-violet-500/5" : "border-slate-800"}`}
+              onDragOver={(event) => {
+                if (section.projectId !== null && event.dataTransfer.types.includes(DRAG_MIME)) {
+                  event.preventDefault();
+                  event.dataTransfer.dropEffect = "link";
+                  setDropTarget(section.key);
+                }
+              }}
+              onDragLeave={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                  setDropTarget(null);
+                }
+              }}
+              onDrop={(event) => {
+                setDropTarget(null);
+                const ids = parseDragIds(event.dataTransfer.getData(DRAG_MIME));
+                if (section.projectId !== null && ids.length > 0) {
+                  event.preventDefault();
+                  onLinkPrs(section.projectId, ids);
+                }
+              }}
+            >
               <header className="flex items-center gap-2 px-2 py-1.5">
                 <button
                   type="button"
@@ -219,34 +294,23 @@ export function PrList({ rows, projects, viewKey, view, onViewChange, now, onOpe
                   state={state}
                   onToggle={() => setSelected(toggleParent(sectionIds(section), selected))}
                 />
-                {editing?.id === section.projectId ? (
-                  <input
-                    aria-label={`Rename ${section.title}`}
-                    className="rounded border border-slate-600 bg-slate-900 px-2 py-0.5 text-sm"
-                    value={editing.name}
-                    autoFocus
-                    onChange={(event) => setEditing({ ...editing, name: event.target.value, error: null })}
-                    onKeyDown={(event) => {
-                      if (event.key === "Escape") {
-                        setEditing(null);
-                      }
-                      if (event.key === "Enter") {
-                        event.preventDefault();
-                        void commit(section);
-                      }
-                    }}
-                    onBlur={() => {
-                      if (!commitRename.current) {
-                        setEditing(null);
-                      }
-                    }}
+                {section.projectId !== null && editing?.id === section.projectId && editing.where === "section" ? (
+                  <RenameField
+                    label={`Rename ${section.title}`}
+                    editing={editing}
+                    className="text-sm"
+                    onChange={setEditing}
+                    onCommit={() => void commit(section.projectId!)}
+                    onCancel={() => setEditing(null)}
+                    committing={commitRename}
                   />
                 ) : (
                   <span
                     className="text-sm font-medium"
+                    title={section.projectId !== null ? "Double-click to rename" : undefined}
                     onDoubleClick={() => {
                       if (section.projectId !== null) {
-                        setEditing({ id: section.projectId, name: section.title, error: null });
+                        setEditing({ id: section.projectId, where: "section", name: section.title, error: null });
                       }
                     }}
                   >
@@ -254,7 +318,7 @@ export function PrList({ rows, projects, viewKey, view, onViewChange, now, onOpe
                   </span>
                 )}
                 <span className="text-xs text-slate-500">({section.rows.length})</span>
-                {editing?.error && editing.id === section.projectId && (
+                {editing?.error && editing.where === "section" && editing.id === section.projectId && (
                   <span className="text-xs text-rose-300">{editing.error}</span>
                 )}
                 <span className="flex-1" />
@@ -270,7 +334,7 @@ export function PrList({ rows, projects, viewKey, view, onViewChange, now, onOpe
                     </button>
                     {sectionMenu === section.key && (
                       <div role="menu" className="absolute right-0 z-10 w-48 rounded border border-slate-700 bg-slate-900 py-1 text-sm">
-                        <button type="button" className="block w-full px-3 py-1.5 text-left" onClick={() => { setRulesFor(section.title); setSectionMenu(null); }}>
+                        <button type="button" className="block w-full px-3 py-1.5 text-left" onClick={() => { onEditProject(section.projectId!); setSectionMenu(null); }}>
                           Edit auto-link rules
                         </button>
                         <button type="button" className="block w-full px-3 py-1.5 text-left" onClick={() => { onArchive(section.projectId!); setSectionMenu(null); }}>
@@ -284,12 +348,25 @@ export function PrList({ rows, projects, viewKey, view, onViewChange, now, onOpe
                   </div>
                 )}
               </header>
+              {open && section.rows.length === 0 && (
+                <p className="border-t border-slate-800 px-3 py-3 text-xs text-slate-500">
+                  No PRs here yet. Drag PRs onto this project, or add an auto-link rule from ⋯.
+                </p>
+              )}
               {open &&
                 section.rows.map((row) => {
                   const index = flat.findIndex((item) => item.row.id === row.id && item.section.key === section.key);
                   return (
                     <article
                       key={`${section.key}-${row.id}`}
+                      draggable
+                      onDragStart={(event) => {
+                        const ids = dragIds(row.id, selected);
+                        event.dataTransfer.setData(DRAG_MIME, JSON.stringify(ids));
+                        event.dataTransfer.setData("text/plain", ids.length === 1 ? row.url : `${ids.length} pull requests`);
+                        event.dataTransfer.effectAllowed = "link";
+                      }}
+                      onDragEnd={() => setDropTarget(null)}
                       className={`flex items-center gap-3 border-t border-slate-800 px-2 py-1.5 ${index === focusIndex ? "bg-slate-900" : ""}`}
                     >
                       <TriCheckbox
@@ -355,14 +432,6 @@ export function PrList({ rows, projects, viewKey, view, onViewChange, now, onOpe
           </div>
         </div>
       )}
-      {rulesFor && (
-        <dialog open className="rounded border border-slate-700 bg-slate-900 p-4 text-sm text-slate-200">
-          <p>Auto-link rules for {rulesFor} can't be edited in this version yet. Archive and delete work from this menu.</p>
-          <button type="button" className="mt-3 rounded bg-slate-800 px-3 py-1" onClick={() => setRulesFor(null)}>
-            Close
-          </button>
-        </dialog>
-      )}
       {deleteFor?.projectId !== null && deleteFor && (
         <dialog open className="rounded border border-slate-700 bg-slate-900 p-4 text-sm">
           <p>Delete {deleteFor.title}? This cannot be undone.</p>
@@ -389,18 +458,18 @@ export function PrList({ rows, projects, viewKey, view, onViewChange, now, onOpe
     </div>
   );
 
-  async function commit(section: Section) {
-    if (!editing || section.projectId === null) {
+  async function commit(projectId: number) {
+    if (!editing) {
       return;
     }
-    const error = renameError(editing.name, projects, section.projectId);
+    const error = renameError(editing.name, projects, projectId);
     if (error) {
       setEditing({ ...editing, error });
       return;
     }
     commitRename.current = true;
     try {
-      await onRename(section.projectId, editing.name.trim());
+      await onRename(projectId, editing.name.trim());
       setEditing(null);
     } catch (err) {
       setEditing({ ...editing, error: err instanceof Error ? err.message : "Could not rename" });
@@ -408,6 +477,57 @@ export function PrList({ rows, projects, viewKey, view, onViewChange, now, onOpe
       commitRename.current = false;
     }
   }
+}
+
+interface Editing {
+  id: number;
+  where: "section" | "title";
+  name: string;
+  error: string | null;
+}
+
+/** Inline rename (§8.2): Enter saves, Esc or blur cancels. */
+function RenameField({
+  label,
+  editing,
+  className,
+  onChange,
+  onCommit,
+  onCancel,
+  committing,
+}: {
+  label: string;
+  editing: Editing;
+  className: string;
+  onChange: (editing: Editing) => void;
+  onCommit: () => void;
+  onCancel: () => void;
+  committing: { current: boolean };
+}) {
+  return (
+    <input
+      aria-label={label}
+      className={`rounded border border-slate-600 bg-slate-900 px-2 py-0.5 ${className}`}
+      value={editing.name}
+      autoFocus
+      onChange={(event) => onChange({ ...editing, name: event.target.value, error: null })}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") {
+          event.stopPropagation();
+          onCancel();
+        }
+        if (event.key === "Enter") {
+          event.preventDefault();
+          onCommit();
+        }
+      }}
+      onBlur={() => {
+        if (!committing.current) {
+          onCancel();
+        }
+      }}
+    />
+  );
 }
 
 function SlackMark({
