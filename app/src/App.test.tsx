@@ -34,6 +34,7 @@ const boot: Bootstrap = {
   slack_redirect_uri: "http://127.0.0.1:47821/mcp/oauth/callback",
   slack_secret_saved: false,
   slack_workspaces: [],
+  slack_mentions: "off",
   mapping_count: 0,
   sync: { phase: "idle", message: "Not synced yet", synced_at: null, paused: false },
   env_token: false,
@@ -98,6 +99,9 @@ function api(): Api {
     saveViewState: () => Promise.resolve(),
     openExternal: () => Promise.resolve(),
     prDetail: () => Promise.reject(new Error("unused")),
+    prSlackContext: () => Promise.resolve([]),
+    prSlackMentions: () => Promise.resolve([]),
+    saveSlackMentions: () => Promise.resolve(),
   };
 }
 

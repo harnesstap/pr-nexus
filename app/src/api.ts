@@ -40,12 +40,62 @@ export interface Bootstrap {
   slack_redirect_uri: string;
   slack_secret_saved: boolean;
   slack_workspaces: SlackWorkspace[];
+  /** Mentions search in the PR detail's Slack panel (§7.10). */
+  slack_mentions: MentionsScope;
   mapping_count: number;
   sync: SyncStatus;
   env_token: boolean;
   oauth_client_configured: boolean;
   gh_ready: boolean;
   gh_detail: string;
+}
+
+/** `off` (default), `public` channels, or `all` (also private channels and DMs). */
+export type MentionsScope = "off" | "public" | "all";
+
+/** One message of a known thread, parent first (§7.10). */
+export interface ContextMessage {
+  ts: string;
+  at: string | null;
+  author: string;
+  user_id: string | null;
+  text: string;
+  permalink: string | null;
+  is_bot: boolean;
+}
+
+/** A thread PR-Nexus posted for this PR, with what Slack returned. */
+export interface ContextThread {
+  workspace: string;
+  channel_id: string;
+  channel_name: string;
+  root_ts: string;
+  permalink: string | null;
+  status: "active" | "closed" | "posted";
+  close_reason: string | null;
+  requested_at: string | null;
+  messages: ContextMessage[];
+  has_more: boolean;
+  fetched_at: string | null;
+  from_cache: boolean;
+  /** Could not read now; `messages` may still hold the cached copy. */
+  error: string | null;
+}
+
+export interface SearchHit {
+  channel_id: string;
+  channel_name: string;
+  ts: string;
+  author: string | null;
+  text: string;
+  permalink: string | null;
+  is_bot: boolean;
+}
+
+export interface MentionGroup {
+  workspace: string;
+  hits: SearchHit[];
+  error: string | null;
 }
 
 /** A Slack workspace signed in through the Slack MCP server (§7.11). */
@@ -298,6 +348,9 @@ export interface Api {
   saveViewState(viewKey: string, stateJson: string): Promise<void>;
   openExternal(url: string): Promise<void>;
   prDetail(id: number): Promise<PrDetail>;
+  prSlackContext(prId: number, refresh: boolean): Promise<ContextThread[]>;
+  prSlackMentions(prId: number): Promise<MentionGroup[]>;
+  saveSlackMentions(scope: MentionsScope): Promise<void>;
 }
 
 export const tauriApi: Api = {
@@ -348,6 +401,9 @@ export const tauriApi: Api = {
   saveViewState: (viewKey, stateJson) => invoke("save_view_state", { viewKey, stateJson }),
   openExternal: (url) => invoke("open_external", { url }),
   prDetail: (id) => invoke("pr_detail", { id }),
+  prSlackContext: (prId, refresh) => invoke("pr_slack_context", { prId, refresh }),
+  prSlackMentions: (prId) => invoke("pr_slack_mentions", { prId }),
+  saveSlackMentions: (scope) => invoke("save_slack_mentions", { scope }),
 };
 
 /**

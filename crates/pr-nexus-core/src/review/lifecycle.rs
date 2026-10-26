@@ -252,7 +252,7 @@ pub fn send(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::sync::Mutex;
 
     use super::*;
@@ -267,10 +267,10 @@ mod tests {
     type Post = (String, String, Option<String>, bool, bool);
 
     #[derive(Default)]
-    struct FakeChat {
-        account: i64,
-        posts: Mutex<Vec<Post>>,
-        fail: bool,
+    pub(crate) struct FakeChat {
+        pub(crate) account: i64,
+        pub(crate) posts: Mutex<Vec<Post>>,
+        pub(crate) fail: bool,
     }
 
     impl ChatProvider for FakeChat {
@@ -319,14 +319,14 @@ mod tests {
         }
     }
 
-    fn at(hours: i64) -> DateTime<Utc> {
+    pub(crate) fn at(hours: i64) -> DateTime<Utc> {
         DateTime::parse_from_rfc3339("2026-10-26T04:40:00Z")
             .unwrap()
             .with_timezone(&Utc)
             + Duration::hours(hours)
     }
 
-    fn seed(title: &str) -> (tempfile::TempDir, Store, PullRequest, FakeChat) {
+    pub(crate) fn seed(title: &str) -> (tempfile::TempDir, Store, PullRequest, FakeChat) {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path().join("t.db")).unwrap();
         let slack = store
@@ -416,7 +416,7 @@ mod tests {
         (dir, store, pr, chat)
     }
 
-    fn target() -> Target {
+    pub(crate) fn target() -> Target {
         Target {
             workspace: "acme".into(),
             channel_id: "C0TEAM".into(),

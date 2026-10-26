@@ -67,3 +67,11 @@ test("requirement labels separate pending, satisfied, and unknown", () => {
   expect(requirementLabel({ codeowners_required: "true", code_owner_review_pending: true })).toBe("code-owner review required, still pending");
   expect(requirementLabel({ codeowners_required: "true", code_owner_review_pending: false })).toBe("code-owner review required, satisfied");
 });
+
+test("with Slack on, the dialog widens and shows the Slack panel beside the owners", async () => {
+  const api = { prDetail: () => Promise.resolve(detail), prSlackContext: vi.fn(() => Promise.resolve([])) } as unknown as Api;
+  render(<PrDetailDialog api={api} row={row} slack={{ mentions: "off" }} onClose={() => undefined} onOpen={() => undefined} />);
+  expect(await screen.findByText("No Slack request for this PR yet.")).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "Slack" })).toBeInTheDocument();
+  expect(await screen.findByText("Unknown")).toBeInTheDocument();
+});

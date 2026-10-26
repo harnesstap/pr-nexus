@@ -1,5 +1,6 @@
 mod bulk;
 mod commands;
+mod context;
 mod demo;
 mod error;
 mod slack;
@@ -60,6 +61,9 @@ pub fn run() {
             slack::send_review,
             bulk::bulk_preview,
             bulk::send_bulk,
+            context::pr_slack_context,
+            context::pr_slack_mentions,
+            context::save_slack_mentions,
             commands::slack_manifest_url,
             commands::import_mapping,
             commands::finish_onboarding,

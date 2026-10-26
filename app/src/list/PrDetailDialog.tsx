@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import type { Api, ListRow, PrDetail } from "../api";
+import type { Api, ListRow, MentionsScope, PrDetail } from "../api";
 import { errorMessage } from "../api";
+import { SlackContextPanel } from "./SlackContextPanel";
 
 interface Props {
   api: Api;
@@ -9,6 +10,8 @@ interface Props {
   onOpen: (url: string) => void;
   /** Opens the Slack request/bump preview for this PR. */
   onRequestReview?: () => void;
+  /** Shows the Slack panel (§7.10). Off in the wizard and in tests that do not need it. */
+  slack?: { mentions: MentionsScope };
 }
 
 const READINESS_LABEL: Record<PrDetail["readiness"], string> = {
@@ -24,7 +27,7 @@ const READINESS_TONE: Record<PrDetail["readiness"], string> = {
 };
 
 /** One PR's readiness and code owners, with the reasons (§6, §7.2). */
-export function PrDetailDialog({ api, row, onClose, onOpen, onRequestReview }: Props) {
+export function PrDetailDialog({ api, row, onClose, onOpen, onRequestReview, slack }: Props) {
   const [detail, setDetail] = useState<PrDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -59,7 +62,7 @@ export function PrDetailDialog({ api, row, onClose, onOpen, onRequestReview }: P
         role="dialog"
         aria-modal="true"
         aria-labelledby="pr-detail-title"
-        className="w-full max-w-3xl rounded-lg border border-slate-700 bg-slate-900 p-5 text-sm text-slate-200 shadow-xl"
+        className={`w-full ${slack ? "max-w-6xl" : "max-w-3xl"} rounded-lg border border-slate-700 bg-slate-900 p-5 text-sm text-slate-200 shadow-xl`}
       >
         <header className="flex items-start justify-between gap-4">
           <div className="min-w-0">
@@ -86,9 +89,14 @@ export function PrDetailDialog({ api, row, onClose, onOpen, onRequestReview }: P
           </div>
         </header>
 
-        {error && <p className="mt-4 text-rose-300">{error}</p>}
-        {!detail && !error && <p className="mt-4 text-slate-400">Checking code owners…</p>}
-        {detail && <Body detail={detail} />}
+        <div className={slack ? "mt-4 grid gap-5 lg:grid-cols-[minmax(0,1fr)_24rem]" : ""}>
+          <div className="min-w-0">
+            {error && <p className="mt-4 text-rose-300">{error}</p>}
+            {!detail && !error && <p className="mt-4 text-slate-400">Checking code owners…</p>}
+            {detail && <Body detail={detail} />}
+          </div>
+          {slack && <SlackContextPanel api={api} prId={row.id} mentions={slack.mentions} onOpen={onOpen} />}
+        </div>
       </div>
     </div>
   );

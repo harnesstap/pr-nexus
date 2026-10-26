@@ -31,6 +31,8 @@ pub const SLACK_MCP_URL: &str = "slack.mcp.url";
 pub const REVIEW_REQUESTER: &str = "review.requester";
 pub const MIN_BUMP_INTERVAL: &str = "review.min_bump_interval_hours";
 pub const BULK_BUMP_MAX_THREADS: &str = "review.bulk_bump_max_threads";
+/// Mentions search in the Slack panel (§7.10): `off`, `public`, or `all`.
+pub const SLACK_MENTIONS: &str = "slack.mentions";
 
 pub const DEFAULT_REDIRECT: &str = "http://127.0.0.1:47821/mcp/oauth/callback";
 
@@ -131,6 +133,46 @@ pub fn review_requester(store: &Store) -> Result<Option<String>, CoreError> {
 
 pub fn min_bump_interval_hours(store: &Store) -> Result<i64, CoreError> {
     json_or(store, MIN_BUMP_INTERVAL, 24)
+}
+
+/// Who the Slack panel's Mentions button searches (§7.10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MentionsScope {
+    /// No button. The default.
+    Off,
+    /// `slack_search_public`: public channels only.
+    Public,
+    /// `slack_search_public_and_private`: also private channels and DMs the
+    /// user is in. An explicit opt-in.
+    All,
+}
+
+impl MentionsScope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Public => "public",
+            Self::All => "all",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "off" => Some(Self::Off),
+            "public" => Some(Self::Public),
+            "all" => Some(Self::All),
+            _ => None,
+        }
+    }
+}
+
+pub fn slack_mentions(store: &Store) -> Result<MentionsScope, CoreError> {
+    let value: String = json_or(store, SLACK_MENTIONS, "off".to_owned())?;
+    Ok(MentionsScope::parse(&value).unwrap_or(MentionsScope::Off))
+}
+
+pub fn set_slack_mentions(store: &Store, scope: MentionsScope) -> Result<(), CoreError> {
+    put_json(store, SLACK_MENTIONS, &scope.as_str())
 }
 
 /// `review.bulk_bump_max_threads`: above this many distinct roots in one

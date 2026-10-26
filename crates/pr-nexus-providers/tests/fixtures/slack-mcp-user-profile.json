@@ -1,0 +1,9 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\"result\":\"Bob Acme (bob.acme)\\nAcme\\nEngineer\\nbob@acme.test\\nStatus:  \\n\"}"
+    }
+  ],
+  "isError": false
+}

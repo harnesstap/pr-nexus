@@ -1,0 +1,9 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\"results\":\"# Search Results for: \\n\\n## Messages (2 results)\\n### Result 1 of 2\\nChannel: #eng-web (ID: C0123456789)\\nFrom: Bob Acme <bob@acme.test> (ID: U0ACME0002) \\nTime: 2026-01-01 12:00:00 UTC\\nMessage_ts: 1700007200.000400\\nPermalink: [link](https:\\/\\/acme.slack.com\\/archives\\/C0123456789\\/p1700007200000400)\\nText: \\nDoes github.com\\/acme\\/web\\/pull\\/1 fix the login loop?\\n\\n---\\n\\n### Result 2 of 2\\nChannel: #deploys (ID: C0123456780)\\nFrom: Devel (ID: U0ACMEBOT1)  [BOT]\\nTime: 2026-01-01 13:00:00 UTC\\nMessage_ts: 1700010800.000500\\nPermalink: [link](https:\\/\\/acme.slack.com\\/archives\\/C0123456780\\/p1700010800000500?thread_ts=1700010000.000100&cid=C0123456780)\\nText: \\nDeployed github.com\\/acme\\/web\\/pull\\/1\\n\\n---\\n\",\"pagination_info\":\"There are no more results.\\n\"}"
+    }
+  ],
+  "isError": false
+}

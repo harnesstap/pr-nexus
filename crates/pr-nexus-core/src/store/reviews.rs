@@ -66,6 +66,25 @@ impl Store {
         })
     }
 
+    /// Messages linked to `pr` through `review_message_prs`, oldest first.
+    pub fn list_review_messages_for_pr(&self, pr: PrId) -> Result<Vec<ReviewMessage>, CoreError> {
+        self.read(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT m.* FROM review_messages m
+                     JOIN review_message_prs l ON l.message_id = m.id
+                     WHERE l.pr_id = ?1 ORDER BY m.posted_at, m.id",
+                )
+                .map_err(db)?;
+            let rows = stmt
+                .query_map([pr.0], map_message)
+                .map_err(db)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(db)?;
+            Ok(rows)
+        })
+    }
+
     pub fn insert_review_request(
         &self,
         request: ReviewRequest,
