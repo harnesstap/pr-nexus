@@ -275,6 +275,9 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
+      # cargo deny reads `cargo metadata`; self-hosted runners have no cargo on
+      # PATH until the toolchain step adds the per-user rustup install.
+      - uses: dtolnay/rust-toolchain@stable
       # cargo-deny-action is a Docker action. A prebuilt binary in the job's
       # tool path needs no Docker on the runner.
       - uses: taiki-e/install-action@v2
