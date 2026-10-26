@@ -86,8 +86,8 @@ pr-nexus/
 
 ```rust
 // ---- identity -----------------------------------------------------------
-pub enum VcsKind { GitHub /* GitLab, Gitea later */ }
-pub enum ChatKind { Slack /* Discord, Mattermost later */ }
+pub enum VcsKind { GitHub, GitLab, Gitea }        // only GitHub is implemented in v1 (§5.1)
+pub enum ChatKind { Slack, Discord, Mattermost }  // only Slack is implemented in v1 (§5.1)
 
 pub struct AccountId(pub i64);          // row in `accounts`
 pub struct PrId(pub i64);               // local surrogate key
@@ -310,6 +310,7 @@ pub enum ProviderError {
     #[error("network: {0}")]       Network(String),       // timeouts, DNS, TLS
     #[error("api error {code}: {message}")] Api { code: String, message: String },
     #[error("decode: {0}")]        Decode(String),
+    #[error("provider not supported: {0}")] Unsupported(String), // Coming-soon provider kinds (§5.1)
 }
 #[derive(Debug, thiserror::Error)]
 pub enum CoreError {
@@ -365,6 +366,43 @@ pub struct OutgoingMessage {
 ```
 
 All methods return typed errors (no `String`). The original `list_repositories` is dropped: navigation is project-first (§8), and repos are discovered from PR search results. `list_organizations` is kept only to fill the org picker in onboarding/Settings (`viewer.organizations`, plus orgs seen in search results), not for sync. Test doubles (`FakeVcs`, `FakeChat`) live in `pr-nexus-core::testing` behind a `testing` feature.
+
+### 5.1 Provider registry and setup steps
+
+The registry is the single place that knows which providers exist and what setting each one up takes. The setup wizard (§8.3), Settings → Accounts, and the sync scheduler all read it; nothing else matches on provider names.
+
+```rust
+pub enum Availability { Available, ComingSoon }
+
+pub enum SetupStep {                       // one wizard screen each (§8.3)
+    ChooseVcs, ChooseChat,                 // always first
+    ConnectVcs, ChooseVcsScope,            // from the VCS descriptor
+    ConnectChat, ChatMapping,              // from the chat descriptor
+    Done,                                  // always last
+}
+
+pub struct VcsDescriptor  { pub kind: VcsKind,  pub label: &'static str, pub availability: Availability,
+                            pub setup: &'static [SetupStep] }   // GitHub: [ConnectVcs, ChooseVcsScope]
+pub struct ChatDescriptor { pub kind: ChatKind, pub label: &'static str, pub availability: Availability,
+                            pub setup: &'static [SetupStep],    // Slack: [ConnectChat, ChatMapping]
+                            pub multi_account: bool }           // Slack: true (N workspaces)
+
+pub struct ProviderRegistry { pub vcs: &'static [VcsDescriptor], pub chat: &'static [ChatDescriptor] }
+impl ProviderRegistry {
+    /// [ChooseVcs, ChooseChat] + vcs.setup + chat.setup + [Done]. Pure; unit-tested.
+    pub fn setup_steps(&self, vcs: VcsKind, chat: ChatKind) -> Vec<SetupStep>;
+}
+// pr-nexus-providers (network code stays out of core): one factory per Available kind.
+pub fn build_vcs(kind: VcsKind, account: AccountId, token: SecretString) -> Result<Box<dyn VcsProvider>, ProviderError>;
+pub fn build_chat(kind: ChatKind, account: AccountId, token: SecretString) -> Result<Box<dyn ChatProvider>, ProviderError>;
+```
+
+- The descriptors and `setup_steps` live in `pr-nexus-core` (pure data, no network). The factories live in `pr-nexus-providers`, and the app wires them together.
+
+- v1 registers GitHub and Slack as `Available`, and GitLab, Gitea, Discord, and Mattermost as `ComingSoon`. `ComingSoon` entries have no factory (the factory returns `ProviderError::Unsupported`) and an empty `setup`; they exist only so the wizard can show them disabled.
+- `ChatMapping` is the only step marked skippable (`SetupStep::is_skippable`).
+- Adding a provider later means adding a descriptor, its factory, and any new `SetupStep` screens; the wizard and Settings pick it up without other changes.
+- The chosen providers are stored in `settings` (`providers.vcs`, `providers.chat`, §7.12). v1 allows exactly one of each.
 
 ## 6. GitHub sync
 
@@ -678,7 +716,7 @@ The PR detail has a right-hand panel titled "Slack". It shows **only** threads P
 ### 7.11 Slack auth, methods, scopes, rate limits
 
 **Auth:** a **user token** (`xoxp-…`) from a Slack app **the user creates in their own workspace**, using the manifest below. Messages are posted *as the user*, which matches the skill (it posts via the user's MCP session) and is what reviewers expect.
-- Onboarding is done **once per workspace**. The user creates the app from the manifest in that workspace, installs it, copies the user OAuth token, and pastes it into PR-Nexus. PR-Nexus checks the token with `auth.test`, which returns `team_id`, `team` and `url` (the workspace domain comes from `url`). It then creates the Slack account row and stores the token in the keychain under that workspace (§9).
+- Onboarding is done **once per workspace**, in wizard step 5 (§8.3) or Settings → Accounts → Add workspace. The user creates the app from the manifest in that workspace, installs it, copies the user OAuth token, and pastes it into PR-Nexus. PR-Nexus checks the token with `auth.test`, which returns `team_id`, `team` and `url` (the workspace domain comes from `url`). It then creates the Slack account row and stores the token in the keychain under that workspace (§9).
 - Separate workspaces (not one Enterprise Grid org) each need their own internal app. Do not turn on public distribution to share a single app: that could move it into the "distributed app" rate-limit category.
 - There is no PR-Nexus-hosted OAuth: there is no server, and the redirect URI would need one.
 
@@ -727,6 +765,8 @@ Nothing org-specific is hard-coded or shipped: GitHub orgs, Slack workspaces, te
 
 | Key (`settings`) | Default | Example user value |
 |---|---|---|
+| `providers.vcs` / `providers.chat` | unset until wizard steps 1–2 | `"github"` / `"slack"` |
+| `onboarding.state` | unset (wizard starts at step 1) | `{"step":"connect_chat","completed":["choose_vcs",…],"mapping_skipped":false,"finished_at":null}` |
 | `github.tracked_orgs` | `[]`: none; onboarding asks the user to pick | `["acme","acme-labs"]` |
 | `github.include_personal_repos` | `false` | false |
 | `github.codeowners_paths` | `[".github/CODEOWNERS","CODEOWNERS","docs/CODEOWNERS"]` | same |
@@ -931,11 +971,156 @@ Keyboard: `j/k` move, `x` toggle select, `Shift+x` toggle the focused row's sect
 **Projects**: list on the left; on the right, name/color, rules editor (kind, pattern, priority, and a live "matches N open PRs" preview), and linked PRs with their source badges (manual/rule/excluded).
 
 **Settings** tabs:
-- Accounts (GitHub account plus the **tracked orgs picker**: checkboxes from `viewer.organizations` and orgs seen in search, and a "personal repos" toggle; Slack with one row per connected workspace, each with its own status, re-auth, remove, and an "Add workspace" button);
-- Mappings (table, import/export, dry-run diff);
+- Accounts. It starts with a **Providers** row showing the chosen git and communication providers (from the registry; other providers are listed as Coming soon, so there is nothing to switch to in v1). Then: the GitHub account (re-connect with any of the three auth modes) plus the **tracked orgs picker**: checkboxes from `viewer.organizations` and orgs seen in search, and a "personal repos" toggle; Slack with one row per connected workspace, each with its own status, re-auth, remove, and an "Add workspace" button);
+- Mappings (table, import/export, dry-run diff; this is where a mapping skipped in the wizard is done later);
 - Review (the config keys in §7.12);
 - Sync;
-- About (version, log folder, DB path).
+- About (version, log folder, DB path, and **Re-run setup**, which reopens the wizard at step 1 with current values pre-filled).
+
+### 8.3 Setup wizard (first run)
+
+Onboarding is a **wizard of separate screens, shown one step at a time**, not a single settings page. It opens on first launch, and on every launch until it is finished.
+
+**Steps** (v1, from `ProviderRegistry::setup_steps(GitHub, Slack)`, §5.1):
+
+| # | Step | Content | Next is enabled when |
+|---|---|---|---|
+| 1 | Choose git provider | Cards: **GitHub** (enabled), GitLab and Gitea (disabled, "Coming soon"). | a provider is selected (GitHub preselected) |
+| 2 | Choose communication provider | Cards: **Slack** (enabled), Discord and Mattermost (disabled, "Coming soon"). | a provider is selected (Slack preselected) |
+| 3 | Connect GitHub | The three auth modes of §9 in order: `gh` CLI token (preselected when `gh auth status` succeeds), PAT, device flow. Validates with `viewer` and shows the login and scope check; SSO errors show the authorization link. | the account is verified |
+| 4 | Choose orgs to track | Checkboxes from `viewer.organizations` (plus orgs seen in search), a filter box, and the **Include my personal repos** toggle. Writes `github.tracked_orgs` and `github.include_personal_repos`. | at least one org is checked or personal repos is on |
+| 5 | Connect Slack workspace(s) | List of connected workspaces, then an add form for **one workspace at a time** (copy manifest, create and install the app, paste the user token, `auth.test`; §7.11). "Add another workspace" repeats the form. | at least one workspace is connected |
+| 6 | Team → channel mapping | CSV import with the target-workspace picker and dry-run preview (§7.5), or **Skip**. A note says it can be done later in Settings → Mappings or from the preview's "Change channel". | always (Import & next, or Skip) |
+| 7 | Done | Summary (account, orgs, workspaces, mapping rows or "skipped") and the **first sync** starting, with live progress. "Open PR-Nexus" goes to My PRs. | — |
+
+**Navigation and rules.**
+- A progress indicator at the top (one dot per step, `Step k of N` and the step name). `N` comes from the registry, so it changes if other providers add steps.
+- **Back** and **Next** in the footer. Back is disabled on step 1. Back never undoes work already saved (a connected account stays connected); it only moves the screen. Going back to step 1 or 2 and changing the provider would drop later steps, but in v1 there is only one available provider per kind.
+- **Only the mapping step is skippable.** Every other step requires its condition above. Steps 1–2 never show a Skip button.
+- Next writes the step's result immediately (settings, accounts, keychain), so each step is durable on its own.
+- **Resumable:** `onboarding.state` (§7.12) stores the current step, completed steps, and `mapping_skipped`. It is updated on every Next/Back. If the app is closed mid-wizard, the next launch reopens the wizard at that step with saved values pre-filled. On launch, completed steps are re-validated cheaply (account still verifiable, keychain entry present); if one fails, the wizard resumes at the first invalid step.
+- Step 7 sets `finished_at` and starts the first sync. After that, the app opens on the list, and the wizard is only reachable through Settings → About → Re-run setup.
+- The wizard is a full window without the sidebar. It uses the same dark style as the list (§8.2).
+- If mapping was skipped, the list shows a one-line dismissible hint ("No team → channel mapping yet · Import CSV") and the Slack preview resolves channels with the picker.
+
+**Wireframes.** Step 1 (the shell is the same for every step):
+
+```
+┌ PR-Nexus setup ────────────────────────────────────────────────────────────┐
+│ ● ○ ○ ○ ○ ○ ○   Step 1 of 7 · Git provider                                 │
+│                                                                            │
+│ Where do your pull requests live?                                          │
+│                                                                            │
+│ ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐           │
+│ │ ◉ GitHub         │  │ ○ GitLab         │  │ ○ Gitea          │           │
+│ │   github.com     │  │   Coming soon    │  │   Coming soon    │           │
+│ └──────────────────┘  └──────────────────┘  └──────────────────┘           │
+│   selected            disabled              disabled                       │
+├────────────────────────────────────────────────────────────────────────────┤
+│                                                        [Back]  [Next →]    │
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
+Step 2:
+
+```
+┌ PR-Nexus setup ────────────────────────────────────────────────────────────┐
+│ ● ● ○ ○ ○ ○ ○   Step 2 of 7 · Communication provider                       │
+│                                                                            │
+│ Where do you ask for reviews?                                              │
+│                                                                            │
+│ ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐           │
+│ │ ◉ Slack          │  │ ○ Discord        │  │ ○ Mattermost     │           │
+│ │   N workspaces   │  │   Coming soon    │  │   Coming soon    │           │
+│ └──────────────────┘  └──────────────────┘  └──────────────────┘           │
+├────────────────────────────────────────────────────────────────────────────┤
+│                                                      [← Back]  [Next →]    │
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
+Step 3:
+
+```
+┌ PR-Nexus setup ────────────────────────────────────────────────────────────┐
+│ ● ● ● ○ ○ ○ ○   Step 3 of 7 · Connect GitHub                               │
+│                                                                            │
+│ ◉ Use the gh CLI token   ✓ gh found · logged in as @you (recommended)      │
+│ ○ Paste a personal access token   [ ghp_… / github_pat_…        ]          │
+│ ○ Sign in with GitHub (device flow)   code: ABCD-1234  [Copy & open]       │
+│                                                                            │
+│ ✓ Connected as @you · scopes ok          (SSO link shown on 403-SSO)       │
+├────────────────────────────────────────────────────────────────────────────┤
+│                                                      [← Back]  [Next →]    │
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
+Step 4:
+
+```
+┌ PR-Nexus setup ────────────────────────────────────────────────────────────┐
+│ ● ● ● ● ○ ○ ○   Step 4 of 7 · Orgs to track                                │
+│                                                                            │
+│ Pick the GitHub orgs whose PRs PR-Nexus should show.                       │
+│ [Filter orgs…    ]                                                         │
+│ ☑ acme          (member)                                                   │
+│ ☑ acme-labs     (member)                                                   │
+│ ☐ other-org     (seen in search)                                           │
+│ ☐ Include my personal repos (@you/*)                                       │
+├────────────────────────────────────────────────────────────────────────────┤
+│ At least one org or personal repos required    [← Back]  [Next →]          │
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
+Step 5:
+
+```
+┌ PR-Nexus setup ────────────────────────────────────────────────────────────┐
+│ ● ● ● ● ● ○ ○   Step 5 of 7 · Connect Slack                                │
+│                                                                            │
+│ Connected workspaces:                                                      │
+│   ✓ acme · @you                                         [Remove]           │
+│                                                                            │
+│ Add a workspace (one at a time):                                           │
+│   1. [Copy app manifest]  2. Create the app at api.slack.com/apps          │
+│   3. Install it, copy the user token   4. [ xoxp-…              ]          │
+│                                                       [Connect]            │
+│ [+ Add another workspace]                                                  │
+├────────────────────────────────────────────────────────────────────────────┤
+│ At least one workspace required                [← Back]  [Next →]          │
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
+Step 6 (the only one with Skip):
+
+```
+┌ PR-Nexus setup ────────────────────────────────────────────────────────────┐
+│ ● ● ● ● ● ● ○   Step 6 of 7 · Team → channel mapping (optional)            │
+│                                                                            │
+│ Tell PR-Nexus which Slack channel each GitHub team reviews in.             │
+│ [Import CSV…]   Target workspace for rows without one: [acme ▾]            │
+│                                                                            │
+│ Preview: 42 rows · 40 new · 2 invalid (shown below)                        │
+│ You can also map channels later in Settings → Mappings, or from            │
+│ the Slack preview's 'Change channel'.                                      │
+├────────────────────────────────────────────────────────────────────────────┤
+│                                        [← Back]  [Skip]  [Import & next →] │
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
+Step 7:
+
+```
+┌ PR-Nexus setup ────────────────────────────────────────────────────────────┐
+│ ● ● ● ● ● ● ●   Step 7 of 7 · Done                                         │
+│                                                                            │
+│ GitHub: @you · 2 orgs · personal repos off                                 │
+│ Slack: 1 workspace (acme) · mapping: 40 rows (or 'skipped')                │
+│                                                                            │
+│ ◌ First sync… 14 PRs found                                                 │
+├────────────────────────────────────────────────────────────────────────────┤
+│                                               [← Back]  [Open PR-Nexus →]  │
+└────────────────────────────────────────────────────────────────────────────┘
+```
 
 ## 9. Auth, secrets & security
 
@@ -996,6 +1181,7 @@ Detect `X-GitHub-SSO: required; url=…` and show the authorization link.
 - **Prompt-injection safeguards.** PR titles and Slack replies are untrusted content. Tool results wrap them as data. The server never follows instructions from that content, and no tool can post free-form text (only the templates).
 
 ### 10.2 Other providers & platforms
+- These are already listed in the registry as Coming soon (§5.1); implementing one means a descriptor flip to `Available`, a factory, and its setup steps.
 - GitLab and Gitea (`VcsProvider`): CODEOWNERS equivalents exist (GitLab `CODEOWNERS` with sections), so `decide_owners` stays as is, and new inputs go through `OwnershipInputs`.
 - Discord and Mattermost (`ChatProvider`): bump maps to "reply in thread and also to channel" where supported, otherwise a quote plus link.
 - Android/iOS via Tauri mobile. Keep `core` free of desktop-only dependencies. The keychain moves behind a trait.
@@ -1113,14 +1299,14 @@ Release runbook (CONTRIBUTING.md):
 | **M3** | Message builder | 12+ golden fixtures generated from the Python script pass byte for byte. Wire-escaping unit tests. |
 | **M4** | CODEOWNERS + owner decision | The skill's `test_helpers.py` cases are ported and pass, and the Δ1–Δ4 tests pass. Readiness table (§7.1) implemented as a pure function with a test per row. `decide_owners` rules 1–9 tested with fixtures. |
 | **M5** | Mapping | Empty mapping on first run. CSV import (replace, merge, dry-run diff, target-workspace picker for rows without a workspace; the skill's 5-column CSV accepted) and export (effective/user/imported, fixed header, sorted). Layer precedence and tombstone tests on placeholder fixtures. |
-| **M6** | GitHub sync | Accounts (gh token, PAT). Tracked-orgs picker (onboarding + Settings; empty state until orgs are picked). Search buckets, client-side tracked-org filter, nodes refresh, polling scheduler, rate-limit pause. HTTP fixture tests via `wiremock`. Typed errors mapped (401, 403-SSO, 403-secondary, 404). |
+| **M6** | Wizard + GitHub sync | `ProviderRegistry` (§5.1) with `setup_steps` unit tests. Setup wizard shell (§8.3): one step per screen, progress indicator, Back/Next, `onboarding.state` persistence and resume (including re-validation of completed steps). Steps 1–4 and 7 (provider cards with Coming-soon entries; Connect GitHub with gh token, PAT, device flow; orgs picker with personal-repos toggle; Done with first sync). Tracked-orgs picker also in Settings; empty state until orgs are picked. Search buckets, client-side tracked-org filter, nodes refresh, polling scheduler, rate-limit pause. HTTP fixture tests via `wiremock`. Typed errors mapped (401, 403-SSO, 403-secondary, 404). |
 | **M7** | List UI | Dark compact style (§8.2). Sidebar navigation with the sync-status footer and refresh button. Grouped, collapsible list with three-level tri-state selection (global, section, row) and no per-row action buttons. No header overflow button. Inline project rename by double-click. Minimal section `⋯` menu (auto-link rules, archive, delete). Floating bulk bar. Slack request indicator with link icon. Filter menu (Grouping, Ordering, Show, Filters with Reset), persisted per view in `view_state`. Search bar over project name, title, body, repo, and number. Keyboard shortcuts. vitest: tri-state derivation (none/partial/all) for section and global; parent toggle selects or deselects only visible children; a filter or search excludes hidden rows from parent toggles; checking a multi-project PR updates every section containing it; bulk count and planner input dedupe by `PrId`; hidden-selected count; inline rename (Enter saves, Esc cancels, empty or duplicate name rejected, Unassigned not editable); filter and search predicates; view-state restore. |
 | **M8** | Projects | CRUD, rules with live preview, manual/rule/excluded semantics tested. Unassigned section. |
 | **M9** | Ownership inputs | Files (paginated, capped), CODEOWNERS lookup order, `rules/branches`, protection with 403→Unknown, reviews with onBehalfOf, team members cache. Detail view shows readiness, owners, and the rationale. |
-| **M10** | Slack single request/bump | Slack onboarding for **any number of workspaces** (manifest + token + `auth.test` per workspace; workspace-scoped channel cache and picker; mapping rows routed to the right token). Channel cache and picker. Archived refusal. `review_requests` lifecycle: created on request; bump updates; closed on merge/close, dismiss, supersede, or archived channel. Discovery via search (background with throttle and cooldown, plus before the preview) stores `source='discovered_via_search'`. The PR detail's contextual Request review / Bump request button. Preview modal with Request/Bump cards → refresh-before-write → post. Bump in thread with `reply_broadcast`. Request indicator deep link (`slack://` with https permalink fallback). Corrections saved as user rows. Optional GitHub team review request. Tested against `FakeChat`, plus one manual run in a test channel. |
+| **M10** | Slack single request/bump | Wizard steps 5 and 6 (connect workspaces one at a time; mapping import or skip) and the same flows in Settings. Slack onboarding for **any number of workspaces** (manifest + token + `auth.test` per workspace; workspace-scoped channel cache and picker; mapping rows routed to the right token). Channel cache and picker. Archived refusal. `review_requests` lifecycle: created on request; bump updates; closed on merge/close, dismiss, supersede, or archived channel. Discovery via search (background with throttle and cooldown, plus before the preview) stores `source='discovered_via_search'`. The PR detail's contextual Request review / Bump request button. Preview modal with Request/Bump cards → refresh-before-write → post. Bump in thread with `reply_broadcast`. Request indicator deep link (`slack://` with https permalink fallback). Corrections saved as user rows. Optional GitHub team review request. Tested against `FakeChat`, plus one manual run in a test channel. |
 | **M11** | Bulk | Single bulk action **Request / bump on Slack**. Per-channel grouping with request and bump sections per card, bulk bump grouping (§7.9), result report, retry failed. Planner unit tests for mixed cases (requested + never requested in one channel, 1/≤3/>3 roots, mixed workspaces, a closed request → new request). |
 | **M12** | Context panel | Threads for known messages, cache, user names, Mentions opt-in. |
-| **M13** | Polish | Settings complete, log redaction test, "update available" banner (GitHub releases API with the user's token, manual DMG download), keychain re-prompt explainer, onboarding flow, empty states. |
+| **M13** | Polish | Settings complete, log redaction test, "update available" banner (GitHub releases API with the user's token, manual DMG download), keychain re-prompt explainer, Settings → About → Re-run setup, the skipped-mapping hint, empty states. |
 
 M0–M1 come first on purpose. Every later PR is then built, linted, and releasable from day one, which matters when coding agents produce most of the commits.
 
@@ -1128,6 +1314,7 @@ M0–M1 come first on purpose. Every later PR is then built, linted, and releasa
 
 - **core**: pure unit tests and golden files (messages, CODEOWNERS, decisions, mapping CSV). `insta` snapshots for `OwnerDecision` JSON. Property tests (`proptest`) for the CODEOWNERS matcher against a small reference implementation of gitignore-style matching.
 - **providers**: `wiremock` HTTP fixtures, recorded once from real responses and scrubbed of names and tokens. Each fixture covers one shape: search page, PR fragment, 403 SSO, secondary rate limit, Slack `ratelimited` with `Retry-After`, `not_in_channel`.
+- **wizard**: core tests for `setup_steps` (order, only `ChatMapping` skippable, Coming-soon providers contribute no steps) and for the resume logic (state round-trip, resume at the stored step, fall back to the first step whose re-validation fails). vitest: one step rendered at a time, Next disabled until the step's condition holds, Back disabled on step 1, Skip only on the mapping step, disabled Coming-soon cards cannot be selected, adding a second Slack workspace.
 - **review requests**: table-driven lifecycle tests in core: sync sees merged/closed → closed; dismiss → next action Request; new commits after approval → still Bump; reopened PR → Request; discovery hit on a closed root → ignored; `/pull/4` vs `/pull/42`; oldest root wins; thread replies count as bumps.
 - **app**: command-level tests with `FakeVcs`/`FakeChat` and a temp DB. Frontend tests with vitest + Testing Library against a mocked `invoke`.
 - **Manual pre-release checklist**: request and bump in a private test channel; verify link rendering, thread plus channel broadcast, permalink, and that the row's ↗ opens the original message in the Slack app.
@@ -1160,3 +1347,4 @@ M0–M1 come first on purpose. Every later PR is then built, linted, and releasa
 - **D15. Discovery cadence:** background search at most once per PR per workspace every 24 h, ≤10 calls/min per workspace, plus a forced check before the preview (§7.4).
 - **D16. List actions:** no per-row action buttons and no header overflow button; the bulk bar is the only list action, and the PR detail keeps a contextual button. Projects are renamed by double-clicking the title (§7.7, §8.2).
 - **D17. Selection:** three-level tri-state checkboxes over visible rows, keyed by `PrId` across sections, session-only (§8.2).
+- **D18. Setup wizard:** separate screens, one step at a time, driven by the provider registry; GitHub and Slack are the only available providers, the others show as Coming soon; only the mapping step is skippable; progress is persisted and resumable (§5.1, §8.3).
