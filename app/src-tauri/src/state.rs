@@ -190,6 +190,9 @@ pub fn run_sync(state: &AppState, kind: SyncKind) -> Result<sync::SyncReport, Ap
         let token = resolve_github_token(state, Some(&account))?;
         let client = GithubClient::new(account.id, token)?;
         let report = sync::sync_account(&state.store, &client, account.id, kind, Utc::now())?;
+        // §8.1: re-evaluate auto-link rules after every sync.
+        let prs = state.store.list_pull_requests_for_account(account.id)?;
+        pr_nexus_core::linking::relink(&state.store, &prs)?;
         Ok::<_, AppError>(report)
     })();
     let mut status = state.sync.lock().expect("sync status");

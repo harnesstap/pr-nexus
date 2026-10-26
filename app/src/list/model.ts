@@ -249,16 +249,81 @@ export function visibleRows(
   });
 }
 
+/**
+ * Which empty project sections stay visible in Project grouping, so they can be
+ * renamed and receive dropped PRs (§8.2). Search or menu filters hide them; a
+ * project view keeps only its own section.
+ */
+export function keptEmptyProjects(
+  projects: readonly ProjectDto[],
+  viewKey: string,
+  filters: Filters,
+  query: string,
+): Set<number> {
+  if (query.trim() || filtersActive(filters)) {
+    return new Set();
+  }
+  const current = projectIdOf(viewKey);
+  if (current !== null) {
+    return new Set([current]);
+  }
+  return new Set(displayedProjects(projects, filters).map((project) => project.id));
+}
+
+export function projectIdOf(viewKey: string): number | null {
+  if (!viewKey.startsWith("project:")) {
+    return null;
+  }
+  const id = Number(viewKey.slice("project:".length));
+  return Number.isFinite(id) ? id : null;
+}
+
+/** Header subtitle (§8.2): "5 open PRs across 2 projects", or "… in this project". */
+export function headerSummary(
+  shown: readonly ListRow[],
+  projects: readonly ProjectDto[],
+  viewKey: string,
+  filters: Filters,
+): string {
+  const prs = `${shown.length} open ${shown.length === 1 ? "PR" : "PRs"}`;
+  if (projectIdOf(viewKey) !== null) {
+    return `${prs} in this project`;
+  }
+  const live = displayedProjects(projects, filters);
+  const ids = new Set(live.map((project) => project.id));
+  const unassigned = shown.filter((row) => !row.project_ids.some((id) => ids.has(id))).length;
+  const base = `${prs} across ${live.length} ${live.length === 1 ? "project" : "projects"}`;
+  return unassigned > 0 && live.length > 0 ? `${base} · ${unassigned} unassigned` : base;
+}
+
+/** MIME type carried by dragged PR rows. */
+export const DRAG_MIME = "application/x-pr-nexus-prs";
+
+/** Dragging a selected row drags the whole selection; otherwise just that row. */
+export function dragIds(rowId: number, selected: ReadonlySet<number>): number[] {
+  return selected.has(rowId) ? bulkIds(selected) : [rowId];
+}
+
+export function parseDragIds(data: string): number[] {
+  try {
+    const value: unknown = JSON.parse(data);
+    return Array.isArray(value) ? value.filter((id): id is number => Number.isInteger(id)) : [];
+  } catch {
+    return [];
+  }
+}
+
 export function groupRows(
   rows: readonly ListRow[],
   projects: readonly ProjectDto[],
   view: SavedView,
   now: Date,
+  keepEmpty: ReadonlySet<number> = new Set(),
 ): Section[] {
   const ordered = [...rows].sort((left, right) => compareRows(left, right, view.ordering, view.direction));
   switch (view.grouping) {
     case "project":
-      return groupByProject(ordered, projects, view.filters);
+      return groupByProject(ordered, projects, view.filters, keepEmpty);
     case "repository":
       return groupBy(ordered, (row) => row.repo);
     case "org":
@@ -379,7 +444,12 @@ function displayedProjects(projects: readonly ProjectDto[], filters: Filters): P
     .sort((left, right) => left.sort_order - right.sort_order || left.name.localeCompare(right.name));
 }
 
-function groupByProject(rows: readonly ListRow[], projects: readonly ProjectDto[], filters: Filters): Section[] {
+function groupByProject(
+  rows: readonly ListRow[],
+  projects: readonly ProjectDto[],
+  filters: Filters,
+  keepEmpty: ReadonlySet<number>,
+): Section[] {
   const shown = displayedProjects(projects, filters);
   const ids = new Set(shown.map((project) => project.id));
   const sections: Section[] = shown
@@ -389,7 +459,7 @@ function groupByProject(rows: readonly ListRow[], projects: readonly ProjectDto[
       projectId: project.id,
       rows: rows.filter((row) => row.project_ids.includes(project.id)),
     }))
-    .filter((section) => section.rows.length > 0);
+    .filter((section) => section.rows.length > 0 || keepEmpty.has(section.projectId));
   const unassigned = rows.filter((row) => !row.project_ids.some((id) => ids.has(id)));
   if (unassigned.length > 0) {
     sections.push({ key: "unassigned", title: "Unassigned", projectId: null, rows: unassigned });

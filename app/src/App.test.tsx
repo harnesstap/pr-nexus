@@ -2,6 +2,7 @@ import { render, screen } from "@testing-library/react";
 import { expect, test } from "vitest";
 import App from "./App";
 import type { Api, Bootstrap } from "./api";
+import { memoryProjectApi } from "./memoryProjects";
 
 const boot: Bootstrap = {
   onboarding: {
@@ -60,6 +61,7 @@ function api(): Api {
     renameProject: () => Promise.resolve(),
     archiveProject: () => Promise.resolve(),
     deleteProject: () => Promise.resolve(),
+    ...memoryProjectApi([], []),
     loadViewState: () => Promise.resolve(null),
     saveViewState: () => Promise.resolve(),
     openExternal: () => Promise.resolve(),

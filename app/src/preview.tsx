@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import type { Api, Bootstrap, ListRow, ProjectDto } from "./api";
 import "./index.css";
 import { ListScreen } from "./list/ListScreen";
+import { memoryProjectApi } from "./memoryProjects";
 import { Wizard } from "./wizard/Wizard";
 
 const steps = [
@@ -155,12 +156,13 @@ const api: Api = {
   finish: () => Promise.resolve(boot.sync),
   syncNow: () => Promise.resolve(boot.sync),
   syncStatus: () => Promise.resolve(boot.sync),
-  listRows: () => Promise.resolve(rows),
-  listProjects: () => Promise.resolve(projects),
+  listRows: () => Promise.resolve(rows.map((item) => ({ ...item }))),
+  listProjects: () => Promise.resolve(projects.map((item) => ({ ...item }))),
   createProject: (name) => Promise.resolve({ id: 99, name, color: "#7c5cbf", archived: false, description: "", sort_order: 99 }),
   renameProject: () => Promise.resolve(),
   archiveProject: () => Promise.resolve(),
   deleteProject: () => Promise.resolve(),
+  ...memoryProjectApi(rows, projects, [{ id: 1, project_id: 1, kind: "ticket_key_in_branch", pattern: "AUTH-*", priority: 10 }]),
   loadViewState: () => Promise.resolve(JSON.stringify({ show: { notRequested: true } })),
   saveViewState: () => Promise.resolve(),
   openExternal: () => Promise.resolve(),

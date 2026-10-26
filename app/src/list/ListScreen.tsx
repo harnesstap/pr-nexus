@@ -3,8 +3,9 @@ import type { Api, Bootstrap, ListRow, ProjectDto } from "../api";
 import { errorMessage } from "../api";
 import { ClockIcon, FolderIcon, GearIcon, HomeIcon, LogoIcon, PlusIcon, RefreshIcon } from "../icons";
 import { OrgOption } from "../orgs";
-import { defaultView, parseViewState, renameError, syncLabel, type SavedView } from "./model";
+import { DRAG_MIME, defaultView, parseDragIds, parseViewState, renameError, syncLabel, type SavedView } from "./model";
 import { PrList } from "./PrList";
+import { ProjectDialog } from "./ProjectDialog";
 
 interface Props {
   api: Api;
@@ -25,6 +26,8 @@ export function ListScreen({ api, boot, onBoot }: Props) {
   const [personal, setPersonal] = useState(boot.include_personal);
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState<{ name: string; error: string | null } | null>(null);
+  const [editingProject, setEditingProject] = useState<number | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const view = views[viewKey] ?? defaultView();
   const needsOrgs = orgs.length === 0 && !personal;
 
@@ -32,6 +35,14 @@ export function ListScreen({ api, boot, onBoot }: Props) {
     const timer = window.setInterval(() => setNow(new Date()), 30_000);
     return () => window.clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    if (!notice) {
+      return;
+    }
+    const timer = window.setTimeout(() => setNotice(null), 4000);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
 
   useEffect(() => {
     let cancel = false;
@@ -113,7 +124,21 @@ export function ListScreen({ api, boot, onBoot }: Props) {
     }
   }
 
+  async function linkPrs(projectId: number, prIds: number[]) {
+    setError(null);
+    const name = projects.find((project) => project.id === projectId)?.name ?? "project";
+    try {
+      const changed = await api.linkPrs(projectId, prIds);
+      await reload();
+      const count = `${prIds.length} ${prIds.length === 1 ? "PR" : "PRs"}`;
+      setNotice(changed > 0 ? `Added ${count} to ${name}` : `${count} already in ${name}`);
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  }
+
   const activeProjects = projects.filter((project) => !project.archived);
+  const dialogProject = projects.find((project) => project.id === editingProject) ?? null;
   const syncTone = sync.phase === "error" || sync.paused || sync.phase === "paused" ? "bg-amber-400" : sync.phase === "syncing" ? "bg-sky-400" : "bg-emerald-400";
 
   async function saveOrgs() {
@@ -165,6 +190,7 @@ export function ListScreen({ api, boot, onBoot }: Props) {
                 id={`project:${project.id}`}
                 icon={<span aria-hidden="true" className="ml-1 mr-0.5 h-2 w-2 rounded-sm" style={{ background: project.color }} />}
                 onSelect={setViewKey}
+                onDropPrs={(ids) => void linkPrs(project.id, ids)}
               >
                 {project.name}
               </NavButton>
@@ -282,9 +308,22 @@ export function ListScreen({ api, boot, onBoot }: Props) {
             onDelete={(id) => {
               void api.deleteProject(id).then(reload);
             }}
+            onEditProject={setEditingProject}
+            onLinkPrs={(projectId, ids) => void linkPrs(projectId, ids)}
           />
         )}
+        {notice && (
+          <p role="status" className="absolute right-4 top-3 flex items-center gap-2 rounded border border-slate-700 bg-slate-900 px-3 py-1.5 text-sm text-slate-200 shadow">
+            {notice}
+            <button type="button" aria-label="Dismiss" className="text-slate-500 hover:text-slate-200" onClick={() => setNotice(null)}>
+              ×
+            </button>
+          </p>
+        )}
         {error && <p className="px-4 py-2 text-sm text-rose-300">{error}</p>}
+        {dialogProject && (
+          <ProjectDialog api={api} project={dialogProject} rows={rows} onClose={() => setEditingProject(null)} onChanged={reload} />
+        )}
       </main>
     </div>
   );
@@ -295,21 +334,48 @@ function NavButton({
   id,
   icon,
   onSelect,
+  onDropPrs,
   children,
 }: {
   current: string;
   id: string;
   icon: ReactNode;
   onSelect: (id: string) => void;
+  /** Makes the entry a drop target for dragged PR rows (manual project links). */
+  onDropPrs?: (ids: number[]) => void;
   children: string;
 }) {
+  const [over, setOver] = useState(false);
   const selected = current === id;
+  const tone = over ? "bg-violet-500/20 text-white ring-1 ring-violet-400" : selected ? "bg-slate-800 text-white" : "text-slate-300 hover:bg-slate-900";
   return (
     <button
       type="button"
       aria-current={selected ? "page" : undefined}
-      className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left ${selected ? "bg-slate-800 text-white" : "text-slate-300 hover:bg-slate-900"}`}
+      className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left ${tone}`}
       onClick={() => onSelect(id)}
+      onDragOver={
+        onDropPrs &&
+        ((event) => {
+          if (event.dataTransfer.types.includes(DRAG_MIME)) {
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "link";
+            setOver(true);
+          }
+        })
+      }
+      onDragLeave={onDropPrs && (() => setOver(false))}
+      onDrop={
+        onDropPrs &&
+        ((event) => {
+          setOver(false);
+          const ids = parseDragIds(event.dataTransfer.getData(DRAG_MIME));
+          if (ids.length > 0) {
+            event.preventDefault();
+            onDropPrs(ids);
+          }
+        })
+      }
     >
       <span className="flex w-4 shrink-0 justify-center text-slate-400">{icon}</span>
       <span className="truncate">{children}</span>

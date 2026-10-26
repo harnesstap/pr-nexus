@@ -103,6 +103,27 @@ export interface ProjectDto {
   sort_order: number;
 }
 
+export type RuleKind =
+  | "ticket_key_in_branch"
+  | "branch_regex"
+  | "label"
+  | "repo"
+  | "title_regex";
+
+export interface ProjectRuleDto {
+  id: number | null;
+  project_id: number;
+  kind: RuleKind;
+  pattern: string;
+  priority: number;
+}
+
+export interface ProjectLinkDto {
+  pr_id: number;
+  source: "manual" | "rule" | "excluded";
+  rule_id: number | null;
+}
+
 export interface Api {
   bootstrap(): Promise<Bootstrap>;
   saveProviders(vcs: string, chat: string): Promise<void>;
@@ -123,6 +144,15 @@ export interface Api {
   renameProject(id: number, name: string): Promise<void>;
   archiveProject(id: number, archived: boolean): Promise<void>;
   deleteProject(id: number): Promise<void>;
+  setProjectColor(id: number, color: string): Promise<ProjectDto>;
+  listProjectRules(projectId: number): Promise<ProjectRuleDto[]>;
+  saveProjectRule(rule: ProjectRuleDto): Promise<ProjectRuleDto>;
+  deleteProjectRule(id: number): Promise<void>;
+  previewRule(kind: RuleKind, pattern: string): Promise<number>;
+  listProjectLinks(projectId: number): Promise<ProjectLinkDto[]>;
+  linkPrs(projectId: number, prIds: number[]): Promise<number>;
+  unlinkPr(projectId: number, prId: number): Promise<void>;
+  restorePr(projectId: number, prId: number): Promise<void>;
   loadViewState(viewKey: string): Promise<string | null>;
   saveViewState(viewKey: string, stateJson: string): Promise<void>;
   openExternal(url: string): Promise<void>;
@@ -154,6 +184,15 @@ export const tauriApi: Api = {
   renameProject: (id, name) => invoke("rename_project", { id, name }),
   archiveProject: (id, archived) => invoke("archive_project", { id, archived }),
   deleteProject: (id) => invoke("delete_project", { id }),
+  setProjectColor: (id, color) => invoke("set_project_color", { id, color }),
+  listProjectRules: (projectId) => invoke("list_project_rules", { projectId }),
+  saveProjectRule: (rule) => invoke("save_project_rule", { rule }),
+  deleteProjectRule: (id) => invoke("delete_project_rule", { id }),
+  previewRule: (kind, pattern) => invoke("preview_rule", { kind, pattern }),
+  listProjectLinks: (projectId) => invoke("list_project_links", { projectId }),
+  linkPrs: (projectId, prIds) => invoke("link_prs", { projectId, prIds }),
+  unlinkPr: (projectId, prId) => invoke("unlink_pr", { projectId, prId }),
+  restorePr: (projectId, prId) => invoke("restore_pr", { projectId, prId }),
   loadViewState: (viewKey) => invoke("load_view_state", { viewKey }),
   saveViewState: (viewKey, stateJson) => invoke("save_view_state", { viewKey, stateJson }),
   openExternal: (url) => invoke("open_external", { url }),

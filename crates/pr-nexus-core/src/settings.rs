@@ -26,6 +26,7 @@ pub const RATE_BUDGET: &str = "github.rate_budget";
 pub const SLACK_CLIENT_ID: &str = "slack.mcp.client_id";
 pub const SLACK_REDIRECT: &str = "slack.mcp.redirect_uri";
 pub const BLOCKED_IS_READY: &str = "review.blocked_review_required_is_ready";
+pub const TICKET_KEY_REGEX: &str = "projects.ticket_key_regex";
 
 pub const DEFAULT_REDIRECT: &str = "http://127.0.0.1:47821/mcp/oauth/callback";
 
@@ -84,6 +85,11 @@ pub fn unfocused_interval_s(store: &Store) -> Result<u64, CoreError> {
 
 pub fn blocked_review_required_is_ready(store: &Store) -> Result<bool, CoreError> {
     json_or(store, BLOCKED_IS_READY, true)
+}
+
+pub fn ticket_key_regex(store: &Store) -> Result<String, CoreError> {
+    Ok(optional_string(store, TICKET_KEY_REGEX)?
+        .unwrap_or_else(|| crate::linking::DEFAULT_TICKET_KEY_REGEX.to_owned()))
 }
 
 pub fn slack_client_id(store: &Store) -> Result<String, CoreError> {

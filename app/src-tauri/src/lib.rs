@@ -12,6 +12,12 @@ use tauri::Manager;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        // Remembers size, position and maximized state; VISIBLE stays with the config.
+        .plugin(
+            tauri_plugin_window_state::Builder::new()
+                .with_state_flags(window_state_flags())
+                .build(),
+        )
         .setup(|app| {
             let path = state::database_path(app);
             let shared = Arc::new(state::AppState::open(path)?);
@@ -19,6 +25,10 @@ pub fn run() {
             app.manage(shared);
             if let Some(window) = app.get_webview_window("main") {
                 fit_to_monitor(&window);
+                if !has_saved_window_state(app.handle()) {
+                    // First launch: open maximized (§7.1). Later launches restore the last geometry.
+                    let _ = window.maximize();
+                }
             }
             Ok(())
         })
@@ -49,12 +59,36 @@ pub fn run() {
             commands::rename_project,
             commands::archive_project,
             commands::delete_project,
+            commands::set_project_color,
+            commands::list_project_rules,
+            commands::save_project_rule,
+            commands::delete_project_rule,
+            commands::preview_rule,
+            commands::list_project_links,
+            commands::link_prs,
+            commands::unlink_pr,
+            commands::restore_pr,
             commands::load_view_state,
             commands::save_view_state,
             commands::open_external,
         ])
         .run(tauri::generate_context!())
         .expect("error while running PR-Nexus");
+}
+
+fn window_state_flags() -> tauri_plugin_window_state::StateFlags {
+    use tauri_plugin_window_state::StateFlags;
+    StateFlags::all() - StateFlags::VISIBLE
+}
+
+fn has_saved_window_state(app: &tauri::AppHandle) -> bool {
+    app.path()
+        .app_config_dir()
+        .map(|dir| {
+            dir.join(tauri_plugin_window_state::DEFAULT_FILENAME)
+                .exists()
+        })
+        .unwrap_or(false)
 }
 
 /// Keeps the default 1280×800 window inside small screens (90% of the monitor).
