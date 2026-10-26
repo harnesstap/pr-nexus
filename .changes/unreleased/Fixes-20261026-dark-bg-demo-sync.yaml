@@ -1,0 +1,3 @@
+kind: Fixes
+body: Use a dark page background so the setup wizard is readable, and skip GitHub sync in demo mode.
+time: 2026-10-26T07:35:00.000000Z
