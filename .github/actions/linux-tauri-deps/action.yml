@@ -1,25 +1,48 @@
 name: Linux Tauri dependencies
-description: Install the WebKitGTK headers required to compile the Tauri shell on Ubuntu.
+description: >-
+  Make sure the WebKitGTK headers needed to compile the Tauri shell are present.
+  Self-hosted runners are shared, so this action never installs system packages
+  there: it checks for them and fails with the command a runner admin can run.
+  GitHub-hosted runners are throwaway VMs, so missing packages are installed.
 runs:
   using: composite
   steps:
-    - name: Install packages
+    - name: Check or install packages
       shell: bash
+      env:
+        RUNNER_ENVIRONMENT: ${{ runner.environment }}
       run: |
         set -euo pipefail
+        packages=(
+          build-essential
+          file
+          libgtk-3-dev
+          librsvg2-dev
+          libssl-dev
+          libwebkit2gtk-4.1-dev
+          libxdo-dev
+          pkg-config
+        )
+        missing=()
+        command -v cc >/dev/null 2>&1 || missing+=("C compiler (cc)")
+        command -v pkg-config >/dev/null 2>&1 || missing+=("pkg-config")
+        if command -v pkg-config >/dev/null 2>&1; then
+          for module in webkit2gtk-4.1 javascriptcoregtk-4.1 libsoup-3.0 gtk+-3.0 librsvg-2.0 openssl; do
+            pkg-config --exists "$module" || missing+=("pkg-config module $module")
+          done
+        fi
+        [ -f /usr/include/xdo.h ] || missing+=("libxdo headers (xdo.h)")
+        if [ "${#missing[@]}" -eq 0 ]; then
+          echo "Linux Tauri dependencies already present."
+          exit 0
+        fi
+        printf 'Missing: %s\n' "${missing[@]}"
+        if [ "$RUNNER_ENVIRONMENT" != "github-hosted" ]; then
+          echo "::error::This self-hosted runner lacks the Tauri build dependencies. CI does not install system packages on shared runners. A runner admin can run: sudo apt-get install -y ${packages[*]}"
+          exit 1
+        fi
         sudo apt-get update
-        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
           -o Dpkg::Options::=--force-confdef \
           -o Dpkg::Options::=--force-confold \
-          build-essential \
-          curl \
-          file \
-          libayatana-appindicator3-dev \
-          libgtk-3-dev \
-          librsvg2-dev \
-          libssl-dev \
-          libwebkit2gtk-4.1-dev \
-          libxdo-dev \
-          patchelf \
-          pkg-config \
-          wget
+          "${packages[@]}"

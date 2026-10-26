@@ -1288,7 +1288,7 @@ Detect `X-GitHub-SSO: required; url=…` and show the authorization link.
 
 **macOS distribution without an Apple Developer ID (owner decision: v1 is unsigned/ad-hoc).**
 - *Gatekeeper.* The DMG is ad-hoc sealed (`codesign --force --deep --sign -`), not notarized. A browser download gets the quarantine flag, and macOS refuses the first launch ("cannot verify the developer" or "damaged"). Workarounds, documented in README and CONTRIBUTING:
-  1. **Preferred:** `gh release download vX.Y.Z -R github-christophe-oudar/pr-nexus -p '*.dmg'`. The repo is private, so `gh` is the natural path anyway, and files fetched by `gh`/`curl` carry no quarantine flag.
+  1. **Preferred:** `gh release download vX.Y.Z -R harnesstap/pr-nexus -p '*.dmg'`. The repo is private, so `gh` is the natural path anyway, and files fetched by `gh`/`curl` carry no quarantine flag.
   2. Browser download: try to open the app once, then System Settings → Privacy & Security → **Open Anyway**. Control-click → Open no longer bypasses this on macOS 15+.
   3. Or `xattr -dr com.apple.quarantine /Applications/PR-Nexus.app`.
 - *Keychain re-prompt after every update.* An ad-hoc signature has no stable team identity, so the keychain's "Always Allow" rule is tied to the exact binary hash. Each new version triggers a "PR-Nexus wants to use your confidential information stored in 'dev.pr-nexus'" prompt, which needs the login password and then **Always Allow**. The single `vault` entry above keeps this to **one prompt per update**. The About tab and release notes explain it. Denying the prompt is handled: accounts show "token unavailable — unlock", with a retry button. Nothing is wiped.
@@ -1374,14 +1374,14 @@ harnesstap is a Bun/TypeScript CLI plus a Tauri v2 desktop app in `apps/desktop`
 | `tag-release.yml` (changie batch → stamp → bot commit → tag) | **Copy, simplified** | The version lives in **one place**: `[workspace.package] version` in the root `Cargo.toml`. `tauri.conf.json` omits `version`, so Tauri falls back to `Cargo.toml`. `app/package.json` is `private` with no meaningful version. The stamp script edits 1 file plus `Cargo.lock` instead of 5. |
 | `release.yml` triggered by tag + `workflow_run` + dispatch, `concurrency`, idempotent upload with `--clobber`, asset-count check, `--latest` only for highest | **Copy** | These handle real GitHub edge cases (GITHUB_TOKEN tags, immutable releases, re-runs). |
 | npm publish via OIDC | **Drop** | No npm package. |
-| 6-target desktop matrix | **Change** | v1 **ships macOS arm64 DMG only**. Linux (ubuntu-24.04) and Windows (windows-latest) **build** in CI (`cargo check` + `tauri build --no-bundle`) but are not attached to releases. Add Intel macOS and Linux/Windows bundles when someone asks. |
+| 6-target desktop matrix | **Change** | v1 **ships macOS arm64 DMG only**. Linux (self-hosted) and Windows (windows-latest, tags and dispatch only) **build** in CI (`cargo check` + `tauri build --no-bundle`) but are not attached to releases. Add Intel macOS and Linux/Windows bundles when someone asks. |
 | Unsigned + ad-hoc reseal | **Copy (owner decision: no Apple Developer ID)** | The ad-hoc reseal is needed for arm64 Gatekeeper. Consequences and workarounds (Open Anyway / `gh release download`, one keychain re-prompt per update) are in §9. Developer ID signing + notarization is optional future work. The release job keeps a dormant `if: secrets.APPLE_CERTIFICATE != ''` branch so it can be enabled without restructuring. |
 | No updater | **Copy for v1 (default D10)** | An auto-updater on a private repo needs authenticated downloads, and unsigned builds re-prompt for the keychain anyway. v1 shows an "update available" banner (GitHub releases API with the user's GitHub token) and the user installs the DMG by hand. `tauri-plugin-updater` + minisign comes later. |
 | No fmt/clippy/test jobs | **Change: add them** | Agents write most of the code. `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, plus `bun run lint`, `tsc --noEmit`, and `vitest` are the cheapest guardrails. |
 | Cargo.lock `--locked` check | **Copy** | Catches lockfile drift. |
 | — | **Add** `cargo deny check` (licenses, advisories, bans) + Dependabot (cargo, npm, github-actions; weekly; grouped) | A desktop app that holds tokens needs supply-chain hygiene. |
 | — | **Add** CSV parser test on placeholder fixtures | No company data in the repo (§7.5, §7.12). (No org-name grep guard: the AGENTS.md rule plus review cover it.) |
-| `ubuntu-26.04` default runner | **Change: pin `ubuntu-24.04`** | Tauri on Linux needs `libwebkit2gtk-4.1-dev`. harnesstap already had to pin 24.04 for webkit2gtk-driver. Use one known-good image. |
+| `ubuntu-26.04` default runner | **Change: self-hosted Linux runners** | The repo lives in the harnesstap org, whose self-hosted runners cost no Actions minutes. Tauri on Linux needs `libwebkit2gtk-4.1-dev`, which the runner image must provide. |
 | Playwright visual container, desktop-e2e | **Defer** | v1 tests the frontend with vitest + React Testing Library against mocked commands. Add tauri-driver e2e when the UI stabilises (Linux only; macOS has no WebDriver). |
 | `rust-toolchain@stable` + `Swatinem/rust-cache@v2` + Bun 1.3.x | **Copy** | Pin the toolchain in `rust-toolchain.toml` (stable, with `rustfmt` and `clippy` components). |
 
@@ -1391,16 +1391,19 @@ harnesstap is a Bun/TypeScript CLI plus a Tauri v2 desktop app in `apps/desktop`
 
 | Job | Runner | Steps |
 |---|---|---|
-| `changes` | ubuntu-24.04 | `dorny/paths-filter`: outputs `rust` (`crates/**`, `app/src-tauri/**`, `Cargo.*`), `web` (`app/**` excl. src-tauri), `ci` (`.github/**`) |
-| `rust-lint` | ubuntu-24.04 | apt webkit deps; `cargo fmt --all --check`; `cargo clippy --workspace --all-targets --locked -- -D warnings`; `cargo update --workspace --locked` |
-| `rust-test` | ubuntu-24.04, macos-latest | `cargo test --workspace --locked` (keyring mock feature on Linux) |
-| `web` | ubuntu-24.04 | `bun install --frozen-lockfile`; `bun run lint`; `bun run typecheck`; `bun run test` |
-| `build-check` | macos-latest, ubuntu-24.04, windows-latest | `bun run tauri build --no-bundle` (proves all 3 OSes build; macOS also uploads the `.app` as a 7-day artifact) |
-| `deny` | ubuntu-24.04 | `EmbarkStudios/cargo-deny-action` |
-| `guards` | ubuntu-24.04 | Changie fragment present unless the PR has the `no-changelog` label |
-| `validate` | ubuntu-24.04, `if: always()` | fail if any needed job is `failure` or `cancelled` (skipped is fine) |
+| `changes` | self-hosted Linux | `dorny/paths-filter`: outputs `rust` (`crates/**`, `app/src-tauri/**`, `Cargo.*`), `web` (`app/**` excl. src-tauri), `ci` (`.github/**`) |
+| `rust-lint` | self-hosted Linux | webkit deps check; `cargo fmt --all --check`; `cargo clippy --workspace --all-targets --locked -- -D warnings`; `cargo update --workspace --locked` |
+| `rust-test` | self-hosted Linux | `cargo test --workspace --locked` |
+| `web` | self-hosted Linux | `bun install --frozen-lockfile`; `bun run lint`; `bun run typecheck`; `bun run test` |
+| `build-check` | self-hosted Linux | `bun run tauri build --no-bundle` |
+| `desktop` | macos-latest, windows-latest (GitHub-hosted) | **Release tags `v*` and dispatch only.** macOS runs `cargo test` and builds the `.app` (7-day artifact); Windows runs `tauri build --no-bundle` |
+| `deny` | self-hosted Linux | `cargo deny --all-features check` (prebuilt binary via `taiki-e/install-action`; no Docker needed) |
+| `guards` | self-hosted Linux | actionlint; Changie fragment present unless the PR has the `no-changelog` label |
+| `validate` | self-hosted Linux, `if: always()` | fail if any needed job is `failure` or `cancelled` (skipped is fine); `desktop` is required on tags and dispatch |
 
-**`nightly.yml`**: cron + dispatch. Runs the full CI with `cargo update` (no `--locked`) against the latest deps, plus `cargo deny`. It opens no issues. The status shows in the Actions tab.
+**Runners.** Linux jobs run on the org's self-hosted runners: `runs-on: ${{ fromJSON(vars.LINUX_RUNNER_LABELS || '["self-hosted","Linux"]') }}`. The repository variable overrides the labels without a code change. The runners are shared, so `.github/actions/linux-tauri-deps` only **checks** the WebKitGTK headers there and fails with the `apt-get` command for a runner admin; it installs packages only on GitHub-hosted runners. Rust, Bun, and cargo-deny are installed per user by their setup actions.
+
+**`nightly.yml`**: cron + dispatch. Linux jobs on the self-hosted runners; macOS and Windows builds on dispatch only. Runs the full CI with `cargo update` (no `--locked`) against the latest deps, plus `cargo deny`. It opens no issues. The status shows in the Actions tab.
 
 **`tag-release.yml`**: `workflow_dispatch` on main.
 1. Install Changie.

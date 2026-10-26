@@ -7,7 +7,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.90"
 license = "UNLICENSED"
-repository = "https://github.com/github-christophe-oudar/pr-nexus"
+repository = "https://github.com/harnesstap/pr-nexus"
 publish = false
 
 [workspace.dependencies]

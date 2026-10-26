@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   tag:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(vars.LINUX_RUNNER_LABELS || '["self-hosted","Linux"]') }}
     permissions:
       contents: write
     steps:

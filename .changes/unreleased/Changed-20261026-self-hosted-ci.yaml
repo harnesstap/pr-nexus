@@ -1,0 +1,3 @@
+kind: Changed
+body: Run Linux CI on the org's self-hosted runners, and macOS and Windows jobs only for release tags and manual runs.
+time: 2026-10-26T09:10:00.000000Z
