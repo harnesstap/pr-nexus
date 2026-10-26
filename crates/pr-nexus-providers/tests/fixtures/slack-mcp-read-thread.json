@@ -1,0 +1,9 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\"messages\":\"=== THREAD PARENT MESSAGE ===\\nFrom: Ada Acme <ada@acme.test> (U0ACME0001)\\nTime: 2026-01-01 10:00:00 UTC\\nMessage TS: 1700000000.000100\\nHello team\\nCould someone please review Fix login?\\n<https:\\/\\/github.com\\/acme\\/web\\/pull\\/1|github.com\\/acme\\/web\\/pull\\/1>\\nThanks!\\n\\n=== THREAD REPLIES (2 total) ===\\n\\n--- Reply 1 of 2 ---\\nFrom: Bob Acme <bob@acme.test> (U0ACME0002)\\nTime: 2026-01-01 10:05:00 UTC\\nMessage TS: 1700000300.000200\\nOn it\\n\\nLeft two comments.\\n\\n--- Reply 2 of 2 ---\\nFrom: Ada Acme <ada@acme.test> (U0ACME0001)\\nTime: 2026-01-01 11:00:00 UTC\\nMessage TS: 1700003600.000300\\nHello, I'm still looking for a review on Fix login\\n\",\"pagination_info\":\"There are no more messages in this thread.\\n\"}"
+    }
+  ],
+  "isError": false
+}

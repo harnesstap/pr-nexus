@@ -381,6 +381,66 @@ pub trait ChatProvider: Send + Sync {
     fn channel_info(&self, channel_id: &str) -> Result<ChatChannel, ProviderError>;
     fn post(&self, message: &OutgoingMessage<'_>) -> Result<PostedMessage, ProviderError>;
     fn account_id(&self) -> AccountId;
+    /// A thread's parent and its first `limit` replies (§7.10, `slack_read_thread`).
+    fn read_thread(
+        &self,
+        _channel_id: &str,
+        _root_ts: &str,
+        _limit: u32,
+    ) -> Result<ThreadReplies, ProviderError> {
+        Err(ProviderError::Unsupported(
+            "reading threads is not supported".into(),
+        ))
+    }
+    /// A user's display name (`slack_read_user_profile`). Implementations cache it.
+    fn user_name(&self, _user_id: &str) -> Result<String, ProviderError> {
+        Err(ProviderError::Unsupported(
+            "user lookup is not supported".into(),
+        ))
+    }
+    /// Message search for the Mentions panel (§7.10). `private` widens it to
+    /// private channels and DMs (`slack_search_public_and_private`).
+    fn search_messages(
+        &self,
+        _phrase: &str,
+        _private: bool,
+        _limit: u32,
+    ) -> Result<Vec<SearchHit>, ProviderError> {
+        Err(ProviderError::Unsupported("search is not supported".into()))
+    }
+}
+
+/// One message of a thread read for the context panel (§7.10).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThreadMessage {
+    pub ts: String,
+    pub user_id: Option<String>,
+    /// Display name, from the result or the profile lookup.
+    pub author: Option<String>,
+    pub text: String,
+    #[serde(default)]
+    pub is_bot: bool,
+}
+
+/// `messages[0]` is the parent when the thread could be read.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThreadReplies {
+    pub messages: Vec<ThreadMessage>,
+    /// More replies exist past the limit.
+    #[serde(default)]
+    pub has_more: bool,
+}
+
+/// One message found by the Mentions search.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SearchHit {
+    pub channel_id: String,
+    pub channel_name: String,
+    pub ts: String,
+    pub author: Option<String>,
+    pub text: String,
+    pub permalink: Option<String>,
+    pub is_bot: bool,
 }
 
 /// One `slack_send_message` call (§7.7). `thread_ts` makes it a thread reply.

@@ -7,6 +7,7 @@ const boot = {
   slack_client_id: "111.222",
   slack_redirect_uri: "",
   slack_secret_saved: true,
+  slack_mentions: "off",
   slack_workspaces: [{ id: 1, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: false, needs_sign_in: false }],
 } as unknown as Bootstrap;
 
@@ -43,4 +44,32 @@ test("a workspace whose token is gone shows needs sign-in and reconnects in plac
   expect(await screen.findByText("Reconnected to Acme.")).toBeInTheDocument();
   expect(screen.queryByText(/needs sign-in/)).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Reconnect Acme" })).not.toBeInTheDocument();
+});
+
+test("the mentions scope saves on change, warns about private results, and reports up", async () => {
+  const saved: string[] = [];
+  const changed: string[] = [];
+  const api = {
+    saveSlackMentions: (scope: string) => {
+      saved.push(scope);
+      return Promise.resolve();
+    },
+  } as unknown as Api;
+  render(<SlackSettings api={api} boot={boot} onMentionsChange={(scope) => changed.push(scope)} />);
+  const select = screen.getByRole("combobox", { name: /Find mentions/ });
+  expect(select).toHaveValue("off");
+  fireEvent.change(select, { target: { value: "all" } });
+  expect(screen.getByText(/can include private channels and DMs/)).toBeInTheDocument();
+  expect(await screen.findByText("Saved.")).toBeInTheDocument();
+  expect(saved).toEqual(["all"]);
+  expect(changed).toEqual(["all"]);
+});
+
+test("a failed mentions save reverts the select", async () => {
+  const api = { saveSlackMentions: () => Promise.reject(new Error("disk full")) } as unknown as Api;
+  render(<SlackSettings api={api} boot={boot} />);
+  const select = screen.getByRole("combobox", { name: /Find mentions/ });
+  fireEvent.change(select, { target: { value: "public" } });
+  expect(await screen.findByText(/disk full/)).toBeInTheDocument();
+  expect(select).toHaveValue("off");
 });

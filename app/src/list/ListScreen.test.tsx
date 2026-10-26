@@ -20,6 +20,7 @@ const boot: Bootstrap = {
   slack_redirect_uri: "",
   slack_secret_saved: false,
   slack_workspaces: [],
+  slack_mentions: "off",
   mapping_count: 0,
   sync: { phase: "idle", message: "Synced", synced_at: "2026-10-26T00:00:00Z", paused: false },
   env_token: false,
@@ -88,6 +89,9 @@ function api(projects: ProjectDto[]): Api {
     saveViewState: () => Promise.resolve(),
     openExternal: () => Promise.resolve(),
     prDetail: () => Promise.reject(new Error("unused")),
+    prSlackContext: () => Promise.resolve([]),
+    prSlackMentions: () => Promise.resolve([]),
+    saveSlackMentions: () => Promise.resolve(),
   };
 }
 

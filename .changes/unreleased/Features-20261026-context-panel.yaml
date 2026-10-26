@@ -1,0 +1,3 @@
+kind: Features
+body: 'PR detail Slack panel: the review threads PR-Nexus posted for the PR with replies, authors, and links (cached for 5 minutes, Refresh to re-read), plus an opt-in Find mentions search for the PR link in public channels or also private channels and DMs.'
+time: 2026-10-26T14:45:00.000000Z

@@ -12,7 +12,8 @@ use pr_nexus_core::domain::{
 use pr_nexus_core::error::{CoreError, ProviderError};
 use pr_nexus_core::mapping::lookup_mapping;
 use pr_nexus_core::providers::{
-    ChatChannel, ChatProvider, ChatUser, OutgoingMessage, Page, PostedMessage,
+    ChatChannel, ChatProvider, ChatUser, OutgoingMessage, Page, PostedMessage, SearchHit,
+    ThreadMessage, ThreadReplies,
 };
 use pr_nexus_core::review::lifecycle::{self, Action, Target};
 use pr_nexus_core::settings;
@@ -618,6 +619,46 @@ impl ChatProvider for DemoChat {
     }
     fn account_id(&self) -> AccountId {
         self.account
+    }
+    /// A made-up reply under the root, so the panel has something to show.
+    fn read_thread(&self, _: &str, root_ts: &str, _: u32) -> Result<ThreadReplies, ProviderError> {
+        let reply_ts = root_ts
+            .split_once('.')
+            .and_then(|(secs, _)| secs.parse::<i64>().ok())
+            .map_or_else(
+                || root_ts.to_owned(),
+                |secs| format!("{}.000100", secs + 300),
+            );
+        Ok(ThreadReplies {
+            messages: vec![
+                ThreadMessage {
+                    ts: root_ts.to_owned(),
+                    user_id: Some("U0DEMO".into()),
+                    author: None,
+                    text: "Could someone please review this? (demo)".into(),
+                    is_bot: false,
+                },
+                ThreadMessage {
+                    ts: reply_ts,
+                    user_id: Some("U0ACME0002".into()),
+                    author: None,
+                    text: "On it (demo reply)".into(),
+                    is_bot: false,
+                },
+            ],
+            has_more: false,
+        })
+    }
+    fn user_name(&self, user_id: &str) -> Result<String, ProviderError> {
+        Ok(if user_id == "U0DEMO" {
+            "Ada Acme"
+        } else {
+            "Bob Acme"
+        }
+        .into())
+    }
+    fn search_messages(&self, _: &str, _: bool, _: u32) -> Result<Vec<SearchHit>, ProviderError> {
+        Ok(Vec::new())
     }
 }
 

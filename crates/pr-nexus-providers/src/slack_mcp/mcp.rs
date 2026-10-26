@@ -11,7 +11,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use pr_nexus_core::domain::{AccountId, ChatKind};
 use pr_nexus_core::error::ProviderError;
 use pr_nexus_core::providers::{
-    ChatChannel, ChatProvider, ChatUser, OutgoingMessage, Page, PostedMessage,
+    ChatChannel, ChatProvider, ChatUser, OutgoingMessage, Page, PostedMessage, SearchHit,
+    ThreadReplies,
 };
 use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, JsonObject};
@@ -22,7 +23,10 @@ use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig
 use serde_json::{Value, json};
 
 use super::oauth::{self, KeychainCredentialStore};
-use super::schema::{self, READ_CHANNEL, SEND_MESSAGE, ToolOutput, ToolShape};
+use super::schema::{
+    self, READ_CHANNEL, READ_THREAD, READ_USER_PROFILE, SEARCH_PUBLIC, SEARCH_PUBLIC_AND_PRIVATE,
+    SEND_MESSAGE, ToolOutput, ToolShape,
+};
 use super::{USER_SCOPES, install_tls_provider};
 use crate::vault::Vault;
 
@@ -254,6 +258,8 @@ pub struct SlackMcpChatProvider {
     account: AccountId,
     user: ChatUser,
     last_write: Mutex<HashMap<String, Instant>>,
+    /// User ID → display name, for the session's lifetime.
+    names: Mutex<HashMap<String, String>>,
 }
 
 impl SlackMcpChatProvider {
@@ -263,6 +269,7 @@ impl SlackMcpChatProvider {
             account,
             user,
             last_write: Mutex::new(HashMap::new()),
+            names: Mutex::new(HashMap::new()),
         }
     }
 
@@ -298,6 +305,15 @@ impl SlackMcpChatProvider {
 }
 
 impl SlackMcpChatProvider {
+    /// Call a read tool; an error result maps through [`schema::map_error`].
+    fn read(&self, tool: &str, args: JsonObject) -> Result<ToolOutput, ProviderError> {
+        let output = self.caller.call(tool, args)?;
+        if output.is_error {
+            return Err(schema::map_error(tool, &output.text, None));
+        }
+        Ok(output)
+    }
+
     /// Find a message just sent: my newest message in the channel from the
     /// last [`RECOVERY_WINDOW`] whose text matches (§7.11).
     fn recover(&self, message: &OutgoingMessage<'_>) -> Option<PostedMessage> {
@@ -327,6 +343,28 @@ impl SlackMcpChatProvider {
             workspace: None,
         })
     }
+}
+
+/// `slack_read_thread` arguments: the first `limit` messages of a thread.
+pub fn read_thread_arguments(channel_id: &str, root_ts: &str, limit: u32) -> JsonObject {
+    let mut args = JsonObject::new();
+    args.insert("channel_id".into(), json!(channel_id));
+    args.insert("message_ts".into(), json!(root_ts));
+    args.insert("limit".into(), json!(limit));
+    args
+}
+
+/// Search arguments for the Mentions button (§7.10): the exact phrase,
+/// bots included (PR-Nexus posts carry the link), newest first.
+pub fn search_arguments(phrase: &str, limit: u32) -> JsonObject {
+    let mut args = JsonObject::new();
+    args.insert("keywords".into(), json!([format!("\"{phrase}\"")]));
+    args.insert("include_bots".into(), json!(true));
+    args.insert("limit".into(), json!(limit.min(20)));
+    args.insert("sort".into(), json!("timestamp"));
+    args.insert("sort_dir".into(), json!("desc"));
+    args.insert("include_context".into(), json!(false));
+    args
 }
 
 /// `slack_send_message` arguments (§7.11 tool table).
@@ -395,6 +433,58 @@ impl ChatProvider for SlackMcpChatProvider {
 
     fn account_id(&self) -> AccountId {
         self.account
+    }
+
+    fn read_thread(
+        &self,
+        channel_id: &str,
+        root_ts: &str,
+        limit: u32,
+    ) -> Result<ThreadReplies, ProviderError> {
+        let output = self.read(
+            READ_THREAD,
+            read_thread_arguments(channel_id, root_ts, limit),
+        )?;
+        let replies = schema::parse_read_thread(&output);
+        if replies.messages.is_empty() {
+            return Err(ProviderError::Decode(format!(
+                "{READ_THREAD}: no messages in the result"
+            )));
+        }
+        Ok(replies)
+    }
+
+    fn user_name(&self, user_id: &str) -> Result<String, ProviderError> {
+        if let Some(name) = self.names.lock().expect("names").get(user_id) {
+            return Ok(name.clone());
+        }
+        let mut args = JsonObject::new();
+        args.insert("user_id".into(), json!(user_id));
+        args.insert("response_format".into(), json!("concise"));
+        let output = self.read(READ_USER_PROFILE, args)?;
+        let name = schema::parse_user_name(&output).ok_or_else(|| {
+            ProviderError::Decode(format!("{READ_USER_PROFILE}: no name in the result"))
+        })?;
+        self.names
+            .lock()
+            .expect("names")
+            .insert(user_id.to_owned(), name.clone());
+        Ok(name)
+    }
+
+    fn search_messages(
+        &self,
+        phrase: &str,
+        private: bool,
+        limit: u32,
+    ) -> Result<Vec<SearchHit>, ProviderError> {
+        let tool = if private {
+            SEARCH_PUBLIC_AND_PRIVATE
+        } else {
+            SEARCH_PUBLIC
+        };
+        let output = self.read(tool, search_arguments(phrase, limit))?;
+        Ok(schema::parse_search(&output))
     }
 }
 
@@ -607,6 +697,130 @@ mod tests {
         assert!(schema::same_message(
             "Hello team\n[Fix login](https://github.com/acme/web/pull/1)",
             &messages[0].text
+        ));
+    }
+
+    fn fixture(json: &str) -> ToolOutput {
+        let result: rmcp::model::CallToolResult = serde_json::from_str(json).unwrap();
+        to_output(result)
+    }
+
+    /// The panel's read tools (§7.10), on the official server's shapes.
+    #[test]
+    fn thread_profile_and_search_fixtures_parse() {
+        let thread = schema::parse_read_thread(&fixture(include_str!(
+            "../../tests/fixtures/slack-mcp-read-thread.json"
+        )));
+        assert!(!thread.has_more);
+        let summary: Vec<(&str, Option<&str>, Option<&str>)> = thread
+            .messages
+            .iter()
+            .map(|m| (m.ts.as_str(), m.user_id.as_deref(), m.author.as_deref()))
+            .collect();
+        assert_eq!(
+            summary,
+            vec![
+                ("1700000000.000100", Some("U0ACME0001"), Some("Ada Acme")),
+                ("1700000300.000200", Some("U0ACME0002"), Some("Bob Acme")),
+                ("1700003600.000300", Some("U0ACME0001"), Some("Ada Acme")),
+            ]
+        );
+        assert!(
+            thread.messages[0]
+                .text
+                .starts_with("Hello team\nCould someone")
+        );
+        assert_eq!(thread.messages[1].text, "On it\n\nLeft two comments.");
+        assert!(
+            thread
+                .messages
+                .iter()
+                .all(|m| !m.text.contains('@')
+                    && !m.author.as_deref().unwrap_or_default().contains('@')),
+            "emails never kept"
+        );
+
+        let name = schema::parse_user_name(&fixture(include_str!(
+            "../../tests/fixtures/slack-mcp-user-profile.json"
+        )));
+        assert_eq!(name.as_deref(), Some("Bob Acme"));
+
+        let hits = schema::parse_search(&fixture(include_str!(
+            "../../tests/fixtures/slack-mcp-search.json"
+        )));
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].channel_id, "C0123456789");
+        assert_eq!(hits[0].channel_name, "eng-web");
+        assert_eq!(hits[0].author.as_deref(), Some("Bob Acme"));
+        assert_eq!(hits[0].ts, "1700007200.000400");
+        assert_eq!(
+            hits[0].text,
+            "Does github.com/acme/web/pull/1 fix the login loop?"
+        );
+        assert!(!hits[0].is_bot);
+        assert!(hits[1].is_bot);
+        assert_eq!(hits[1].author.as_deref(), Some("Devel"));
+        assert_eq!(
+            hits[1].permalink.as_deref(),
+            Some(
+                "https://acme.slack.com/archives/C0123456780/p1700010800000500?thread_ts=1700010000.000100&cid=C0123456780"
+            )
+        );
+    }
+
+    #[test]
+    fn panel_reads_call_the_right_tools_and_cache_names() {
+        let (slack, fake) = provider(fixture(include_str!(
+            "../../tests/fixtures/slack-mcp-read-thread.json"
+        )));
+        let replies = slack
+            .read_thread("C0TEAM", "1700000000.000100", 50)
+            .unwrap();
+        assert_eq!(replies.messages.len(), 3);
+        {
+            let calls = fake.calls.lock().unwrap();
+            assert_eq!(calls[0].0, READ_THREAD);
+            assert_eq!(calls[0].1["message_ts"], "1700000000.000100");
+            assert_eq!(calls[0].1["limit"], 50);
+        }
+
+        let (slack, fake) = provider(fixture(include_str!(
+            "../../tests/fixtures/slack-mcp-user-profile.json"
+        )));
+        assert_eq!(slack.user_name("U0ACME0002").unwrap(), "Bob Acme");
+        assert_eq!(slack.user_name("U0ACME0002").unwrap(), "Bob Acme");
+        assert_eq!(fake.calls.lock().unwrap().len(), 1, "names are cached");
+
+        let (slack, fake) = provider(fixture(include_str!(
+            "../../tests/fixtures/slack-mcp-search.json"
+        )));
+        slack
+            .search_messages("github.com/acme/web/pull/1", false, 20)
+            .unwrap();
+        slack
+            .search_messages("github.com/acme/web/pull/1", true, 50)
+            .unwrap();
+        let calls = fake.calls.lock().unwrap();
+        assert_eq!(calls[0].0, SEARCH_PUBLIC);
+        assert_eq!(
+            calls[0].1["keywords"],
+            json!(["\"github.com/acme/web/pull/1\""])
+        );
+        assert_eq!(calls[0].1["include_bots"], true);
+        assert_eq!(calls[1].0, SEARCH_PUBLIC_AND_PRIVATE);
+        assert_eq!(calls[1].1["limit"], 20);
+    }
+
+    #[test]
+    fn a_tool_error_on_read_maps_to_reconnect() {
+        let (slack, _) = provider(ToolOutput {
+            text: "invalid_auth".into(),
+            is_error: true,
+            ..ToolOutput::default()
+        });
+        assert!(matches!(
+            slack.read_thread("C0TEAM", "1700000000.000100", 50),
+            Err(ProviderError::Unauthorized(_))
         ));
     }
 }

@@ -5,6 +5,7 @@
 
 pub mod batch;
 pub mod codeowners;
+pub mod context;
 pub mod lifecycle;
 pub mod message;
 pub mod owners;

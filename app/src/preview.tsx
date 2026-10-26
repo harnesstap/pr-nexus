@@ -1,6 +1,6 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import type { Api, Bootstrap, ListRow, PrDetail, ProjectDto, ReviewTarget } from "./api";
+import type { Api, Bootstrap, ContextThread, ListRow, PrDetail, ProjectDto, ReviewTarget } from "./api";
 import "./index.css";
 import { ListScreen } from "./list/ListScreen";
 import { memoryProjectApi } from "./memoryProjects";
@@ -38,6 +38,7 @@ const boot: Bootstrap = {
   slack_redirect_uri: "http://127.0.0.1:47821/mcp/oauth/callback",
   slack_secret_saved: false,
   slack_workspaces: [],
+  slack_mentions: "off",
   mapping_count: 0,
   sync: {
     phase: "ok",
@@ -144,6 +145,27 @@ const rows: ListRow[] = [
   }),
 ];
 
+const previewThreads: ContextThread[] = [
+  {
+    workspace: "acme",
+    channel_id: "C0123456789",
+    channel_name: "web-reviews",
+    root_ts: "1700000000.000100",
+    permalink: "https://acme.slack.com/archives/C0123456789/p1700000000000100",
+    status: "active",
+    close_reason: null,
+    requested_at: "2023-11-14T22:13:20Z",
+    messages: [
+      { ts: "1700000000.000100", at: "2023-11-14T22:13:20Z", author: "Ada Acme", user_id: "U0ACME0001", text: "Hello team\nCould someone please review this?\n<https://github.com/acme/web/pull/1|github.com/acme/web/pull/1>", permalink: "https://acme.slack.com/archives/C0123456789/p1700000000000100", is_bot: false },
+      { ts: "1700000300.000200", at: "2023-11-14T22:18:20Z", author: "Bob Acme", user_id: "U0ACME0002", text: "On it, <@U0ACME0001>", permalink: null, is_bot: false },
+    ],
+    has_more: false,
+    fetched_at: "2023-11-14T22:20:00Z",
+    from_cache: false,
+    error: null,
+  },
+];
+
 function previewDetail(id: number): PrDetail {
   return {
     id,
@@ -227,6 +249,9 @@ const api: Api = {
   saveViewState: () => Promise.resolve(),
   openExternal: () => Promise.resolve(),
   prDetail: (id) => Promise.resolve(previewDetail(id)),
+  prSlackContext: () => Promise.resolve(previewThreads),
+  prSlackMentions: () => Promise.resolve([]),
+  saveSlackMentions: () => Promise.resolve(),
 };
 
 document.body.style.margin = "0";

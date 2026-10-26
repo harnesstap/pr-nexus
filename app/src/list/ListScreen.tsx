@@ -298,7 +298,7 @@ export function ListScreen({ api, boot, onBoot }: Props) {
             <button type="button" className="mt-4 rounded bg-violet-500 px-3 py-2 text-sm" onClick={() => void saveOrgs()}>
               Save orgs
             </button>
-            {viewKey === "settings" && <SlackSettings api={api} boot={boot} />}
+            {viewKey === "settings" && <SlackSettings api={api} boot={boot} onMentionsChange={(scope) => onBoot({ ...boot, slack_mentions: scope })} />}
           </section>
         ) : (
           <PrList
@@ -345,7 +345,7 @@ export function ListScreen({ api, boot, onBoot }: Props) {
         )}
         {error && <p className="px-4 py-2 text-sm text-rose-300">{error}</p>}
         {detailRow && (
-          <PrDetailDialog key={detailRow.id} api={api} row={detailRow} onClose={() => {
+          <PrDetailDialog key={detailRow.id} api={api} row={detailRow} slack={{ mentions: boot.slack_mentions }} onClose={() => {
               setDetailId(null);
               // The detail may have resolved code-owner status the list row now uses.
               void reload();

@@ -5,16 +5,22 @@
 
 use chrono::{Duration, Utc};
 use pr_nexus_core::error::ProviderError;
-use pr_nexus_core::providers::PostedMessage;
+use pr_nexus_core::providers::{PostedMessage, SearchHit, ThreadMessage, ThreadReplies};
 use pr_nexus_core::review::permalink;
 use serde_json::Value;
 
 pub const SEND_MESSAGE: &str = "slack_send_message";
 pub const READ_CHANNEL: &str = "slack_read_channel";
+pub const READ_THREAD: &str = "slack_read_thread";
+pub const READ_USER_PROFILE: &str = "slack_read_user_profile";
+pub const SEARCH_PUBLIC: &str = "slack_search_public";
+pub const SEARCH_PUBLIC_AND_PRIVATE: &str = "slack_search_public_and_private";
 
 /// Tools and input fields PR-Nexus relies on, as listed on 2026-10-25.
 /// `slack_read_channel` is not pinned: it only backs the send-result
-/// recovery, which degrades to "sent, link unknown" without it.
+/// recovery, which degrades to "sent, link unknown" without it. The read
+/// and search tools behind the Slack panel (§7.10) are not pinned either:
+/// a change there shows an error in the panel and never blocks sending.
 pub const PINNED_TOOLS: &[(&str, &[&str])] = &[(
     SEND_MESSAGE,
     &["channel_id", "message", "thread_ts", "reply_broadcast"],
@@ -225,6 +231,185 @@ pub fn parse_read_channel(output: &ToolOutput) -> Vec<ReadMessage> {
         });
     }
     messages
+}
+
+/// One string field of the result's JSON, else the whole text.
+fn field_or_text(output: &ToolOutput, key: &str) -> String {
+    output
+        .json_values()
+        .iter()
+        .find_map(|value| value.get(key).and_then(Value::as_str).map(str::to_owned))
+        .unwrap_or_else(|| output.text.clone())
+}
+
+/// `Ada Acme <ada@acme.test> (U0ACME0001)`, `Devel (ID: U0ACMEBOT)  [BOT]`
+/// → name without the email, user ID, bot flag. Emails are never kept.
+fn parse_author(line: &str) -> (Option<String>, Option<String>, bool) {
+    let mut line = line.trim();
+    let is_bot = line.ends_with("[BOT]");
+    if is_bot {
+        line = line.trim_end_matches("[BOT]").trim_end();
+    }
+    let (name, user_id) = match line.rsplit_once('(') {
+        Some((name, id)) if id.ends_with(')') => {
+            let id = id.trim_end_matches(')').trim();
+            let id = id.strip_prefix("ID:").unwrap_or(id).trim();
+            (name, (!id.is_empty()).then(|| id.to_owned()))
+        }
+        _ => (line, None),
+    };
+    let name = match (name.find('<'), name.rfind('>')) {
+        (Some(open), Some(close)) if open < close => {
+            format!("{}{}", &name[..open], &name[close + 1..])
+        }
+        _ => name.to_owned(),
+    };
+    let name = name.trim();
+    let name = (!name.is_empty() && !name.contains('@')).then(|| name.to_owned());
+    (name, user_id, is_bot)
+}
+
+fn trim_text(lines: &[&str]) -> String {
+    lines.join("\n").trim_matches('\n').trim_end().to_owned()
+}
+
+/// Parse a `slack_read_thread` result: JSON text `{"messages": "<blocks>",
+/// "pagination_info": "…"}`. The parent block follows
+/// `=== THREAD PARENT MESSAGE ===`, each reply `--- Reply N of M ---`; each
+/// has `From:`, `Time:` and `Message TS:` lines, then the text.
+pub fn parse_read_thread(output: &ToolOutput) -> ThreadReplies {
+    let body = field_or_text(output, "messages");
+    let pagination = field_or_text(output, "pagination_info").to_ascii_lowercase();
+    let mut messages = Vec::new();
+    let mut current: Option<(ThreadMessage, Vec<&str>)> = None;
+    fn finish(current: Option<(ThreadMessage, Vec<&str>)>, messages: &mut Vec<ThreadMessage>) {
+        if let Some((mut message, lines)) = current
+            && permalink::is_ts(&message.ts)
+        {
+            message.text = trim_text(&lines);
+            messages.push(message);
+        }
+    }
+    for line in body.lines() {
+        let trimmed = line.trim();
+        let header = (trimmed.starts_with("=== ") && trimmed.ends_with(" ==="))
+            || (trimmed.starts_with("--- Reply ") && trimmed.ends_with(" ---"));
+        if header {
+            finish(current.take(), &mut messages);
+            continue;
+        }
+        if let Some(from) = trimmed.strip_prefix("From:")
+            && current
+                .as_ref()
+                .is_none_or(|(message, _)| message.ts.is_empty())
+        {
+            let (author, user_id, is_bot) = parse_author(from);
+            current = Some((
+                ThreadMessage {
+                    ts: String::new(),
+                    user_id,
+                    author,
+                    text: String::new(),
+                    is_bot,
+                },
+                Vec::new(),
+            ));
+            continue;
+        }
+        let Some((message, lines)) = current.as_mut() else {
+            continue;
+        };
+        if message.ts.is_empty() {
+            if let Some(ts) = trimmed.strip_prefix("Message TS:") {
+                message.ts = ts.trim().to_owned();
+            }
+            // `Time:` and anything else before the ts is metadata.
+            continue;
+        }
+        lines.push(line);
+    }
+    finish(current.take(), &mut messages);
+    let has_more = !pagination.trim().is_empty()
+        && pagination != body.to_ascii_lowercase()
+        && !pagination.contains("no more");
+    ThreadReplies { messages, has_more }
+}
+
+/// Parse a concise `slack_read_user_profile` result: `{"result": "<display>
+/// (<username>)\n<org>\n<title>\n<email>\n…"}` → the display name, else
+/// the username.
+pub fn parse_user_name(output: &ToolOutput) -> Option<String> {
+    let body = field_or_text(output, "result");
+    let first = body.lines().map(str::trim).find(|line| !line.is_empty())?;
+    let (display, username) = match first.rsplit_once(" (") {
+        Some((display, username)) if username.ends_with(')') => {
+            (display.trim(), username.trim_end_matches(')').trim())
+        }
+        _ => (first, ""),
+    };
+    let display = display.trim_start_matches('(').trim_end_matches(')');
+    [display, username]
+        .into_iter()
+        .find(|name| !name.is_empty() && !name.contains('@'))
+        .map(str::to_owned)
+}
+
+/// Parse a `slack_search_public` (or `_and_private`) result: JSON text
+/// `{"results": "# Search Results…\n### Result 1 of N\nChannel: #name (ID:
+/// C…)\nFrom: …\nTime: …\nMessage_ts: …\nPermalink: [link](url)\nText:
+/// \n<text>\n\n---"}`.
+pub fn parse_search(output: &ToolOutput) -> Vec<SearchHit> {
+    let body = field_or_text(output, "results");
+    let mut hits = Vec::new();
+    for block in body.split("### Result ").skip(1) {
+        let mut hit = SearchHit {
+            channel_id: String::new(),
+            channel_name: String::new(),
+            ts: String::new(),
+            author: None,
+            text: String::new(),
+            permalink: None,
+            is_bot: false,
+        };
+        let mut text: Option<Vec<&str>> = None;
+        for line in block.lines().skip(1) {
+            if let Some(lines) = text.as_mut() {
+                if line.trim() == "---" || line.starts_with("## ") {
+                    break;
+                }
+                lines.push(line);
+                continue;
+            }
+            let trimmed = line.trim();
+            if let Some(channel) = trimmed.strip_prefix("Channel:") {
+                let (name, id, _) = parse_author(channel);
+                hit.channel_name = name.unwrap_or_default().trim_start_matches('#').to_owned();
+                hit.channel_id = id.unwrap_or_default();
+            } else if let Some(from) = trimmed.strip_prefix("From:") {
+                let (author, _, is_bot) = parse_author(from);
+                hit.author = author;
+                hit.is_bot = is_bot;
+            } else if let Some(ts) = trimmed.strip_prefix("Message_ts:") {
+                hit.ts = ts.trim().to_owned();
+            } else if let Some(link) = trimmed.strip_prefix("Permalink:") {
+                hit.permalink = link
+                    .split_once("](")
+                    .and_then(|(_, url)| url.strip_suffix(')'))
+                    .map(|url| url.replace("\\/", "/"));
+            } else if let Some(first) = trimmed.strip_prefix("Text:") {
+                let mut lines = Vec::new();
+                if !first.trim().is_empty() {
+                    lines.push(first.trim());
+                }
+                text = Some(lines);
+            }
+        }
+        hit.text = trim_text(&text.unwrap_or_default());
+        if permalink::is_ts(&hit.ts) && !hit.channel_id.is_empty() {
+            hits.push(hit);
+        }
+    }
+    hits
 }
 
 /// True when `posted` (Slack's stored text) is the message we sent as `sent`.
