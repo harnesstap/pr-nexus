@@ -3,7 +3,7 @@ import type { Api, Bootstrap, ListRow, ProjectDto } from "../api";
 import { errorMessage } from "../api";
 import { ClockIcon, FolderIcon, GearIcon, HomeIcon, LogoIcon, PlusIcon, RefreshIcon } from "../icons";
 import { OrgOption } from "../orgs";
-import { DRAG_MIME, defaultView, parseDragIds, parseViewState, renameError, syncLabel, type SavedView } from "./model";
+import { DRAG_MIME, TOAST_MS, bulkToast, defaultView, parseDragIds, parseViewState, renameError, sentToast, syncLabel, type SavedView, type Toast } from "./model";
 import { PrList } from "./PrList";
 import { PrDetailDialog } from "./PrDetailDialog";
 import { ProjectDialog } from "./ProjectDialog";
@@ -34,7 +34,9 @@ export function ListScreen({ api, boot, onBoot }: Props) {
   const [detailId, setDetailId] = useState<number | null>(null);
   const [reviewId, setReviewId] = useState<number | null>(null);
   const [bulkIds, setBulkIds] = useState<number[] | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notice, setNotice] = useState<Toast | null>(null);
+  /** The bulk run's summary, shown as a toast once its dialog closes. */
+  const [bulkSummary, setBulkSummary] = useState<string | null>(null);
   const view = views[viewKey] ?? defaultView();
   const needsOrgs = orgs.length === 0 && !personal;
 
@@ -47,7 +49,7 @@ export function ListScreen({ api, boot, onBoot }: Props) {
     if (!notice) {
       return;
     }
-    const timer = window.setTimeout(() => setNotice(null), 4000);
+    const timer = window.setTimeout(() => setNotice(null), TOAST_MS);
     return () => window.clearTimeout(timer);
   }, [notice]);
 
@@ -138,7 +140,7 @@ export function ListScreen({ api, boot, onBoot }: Props) {
       const changed = await api.linkPrs(projectId, prIds);
       await reload();
       const count = `${prIds.length} ${prIds.length === 1 ? "PR" : "PRs"}`;
-      setNotice(changed > 0 ? `Added ${count} to ${name}` : `${count} already in ${name}`);
+      setNotice({ text: changed > 0 ? `Added ${count} to ${name}` : `${count} already in ${name}` });
     } catch (err) {
       setError(errorMessage(err));
     }
@@ -326,8 +328,16 @@ export function ListScreen({ api, boot, onBoot }: Props) {
           />
         )}
         {notice && (
-          <p role="status" className="absolute right-4 top-3 flex items-center gap-2 rounded border border-slate-700 bg-slate-900 px-3 py-1.5 text-sm text-slate-200 shadow">
-            {notice}
+          <p
+            role="status"
+            className="fixed bottom-6 right-6 z-50 flex items-center gap-3 rounded border border-emerald-700 bg-slate-900 px-4 py-2 text-sm text-slate-100 shadow-lg"
+          >
+            {notice.text}
+            {notice.link && (
+              <button type="button" className="text-violet-300 underline" onClick={() => void api.openExternal(notice.link!)}>
+                Open ↗
+              </button>
+            )}
             <button type="button" aria-label="Dismiss" className="text-slate-500 hover:text-slate-200" onClick={() => setNotice(null)}>
               ×
             </button>
@@ -357,7 +367,7 @@ export function ListScreen({ api, boot, onBoot }: Props) {
               const id = reviewRow.id;
               setRows((current) => current.map((row) => (row.id === id ? { ...row, slack } : row)));
               setReviewId(null);
-              setNotice(slack.bump_count > 0 ? "Bumped on Slack." : "Review requested on Slack.");
+              setNotice(sentToast(slack));
             }}
           />
         )}
@@ -365,10 +375,17 @@ export function ListScreen({ api, boot, onBoot }: Props) {
           <BulkDialog
             api={api}
             prIds={bulkIds}
-            onClose={() => setBulkIds(null)}
+            onClose={() => {
+              setBulkIds(null);
+              if (bulkSummary) {
+                setNotice({ text: bulkSummary });
+                setBulkSummary(null);
+              }
+            }}
             onOpen={(url) => void api.openExternal(url)}
-            onSent={(indicators) => {
-              const byId = new Map(indicators.map((item) => [item.pr_id, item.indicator]));
+            onSent={(done) => {
+              setBulkSummary(bulkToast(done));
+              const byId = new Map(done.indicators.map((item) => [item.pr_id, item.indicator]));
               setRows((current) => current.map((row) => (byId.has(row.id) ? { ...row, slack: byId.get(row.id) ?? null } : row)));
             }}
           />
@@ -434,3 +451,4 @@ function NavButton({
     </button>
   );
 }
+

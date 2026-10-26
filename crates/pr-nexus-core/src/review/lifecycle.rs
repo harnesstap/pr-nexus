@@ -25,6 +25,25 @@ pub struct Target {
     pub channel_name: String,
 }
 
+impl Target {
+    /// How the channel reads in text: `#reviews`, or `DM` for a direct
+    /// message (`D…`), never `#D…`. Mirrors `channelLabel` in the app.
+    pub fn label(&self) -> String {
+        let name = self.channel_name.trim().trim_start_matches('#');
+        if self.channel_id.starts_with('D') {
+            if name.is_empty() || name == self.channel_id {
+                "DM".to_owned()
+            } else {
+                format!("DM · {name}")
+            }
+        } else if name.is_empty() {
+            format!("#{}", self.channel_id)
+        } else {
+            format!("#{name}")
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     /// New top-level message.
@@ -89,8 +108,8 @@ pub fn plan(
             let last = request.last_bumped_at.unwrap_or(request.requested_at);
             if now - last < Duration::hours(min_bump_interval_hours) {
                 warnings.push(format!(
-                    "The last message in #{} is less than {min_bump_interval_hours} h old.",
-                    target.channel_name
+                    "The last message in {} is less than {min_bump_interval_hours} h old.",
+                    target.label()
                 ));
             }
             (
@@ -481,5 +500,18 @@ mod tests {
             .close_review_request(request.id, crate::domain::CloseReason::Dismissed, at(1))
             .unwrap();
         assert!(store.record_bump(request.id, at(2)).is_err());
+    }
+
+    #[test]
+    fn dm_targets_read_as_dm_in_warnings() {
+        let target = |id: &str, name: &str| Target {
+            workspace: "acme".into(),
+            channel_id: id.into(),
+            channel_name: name.into(),
+        };
+        assert_eq!(target("C0123456789", "reviews").label(), "#reviews");
+        assert_eq!(target("C0123456789", "#reviews").label(), "#reviews");
+        assert_eq!(target("D0123456789", "D0123456789").label(), "DM");
+        assert_eq!(target("D0123456789", "ada").label(), "DM · ada");
     }
 }

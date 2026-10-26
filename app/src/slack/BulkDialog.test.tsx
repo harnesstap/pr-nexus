@@ -66,7 +66,7 @@ function fake() {
 
 test("previews every message per channel, switches to one top-level request, and reports per-PR results", async () => {
   const { api, calls } = fake();
-  const sent: BulkResult["indicators"][] = [];
+  const sent: BulkResult[] = [];
   render(<BulkDialog api={api} prIds={[1, 2, 3]} onClose={() => undefined} onSent={(items) => sent.push(items)} onOpen={() => undefined} />);
   expect(await screen.findByText("Bump #42")).toBeInTheDocument();
   expect(screen.getByText("Please review #43")).toBeInTheDocument();

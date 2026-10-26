@@ -1,0 +1,3 @@
+kind: Fixed
+body: Name DM targets "DM" in the recent-message warning, and confirm single and bulk Slack sends with a visible toast.
+time: 2026-10-26T14:40:00.000000Z

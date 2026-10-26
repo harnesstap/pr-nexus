@@ -7,7 +7,8 @@ interface Props {
   prIds: number[];
   onClose: () => void;
   /** Fresh indicators for the PRs that were posted. */
-  onSent: (indicators: BulkResult["indicators"]) => void;
+  /** After each Send (and Retry failed): updates indicators and the closing toast. */
+  onSent: (done: BulkResult) => void;
   onOpen: (url: string) => void;
 }
 
@@ -123,7 +124,7 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen }: Props) {
         preview.cards.map((card) => card.fingerprint),
       );
       setResult(done);
-      onSent(done.indicators);
+      onSent(done);
     } catch (err) {
       setError(errorMessage(err));
     } finally {

@@ -1,7 +1,9 @@
 import { expect, test } from "vitest";
-import type { ListRow, ProjectDto } from "../api";
+import type { BulkResult, ListRow, ProjectDto } from "../api";
 import {
   bulkIds,
+  bulkToast,
+  sentToast,
   checkState,
   slackStatus,
   threadsLabel,
@@ -189,6 +191,9 @@ test("slack status prefers the latest bump and threads label explains the count"
   expect(slackStatus(null, now)).toBeNull();
   expect(slackStatus(slack, now)).toEqual({ label: "Requested · 2d ago", title: "team · #reviews · requested 2d ago" });
   expect(slackStatus({ ...slack, bump_count: 1, last_bumped_at: "2026-10-26T07:00:00Z" }, now)?.label).toBe("Bumped · 5h ago");
+  expect(sentToast(slack)).toEqual({ text: "Review requested in team · #reviews", link: null });
+  const dm = { ...slack, channel_id: "D0123456789", channel_name: "D0123456789", permalink: "https://acme.slack.com/archives/D0123456789/p1", bump_count: 1 };
+  expect(sentToast(dm)).toEqual({ text: "Bumped in team · DM", link: "https://acme.slack.com/archives/D0123456789/p1" });
   expect(threadsLabel(2, 5)).toEqual({ text: "2", title: "2 unresolved of 5 review threads" });
   expect(threadsLabel(120, 130).text).toBe("100+");
 });
@@ -217,4 +222,12 @@ test("dragging a selected row carries the selection", () => {
   expect(dragIds(4, new Set([2, 3]))).toEqual([4]);
   expect(parseDragIds("[1,2.5,\"x\",3]")).toEqual([1, 3]);
   expect(parseDragIds("nope")).toEqual([]);
+});
+
+test("bulk toast counts outcomes and drops zero counts", () => {
+  const outcome = (value: "sent" | "skipped" | "failed") => ({ outcome: value }) as BulkResult["results"][number];
+  const done = (...values: ("sent" | "skipped" | "failed")[]) => ({ batch_id: "b", results: values.map(outcome), indicators: [] });
+  expect(bulkToast(done("sent", "sent", "failed"))).toBe("Slack: 2 sent · 1 failed");
+  expect(bulkToast(done("skipped"))).toBe("Slack: 1 skipped");
+  expect(bulkToast(done())).toBe("Slack: nothing sent");
 });

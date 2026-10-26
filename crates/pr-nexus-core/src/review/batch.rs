@@ -223,8 +223,8 @@ fn plan_card(
             .collect();
         if !recent.is_empty() {
             warnings.push(format!(
-                "The last message in #{} for {} is less than {} h old.",
-                target.channel_name,
+                "The last message in {} for {} is less than {} h old.",
+                target.label(),
                 recent.join(", "),
                 options.min_bump_interval_hours
             ));
