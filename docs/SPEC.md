@@ -686,6 +686,8 @@ The preview decides per channel. A PR with an active request in one channel and 
 | Stored | `review_messages(kind='request')` + new active `review_requests` rows (`source='app'`) | `review_messages(kind='bump', thread_root_ts=<root>)` + `last_bumped_at`, `bump_count` on the active rows |
 | Guard | — | Warn (not block) if the last request or bump in this channel is less than `review.min_bump_interval_hours` old (default 24, default D12). |
 
+Because bumps use `reply_broadcast=true`, Slack also shows each bump in the channel or DM history: `slack_read_channel` lists it as a top-level message while the root reports `Thread: N replies`. This is intended (the skill does the same), not a duplicate post. Warnings and toasts name a DM target `DM` (or `DM · name`), never `#D…`. A successful single send closes the dialog and shows a toast (`Review requested in acme · DM`, with **Open ↗** to the permalink). A bulk run shows a summary toast (`Slack: 2 sent · 1 failed`) when its result dialog closes.
+
 Both kinds open the same **preview modal** (wireframe and mockup in §8.2):
 - one card per `workspace · #channel`, with a **Change channel** dropdown (the picker) and a **Save as mapping correction** checkbox (checked by default; unchecked = only for this message);
 - each card is labeled **Request** or **Bump**. A request renders as a new message. A bump renders as a **thread reply under the existing message** (root excerpt plus "Open thread ↗");

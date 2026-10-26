@@ -1,4 +1,4 @@
-import type { ListRow, ProjectDto, SyncStatus } from "../api";
+import type { BulkOutcome, BulkResult, ListRow, ProjectDto, SlackIndicator, SyncStatus } from "../api";
 import { channelLabel } from "../api";
 
 export const AUTHOR = 1;
@@ -686,4 +686,25 @@ export function slackStatus(slack: ListRow["slack"], now: Date): { label: string
     return { label: `Bumped · ${ago(slack.last_bumped_at, now)}`, title: `${where} · ${requested} · ${bumps}` };
   }
   return { label: `Requested · ${ago(slack.requested_at, now)}`, title: `${where} · ${requested}` };
+}
+
+export const TOAST_MS = 6000;
+
+export interface Toast {
+  text: string;
+  /** Opens the posted Slack message. */
+  link?: string | null;
+}
+
+/** Success toast for a single request or bump. */
+export function sentToast(slack: SlackIndicator): Toast {
+  const what = slack.bump_count > 0 ? "Bumped" : "Review requested";
+  return { text: `${what} in ${slack.workspace} · ${channelLabel(slack)}`, link: slack.permalink };
+}
+
+/** One-line summary of a bulk run: `Slack: 2 sent · 1 skipped · 1 failed`. */
+export function bulkToast(done: BulkResult): string {
+  const count = (outcome: BulkOutcome["outcome"]) => done.results.filter((item) => item.outcome === outcome).length;
+  const parts = (["sent", "skipped", "failed"] as const).filter((label) => count(label) > 0).map((label) => `${count(label)} ${label}`);
+  return `Slack: ${parts.length > 0 ? parts.join(" · ") : "nothing sent"}`;
 }
