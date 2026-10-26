@@ -1,0 +1,3 @@
+kind: Fixed
+body: 'Slack sign-in now waits up to 10 minutes for the browser redirect, shows a countdown with Cancel, and offers "Sign-in timed out, click to retry." on timeout.'
+time: 2026-10-26T13:10:00.000000Z

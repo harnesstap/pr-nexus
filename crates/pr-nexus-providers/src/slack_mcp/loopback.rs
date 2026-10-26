@@ -16,7 +16,7 @@ use url::Url;
 use super::SlackAuthError;
 
 /// How long the listener waits for Slack to redirect back (§7.11 step 3).
-pub const CALLBACK_TIMEOUT: Duration = Duration::from_secs(120);
+pub const CALLBACK_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// A validated loopback redirect URI.
 #[derive(Debug, Clone, PartialEq, Eq)]

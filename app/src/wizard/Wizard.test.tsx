@@ -1,5 +1,5 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { expect, test } from "vitest";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { expect, test, vi } from "vitest";
 import type { Api, Bootstrap, ReviewTarget } from "../api";
 import { Wizard } from "./Wizard";
 import { memoryProjectApi } from "../memoryProjects";
@@ -142,6 +142,7 @@ test("the Slack step saves a custom redirect, connects in the browser, then allo
   fireEvent.click(screen.getByRole("button", { name: "Sign in with Slack" }));
   expect(await screen.findByRole("button", { name: "Waiting for Slack…" })).toBeDisabled();
   expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+  expect(screen.getByRole("status", { name: "Slack sign-in status" })).toHaveTextContent("Finish signing in in your browser · 10:00 left.");
   expect(saved).toEqual([["111.222", "", "http://127.0.0.1:40001/cb"]]);
   await waitFor(() => expect(release).not.toBeNull());
   release!();
@@ -174,6 +175,47 @@ test("a cancelled Slack sign-in shows no error and a failure shows the message",
   expect(screen.queryByText(/cancelled/)).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Sign in with Slack" }));
   expect(await screen.findByText("Port 40001 is in use.")).toBeInTheDocument();
+});
+
+test("a long Slack sign-in counts down, says still waiting, and offers a retry after the timeout", async () => {
+  let reject: ((err: unknown) => void) | null = null;
+  let calls = 0;
+  render(
+    <Wizard
+      api={api({
+        slackConnect: () => {
+          calls += 1;
+          return new Promise((_, fail) => {
+            reject = fail;
+          });
+        },
+      })}
+      boot={{ ...boot, resume_step: "connect_chat", slack_client_id: "111.222" }}
+      onFinished={() => undefined}
+    />,
+  );
+  vi.useFakeTimers();
+  try {
+    fireEvent.click(screen.getByRole("button", { name: "Sign in with Slack" }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(95_000);
+    });
+    expect(screen.getByRole("status", { name: "Slack sign-in status" })).toHaveTextContent(
+      "Still waiting for Slack. Finish signing in in your browser · 8:25 left.",
+    );
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+    await act(async () => {
+      reject!({ kind: "timeout", message: "Slack sign-in timed out after 10 minutes. Try again." });
+      await vi.advanceTimersByTimeAsync(0);
+    });
+  } finally {
+    vi.useRealTimers();
+  }
+  const retry = await screen.findByRole("button", { name: "Sign-in timed out, click to retry." });
+  expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
+  fireEvent.click(retry);
+  await waitFor(() => expect(calls).toBe(2));
+  expect(screen.queryByRole("button", { name: /timed out/ })).not.toBeInTheDocument();
 });
 
 test("a connected workspace can be removed", async () => {

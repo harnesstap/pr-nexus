@@ -97,7 +97,7 @@ pub fn slack_workspaces(app: Shared<'_>) -> Result<Vec<SlackWorkspace>, AppError
 }
 
 /// Browser sign-in for one workspace. Resolves when the redirect arrives,
-/// the 2-minute timeout fires, or [`slack_cancel_connect`] runs.
+/// the 10-minute timeout fires, or [`slack_cancel_connect`] runs.
 #[tauri::command]
 pub async fn slack_connect(
     app: tauri::AppHandle,
