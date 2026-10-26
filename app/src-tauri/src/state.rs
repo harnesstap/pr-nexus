@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -7,11 +8,13 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use pr_nexus_core::domain::{Account, AccountKind};
 use pr_nexus_core::onboarding::{self, OnboardingState, StepValidity};
+use pr_nexus_core::providers::ChatProvider;
 use pr_nexus_core::providers::{ProviderRegistry, SetupStep};
 use pr_nexus_core::settings;
 use pr_nexus_core::store::Store;
 use pr_nexus_core::sync::{self, SyncKind};
 use pr_nexus_providers::github::{self, GithubClient};
+use pr_nexus_providers::slack_mcp::CancelHandle;
 use pr_nexus_providers::vault::Vault;
 use tauri::Manager;
 
@@ -51,7 +54,11 @@ pub struct DeviceSession {
 
 pub struct AppState {
     pub store: Store,
-    pub vault: Vault,
+    pub vault: Arc<Vault>,
+    /// One lazy Slack MCP session per connected workspace account.
+    pub chats: Mutex<HashMap<i64, Arc<dyn ChatProvider>>>,
+    /// The Slack sign-in in progress, if any.
+    pub slack_cancel: Mutex<Option<CancelHandle>>,
     pub sync: Mutex<SyncStatus>,
     pub device: Mutex<Option<DeviceSession>>,
     pub focused: AtomicBool,
@@ -70,7 +77,9 @@ impl AppState {
         }
         Ok(Self {
             store,
-            vault,
+            vault: Arc::new(vault),
+            chats: Mutex::new(HashMap::new()),
+            slack_cancel: Mutex::new(None),
             sync: Mutex::new(if demo {
                 SyncStatus::demo()
             } else {
@@ -160,7 +169,9 @@ pub fn validity(state: &AppState, saved: &OnboardingState) -> Result<StepValidit
         chat_selected: chat.as_deref() == Some("slack"),
         github_verified,
         orgs_chosen: !orgs.is_empty() || personal,
-        slack_ok: saved.slack_skipped || slack_completed,
+        slack_ok: saved.slack_skipped
+            || slack_completed
+            || !crate::slack::workspace_accounts(&state.store)?.is_empty(),
         mapping_ok: saved.mapping_skipped
             || saved.completed.iter().any(|step| step == "chat_mapping"),
     })
@@ -309,7 +320,9 @@ mod tests {
         let path = std::env::temp_dir().join(format!("pr-nexus-demo-{}.db", std::process::id()));
         let state = AppState {
             store: Store::open(&path).unwrap(),
-            vault: Vault::memory("test"),
+            vault: Arc::new(Vault::memory("test")),
+            chats: Mutex::new(HashMap::new()),
+            slack_cancel: Mutex::new(None),
             sync: Mutex::new(SyncStatus::demo()),
             device: Mutex::new(None),
             focused: AtomicBool::new(true),

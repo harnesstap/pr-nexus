@@ -7,6 +7,8 @@ interface Props {
   row: ListRow;
   onClose: () => void;
   onOpen: (url: string) => void;
+  /** Opens the Slack request/bump preview for this PR. */
+  onRequestReview?: () => void;
 }
 
 const READINESS_LABEL: Record<PrDetail["readiness"], string> = {
@@ -22,7 +24,7 @@ const READINESS_TONE: Record<PrDetail["readiness"], string> = {
 };
 
 /** One PR's readiness and code owners, with the reasons (§6, §7.2). */
-export function PrDetailDialog({ api, row, onClose, onOpen }: Props) {
+export function PrDetailDialog({ api, row, onClose, onOpen, onRequestReview }: Props) {
   const [detail, setDetail] = useState<PrDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -70,6 +72,11 @@ export function PrDetailDialog({ api, row, onClose, onOpen }: Props) {
             </p>
           </div>
           <div className="flex shrink-0 gap-2">
+            {onRequestReview && (
+              <button type="button" className="rounded px-2 py-1 text-violet-300 hover:bg-slate-800" onClick={onRequestReview}>
+                {row.slack ? "Bump on Slack" : "Request on Slack"}
+              </button>
+            )}
             <button type="button" className="rounded px-2 py-1 text-slate-400 hover:bg-slate-800" onClick={() => onOpen(row.url)}>
               Open on GitHub
             </button>

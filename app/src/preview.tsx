@@ -1,6 +1,6 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import type { Api, Bootstrap, ListRow, PrDetail, ProjectDto } from "./api";
+import type { Api, Bootstrap, ListRow, PrDetail, ProjectDto, ReviewTarget } from "./api";
 import "./index.css";
 import { ListScreen } from "./list/ListScreen";
 import { memoryProjectApi } from "./memoryProjects";
@@ -36,6 +36,8 @@ const boot: Bootstrap = {
   orgs_needing_sso: [],
   slack_client_id: "",
   slack_redirect_uri: "http://127.0.0.1:47821/mcp/oauth/callback",
+  slack_secret_saved: false,
+  slack_workspaces: [],
   mapping_count: 0,
   sync: {
     phase: "ok",
@@ -180,6 +182,34 @@ const api: Api = {
   saveOrgs: () => Promise.resolve(),
   saveSlack: () => Promise.resolve(),
   slackManifestUrl: () => Promise.resolve("https://api.slack.com/apps?new_app=1"),
+  slackWorkspaces: () => Promise.resolve([]),
+  slackConnect: () =>
+    Promise.resolve({ id: 9, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true }),
+  slackCancelConnect: () => Promise.resolve(),
+  slackRemoveWorkspace: () => Promise.resolve(),
+  reviewTargets: () => Promise.resolve([]),
+  reviewPreview: (_prId: number, target: ReviewTarget) =>
+    Promise.resolve({
+      target,
+      action: "request" as const,
+      text: "Hi, could you review this?",
+      warnings: [],
+      signed_in: true,
+      bump_count: 0,
+      permalink: null,
+    }),
+  sendReview: (_prId: number, target: ReviewTarget) =>
+    Promise.resolve({
+      requested_at: new Date().toISOString(),
+      last_bumped_at: null,
+      bump_count: 0,
+      workspace: target.workspace,
+      channel_id: target.channel_id,
+      channel_name: target.channel_name,
+      permalink: `https://acme.slack.com/archives/${target.channel_id}/p1700000000000100`,
+      root_ts: "1700000000.000100",
+      source: "app",
+    }),
   importMapping: () => Promise.resolve({ rows: 0 }),
   finish: () => Promise.resolve(boot.sync),
   syncNow: () => Promise.resolve(boot.sync),

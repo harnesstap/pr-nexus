@@ -38,6 +38,8 @@ export interface Bootstrap {
   orgs_needing_sso: string[];
   slack_client_id: string;
   slack_redirect_uri: string;
+  slack_secret_saved: boolean;
+  slack_workspaces: SlackWorkspace[];
   mapping_count: number;
   sync: SyncStatus;
   env_token: boolean;
@@ -45,6 +47,40 @@ export interface Bootstrap {
   gh_ready: boolean;
   gh_detail: string;
 }
+
+/** A Slack workspace signed in through the Slack MCP server (§7.11). */
+export interface SlackWorkspace {
+  id: number;
+  team_name: string;
+  /** `acme` for acme.slack.com. */
+  domain: string;
+  user_name: string;
+  signed_in: boolean;
+}
+
+export interface ReviewTarget {
+  workspace: string;
+  channel_id: string;
+  channel_name: string;
+}
+
+export interface TargetChoice {
+  target: ReviewTarget;
+  teams: string[];
+  source: "request" | "mapping";
+}
+
+export interface ReviewPreview {
+  target: ReviewTarget;
+  action: "request" | "bump";
+  text: string;
+  warnings: string[];
+  signed_in: boolean;
+  bump_count: number;
+  permalink: string | null;
+}
+
+export type SlackIndicator = NonNullable<ListRow["slack"]>;
 
 export interface GithubSession {
   login: string;
@@ -171,6 +207,14 @@ export interface Api {
   saveOrgs(orgs: string[], includePersonal: boolean): Promise<void>;
   saveSlack(clientId: string, clientSecret: string, redirectUri: string): Promise<void>;
   slackManifestUrl(redirectUri: string): Promise<string>;
+  slackWorkspaces(): Promise<SlackWorkspace[]>;
+  /** Opens the system browser and resolves after the redirect, a timeout, or cancel. */
+  slackConnect(): Promise<SlackWorkspace>;
+  slackCancelConnect(): Promise<void>;
+  slackRemoveWorkspace(id: number): Promise<void>;
+  reviewTargets(prId: number, teams: string[]): Promise<TargetChoice[]>;
+  reviewPreview(prId: number, target: ReviewTarget): Promise<ReviewPreview>;
+  sendReview(prId: number, target: ReviewTarget, teams: string[]): Promise<SlackIndicator>;
   importMapping(csv: string, workspace: string): Promise<{ rows: number }>;
   finish(): Promise<SyncStatus>;
   syncNow(): Promise<SyncStatus>;
@@ -212,6 +256,13 @@ export const tauriApi: Api = {
       redirectUri,
     }),
   slackManifestUrl: (redirectUri) => invoke("slack_manifest_url", { redirectUri }),
+  slackWorkspaces: () => invoke("slack_workspaces"),
+  slackConnect: () => invoke("slack_connect"),
+  slackCancelConnect: () => invoke("slack_cancel_connect"),
+  slackRemoveWorkspace: (id) => invoke("slack_remove_workspace", { id }),
+  reviewTargets: (prId, teams) => invoke("review_targets", { prId, teams }),
+  reviewPreview: (prId, target) => invoke("review_preview", { prId, target }),
+  sendReview: (prId, target, teams) => invoke("send_review", { prId, target, teams }),
   importMapping: (csv, workspace) => invoke("import_mapping", { csv, workspace }),
   finish: () => invoke("finish_onboarding"),
   syncNow: () => invoke("sync_now"),

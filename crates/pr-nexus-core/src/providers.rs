@@ -30,13 +30,9 @@ pub enum SetupStep {
 }
 
 impl SetupStep {
-    /// Mapping is the only step the user can skip once Slack sign-in exists.
+    /// Mapping is optional. Slack connect can be skipped too, so the app stays
+    /// usable before a workspace has approved a Slack app (§7.13 R7).
     pub const fn is_skippable(self) -> bool {
-        matches!(self, Self::ChatMapping)
-    }
-
-    /// Until M10, the Slack connect screen can be skipped. The screen still exists.
-    pub const fn is_skippable_before_slack_oauth(self) -> bool {
         matches!(self, Self::ChatMapping | Self::ConnectChat)
     }
 
@@ -203,7 +199,7 @@ mod tests {
     }
 
     #[test]
-    fn only_chat_mapping_is_skippable() {
+    fn only_slack_steps_are_skippable() {
         let skippable = [
             SetupStep::ChooseVcs,
             SetupStep::ChooseChat,
@@ -214,9 +210,8 @@ mod tests {
             SetupStep::Done,
         ];
         for step in skippable {
-            assert_eq!(step.is_skippable(), step == SetupStep::ChatMapping);
             assert_eq!(
-                step.is_skippable_before_slack_oauth(),
+                step.is_skippable(),
                 matches!(step, SetupStep::ChatMapping | SetupStep::ConnectChat)
             );
         }
@@ -384,6 +379,28 @@ pub trait ChatProvider: Send + Sync {
     fn whoami(&self) -> Result<ChatUser, ProviderError>;
     fn list_channels(&self, cursor: Option<String>) -> Result<Page<ChatChannel>, ProviderError>;
     fn channel_info(&self, channel_id: &str) -> Result<ChatChannel, ProviderError>;
-    fn post(&self, channel_id: &str, text: &str) -> Result<(), ProviderError>;
+    fn post(&self, message: &OutgoingMessage<'_>) -> Result<PostedMessage, ProviderError>;
     fn account_id(&self) -> AccountId;
+}
+
+/// One `slack_send_message` call (§7.7). `thread_ts` makes it a thread reply.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutgoingMessage<'a> {
+    pub channel_id: &'a str,
+    pub text: &'a str,
+    pub thread_ts: Option<&'a str>,
+    /// Also show a thread reply in the channel. Bumps set it (§7.7).
+    pub reply_broadcast: bool,
+    pub unfurl_app_links: bool,
+}
+
+/// What the provider learned about a message it posted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PostedMessage {
+    pub channel_id: String,
+    pub ts: String,
+    pub thread_ts: Option<String>,
+    pub permalink: Option<String>,
+    /// Workspace domain taken from the permalink (`acme` for `acme.slack.com`).
+    pub workspace: Option<String>,
 }

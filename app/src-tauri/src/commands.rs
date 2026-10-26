@@ -42,6 +42,8 @@ pub struct Bootstrap {
     pub orgs_needing_sso: Vec<String>,
     pub slack_client_id: String,
     pub slack_redirect_uri: String,
+    pub slack_secret_saved: bool,
+    pub slack_workspaces: Vec<crate::slack::SlackWorkspace>,
     pub mapping_count: i64,
     pub sync: SyncDto,
     pub env_token: bool,
@@ -187,6 +189,20 @@ pub fn bootstrap(app: State<'_, std::sync::Arc<AppState>>) -> Result<Bootstrap, 
         orgs_needing_sso: settings::sso_orgs(&state.store)?,
         slack_client_id: settings::slack_client_id(&state.store)?,
         slack_redirect_uri: settings::slack_redirect_uri(&state.store)?,
+        slack_secret_saved: {
+            let id = settings::slack_client_id(&state.store)?;
+            !id.trim().is_empty()
+                && state
+                    .vault
+                    .get(&format!("slack-client:{}", id.trim()))
+                    .ok()
+                    .flatten()
+                    .is_some()
+        },
+        slack_workspaces: crate::slack::workspace_accounts(&state.store)?
+            .iter()
+            .map(crate::slack::workspace_dto)
+            .collect(),
         mapping_count: state.store.mapping_count()?,
         sync: sync_dto(state),
         env_token: github::github_token_from_env().is_some(),
@@ -405,6 +421,12 @@ pub fn save_slack_settings(
             state.vault.set(&format!("slack-client:{id}"), &secret)?;
         }
     }
+    // Open sessions carry the old client settings.
+    state
+        .chats
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clear();
     Ok(())
 }
 
@@ -900,6 +922,20 @@ pub fn save_view_state(
     Ok(())
 }
 
+pub(crate) fn indicator(request: pr_nexus_core::domain::ReviewRequest) -> SlackIndicator {
+    SlackIndicator {
+        requested_at: request.requested_at.to_rfc3339(),
+        last_bumped_at: request.last_bumped_at.map(|value| value.to_rfc3339()),
+        bump_count: request.bump_count,
+        workspace: request.workspace,
+        channel_id: request.channel_id,
+        channel_name: request.channel_name,
+        permalink: request.permalink,
+        root_ts: request.root_ts,
+        source: request.source.as_str().to_owned(),
+    }
+}
+
 fn to_row(state: &AppState, pr: &PullRequest, flag: bool) -> Result<ListRow, AppError> {
     let links = state.store.list_pr_projects(pr.id)?;
     let requests = state.store.list_review_requests(pr.id)?;
@@ -907,17 +943,7 @@ fn to_row(state: &AppState, pr: &PullRequest, flag: bool) -> Result<ListRow, App
         .into_iter()
         .filter(|request| matches!(request.status, RequestStatus::Active))
         .max_by_key(|request| request.requested_at)
-        .map(|request| SlackIndicator {
-            requested_at: request.requested_at.to_rfc3339(),
-            last_bumped_at: request.last_bumped_at.map(|value| value.to_rfc3339()),
-            bump_count: request.bump_count,
-            workspace: request.workspace,
-            channel_id: request.channel_id,
-            channel_name: request.channel_name,
-            permalink: request.permalink,
-            root_ts: request.root_ts,
-            source: request.source.as_str().to_owned(),
-        });
+        .map(indicator);
     let readiness = ownership::cached_readiness(&state.store, pr, flag)?;
     let (label, notes) = match readiness {
         pr_nexus_core::domain::Readiness::Ready { notes } => ("ready", notes),

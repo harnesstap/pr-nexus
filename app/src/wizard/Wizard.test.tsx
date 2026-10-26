@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { expect, test } from "vitest";
-import type { Api, Bootstrap } from "../api";
+import type { Api, Bootstrap, ReviewTarget } from "../api";
 import { Wizard } from "./Wizard";
 import { memoryProjectApi } from "../memoryProjects";
 
@@ -32,6 +32,8 @@ const boot: Bootstrap = {
   orgs_needing_sso: [],
   slack_client_id: "",
   slack_redirect_uri: "http://127.0.0.1:47821/mcp/oauth/callback",
+  slack_secret_saved: false,
+  slack_workspaces: [],
   mapping_count: 0,
   sync: { phase: "idle", message: "Not synced yet", synced_at: null, paused: false },
   env_token: false,
@@ -51,6 +53,34 @@ function api(overrides: Partial<Api> = {}): Api {
     saveOrgs: () => Promise.resolve(),
     saveSlack: () => Promise.resolve(),
     slackManifestUrl: () => Promise.resolve("https://api.slack.com/apps?new_app=1&manifest_json=%7B%7D"),
+    slackWorkspaces: () => Promise.resolve([]),
+    slackConnect: () =>
+      Promise.resolve({ id: 9, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true }),
+    slackCancelConnect: () => Promise.resolve(),
+    slackRemoveWorkspace: () => Promise.resolve(),
+    reviewTargets: () => Promise.resolve([]),
+    reviewPreview: (_prId: number, target: ReviewTarget) =>
+      Promise.resolve({
+        target,
+        action: "request" as const,
+        text: "Hi, could you review this?",
+        warnings: [],
+        signed_in: true,
+        bump_count: 0,
+        permalink: null,
+      }),
+    sendReview: (_prId: number, target: ReviewTarget) =>
+      Promise.resolve({
+        requested_at: new Date().toISOString(),
+        last_bumped_at: null,
+        bump_count: 0,
+        workspace: target.workspace,
+        channel_id: target.channel_id,
+        channel_name: target.channel_name,
+        permalink: `https://acme.slack.com/archives/${target.channel_id}/p1700000000000100`,
+        root_ts: "1700000000.000100",
+        source: "app",
+      }),
     importMapping: () => Promise.resolve({ rows: 1 }),
     finish: () => Promise.resolve(boot.sync),
     syncNow: () => Promise.resolve(boot.sync),
@@ -80,15 +110,91 @@ test("coming soon providers cannot be selected and back is disabled on step 1", 
   expect(screen.getByRole("radio", { name: /GitHub/ })).toHaveAttribute("aria-checked", "true");
 });
 
-test("skip is on the Slack step and a second workspace cannot be added yet", async () => {
-  render(<Wizard api={api()} boot={{ ...boot, resume_step: "connect_chat" }} onFinished={() => undefined} />);
+test("the Slack step saves a custom redirect, connects in the browser, then allows Next", async () => {
+  const saved: string[][] = [];
+  let release: (() => void) | null = null;
+  render(
+    <Wizard
+      api={api({
+        saveSlack: (clientId, secret, redirect) => {
+          saved.push([clientId, secret, redirect]);
+          return Promise.resolve();
+        },
+        slackConnect: () =>
+          new Promise((resolve) => {
+            release = () => resolve({ id: 3, team_name: "Acme Corp", domain: "acme", user_name: "ada", signed_in: true });
+          }),
+      })}
+      boot={{ ...boot, resume_step: "connect_chat" }}
+      onFinished={() => undefined}
+    />,
+  );
   expect(await screen.findByRole("heading", { name: /Connect Slack/ })).toBeInTheDocument();
-  expect(screen.getByText(/Slack sign-in isn't available in this version yet/)).toBeInTheDocument();
+  expect(screen.queryByText(/isn't available in this version/)).not.toBeInTheDocument();
   expect(screen.queryByText(/M\d+/)).not.toBeInTheDocument();
-  expect(screen.getByText(/unlocks with Slack sign-in/)).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Skip" })).toBeEnabled();
-  expect(screen.getByRole("button", { name: "Add another workspace" })).toBeDisabled();
-  expect(screen.getByRole("button", { name: "Create your Slack app" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Sign in with Slack" })).toBeDisabled();
+  fireEvent.change(screen.getByRole("textbox", { name: /Client ID/ }), { target: { value: "111.222" } });
+  fireEvent.change(screen.getByRole("textbox", { name: /Redirect URI/ }), {
+    target: { value: "http://127.0.0.1:40001/cb" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Sign in with Slack" }));
+  expect(await screen.findByRole("button", { name: "Waiting for Slack…" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+  expect(saved).toEqual([["111.222", "", "http://127.0.0.1:40001/cb"]]);
+  await waitFor(() => expect(release).not.toBeNull());
+  release!();
+  expect(await screen.findByText("Acme Corp")).toBeInTheDocument();
+  expect(screen.getByText(/Connected to Acme Corp/)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Add another workspace" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Next" })).toBeEnabled();
+});
+
+test("a cancelled Slack sign-in shows no error and a failure shows the message", async () => {
+  let calls = 0;
+  render(
+    <Wizard
+      api={api({
+        slackConnect: () => {
+          calls += 1;
+          return Promise.reject(
+            calls === 1
+              ? { kind: "cancelled", message: "Slack sign-in was cancelled." }
+              : { kind: "port_in_use", message: "Port 40001 is in use." },
+          );
+        },
+      })}
+      boot={{ ...boot, resume_step: "connect_chat", slack_client_id: "111.222" }}
+      onFinished={() => undefined}
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Sign in with Slack" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Sign in with Slack" })).toBeEnabled());
+  expect(screen.queryByText(/cancelled/)).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Sign in with Slack" }));
+  expect(await screen.findByText("Port 40001 is in use.")).toBeInTheDocument();
+});
+
+test("a connected workspace can be removed", async () => {
+  let remaining = [{ id: 4, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true }];
+  render(
+    <Wizard
+      api={api({
+        slackRemoveWorkspace: () => {
+          remaining = [];
+          return Promise.resolve();
+        },
+        slackWorkspaces: () => Promise.resolve(remaining),
+      })}
+      boot={{ ...boot, resume_step: "connect_chat", slack_workspaces: remaining }}
+      onFinished={() => undefined}
+    />,
+  );
+  expect(screen.getByRole("button", { name: "Next" })).toBeEnabled();
+  fireEvent.click(screen.getByRole("button", { name: "Remove Acme" }));
+  expect(await screen.findByText("None yet.")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
 });
 
 test("next is disabled on orgs until one org or personal repos is chosen", () => {
