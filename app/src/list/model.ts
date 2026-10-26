@@ -59,7 +59,7 @@ export function defaultShow(): ShowFlags {
     teams: false,
     activity: false,
     badges: true,
-    notRequested: false,
+    notRequested: true,
   };
 }
 
@@ -289,7 +289,7 @@ export function visibleIds(sections: readonly Section[]): number[] {
   return [...new Set(sections.flatMap((section) => sectionIds(section)))];
 }
 
-export function renameError(name: string, projects: readonly ProjectDto[], id: number): string | null {
+export function renameError(name: string, projects: readonly ProjectDto[], id: number | null): string | null {
   const trimmed = name.trim();
   if (!trimmed) {
     return "Name cannot be empty";
@@ -362,9 +362,9 @@ export function reviewLabel(decision: string | null): string | null {
     case "approved":
       return "Approved";
     case "changes_requested":
-      return "Changes";
+      return "Changes requested";
     case "review_required":
-      return "Review";
+      return "Review pending";
     case null:
       return null;
     default:
@@ -566,4 +566,53 @@ function stringList(value: unknown): string[] {
     return [];
   }
   return value.filter((item): item is string => typeof item === "string");
+}
+
+export type Tone = "good" | "bad" | "warn" | "pending" | "muted";
+
+export function reviewTone(decision: string | null): Tone {
+  switch (decision) {
+    case "approved":
+      return "good";
+    case "changes_requested":
+      return "bad";
+    case "review_required":
+      return "pending";
+    default:
+      return "muted";
+  }
+}
+
+export function ciTone(checks: string): Tone {
+  switch (ciBucket(checks)) {
+    case "passing":
+      return "good";
+    case "failing":
+      return "bad";
+    case "pending":
+      return "warn";
+    default:
+      return "muted";
+  }
+}
+
+/** Unresolved review-thread count as shown in a row, plus its accessible description. */
+export function threadsLabel(unresolved: number, total: number): { text: string; title: string } {
+  const text = unresolved >= 100 ? "100+" : String(unresolved);
+  const noun = total === 1 ? "review thread" : "review threads";
+  return { text, title: `${text} unresolved of ${total >= 100 ? "100+" : total} ${noun}` };
+}
+
+/** Row Slack indicator: the newest event (bump wins over the request) and its age. */
+export function slackStatus(slack: ListRow["slack"], now: Date): { label: string; title: string } | null {
+  if (!slack) {
+    return null;
+  }
+  const where = `${slack.workspace} · #${slack.channel_name}`;
+  const requested = `requested ${ago(slack.requested_at, now)}`;
+  if (slack.last_bumped_at) {
+    const bumps = slack.bump_count === 1 ? "1 bump" : `${slack.bump_count} bumps`;
+    return { label: `Bumped · ${ago(slack.last_bumped_at, now)}`, title: `${where} · ${requested} · ${bumps}` };
+  }
+  return { label: `Requested · ${ago(slack.requested_at, now)}`, title: `${where} · ${requested}` };
 }

@@ -3,6 +3,8 @@ import type { ListRow, ProjectDto } from "../api";
 import {
   bulkIds,
   checkState,
+  slackStatus,
+  threadsLabel,
   defaultView,
   filtersActive,
   groupRows,
@@ -165,4 +167,24 @@ test("demo mode shows a neutral sync label instead of an error", () => {
   expect(syncLabel({ ...demo, phase: "error", message: "Sync failed · boom" }, now)).toBe(
     "Sync failed · boom",
   );
+});
+
+test("slack status prefers the latest bump and threads label explains the count", () => {
+  const now = new Date("2026-10-26T12:00:00Z");
+  const slack = {
+    workspace: "team",
+    channel_id: "C1",
+    channel_name: "reviews",
+    permalink: null,
+    root_ts: "1.0",
+    source: "app",
+    bump_count: 0,
+    last_bumped_at: null,
+    requested_at: "2026-10-24T12:00:00Z",
+  };
+  expect(slackStatus(null, now)).toBeNull();
+  expect(slackStatus(slack, now)).toEqual({ label: "Requested · 2d ago", title: "team · #reviews · requested 2d ago" });
+  expect(slackStatus({ ...slack, bump_count: 1, last_bumped_at: "2026-10-26T07:00:00Z" }, now)?.label).toBe("Bumped · 5h ago");
+  expect(threadsLabel(2, 5)).toEqual({ text: "2", title: "2 unresolved of 5 review threads" });
+  expect(threadsLabel(120, 130).text).toBe("100+");
 });

@@ -221,6 +221,20 @@ mod tests {
     }
 
     #[test]
+    fn create_project_trims_appends_last_and_rejects_duplicates() {
+        let (_dir, store) = open_temp();
+        let first = store.create_project("  Auth  ".into()).unwrap();
+        assert_eq!(first.name, "Auth");
+        let second = store.create_project("Billing".into()).unwrap();
+        assert!(second.sort_order > first.sort_order);
+        let dup = store.create_project("Auth".into()).unwrap_err().to_string();
+        assert!(dup.contains("already exists"), "{dup}");
+        let empty = store.create_project(" ".into()).unwrap_err().to_string();
+        assert!(empty.contains("empty"), "{empty}");
+        assert_eq!(store.list_projects().unwrap().len(), 2);
+    }
+
+    #[test]
     fn rename_rejects_empty_and_duplicate_names_and_archive_round_trips() {
         let (_dir, store) = open_temp();
         let auth = store

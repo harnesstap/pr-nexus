@@ -119,6 +119,7 @@ export interface Api {
   syncStatus(): Promise<SyncStatus>;
   listRows(): Promise<ListRow[]>;
   listProjects(): Promise<ProjectDto[]>;
+  createProject(name: string): Promise<ProjectDto>;
   renameProject(id: number, name: string): Promise<void>;
   archiveProject(id: number, archived: boolean): Promise<void>;
   deleteProject(id: number): Promise<void>;
@@ -149,6 +150,7 @@ export const tauriApi: Api = {
   syncStatus: () => invoke("sync_status"),
   listRows: () => invoke("list_rows"),
   listProjects: () => invoke("list_projects"),
+  createProject: (name) => invoke("create_project", { name }),
   renameProject: (id, name) => invoke("rename_project", { id, name }),
   archiveProject: (id, archived) => invoke("archive_project", { id, archived }),
   deleteProject: (id) => invoke("delete_project", { id }),

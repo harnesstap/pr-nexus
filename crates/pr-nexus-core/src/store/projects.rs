@@ -30,25 +30,36 @@ impl Store {
         })
     }
 
-    pub fn rename_project(&self, id: ProjectId, name: String) -> Result<Project, CoreError> {
-        let name = name.trim().to_owned();
-        if name.is_empty() {
-            return Err(CoreError::Validation("Project name cannot be empty".into()));
-        }
+    /// Creates an empty project named `name` (trimmed, non-empty, unique), placed last.
+    pub fn create_project(&self, name: String) -> Result<Project, CoreError> {
+        let name = valid_name(&name)?;
         self.write(move |conn| {
-            let taken: Option<i64> = conn
+            ensure_name_free(conn, &name, None)?;
+            let sort_order: i32 = conn
                 .query_row(
-                    "SELECT id FROM projects WHERE name = ?1 AND id <> ?2",
-                    params![name, id.0],
+                    "SELECT COALESCE(MAX(sort_order) + 1, 0) FROM projects",
+                    [],
                     |row| row.get(0),
                 )
-                .optional()
                 .map_err(db)?;
-            if taken.is_some() {
-                return Err(CoreError::Validation(
-                    "A project with that name already exists".into(),
-                ));
-            }
+            insert_project(
+                conn,
+                &Project {
+                    id: ProjectId(0),
+                    name,
+                    description: String::new(),
+                    color: DEFAULT_COLOR.to_owned(),
+                    archived: false,
+                    sort_order,
+                },
+            )
+        })
+    }
+
+    pub fn rename_project(&self, id: ProjectId, name: String) -> Result<Project, CoreError> {
+        let name = valid_name(&name)?;
+        self.write(move |conn| {
+            ensure_name_free(conn, &name, Some(id))?;
             let updated = conn
                 .execute(
                     "UPDATE projects SET name = ?1 WHERE id = ?2",
@@ -140,6 +151,37 @@ impl Store {
             Ok(())
         })
     }
+}
+
+const DEFAULT_COLOR: &str = "#7c5cbf";
+
+fn valid_name(name: &str) -> Result<String, CoreError> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(CoreError::Validation("Project name cannot be empty".into()));
+    }
+    Ok(name.to_owned())
+}
+
+fn ensure_name_free(
+    conn: &Connection,
+    name: &str,
+    except: Option<ProjectId>,
+) -> Result<(), CoreError> {
+    let taken: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM projects WHERE name = ?1 AND id <> ?2",
+            params![name, except.map_or(-1, |id| id.0)],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(db)?;
+    if taken.is_some() {
+        return Err(CoreError::Validation(
+            "A project with that name already exists".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn insert_project(conn: &Connection, project: &Project) -> Result<Project, CoreError> {
