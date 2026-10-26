@@ -4,9 +4,11 @@
 //! has no async runtime (§4).
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 use crate::domain::{AccountId, ChatKind, ProviderRef, PullRequest, TeamRef, VcsKind};
 use crate::error::ProviderError;
+use crate::review::owners::ReviewBundle;
 
 /// Whether the wizard can connect a provider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -274,10 +276,57 @@ pub struct RateBudget {
     pub secondary_until: Option<DateTime<Utc>>,
 }
 
-/// Placeholder until M9 fills files, CODEOWNERS, and rules.
+/// GitHub's own cap on the files a pull request lists.
+pub const FILES_CAP: usize = 3000;
+
+/// The CODEOWNERS file on the base branch: the first hit in
+/// [`CODEOWNERS_CANDIDATES`](crate::review::codeowners::CODEOWNERS_CANDIDATES).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodeownersBlob {
+    pub path: String,
+    pub oid: String,
+    pub text: String,
+}
+
+/// The cheap part of ownership, fetched every time a PR is opened (§6).
+///
+/// It carries the cache key `(head_sha, base_ref, codeowners oid)` and the
+/// reviews, which change without the key changing.
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnershipProbe {
+    pub head_sha: String,
+    pub base_ref: String,
+    pub codeowners: Option<CodeownersBlob>,
+    pub reviews: ReviewBundle,
+    /// The viewer has admin permission on the repository. Only then does a
+    /// 404 from classic protection mean "no protection".
+    pub viewer_is_admin: bool,
+}
+
+/// Classic branch protection: `required_pull_request_reviews` on the base.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ClassicProtection {
+    /// 200: protection requires reviews, with or without code owners.
+    Present { require_code_owner_reviews: bool },
+    /// 404 while the viewer is an admin: no review protection.
+    Absent,
+    /// 403, a 404 for a non-admin, or another failure. Never read as false.
+    Unknown { reason: String },
+}
+
+/// The expensive part of ownership, cached by `(head_sha, base_ref, codeowners oid)`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OwnershipInputs {
-    pub truncated: bool,
+    /// Changed paths, at most [`FILES_CAP`].
+    pub files: Vec<String>,
+    /// The list stopped at the cap, or GitHub reports more changed files.
+    pub files_truncated: bool,
+    /// `rules/branches/{base}`: does any applying rule require code-owner review.
+    /// `None` when the call failed; the error is in `rules_error`.
+    pub rules_require_code_owner: Option<bool>,
+    pub rules_error: Option<String>,
+    pub protection: ClassicProtection,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -315,7 +364,15 @@ pub trait VcsProvider: Send + Sync {
         &self,
         ids: &[ProviderRef],
     ) -> Result<Vec<SyncedPullRequest>, ProviderError>;
-    fn ownership_inputs(&self, pr: &PullRequest) -> Result<OwnershipInputs, ProviderError>;
+    /// Head, base, CODEOWNERS blob, viewer permission, and effective reviews in one call.
+    fn ownership_probe(&self, pr: &PullRequest) -> Result<OwnershipProbe, ProviderError>;
+    /// Files, rules, and protection for the head and base in `probe`.
+    fn ownership_inputs(
+        &self,
+        pr: &PullRequest,
+        probe: &OwnershipProbe,
+    ) -> Result<OwnershipInputs, ProviderError>;
+    /// Team members. A team the token cannot read returns `complete: false`.
     fn team_members(&self, team: &TeamRef) -> Result<TeamMembers, ProviderError>;
     fn rate_limit(&self) -> Result<RateBudget, ProviderError>;
     fn request_team_review(&self, pr: &PullRequest, teams: &[TeamRef])

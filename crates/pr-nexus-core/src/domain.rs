@@ -52,7 +52,7 @@ pub struct RepoRef {
 }
 
 /// GitHub team. `org` is kept so CODEOWNERS can name another org's team.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, serde::Deserialize)]
 pub struct TeamRef {
     pub org: String,
     pub slug: String,

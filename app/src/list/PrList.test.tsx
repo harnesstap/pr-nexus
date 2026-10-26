@@ -46,6 +46,7 @@ function Harness({
   viewKey = "mine",
   onLinkPrs = () => undefined,
   onEditProject = () => undefined,
+  onDetails = () => undefined,
 }: {
   rows: ListRow[];
   projects?: ProjectDto[];
@@ -53,6 +54,7 @@ function Harness({
   viewKey?: string;
   onLinkPrs?: (projectId: number, ids: number[]) => void;
   onEditProject?: (id: number) => void;
+  onDetails?: (row: ListRow) => void;
 }) {
   const [view, setView] = useState<SavedView>(defaultView());
   return (
@@ -69,6 +71,7 @@ function Harness({
       onDelete={() => undefined}
       onEditProject={onEditProject}
       onLinkPrs={onLinkPrs}
+      onDetails={onDetails}
     />
   );
 }
@@ -213,6 +216,7 @@ test("rows show labelled threads, a review pill, and the Slack request status", 
       onDelete={() => undefined}
       onEditProject={() => undefined}
       onLinkPrs={() => undefined}
+      onDetails={() => undefined}
     />,
   );
   expect(screen.getByText("Requested · 2d ago")).toBeInTheDocument();
@@ -306,4 +310,13 @@ test("dragging a selected row onto a project section links the whole selection",
   fireEvent.dragStart(screen.getAllByText("Migrate login")[0].closest("article")!, { dataTransfer: single });
   fireEvent.drop(billingSection, { dataTransfer: single });
   expect(onLinkPrs).toHaveBeenLastCalledWith(2, [1]);
+});
+
+test("the title button and Enter open a row's details", () => {
+  const onDetails = vi.fn();
+  render(<Harness rows={rows} onDetails={onDetails} />);
+  fireEvent.click(screen.getByRole("button", { name: /Fix tax rounding/ }));
+  expect(onDetails).toHaveBeenLastCalledWith(expect.objectContaining({ id: 3 }));
+  fireEvent.keyDown(window, { key: "Enter" });
+  expect(onDetails).toHaveBeenCalledTimes(2);
 });

@@ -6,8 +6,14 @@ use pr_nexus_core::domain::{
     MergeStateStatus, Mergeable, PrId, PrState, Project, ProjectId, ProviderRef, RepoRef,
     RequestSource, RequestStatus, ReviewDecision, ReviewRequest, ReviewRequestId,
 };
+use pr_nexus_core::domain::{PullRequest, TeamRef, VcsKind};
+use pr_nexus_core::error::ProviderError;
 use pr_nexus_core::onboarding::{self, OnboardingState};
-use pr_nexus_core::providers::SetupStep;
+use pr_nexus_core::providers::{
+    ClassicProtection, CodeownersBlob, OwnershipInputs, OwnershipProbe, PrQuery, RateBudget,
+    SetupStep, SyncedPullRequest, TeamMembers, VcsProvider, VcsUser,
+};
+use pr_nexus_core::review::owners::{OnBehalfOf, ReviewBundle, ReviewRecord};
 use pr_nexus_core::settings;
 use pr_nexus_core::store::Store;
 
@@ -61,6 +67,7 @@ pub fn seed_if_empty(store: &Store) -> Result<(), AppError> {
     let specs = [
         (
             1u64,
+            // BLOCKED with no review decision: readiness needs the code-owner probe.
             "Add a latch",
             ChecksState::Success,
             None,
@@ -124,7 +131,11 @@ pub fn seed_if_empty(store: &Store) -> Result<(), AppError> {
                 review_decision: decision,
                 checks,
                 mergeable: Mergeable::Mergeable,
-                merge_state: MergeStateStatus::Clean,
+                merge_state: if number == 1 {
+                    MergeStateStatus::Blocked
+                } else {
+                    MergeStateStatus::Clean
+                },
                 requested_reviewers: Vec::new(),
                 unresolved_threads: 0,
                 total_threads: 1,
@@ -175,7 +186,138 @@ pub fn seed_if_empty(store: &Store) -> Result<(), AppError> {
     saved.mapping_skipped = true;
     saved.finished_at = Some(now.to_rfc3339());
     onboarding::save(store, &saved)?;
+    let prs = store.list_pull_requests_for_account(account.id)?;
+    let flag = settings::blocked_review_required_is_ready(store)?;
+    pr_nexus_core::ownership::resolve_unknown_code_owner_reviews(
+        store,
+        &DemoProvider,
+        &prs,
+        flag,
+        now,
+        pr_nexus_core::ownership::MAX_RESOLVES_PER_SYNC,
+    )?;
     Ok(())
+}
+
+const DEMO_CODEOWNERS: &str = "\
+# Demo owners for acme/widgets
+*          @acme/platform
+/docs/     @acme/docs
+/billing/  @acme/billing
+";
+
+/// Fixture answers for the detail view in demo mode. Never touches the network.
+pub struct DemoProvider;
+
+impl DemoProvider {
+    fn files(number: u64) -> Vec<String> {
+        let files: &[&str] = match number {
+            1 => &["src/latch.rs", "docs/latch.md"],
+            2 => &["src/auth/token.rs"],
+            3 => &["billing/tax.rs", "billing/tests/tax.rs"],
+            _ => &["docs/latch.md"],
+        };
+        files.iter().map(|path| (*path).to_owned()).collect()
+    }
+
+    fn reviews(number: u64) -> Vec<ReviewRecord> {
+        let review = |login: &str, state: &str, team: Option<&str>| ReviewRecord {
+            id: Some(format!("PRR_demo_{number}_{login}")),
+            state: state.into(),
+            author_typename: "User".into(),
+            author_login: login.into(),
+            commit: Some(format!("abc{number}")),
+            on_behalf_of: team
+                .map(|slug| OnBehalfOf {
+                    org: "acme".into(),
+                    slug: slug.into(),
+                })
+                .into_iter()
+                .collect(),
+        };
+        match number {
+            2 => vec![review("linus", "APPROVED", None)],
+            3 => vec![
+                review("grace", "CHANGES_REQUESTED", None),
+                review("hopper", "APPROVED", None),
+            ],
+            4 => vec![review("grace", "APPROVED", Some("docs"))],
+            _ => Vec::new(),
+        }
+    }
+}
+
+impl VcsProvider for DemoProvider {
+    fn kind(&self) -> VcsKind {
+        VcsKind::GitHub
+    }
+    fn viewer(&self) -> Result<VcsUser, ProviderError> {
+        Err(ProviderError::Unsupported("demo data".into()))
+    }
+    fn search_pull_requests(&self, _: &PrQuery) -> Result<Vec<SyncedPullRequest>, ProviderError> {
+        Err(ProviderError::Unsupported("demo data".into()))
+    }
+    fn refresh_pull_requests(
+        &self,
+        _: &[ProviderRef],
+    ) -> Result<Vec<SyncedPullRequest>, ProviderError> {
+        Err(ProviderError::Unsupported("demo data".into()))
+    }
+    fn ownership_probe(&self, pr: &PullRequest) -> Result<OwnershipProbe, ProviderError> {
+        Ok(OwnershipProbe {
+            head_sha: pr.head_sha.clone(),
+            base_ref: pr.base_ref.clone(),
+            codeowners: Some(CodeownersBlob {
+                path: ".github/CODEOWNERS".into(),
+                oid: "demo-codeowners-1".into(),
+                text: DEMO_CODEOWNERS.into(),
+            }),
+            reviews: ReviewBundle {
+                fetched: true,
+                complete: true,
+                reviews: Self::reviews(pr.number),
+            },
+            viewer_is_admin: false,
+        })
+    }
+    fn ownership_inputs(
+        &self,
+        pr: &PullRequest,
+        _: &OwnershipProbe,
+    ) -> Result<OwnershipInputs, ProviderError> {
+        Ok(OwnershipInputs {
+            files: Self::files(pr.number),
+            files_truncated: false,
+            rules_require_code_owner: Some(true),
+            rules_error: None,
+            protection: ClassicProtection::Unknown {
+                reason: "branch protection is only visible to repository admins".into(),
+            },
+        })
+    }
+    fn team_members(&self, team: &TeamRef) -> Result<TeamMembers, ProviderError> {
+        let logins: &[&str] = match team.slug.as_str() {
+            "platform" => &["ada", "linus"],
+            "docs" => &["grace"],
+            // An unreadable team shows up as "attribution unknown".
+            _ => {
+                return Ok(TeamMembers {
+                    complete: false,
+                    logins: Vec::new(),
+                });
+            }
+        };
+        Ok(TeamMembers {
+            complete: true,
+            logins: logins.iter().map(|login| (*login).to_owned()).collect(),
+        })
+    }
+    fn rate_limit(&self) -> Result<RateBudget, ProviderError> {
+        Err(ProviderError::Unsupported("demo data".into()))
+    }
+    fn request_team_review(&self, _: &PullRequest, _: &[TeamRef]) -> Result<(), ProviderError> {
+        Err(ProviderError::Unsupported("demo data".into()))
+    }
 }
 
 fn wizard_steps() -> Vec<String> {
@@ -187,4 +329,53 @@ fn wizard_steps() -> Vec<String> {
         .into_iter()
         .map(|step| step.as_str().to_owned())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pr_nexus_core::domain::Readiness;
+    use pr_nexus_core::ownership;
+
+    #[test]
+    fn demo_seed_resolves_the_blocked_pull_request_and_details_explain_owners() {
+        let dir = std::env::temp_dir().join(format!("pr-nexus-demo-owners-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("demo.db");
+        let _ = std::fs::remove_file(&path);
+        let store = Store::open(&path).unwrap();
+        seed_if_empty(&store).unwrap();
+        let account = store.list_accounts().unwrap().remove(0);
+        let prs = store.list_pull_requests_for_account(account.id).unwrap();
+        let by_number = |number: u64| prs.iter().find(|pr| pr.number == number).unwrap();
+
+        // PR 1 is BLOCKED with no decision; the platform team still has to approve.
+        let latch = by_number(1);
+        assert!(matches!(
+            ownership::cached_readiness(&store, latch, true).unwrap(),
+            Readiness::Ready { .. }
+        ));
+
+        // PR 3: billing members are unreadable, so hopper's approval is unattributed.
+        let tax = by_number(3);
+        let report = ownership::resolve(&store, &DemoProvider, tax, true, Utc::now()).unwrap();
+        assert!(
+            report
+                .decision
+                .review_attribution_unknown
+                .iter()
+                .any(|gap| gap.team.slug == "billing")
+        );
+        // PR 4: grace approved on behalf of docs.
+        let docs = by_number(4);
+        let report = ownership::resolve(&store, &DemoProvider, docs, true, Utc::now()).unwrap();
+        assert!(
+            report
+                .decision
+                .approved_teams
+                .iter()
+                .any(|team| team.slug == "docs")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

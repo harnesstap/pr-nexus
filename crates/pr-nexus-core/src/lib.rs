@@ -7,6 +7,7 @@ pub mod error;
 pub mod linking;
 pub mod mapping;
 pub mod onboarding;
+pub mod ownership;
 pub mod providers;
 pub mod review;
 pub mod settings;

@@ -2,11 +2,16 @@
 //!
 //! Reason strings are the ones in the spec table. Blocked wins over Unknown.
 //! A `BLOCKED` merge state whose only gap is reviews is Ready, with a note.
+//! With no review decision, that needs a known pending code-owner review.
 
-use crate::domain::{ChecksState, MergeStateStatus, Mergeable, PrState, Readiness, ReviewDecision};
+use crate::domain::{
+    ChecksState, MergeStateStatus, Mergeable, PrState, PullRequest, Readiness, ReviewDecision,
+};
 
 pub const BLOCKED_WAITING_FOR_REVIEWS: &str = "GitHub reports BLOCKED: waiting for reviews";
 pub const BLOCKED_OTHER: &str = "GitHub reports BLOCKED for a reason other than missing reviews";
+pub const CODE_OWNER_REVIEW_UNKNOWN: &str =
+    "GitHub reports BLOCKED with no review decision; code-owner review status is unknown";
 pub const MERGEABILITY_UNKNOWN: &str = "GitHub mergeability is unknown";
 pub const NO_CHECKS: &str = "no CI checks reported";
 pub const FILES_TRUNCATED: &str =
@@ -47,6 +52,59 @@ pub struct ReadinessSnapshot {
     pub native_error: Option<String>,
     pub snapshot_changed: bool,
     pub files_truncated: bool,
+    /// A code-owner team still has to approve. `None` until ownership is
+    /// resolved for this head. Only read when `review_decision` is `None`.
+    pub code_owner_review_pending: Option<bool>,
+}
+
+/// Evidence from the synced row alone.
+///
+/// The rollup stands in for the check list, and a `CHANGES_REQUESTED` decision
+/// stands in for the reviews. The detail view swaps in the real reviews and
+/// the ownership facts.
+pub fn snapshot_from_pr(pr: &PullRequest) -> ReadinessSnapshot {
+    let check = |bucket: &str| Evidence {
+        complete: true,
+        error: None,
+        items: vec![CheckSnapshot {
+            name: "ci".into(),
+            bucket: bucket.into(),
+        }],
+    };
+    let checks = match pr.checks {
+        ChecksState::Success => Some(check("pass")),
+        ChecksState::Failure | ChecksState::Error => Some(check("fail")),
+        ChecksState::Pending | ChecksState::Expected => Some(check("pending")),
+        ChecksState::None => None,
+    };
+    let reviews = Evidence {
+        complete: true,
+        error: None,
+        items: if pr.review_decision == Some(ReviewDecision::ChangesRequested) {
+            vec![ReviewSnapshot {
+                state: "CHANGES_REQUESTED".into(),
+                author_login: "reviewer".into(),
+                author_is_human: true,
+            }]
+        } else {
+            Vec::new()
+        },
+    };
+    ReadinessSnapshot {
+        state: Some(pr.state),
+        is_draft: Some(pr.is_draft),
+        merge_state: Some(pr.merge_state),
+        mergeable: Some(pr.mergeable),
+        head_sha: Some(pr.head_sha.clone()),
+        review_decision: pr.review_decision,
+        checks_rollup: Some(pr.checks),
+        checks,
+        reviews: Some(reviews),
+        native_error: None,
+        snapshot_changed: false,
+        files_truncated: false,
+        code_owner_review_pending: None,
+    }
 }
 
 /// Readiness with `review.blocked_review_required_is_ready` left at its default (`true`).
@@ -116,15 +174,21 @@ pub fn decide_readiness_with(
         unknown.push(FILES_TRUNCATED.to_string());
     }
 
-    let reviews_only = blocking.is_empty()
+    let otherwise_clean = blocking.is_empty()
         && unknown.is_empty()
         && snapshot.merge_state == Some(MergeStateStatus::Blocked)
         && snapshot.mergeable == Some(Mergeable::Mergeable)
-        && checks_are_green(snapshot)
-        && matches!(
-            snapshot.review_decision,
-            None | Some(ReviewDecision::ReviewRequired)
-        );
+        && checks_are_green(snapshot);
+    // §7.1: REVIEW_REQUIRED, or no decision while a code-owner review is pending.
+    let reviews_missing = match snapshot.review_decision {
+        Some(ReviewDecision::ReviewRequired) => true,
+        None => snapshot.code_owner_review_pending == Some(true),
+        Some(_) => false,
+    };
+    let reviews_only = otherwise_clean && reviews_missing;
+    let code_owner_status_unknown = otherwise_clean
+        && snapshot.review_decision.is_none()
+        && snapshot.code_owner_review_pending.is_none();
     if reviews_only && !blocked_review_required_is_ready {
         unknown.push(BLOCKED_WAITING_FOR_REVIEWS.to_string());
     }
@@ -132,7 +196,11 @@ pub fn decide_readiness_with(
         && !reviews_only
         && blocking.is_empty()
     {
-        unknown.push(BLOCKED_OTHER.to_string());
+        unknown.push(if code_owner_status_unknown {
+            CODE_OWNER_REVIEW_UNKNOWN.to_string()
+        } else {
+            BLOCKED_OTHER.to_string()
+        });
     }
 
     if !blocking.is_empty() {
@@ -283,6 +351,7 @@ mod tests {
             native_error: None,
             snapshot_changed: false,
             files_truncated: false,
+            code_owner_review_pending: None,
         }
     }
 
@@ -549,6 +618,7 @@ mod tests {
             native_error: None,
             snapshot_changed: false,
             files_truncated: false,
+            code_owner_review_pending: None,
         };
         assert!(matches!(
             decide_readiness(&snapshot),
@@ -574,14 +644,38 @@ mod tests {
     }
 
     #[test]
-    fn null_review_decision_with_green_ci_is_waiting_for_reviews() {
+    fn null_review_decision_needs_a_known_pending_code_owner_review() {
         let mut snapshot = ready_base();
         snapshot.merge_state = Some(MergeStateStatus::Blocked);
         snapshot.review_decision = None;
+
+        snapshot.code_owner_review_pending = Some(true);
         match decide_readiness(&snapshot) {
-            Readiness::Ready { notes } => {
-                assert_eq!(notes, [BLOCKED_WAITING_FOR_REVIEWS]);
-            }
+            Readiness::Ready { notes } => assert_eq!(notes, [BLOCKED_WAITING_FOR_REVIEWS]),
+            other => panic!("{other:?}"),
+        }
+
+        snapshot.code_owner_review_pending = None;
+        match decide_readiness(&snapshot) {
+            Readiness::Unknown { reasons } => assert_eq!(reasons, [CODE_OWNER_REVIEW_UNKNOWN]),
+            other => panic!("{other:?}"),
+        }
+
+        snapshot.code_owner_review_pending = Some(false);
+        match decide_readiness(&snapshot) {
+            Readiness::Unknown { reasons } => assert_eq!(reasons, [BLOCKED_OTHER]),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn pending_code_owner_review_is_ignored_once_github_reports_a_decision() {
+        let mut snapshot = ready_base();
+        snapshot.merge_state = Some(MergeStateStatus::Blocked);
+        snapshot.review_decision = Some(ReviewDecision::Approved);
+        snapshot.code_owner_review_pending = Some(true);
+        match decide_readiness(&snapshot) {
+            Readiness::Unknown { reasons } => assert_eq!(reasons, [BLOCKED_OTHER]),
             other => panic!("{other:?}"),
         }
     }

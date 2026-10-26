@@ -124,6 +124,43 @@ export interface ProjectLinkDto {
   rule_id: number | null;
 }
 
+export interface TeamGap {
+  team: string;
+  reasons: string[];
+}
+
+export interface FileOwners {
+  path: string;
+  teams: string[];
+}
+
+/** Readiness, owners, and why for one PR (§6, §7.2). */
+export interface PrDetail {
+  id: number;
+  readiness: "ready" | "blocked" | "unknown";
+  readiness_notes: string[];
+  head_sha: string;
+  base_ref: string;
+  codeowners_path: string | null;
+  codeowners_error: string | null;
+  codeowners_required: "true" | "false" | "unknown";
+  codeowners_required_reason: string;
+  code_owner_review_pending: boolean | null;
+  mandatory_teams: string[];
+  optional_teams: string[];
+  approved_teams: string[];
+  candidate_teams: string[];
+  attribution_unknown: TeamGap[];
+  requested_teams: string[];
+  users_ignored: string[];
+  rationale: string[];
+  files: FileOwners[];
+  files_truncated: boolean;
+  rules_error: string | null;
+  protection: string;
+  from_cache: boolean;
+}
+
 export interface Api {
   bootstrap(): Promise<Bootstrap>;
   saveProviders(vcs: string, chat: string): Promise<void>;
@@ -156,6 +193,7 @@ export interface Api {
   loadViewState(viewKey: string): Promise<string | null>;
   saveViewState(viewKey: string, stateJson: string): Promise<void>;
   openExternal(url: string): Promise<void>;
+  prDetail(id: number): Promise<PrDetail>;
 }
 
 export const tauriApi: Api = {
@@ -196,6 +234,7 @@ export const tauriApi: Api = {
   loadViewState: (viewKey) => invoke("load_view_state", { viewKey }),
   saveViewState: (viewKey, stateJson) => invoke("save_view_state", { viewKey, stateJson }),
   openExternal: (url) => invoke("open_external", { url }),
+  prDetail: (id) => invoke("pr_detail", { id }),
 };
 
 export function errorMessage(err: unknown): string {

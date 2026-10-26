@@ -306,7 +306,7 @@ fn threads(node: &Value) -> (u32, u32) {
     (unresolved, total)
 }
 
-fn data(body: &Value) -> Result<&Value, ProviderError> {
+pub(crate) fn data(body: &Value) -> Result<&Value, ProviderError> {
     body.get("data")
         .ok_or_else(|| ProviderError::Decode("graphql response has no data".into()))
 }

@@ -5,6 +5,7 @@
 
 mod auth;
 mod http;
+mod ownership;
 mod parse;
 
 pub use auth::{
@@ -17,8 +18,8 @@ use std::sync::{Arc, Mutex};
 use pr_nexus_core::domain::{AccountId, Involvement, PullRequest, TeamRef, VcsKind};
 use pr_nexus_core::error::ProviderError;
 use pr_nexus_core::providers::{
-    OwnershipInputs, PrQuery, RateBudget, SearchBucket, SyncedPullRequest, TeamMembers,
-    VcsProvider, VcsUser,
+    OwnershipInputs, OwnershipProbe, PrQuery, RateBudget, SearchBucket, SyncedPullRequest,
+    TeamMembers, VcsProvider, VcsUser,
 };
 use pr_nexus_core::sync::{SEARCH_CAP, search_query};
 use serde_json::{Value, json};
@@ -111,32 +112,51 @@ impl GithubClient {
 }
 
 impl GithubClient {
+    /// A REST `GET` that returns the body of a 2xx and a classified error otherwise.
+    fn rest_ok(&self, path: &str, query: &[(&str, &str)]) -> Result<String, ProviderError> {
+        let _permit = http::Permit::acquire(&self.gate);
+        let response = self
+            .http
+            .get(format!("{}{path}", self.api))
+            .query(query)
+            .bearer_auth(&self.token)
+            .header("Accept", "application/vnd.github+json")
+            .send()
+            .map_err(|err| ProviderError::Network(err.to_string()))?;
+        let status = response.status().as_u16();
+        let retry = response
+            .headers()
+            .get("retry-after")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let sso = response
+            .headers()
+            .get("x-github-sso")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let body = response
+            .text()
+            .map_err(|err| ProviderError::Network(err.to_string()))?;
+        if !(200..300).contains(&status) {
+            return Err(http::classify(
+                status,
+                retry.as_deref(),
+                sso.as_deref(),
+                &body,
+                chrono::Utc::now(),
+            ));
+        }
+        Ok(body)
+    }
+
     /// `GET /user/orgs`, following pagination (100 per page, at most 10 pages).
     fn rest_user_orgs(&self) -> Result<Vec<String>, ProviderError> {
         let mut orgs = Vec::new();
         for page in 1..=10 {
-            let _permit = http::Permit::acquire(&self.gate);
-            let response = self
-                .http
-                .get(format!("{}/user/orgs", self.api))
-                .query(&[("per_page", "100"), ("page", &page.to_string())])
-                .bearer_auth(&self.token)
-                .header("Accept", "application/vnd.github+json")
-                .send()
-                .map_err(|err| ProviderError::Network(err.to_string()))?;
-            let status = response.status().as_u16();
-            let body = response
-                .text()
-                .map_err(|err| ProviderError::Network(err.to_string()))?;
-            if !(200..300).contains(&status) {
-                return Err(http::classify(
-                    status,
-                    None,
-                    None,
-                    &body,
-                    chrono::Utc::now(),
-                ));
-            }
+            let body = self.rest_ok(
+                "/user/orgs",
+                &[("per_page", "100"), ("page", &page.to_string())],
+            )?;
             let batch = parse::parse_rest_orgs(&body)?;
             let full = batch.len() == 100;
             orgs.extend(batch);
@@ -201,16 +221,20 @@ impl VcsProvider for GithubClient {
         Ok(items)
     }
 
-    fn ownership_inputs(&self, _pr: &PullRequest) -> Result<OwnershipInputs, ProviderError> {
-        Err(ProviderError::Unsupported(
-            "ownership inputs arrive in M9".into(),
-        ))
+    fn ownership_probe(&self, pr: &PullRequest) -> Result<OwnershipProbe, ProviderError> {
+        ownership::probe(self, pr)
     }
 
-    fn team_members(&self, _team: &TeamRef) -> Result<TeamMembers, ProviderError> {
-        Err(ProviderError::Unsupported(
-            "team member lookup arrives in M9".into(),
-        ))
+    fn ownership_inputs(
+        &self,
+        pr: &PullRequest,
+        probe: &OwnershipProbe,
+    ) -> Result<OwnershipInputs, ProviderError> {
+        ownership::inputs(self, pr, probe)
+    }
+
+    fn team_members(&self, team: &TeamRef) -> Result<TeamMembers, ProviderError> {
+        ownership::team_members(self, &team.org, &team.slug)
     }
 
     fn rate_limit(&self) -> Result<RateBudget, ProviderError> {

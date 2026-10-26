@@ -193,6 +193,19 @@ pub fn run_sync(state: &AppState, kind: SyncKind) -> Result<sync::SyncReport, Ap
         // §8.1: re-evaluate auto-link rules after every sync.
         let prs = state.store.list_pull_requests_for_account(account.id)?;
         pr_nexus_core::linking::relink(&state.store, &prs)?;
+        // §7.1: a BLOCKED pull request with no review decision needs its
+        // code-owner status before the list can call it Ready.
+        if !report.paused {
+            let flag = settings::blocked_review_required_is_ready(&state.store)?;
+            let _ = pr_nexus_core::ownership::resolve_unknown_code_owner_reviews(
+                &state.store,
+                &client,
+                &prs,
+                flag,
+                Utc::now(),
+                pr_nexus_core::ownership::MAX_RESOLVES_PER_SYNC,
+            );
+        }
         Ok::<_, AppError>(report)
     })();
     let mut status = state.sync.lock().expect("sync status");

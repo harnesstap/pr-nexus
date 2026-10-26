@@ -5,6 +5,7 @@ import { ClockIcon, FolderIcon, GearIcon, HomeIcon, LogoIcon, PlusIcon, RefreshI
 import { OrgOption } from "../orgs";
 import { DRAG_MIME, defaultView, parseDragIds, parseViewState, renameError, syncLabel, type SavedView } from "./model";
 import { PrList } from "./PrList";
+import { PrDetailDialog } from "./PrDetailDialog";
 import { ProjectDialog } from "./ProjectDialog";
 
 interface Props {
@@ -27,6 +28,7 @@ export function ListScreen({ api, boot, onBoot }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState<{ name: string; error: string | null } | null>(null);
   const [editingProject, setEditingProject] = useState<number | null>(null);
+  const [detailId, setDetailId] = useState<number | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const view = views[viewKey] ?? defaultView();
   const needsOrgs = orgs.length === 0 && !personal;
@@ -139,6 +141,7 @@ export function ListScreen({ api, boot, onBoot }: Props) {
 
   const activeProjects = projects.filter((project) => !project.archived);
   const dialogProject = projects.find((project) => project.id === editingProject) ?? null;
+  const detailRow = rows.find((row) => row.id === detailId) ?? null;
   const syncTone = sync.phase === "error" || sync.paused || sync.phase === "paused" ? "bg-amber-400" : sync.phase === "syncing" ? "bg-sky-400" : "bg-emerald-400";
 
   async function saveOrgs() {
@@ -310,6 +313,7 @@ export function ListScreen({ api, boot, onBoot }: Props) {
             }}
             onEditProject={setEditingProject}
             onLinkPrs={(projectId, ids) => void linkPrs(projectId, ids)}
+            onDetails={(row) => setDetailId(row.id)}
           />
         )}
         {notice && (
@@ -321,6 +325,14 @@ export function ListScreen({ api, boot, onBoot }: Props) {
           </p>
         )}
         {error && <p className="px-4 py-2 text-sm text-rose-300">{error}</p>}
+        {detailRow && (
+          <PrDetailDialog key={detailRow.id} api={api} row={detailRow} onClose={() => {
+              setDetailId(null);
+              // The detail may have resolved code-owner status the list row now uses.
+              void reload();
+            }}
+            onOpen={(url) => void api.openExternal(url)} />
+        )}
         {dialogProject && (
           <ProjectDialog api={api} project={dialogProject} rows={rows} onClose={() => setEditingProject(null)} onChanged={reload} />
         )}
