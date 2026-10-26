@@ -294,11 +294,15 @@ jobs:
 
       # rhysd/actionlint is a Docker action. The self-hosted runner itself runs
       # in a container, so its bind mounts do not see the workspace.
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: actionlint@1.7.12
+      # The binary goes to RUNNER_TEMP, which the runner wipes after the job.
       - name: Lint workflows
-        run: actionlint
+        env:
+          ACTIONLINT_VERSION: "1.7.12"
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://raw.githubusercontent.com/rhysd/actionlint/v${ACTIONLINT_VERSION}/scripts/download-actionlint.bash" \
+            | bash -s -- "$ACTIONLINT_VERSION" "$RUNNER_TEMP"
+          "$RUNNER_TEMP/actionlint" -color
 
       - name: Require a Changie fragment
         if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'no-changelog')
