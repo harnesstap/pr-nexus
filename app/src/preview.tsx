@@ -39,6 +39,7 @@ const boot: Bootstrap = {
   slack_secret_saved: false,
   slack_workspaces: [],
   slack_mentions: "off",
+  bump_broadcast: true,
   mapping_count: 0,
   sync: {
     phase: "ok",
@@ -219,6 +220,7 @@ const api: Api = {
       signed_in: true,
       bump_count: 0,
       permalink: null,
+      broadcast: true,
     }),
   bulkPreview: () => Promise.resolve({ cards: [], skipped: [] }),
   sendBulk: () => Promise.resolve({ batch_id: "bulk-1", results: [], indicators: [] }),
@@ -252,6 +254,7 @@ const api: Api = {
   prSlackContext: () => Promise.resolve(previewThreads),
   prSlackMentions: () => Promise.resolve([]),
   saveSlackMentions: () => Promise.resolve(),
+  saveBumpBroadcast: () => Promise.resolve(),
 };
 
 document.body.style.margin = "0";

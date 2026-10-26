@@ -64,6 +64,7 @@ pub fn run() {
             context::pr_slack_context,
             context::pr_slack_mentions,
             context::save_slack_mentions,
+            context::save_bump_broadcast,
             commands::slack_manifest_url,
             commands::import_mapping,
             commands::finish_onboarding,

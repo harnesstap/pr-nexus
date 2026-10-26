@@ -37,6 +37,7 @@ function fake(overrides: Partial<Api> = {}) {
         signed_in: true,
         bump_count: 0,
         permalink: null,
+        broadcast: true,
       }),
     sendReview: (_id: number, target: ReviewTarget, teams: string[]): Promise<SlackIndicator> => {
       calls.sent.push([target, teams]);
@@ -80,10 +81,11 @@ test("a bump shows the thread link and a signed-out workspace blocks Send", asyn
         signed_in: false,
         bump_count: 1,
         permalink: "https://acme.slack.com/archives/C0123456789/p2",
+        broadcast: true,
       }),
   });
   render(<ReviewDialog api={api} row={row} onClose={() => undefined} onOpen={(url) => opened.push(url)} onSent={() => undefined} />);
-  expect(await screen.findByText(/1 earlier bump\)/)).toBeInTheDocument();
+  expect(await screen.findByText(/thread, also sent to the channel \(1 earlier bump\)/)).toBeInTheDocument();
   expect(screen.getByText("Last bump was 2 h ago")).toBeInTheDocument();
   expect(screen.getByText(/Sign in to acme in Settings/)).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Bump in thread" })).toBeDisabled();
@@ -97,7 +99,7 @@ test("without a mapping the channel is entered by hand and errors are shown", as
     reviewPreview: (_id, target) =>
       target.channel_id.length < 9
         ? Promise.reject({ kind: "validation", message: "Enter a Slack channel ID such as C0123456789" })
-        : Promise.resolve({ target, action: "request", text: "hand", warnings: [], signed_in: true, bump_count: 0, permalink: null }),
+        : Promise.resolve({ target, action: "request", text: "hand", warnings: [], signed_in: true, bump_count: 0, permalink: null, broadcast: true }),
   });
   render(<ReviewDialog api={api} row={row} onClose={() => undefined} onOpen={() => undefined} onSent={() => undefined} />);
   expect(await screen.findByText(/No mapped channel/)).toBeInTheDocument();

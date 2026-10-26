@@ -298,7 +298,14 @@ export function ListScreen({ api, boot, onBoot }: Props) {
             <button type="button" className="mt-4 rounded bg-violet-500 px-3 py-2 text-sm" onClick={() => void saveOrgs()}>
               Save orgs
             </button>
-            {viewKey === "settings" && <SlackSettings api={api} boot={boot} onMentionsChange={(scope) => onBoot({ ...boot, slack_mentions: scope })} />}
+            {viewKey === "settings" && (
+              <SlackSettings
+                api={api}
+                boot={boot}
+                onMentionsChange={(scope) => onBoot({ ...boot, slack_mentions: scope })}
+                onBroadcastChange={(on) => onBoot({ ...boot, bump_broadcast: on })}
+              />
+            )}
           </section>
         ) : (
           <PrList

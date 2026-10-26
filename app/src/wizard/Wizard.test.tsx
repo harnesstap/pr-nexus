@@ -35,6 +35,7 @@ const boot: Bootstrap = {
   slack_secret_saved: false,
   slack_workspaces: [],
   slack_mentions: "off",
+  bump_broadcast: true,
   mapping_count: 0,
   sync: { phase: "idle", message: "Not synced yet", synced_at: null, paused: false },
   env_token: false,
@@ -69,6 +70,7 @@ function api(overrides: Partial<Api> = {}): Api {
         signed_in: true,
         bump_count: 0,
         permalink: null,
+        broadcast: true,
       }),
     bulkPreview: () => Promise.resolve({ cards: [], skipped: [] }),
     sendBulk: () => Promise.resolve({ batch_id: "bulk-1", results: [], indicators: [] }),
@@ -102,6 +104,7 @@ function api(overrides: Partial<Api> = {}): Api {
     prSlackContext: () => Promise.resolve([]),
     prSlackMentions: () => Promise.resolve([]),
     saveSlackMentions: () => Promise.resolve(),
+    saveBumpBroadcast: () => Promise.resolve(),
     ...overrides,
   };
 }

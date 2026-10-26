@@ -106,3 +106,9 @@ pub fn save_slack_mentions(app: Shared<'_>, scope: String) -> Result<(), AppErro
     settings::set_slack_mentions(&app.inner().store, scope)?;
     Ok(())
 }
+
+#[tauri::command]
+pub fn save_bump_broadcast(app: Shared<'_>, on: bool) -> Result<(), AppError> {
+    settings::set_bump_broadcast(&app.inner().store, on)?;
+    Ok(())
+}

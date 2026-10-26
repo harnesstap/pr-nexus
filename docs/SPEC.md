@@ -682,11 +682,11 @@ The preview decides per channel. A PR with an active request in one channel and 
 |---|---|---|
 | When | no active row for this (PR, workspace, channel), or the user picks "new top-level message instead" in the preview | an active row exists for this (PR, workspace, channel) |
 | Text | request template (§7.6) | remind template |
-| Slack call | `slack_send_message(channel_id, message, unfurl_app_links=true)` | `slack_send_message(channel_id, message, thread_ts=<root_ts>, reply_broadcast=true)`: posted in the thread **and** in the channel, same as the skill |
+| Slack call | `slack_send_message(channel_id, message, unfurl_app_links=true)` | `slack_send_message(channel_id, message, thread_ts=<root_ts>, reply_broadcast=<review.bump_broadcast>)`: by default posted in the thread **and** in the channel, same as the skill |
 | Stored | `review_messages(kind='request')` + new active `review_requests` rows (`source='app'`) | `review_messages(kind='bump', thread_root_ts=<root>)` + `last_bumped_at`, `bump_count` on the active rows |
 | Guard | — | Warn (not block) if the last request or bump in this channel is less than `review.min_bump_interval_hours` old (default 24, default D12). |
 
-Because bumps use `reply_broadcast=true`, Slack also shows each bump in the channel or DM history: `slack_read_channel` lists it as a top-level message while the root reports `Thread: N replies`. This is intended (the skill does the same), not a duplicate post. Warnings and toasts name a DM target `DM` (or `DM · name`), never `#D…`. A successful single send closes the dialog and shows a toast (`Review requested in acme · DM`, with **Open ↗** to the permalink). A bulk run shows a summary toast (`Slack: 2 sent · 1 failed`) when its result dialog closes.
+Because bumps use `reply_broadcast=true` by default (`review.bump_broadcast`, §7.12), Slack also shows each bump in the channel or DM history: `slack_read_channel` lists it as a top-level message while the root reports `Thread: N replies`. This is intended (the skill does the same), not a duplicate post. Warnings and toasts name a DM target `DM` (or `DM · name`), never `#D…`. A successful single send closes the dialog and shows a toast (`Review requested in acme · DM`, with **Open ↗** to the permalink). A bulk run shows a summary toast (`Slack: 2 sent · 1 failed`) when its result dialog closes.
 
 Both kinds open the same **preview modal** (wireframe and mockup in §8.2):
 - one card per `workspace · #channel`, with a **Change channel** dropdown (the picker) and a **Save as mapping correction** checkbox (checked by default; unchecked = only for this message);
@@ -923,6 +923,7 @@ Nothing org-specific is hard-coded or shipped: GitHub orgs, Slack workspaces, te
 | `review.blocked_review_required_is_ready` | `true` (§7.1 Δ, owner decision) | true |
 | `review.discovery_search` | `true` (if `search:read.public` is granted) | true |
 | `review.bulk_bump_max_threads` | 3 | 3 |
+| `review.bump_broadcast` | `true`: a bump reply is also sent to the channel (`reply_broadcast`, same as the skill). Off: thread reply only. Settings → Slack **Also post bumps to the channel**; the preview says which. | true |
 | `review.also_request_github_team` | `false` (checkbox per preview) | false |
 | `projects.ticket_key_regex` | `([A-Z][A-Z0-9]+-\d+)` | e.g. restrict to the user's Jira keys |
 | mapping | empty; filled by CSV import, picker, corrections | — |

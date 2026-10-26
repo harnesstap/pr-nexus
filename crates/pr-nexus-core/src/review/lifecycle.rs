@@ -189,12 +189,13 @@ pub fn send(
         Action::Request => (None, ReviewMessageKind::Request),
         Action::Bump { request } => (Some(request.root_ts.as_str()), ReviewMessageKind::Bump),
     };
+    let broadcast = thread_ts.is_some() && crate::settings::bump_broadcast(store)?;
     let posted = chat
         .post(&OutgoingMessage {
             channel_id: &plan.target.channel_id,
             text: &plan.wire_text,
             thread_ts,
-            reply_broadcast: thread_ts.is_some(),
+            reply_broadcast: broadcast,
             unfurl_app_links: thread_ts.is_none(),
         })
         .map_err(CoreError::Provider)?;
@@ -465,6 +466,20 @@ pub(crate) mod tests {
         assert!(!posts[0].3 && posts[0].4, "request unfurls, no broadcast");
         assert_eq!(posts[1].2.as_deref(), Some("1700000001.000100"));
         assert!(posts[1].3, "bump is broadcast to the channel");
+    }
+
+    #[test]
+    fn bump_stays_in_the_thread_when_broadcast_is_off() {
+        let (_dir, store, pr, chat) = seed("Fix");
+        crate::settings::set_bump_broadcast(&store, false).unwrap();
+        let first = plan(&store, &pr, target(), None, 24, at(0)).unwrap();
+        send(&store, &chat, &pr, &first, "[]", at(0)).unwrap();
+        let later = plan(&store, &pr, target(), None, 24, at(30)).unwrap();
+        assert!(matches!(later.action, Action::Bump { .. }));
+        send(&store, &chat, &pr, &later, "[]", at(30)).unwrap();
+        let posts = chat.posts.lock().unwrap();
+        assert_eq!(posts[1].2.as_deref(), Some("1700000001.000100"));
+        assert!(!posts[1].3, "thread reply only");
     }
 
     #[test]

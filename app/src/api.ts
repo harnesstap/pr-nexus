@@ -42,6 +42,8 @@ export interface Bootstrap {
   slack_workspaces: SlackWorkspace[];
   /** Mentions search in the PR detail's Slack panel (§7.10). */
   slack_mentions: MentionsScope;
+  /** Bumps are also sent to the channel (Slack's reply_broadcast). */
+  bump_broadcast: boolean;
   mapping_count: number;
   sync: SyncStatus;
   env_token: boolean;
@@ -131,6 +133,8 @@ export interface ReviewPreview {
   signed_in: boolean;
   bump_count: number;
   permalink: string | null;
+  /** A bump is also sent to the channel. */
+  broadcast: boolean;
 }
 
 export type SlackIndicator = NonNullable<ListRow["slack"]>;
@@ -351,6 +355,7 @@ export interface Api {
   prSlackContext(prId: number, refresh: boolean): Promise<ContextThread[]>;
   prSlackMentions(prId: number): Promise<MentionGroup[]>;
   saveSlackMentions(scope: MentionsScope): Promise<void>;
+  saveBumpBroadcast(on: boolean): Promise<void>;
 }
 
 export const tauriApi: Api = {
@@ -404,6 +409,7 @@ export const tauriApi: Api = {
   prSlackContext: (prId, refresh) => invoke("pr_slack_context", { prId, refresh }),
   prSlackMentions: (prId) => invoke("pr_slack_mentions", { prId }),
   saveSlackMentions: (scope) => invoke("save_slack_mentions", { scope }),
+  saveBumpBroadcast: (on) => invoke("save_bump_broadcast", { on }),
 };
 
 /**
