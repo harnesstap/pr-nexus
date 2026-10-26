@@ -219,8 +219,27 @@ fn a_failed_read_keeps_the_cached_copy_and_flags_sign_in() {
         ))
     };
     let threads = context_threads(&store, pr.id, &mut signed_out, at(2), false).unwrap();
-    assert!(threads[0].messages.is_empty());
     assert!(threads[0].error.as_deref().unwrap().contains("Reconnect"));
+    // Signed out still shows what the DB knows: the cached replies, the
+    // stored request times and the permalink.
+    assert!(threads[0].from_cache);
+    assert_eq!(threads[0].messages.len(), 2);
+    assert!(threads[0].requested_at.is_some());
+    assert_eq!(threads[0].bump_count, 0);
+    assert!(threads[0].permalink.is_some());
+}
+
+#[test]
+fn signed_out_without_a_cache_keeps_the_stored_request() {
+    let (_dir, store, pr, _account) = with_request();
+    let mut signed_out = |_: &str| -> Result<Arc<dyn ChatProvider>, CoreError> {
+        Err(CoreError::Validation("Slack sign-in expired.".into()))
+    };
+    let threads = context_threads(&store, pr.id, &mut signed_out, at(2), false).unwrap();
+    assert!(threads[0].messages.is_empty());
+    assert!(!threads[0].from_cache);
+    assert_eq!(threads[0].requested_at, Some(at(0)));
+    assert!(threads[0].permalink.is_some());
 }
 
 #[test]

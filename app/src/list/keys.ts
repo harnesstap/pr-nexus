@@ -7,3 +7,20 @@ export function isPlainShortcut(event: Pick<KeyboardEvent, "metaKey" | "ctrlKey"
 export function wantsRowEnter(target: Element | null): boolean {
   return !target?.closest("button, a, summary, [role='menuitem'], [role='tab']");
 }
+
+const NON_TEXT_INPUTS = new Set(["checkbox", "radio", "button", "submit", "reset"]);
+
+/**
+ * True while focus is in a field that takes typed text, so list shortcuts and
+ * Esc stay out of its way. A focused row checkbox is not typing: Esc there
+ * still clears the selection.
+ */
+export function isTypingTarget(target: HTMLElement | null): boolean {
+  if (!target) {
+    return false;
+  }
+  if (target.isContentEditable || target.tagName === "TEXTAREA" || target.tagName === "SELECT") {
+    return true;
+  }
+  return target instanceof HTMLInputElement && !NON_TEXT_INPUTS.has(target.type);
+}

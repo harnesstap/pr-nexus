@@ -363,6 +363,36 @@ test("j and k move the focused row, x and Shift+x select, Esc clears", () => {
   expect(screen.getByRole("checkbox", { name: "Select all" })).toBeChecked();
 });
 
+test("Esc clears the selection from a focused row checkbox, but not from the search field", () => {
+  render(<Harness rows={rows} />);
+  const first = screen.getAllByRole("checkbox", { name: "Select Migrate login" })[0];
+  const second = screen.getByRole("checkbox", { name: "Select Add passkeys" });
+  fireEvent.click(first);
+  fireEvent.click(second);
+  second.focus();
+  expect(screen.getByRole("region", { name: "Selection actions" })).toBeInTheDocument();
+  fireEvent.keyDown(second, { key: "Escape" });
+  expect(screen.queryByRole("region", { name: "Selection actions" })).not.toBeInTheDocument();
+
+  fireEvent.click(second);
+  const search = screen.getByRole("textbox", { name: "Search" });
+  fireEvent.change(search, { target: { value: "passkeys" } });
+  fireEvent.keyDown(search, { key: "Escape" });
+  expect(search).toHaveValue("");
+  expect(screen.getByRole("region", { name: "Selection actions" })).toBeInTheDocument();
+});
+
+test("a merged PR is not listed as open and shows its state under the Archived filter", () => {
+  render(<Harness rows={[...rows, row({ id: 4, number: 19, title: "Ship sync", state: "merged", project_ids: [1] })]} />);
+  expect(screen.queryByRole("article", { name: /Ship sync/ })).not.toBeInTheDocument();
+  expect(screen.getAllByText(/^3 open PRs across/)[0]).not.toHaveTextContent("merged");
+  fireEvent.click(screen.getByRole("button", { name: "Filter menu" }));
+  fireEvent.click(screen.getByRole("checkbox", { name: "Archived and closed" }));
+  const merged = screen.getByRole("article", { name: /Ship sync/ });
+  expect(within(merged).getByText("Merged")).toBeInTheDocument();
+  expect(screen.getAllByText(/3 open PRs .*· 1 merged or closed/).length).toBeGreaterThan(0);
+});
+
 test("r requests the selection or the focused row, and system shortcuts are left alone", () => {
   const onRequestReview = vi.fn();
   const onBulkReview = vi.fn();

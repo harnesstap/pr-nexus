@@ -15,7 +15,7 @@ export function ruleKindLabel(kind: RuleKind): string {
   return RULE_KINDS.find((item) => item.id === kind)?.label ?? kind;
 }
 
-/** PRs that can be added by hand: not already linked (excluded ones can be re-added). */
+/** Open PRs that can be added by hand: not already linked (excluded ones can be re-added). */
 export function linkCandidates(rows: readonly ListRow[], links: readonly ProjectLinkDto[], query: string, limit = 8): ListRow[] {
   if (!query.trim()) {
     return [];
@@ -23,7 +23,7 @@ export function linkCandidates(rows: readonly ListRow[], links: readonly Project
   const linked = new Set(links.filter((link) => link.source !== "excluded").map((link) => link.pr_id));
   const needle = query.trim().replace(/^#/, "");
   return rows
-    .filter((row) => !linked.has(row.id) && !row.hidden)
+    .filter((row) => !linked.has(row.id) && !row.hidden && row.state === "open")
     .filter((row) => String(row.number) === needle || matchesSearch(row, [], query))
     .slice(0, limit);
 }

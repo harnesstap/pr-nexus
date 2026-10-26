@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Api, ContextThread, MentionGroup, MentionsScope } from "../api";
 import { channelLabel, errorMessage } from "../api";
+import { ago, requestAction } from "./model";
 import { shortTime, slackText } from "./slackText";
 
 interface Props {
@@ -84,17 +85,32 @@ export function SlackContextPanel({ api, prId, mentions, onOpen }: Props) {
   );
 }
 
+/** The stored state of a thread, from the DB: it does not need Slack to be readable. */
+function threadStatus(thread: ContextThread, now: Date): { label: string; title?: string } {
+  const at = thread.requested_at;
+  if (thread.status === "posted") {
+    return { label: at ? `Posted · ${ago(at, now)}` : "Posted" };
+  }
+  const action = at ? requestAction({ requested_at: at, last_bumped_at: thread.last_bumped_at, bump_count: thread.bump_count }, now) : null;
+  if (thread.status === "closed") {
+    const closed = `Closed: ${thread.close_reason ?? "closed"}`;
+    return action ? { label: `${closed} · ${action.label}`, title: action.title } : { label: closed };
+  }
+  return action ?? { label: "Active" };
+}
+
 function Thread({ thread, onOpen }: { thread: ContextThread; onOpen: (url: string) => void }) {
   const label = channelLabel(thread);
   const replies = Math.max(thread.messages.length - 1, 0);
+  const status = threadStatus(thread, new Date());
   return (
     <article aria-label={`${label} thread`} className={`mt-3 rounded border p-2 ${thread.status === "active" ? "border-violet-500/40" : "border-slate-800 opacity-80"}`}>
       <header className="flex items-baseline justify-between gap-2 text-xs">
         <span className="min-w-0 truncate">
           <span className="font-medium text-slate-200">{label}</span>
-          <span className="text-slate-500">
+          <span className="text-slate-500" title={status.title}>
             {" · "}
-            {thread.status === "active" ? "Active" : thread.status === "closed" ? `Closed: ${thread.close_reason ?? "closed"}` : "Posted"}
+            {status.label}
             {thread.messages.length > 0 && ` · ${replies} ${replies === 1 ? "reply" : "replies"}${thread.has_more ? "+" : ""}`}
           </span>
         </span>
@@ -107,7 +123,7 @@ function Thread({ thread, onOpen }: { thread: ContextThread; onOpen: (url: strin
       {thread.error && (
         <p className="mt-1 text-xs text-amber-200">
           {thread.error}
-          {thread.messages.length > 0 && " Showing the cached copy."}
+          {thread.messages.length > 0 ? " Showing the cached copy." : thread.permalink ? " Open the thread in Slack to read the replies." : ""}
         </p>
       )}
       <ol className="mt-1 space-y-2">

@@ -220,8 +220,15 @@ export function passesMenu(row: ListRow, filters: Filters, now: Date): boolean {
   return true;
 }
 
+/**
+ * Merged and closed PRs leave the open list at the sync that sees them. The
+ * Archived filter brings them back until `sync.keep_closed_days` hides them.
+ */
 export function scopeRow(row: ListRow, projects: readonly ProjectDto[], filters: Filters): boolean {
-  if (row.hidden && !filters.archived) {
+  if (row.hidden) {
+    return false;
+  }
+  if (!isOpen(row) && !filters.archived) {
     return false;
   }
   const live = new Set(displayedProjects(projects, filters).map((project) => project.id));
@@ -279,21 +286,31 @@ export function projectIdOf(viewKey: string): number | null {
   return Number.isFinite(id) ? id : null;
 }
 
-/** Header subtitle (§8.2): "5 open PRs across 2 projects", or "… in this project". */
+export function isOpen(row: ListRow): boolean {
+  return row.state === "open";
+}
+
+/**
+ * Header subtitle (§8.2): "5 open PRs across 2 projects", or "… in this
+ * project". Merged and closed rows shown by the Archived filter are counted apart.
+ */
 export function headerSummary(
   shown: readonly ListRow[],
   projects: readonly ProjectDto[],
   viewKey: string,
   filters: Filters,
 ): string {
-  const prs = `${shown.length} open ${shown.length === 1 ? "PR" : "PRs"}`;
+  const open = shown.filter(isOpen).length;
+  const finished = shown.length - open;
+  const extra = finished > 0 ? ` · ${finished} merged or closed` : "";
+  const prs = `${open} open ${open === 1 ? "PR" : "PRs"}`;
   if (projectIdOf(viewKey) !== null) {
-    return `${prs} in this project`;
+    return `${prs} in this project${extra}`;
   }
   const live = displayedProjects(projects, filters);
   const ids = new Set(live.map((project) => project.id));
   const unassigned = shown.filter((row) => !row.project_ids.some((id) => ids.has(id))).length;
-  const base = `${prs} across ${live.length} ${live.length === 1 ? "project" : "projects"}`;
+  const base = `${prs} across ${live.length} ${live.length === 1 ? "project" : "projects"}${extra}`;
   return unassigned > 0 && live.length > 0 ? `${base} · ${unassigned} unassigned` : base;
 }
 
@@ -679,13 +696,24 @@ export function slackStatus(slack: ListRow["slack"], now: Date): { label: string
   if (!slack) {
     return null;
   }
-  const where = `${slack.workspace} · ${channelLabel(slack)}`;
-  const requested = `requested ${ago(slack.requested_at, now)}`;
-  if (slack.last_bumped_at) {
-    const bumps = slack.bump_count === 1 ? "1 bump" : `${slack.bump_count} bumps`;
-    return { label: `Bumped · ${ago(slack.last_bumped_at, now)}`, title: `${where} · ${requested} · ${bumps}` };
+  const action = requestAction(slack, now);
+  return { label: action.label, title: `${slack.workspace} · ${channelLabel(slack)} · ${action.title}` };
+}
+
+/**
+ * The last thing done on a review request: `Bumped · 9h ago` or
+ * `Requested · 2d ago`. Shared by the list row and the PR detail Slack card.
+ */
+export function requestAction(
+  request: { requested_at: string; last_bumped_at: string | null; bump_count: number },
+  now: Date,
+): { label: string; title: string } {
+  const requested = `requested ${ago(request.requested_at, now)}`;
+  if (request.last_bumped_at) {
+    const bumps = request.bump_count === 1 ? "1 bump" : `${request.bump_count} bumps`;
+    return { label: `Bumped · ${ago(request.last_bumped_at, now)}`, title: `${requested} · ${bumps}` };
   }
-  return { label: `Requested · ${ago(slack.requested_at, now)}`, title: `${where} · ${requested}` };
+  return { label: `Requested · ${ago(request.requested_at, now)}`, title: requested };
 }
 
 export const TOAST_MS = 6000;

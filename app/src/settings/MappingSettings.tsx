@@ -93,8 +93,9 @@ export function MappingSettings({ api, skippedInSetup, onCountChange }: Props) {
           <input
             type="search"
             aria-label="Filter mappings"
-            placeholder="Filter by team, workspace or channel"
-            className={`${box} w-64 text-sm`}
+            placeholder="Filter teams or channels"
+            title="Matches team, workspace and channel"
+            className={`${box} w-72 text-sm`}
             value={query}
             onChange={(event) => setQuery(event.target.value)}
           />

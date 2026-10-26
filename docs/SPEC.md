@@ -421,7 +421,7 @@ pub fn build_chat(kind: ChatKind, account: AccountId, token: SecretString) -> Re
 
 - Use `search(type: ISSUE, query:…, first: 50)` with cursor pagination and a hard cap of 500 per bucket. `ISSUE_ADVANCED` was removed on 2025-09-04, so do not use it.
 - **Org filtering happens client-side.** Several `org:` qualifiers separated by spaces are ANDed, so `org:acme org:acme-labs` matches nothing. The search runs unfiltered, and results are kept only for the orgs the user tracks (`github.tracked_orgs`, picked in onboarding and Settings → Accounts; §8). Nothing is hardcoded and there is no default org. Until the user picks orgs, the PR list shows an empty state with a "Choose orgs to track" button. Personal (user-owned) repos are a separate opt-in toggle. In the UI the org list is also a filter chip, not a navigation level.
-- **PRs that disappear** from a bucket (merged, closed, or no longer requested) are refreshed once via `nodes(ids:[…])` so their final state is stored. Merged/closed PRs stay visible for `settings.sync.keep_closed_days` (default 7), then become `hidden`.
+- **PRs that disappear** from a bucket (merged, closed, or no longer requested) are refreshed once via `nodes(ids:[…])` so their final state is stored. Merged/closed PRs leave the open list at that sync. The list's **Archived and closed** filter still shows them, with a Merged/Closed badge, for `settings.sync.keep_closed_days` (default 7); then they become `hidden`. The same sync closes their active review requests (`pr_merged` / `pr_closed`, §7.4).
 
 **Fragment** (one GraphQL file per query under `crates/pr-nexus-providers/src/github/graphql/`):
 
@@ -736,7 +736,7 @@ When the user clicks Send, for each affected PR:
 
 ### 7.10 Chat context panel (scoped read)
 
-The PR detail has a right-hand panel titled "Slack". It shows **only** threads PR-Nexus knows about for this PR: the roots of its `review_requests` rows (active first, then closed, labeled with the close reason) and their `review_messages`. For each thread root, it calls `slack_read_thread(channel, ts)` (the first 50 replies are shown) and caches the result in `chat_thread_cache` for 5 min. It renders replies with the author's name (`slack_read_user_profile`, cached), time, and text, and links to the permalink.
+The PR detail has a right-hand panel titled "Slack". It shows **only** threads PR-Nexus knows about for this PR: the roots of its `review_requests` rows (active first, then closed, labeled with the close reason) and their `review_messages`. For each thread root, it calls `slack_read_thread(channel, ts)` (the first 50 replies are shown) and caches the result in `chat_thread_cache` for 5 min. It renders replies with the author's name (`slack_read_user_profile`, cached), time, and text, and links to the permalink. The card header always shows what the DB knows, the same status as the list row (`Bumped · 9h ago` / `Requested · 2d ago`, with the request time and bump count on hover) and the permalink, so a signed-out workspace still shows the last action, the last cached copy of the replies (if any), and an "Open ↗" link.
 - There is no channel browsing, no history crawling, and no posting from the panel in v1. (Posting is only through the Slack preview.)
 - Optional "Mentions" (off by default): `slack_search_public` (or `slack_search_public_and_private`) for `"github.com/ORG/REPO/pull/N"` with `include_bots=true` across the workspace, limited to 20 results, to find discussions in other channels. It is one call per click, not polled.
 
@@ -1061,14 +1061,14 @@ Row content, each part toggled under **Show**: number and title; `owner/repo`; C
   - Review decision: Approved, Changes requested, Review required, None;
   - CI: Passing, Failing, Pending, None;
   - Slack request: None, Requested, Bumped, Bump due (last request or bump older than `review.min_bump_interval_hours`);
-  - Archived: show PRs in archived projects and hidden closed PRs.
+  - Archived and closed: show PRs in archived projects and merged/closed PRs still within `sync.keep_closed_days`. The header counts them apart (`3 open PRs across 2 projects · 1 merged or closed`).
   **Reset** clears filters only, not grouping, ordering, or Show.
 - The funnel is an icon button immediately right of the search field. It shows a dot when any filter is active. The menu closes on `Esc` and on a click outside it. There is no other persistent filter UI.
 - **Persistence:** grouping, ordering, Show, and filters are saved **per view** in `view_state` (`mine`, `to_review`, `project:<id>`) and restored on launch.
 
 **Search bar:** always visible. Filters the current view as you type (150 ms debounce), case- and accent-insensitive, whitespace-separated terms ANDed. It matches project name, PR title, PR body (`bodyText`), `owner/repo`, and number (`#142` or `142`). It runs in core over the cached rows (a few hundred PRs; no FTS needed). It combines with the menu filters. `/` focuses it, and `Esc` clears it.
 
-Keyboard: `j/k` move, `x` toggle select, `Shift+x` toggle the focused row's section, `Cmd/Ctrl+A` toggle the global checkbox, `r` open the Slack preview for the selection (or the focused row if nothing is selected), `s` open the focused row's Slack request, `o` open in browser, `f` open the filter menu, `Enter` open the focused row's details, `/` focus the search (`Esc` there clears it), `Esc` clear the selection. Single-key shortcuts ignore Cmd, Ctrl and Alt, so Cmd+R and similar keep their system meaning, and do nothing while typing or while a modal is open. The focused row is marked `aria-current` and scrolled into view.
+Keyboard: `j/k` move, `x` toggle select, `Shift+x` toggle the focused row's section, `Cmd/Ctrl+A` toggle the global checkbox, `r` open the Slack preview for the selection (or the focused row if nothing is selected), `s` open the focused row's Slack request, `o` open in browser, `f` open the filter menu, `Enter` open the focused row's details, `/` focus the search (`Esc` there clears it), `Esc` clear the selection (also from a focused row checkbox). Single-key shortcuts ignore Cmd, Ctrl and Alt, so Cmd+R and similar keep their system meaning, and do nothing while typing or while a modal is open. The focused row is marked `aria-current` and scrolled into view.
 
 **PR detail**:
 

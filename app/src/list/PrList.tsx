@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ListRow, ProjectDto } from "../api";
 import { CommentIcon, ExternalIcon, FunnelIcon, SearchIcon, SlackIcon } from "../icons";
-import { isPlainShortcut, wantsRowEnter } from "./keys";
+import { isPlainShortcut, isTypingTarget, wantsRowEnter } from "./keys";
 import {
   ago,
   bulkIds,
@@ -171,7 +171,7 @@ export function PrList({
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
       const target = event.target instanceof HTMLElement ? event.target : null;
-      const typing = target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.tagName === "SELECT";
+      const typing = isTypingTarget(target);
       if (document.querySelector('[role="dialog"][aria-modal="true"]')) {
         return;
       }
@@ -447,6 +447,9 @@ export function PrList({
                             >
                               <span className="text-slate-500">#{row.number}</span> {row.title}
                             </button>
+                          )}
+                          {row.state !== "open" && (
+                            <span className="shrink-0 rounded bg-slate-800 px-1 text-xs text-slate-300">{row.state === "merged" ? "Merged" : "Closed"}</span>
                           )}
                           {view.show.badges && row.project_ids.length > 1 && (
                             <span
@@ -985,7 +988,7 @@ function FilterChoices({
           checked={view.filters.archived}
           onChange={() => onViewChange({ ...view, filters: { ...view.filters, archived: !view.filters.archived } })}
         />
-        Archived
+        Archived and closed
       </label>
     </div>
   );
