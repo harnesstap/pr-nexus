@@ -66,13 +66,17 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$EVENT_NAME" = "push" ] || [ "$EVENT_NAME" = "schedule" ] || [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            echo "rust=true" >> "$GITHUB_OUTPUT"
-            echo "web=true" >> "$GITHUB_OUTPUT"
-            echo "ci=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "rust=true"
+              echo "web=true"
+              echo "ci=true"
+            } >> "$GITHUB_OUTPUT"
           else
-            echo "rust=${FILTER_RUST}" >> "$GITHUB_OUTPUT"
-            echo "web=${FILTER_WEB}" >> "$GITHUB_OUTPUT"
-            echo "ci=${FILTER_CI}" >> "$GITHUB_OUTPUT"
+            {
+              echo "rust=${FILTER_RUST}"
+              echo "web=${FILTER_WEB}"
+              echo "ci=${FILTER_CI}"
+            } >> "$GITHUB_OUTPUT"
           fi
 
   rust-lint:
