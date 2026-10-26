@@ -1,8 +1,10 @@
-//! Slack message links: `https://<domain>.slack.com/archives/<C…>/p<16 digits>`.
+//! Slack message links: `https://<domain>.slack.com/archives/<channel>/p<16 digits>`.
 //!
 //! `slack_send_message` returns the link of the posted message (§7.11). The
 //! message `ts` is the 16 digits with a dot before the last six, and a thread
-//! reply carries its root in `?thread_ts=`.
+//! reply carries its root in `?thread_ts=`. The channel can be a public (C),
+//! private (G) or DM (D) channel. Links inside JSON text may have escaped
+//! slashes (`https:\/\/…`); [`find`] accepts both.
 
 /// A parsed Slack message link.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +58,13 @@ pub fn parse(url: &str) -> Option<Permalink> {
 
 /// First Slack message link found anywhere in `text` (tool output, JSON, prose).
 pub fn find(text: &str) -> Option<Permalink> {
+    let unescaped;
+    let text = if text.contains("\\/") {
+        unescaped = text.replace("\\/", "/");
+        unescaped.as_str()
+    } else {
+        text
+    };
     let mut start = 0;
     while let Some(offset) = text[start..].find("https://") {
         let begin = start + offset;
@@ -72,6 +81,16 @@ pub fn find(text: &str) -> Option<Permalink> {
     None
 }
 
+/// The message link for `ts` in `channel_id`, as Slack's "Copy link" builds it.
+pub fn build(workspace: &str, channel_id: &str, ts: &str, thread_ts: Option<&str>) -> String {
+    let digits: String = ts.chars().filter(char::is_ascii_digit).collect();
+    let mut url = format!("https://{workspace}.slack.com/archives/{channel_id}/p{digits}");
+    if let Some(root) = thread_ts.filter(|root| *root != ts) {
+        url.push_str(&format!("?thread_ts={root}&cid={channel_id}"));
+    }
+    url
+}
+
 fn ts_from_segment(segment: &str) -> Option<String> {
     let digits = segment.strip_prefix('p')?;
     if digits.len() != 16 || !digits.bytes().all(|b| b.is_ascii_digit()) {
@@ -80,7 +99,8 @@ fn ts_from_segment(segment: &str) -> Option<String> {
     Some(format!("{}.{}", &digits[..10], &digits[10..]))
 }
 
-fn is_ts(value: &str) -> bool {
+/// `1700000000.000100`: seconds, a dot, six digits.
+pub fn is_ts(value: &str) -> bool {
     value.split_once('.').is_some_and(|(secs, micros)| {
         !secs.is_empty()
             && micros.len() == 6
@@ -91,8 +111,9 @@ fn is_ts(value: &str) -> bool {
     })
 }
 
+/// Letters, digits, `-`, and `.` for Enterprise Grid hosts like `acme.enterprise`.
 fn is_domain_char(c: char) -> bool {
-    c.is_ascii_alphanumeric() || c == '-'
+    c.is_ascii_alphanumeric() || c == '-' || c == '.'
 }
 
 #[cfg(test)]
@@ -140,5 +161,38 @@ mod tests {
         let prose = "Sent. See https://github.com/x and <https://acme.slack.com/archives/C9/p1700000000000100>.";
         assert_eq!(find(prose).unwrap().ts, "1700000000.000100");
         assert!(find("no link here").is_none());
+    }
+
+    #[test]
+    fn finds_dm_links_with_escaped_slashes() {
+        let text = r#"{"message_link":"https:\/\/acme.slack.com\/archives\/D0123456789\/p1700000000000100"}"#;
+        let link = find(text).unwrap();
+        assert_eq!(link.channel_id, "D0123456789");
+        assert_eq!(link.ts, "1700000000.000100");
+        assert_eq!(
+            link.url,
+            "https://acme.slack.com/archives/D0123456789/p1700000000000100"
+        );
+        let grid =
+            find("https://acme.enterprise.slack.com/archives/G01/p1700000000000100").unwrap();
+        assert_eq!(grid.workspace, "acme.enterprise");
+    }
+
+    #[test]
+    fn builds_links_that_parse_back() {
+        let url = build("acme", "D0123456789", "1700000000.000100", None);
+        assert_eq!(
+            url,
+            "https://acme.slack.com/archives/D0123456789/p1700000000000100"
+        );
+        let reply = build(
+            "acme",
+            "C01",
+            "1700000500.000200",
+            Some("1700000000.000100"),
+        );
+        let link = parse(&reply).unwrap();
+        assert_eq!(link.ts, "1700000500.000200");
+        assert_eq!(link.thread_ts.as_deref(), Some("1700000000.000100"));
     }
 }

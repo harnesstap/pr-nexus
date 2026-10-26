@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use pr_nexus_core::domain::{AccountId, ChatKind};
 use pr_nexus_core::error::ProviderError;
@@ -22,13 +22,15 @@ use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig
 use serde_json::{Value, json};
 
 use super::oauth::{self, KeychainCredentialStore};
-use super::schema::{self, SEND_MESSAGE, ToolOutput, ToolShape};
+use super::schema::{self, READ_CHANNEL, SEND_MESSAGE, ToolOutput, ToolShape};
 use super::{USER_SCOPES, install_tls_provider};
 use crate::vault::Vault;
 
 /// Slack allows about one write per second per channel (§7.11).
 const WRITE_SPACING: Duration = Duration::from_secs(1);
 const CALL_TIMEOUT: Duration = Duration::from_secs(60);
+/// How far back the send-result recovery reads the channel.
+const RECOVERY_WINDOW: Duration = Duration::from_secs(60);
 
 /// One MCP tool call, blocking. Lets the provider be tested without a server.
 pub trait ToolCaller: Send + Sync {
@@ -295,6 +297,38 @@ impl SlackMcpChatProvider {
     }
 }
 
+impl SlackMcpChatProvider {
+    /// Find a message just sent: my newest message in the channel from the
+    /// last [`RECOVERY_WINDOW`] whose text matches (§7.11).
+    fn recover(&self, message: &OutgoingMessage<'_>) -> Option<PostedMessage> {
+        let oldest = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .ok()?
+            .saturating_sub(RECOVERY_WINDOW)
+            .as_secs();
+        let mut args = JsonObject::new();
+        args.insert("channel_id".into(), json!(message.channel_id));
+        args.insert("oldest".into(), json!(format!("{oldest}.000000")));
+        args.insert("limit".into(), json!(20));
+        let output = self.caller.call(READ_CHANNEL, args).ok()?;
+        if output.is_error {
+            return None;
+        }
+        let found = schema::parse_read_channel(&output)
+            .into_iter()
+            .filter(|read| read.user_id.as_deref() == Some(self.user.id.as_str()))
+            .filter(|read| schema::same_message(message.text, &read.text))
+            .max_by(|a, b| a.ts.cmp(&b.ts))?;
+        Some(PostedMessage {
+            channel_id: message.channel_id.to_owned(),
+            ts: found.ts,
+            thread_ts: message.thread_ts.map(str::to_owned),
+            permalink: None,
+            workspace: None,
+        })
+    }
+}
+
 /// `slack_send_message` arguments (§7.11 tool table).
 pub fn send_arguments(message: &OutgoingMessage<'_>) -> JsonObject {
     let mut args = JsonObject::new();
@@ -337,7 +371,22 @@ impl ChatProvider for SlackMcpChatProvider {
         if output.is_error {
             return Err(schema::map_error(SEND_MESSAGE, &output.text, None));
         }
-        let mut posted = schema::parse_send(&output, message.channel_id)?;
+        let mut posted = match schema::parse_send(&output, message.channel_id) {
+            Ok(posted) => posted,
+            Err(err) => {
+                // The call succeeded, so the message is in Slack. Never report
+                // a failure here: a retry would post it twice.
+                eprintln!(
+                    "pr-nexus: {SEND_MESSAGE} result not understood ({err}): {}",
+                    output.text.chars().take(300).collect::<String>()
+                );
+                self.recover(message).ok_or_else(|| {
+                    ProviderError::SentUnconfirmed(format!(
+                        "{SEND_MESSAGE} succeeded but its result has no message link or ts"
+                    ))
+                })?
+            }
+        };
         if posted.thread_ts.is_none() {
             posted.thread_ts = message.thread_ts.map(str::to_owned);
         }
@@ -356,6 +405,7 @@ mod tests {
     struct Fake {
         calls: Mutex<Vec<(String, JsonObject)>>,
         reply: ToolOutput,
+        read: Option<ToolOutput>,
     }
 
     impl ToolCaller for Arc<Fake> {
@@ -364,14 +414,28 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push((tool.to_owned(), arguments));
+            if tool == READ_CHANNEL {
+                return self
+                    .read
+                    .clone()
+                    .ok_or_else(|| ProviderError::Network("offline".into()));
+            }
             Ok(self.reply.clone())
         }
     }
 
     fn provider(reply: ToolOutput) -> (SlackMcpChatProvider, Arc<Fake>) {
+        provider_with_read(reply, None)
+    }
+
+    fn provider_with_read(
+        reply: ToolOutput,
+        read: Option<ToolOutput>,
+    ) -> (SlackMcpChatProvider, Arc<Fake>) {
         let fake = Arc::new(Fake {
             calls: Mutex::new(Vec::new()),
             reply,
+            read,
         });
         let user = ChatUser {
             id: "U0ME".into(),
@@ -470,6 +534,45 @@ mod tests {
         assert!(start.elapsed() >= Duration::from_millis(900));
     }
 
+    fn dm(text: &str) -> OutgoingMessage<'_> {
+        OutgoingMessage {
+            channel_id: "D0123456789",
+            text,
+            thread_ts: None,
+            reply_broadcast: false,
+            unfurl_app_links: true,
+        }
+    }
+
+    #[test]
+    fn unreadable_result_is_recovered_from_the_channel() {
+        let read = text(
+            r#"{"messages":"=== Message from me (U0ME) at now === \nMessage TS: 1700000000.000300\nReview <https:\/\/github.com\/acme\/web\/pull\/2|github.com\/acme\/web\/pull\/2>\n=== Message from me (U0ME) at now === \nMessage TS: 1700000000.000200\nReview <https:\/\/github.com\/acme\/web\/pull\/1|github.com\/acme\/web\/pull\/1>\n*Sent using* <@U0APP|PR-Nexus>\n=== Message from other (U0OTHER) at now === \nMessage TS: 1700000000.000400\nReview https:\/\/github.com\/acme\/web\/pull\/1"}"#,
+        );
+        let (slack, fake) = provider_with_read(text("Message sent."), Some(read));
+        let posted = slack
+            .post(&dm("Review [web#1](https://github.com/acme/web/pull/1)"))
+            .unwrap();
+        assert_eq!(posted.ts, "1700000000.000200");
+        assert_eq!(posted.channel_id, "D0123456789");
+        let calls = fake.calls.lock().unwrap();
+        assert_eq!(calls[1].0, READ_CHANNEL);
+        assert_eq!(calls[1].1["channel_id"], json!("D0123456789"));
+    }
+
+    #[test]
+    fn unrecoverable_result_is_sent_unconfirmed_not_failed() {
+        let (slack, _) = provider_with_read(text("Message sent."), None);
+        let err = slack.post(&dm("hello")).unwrap_err();
+        assert!(matches!(err, ProviderError::SentUnconfirmed(_)));
+        let (slack, _) =
+            provider_with_read(text("Message sent."), Some(text(r#"{"messages":""}"#)));
+        assert!(matches!(
+            slack.post(&dm("hello")).unwrap_err(),
+            ProviderError::SentUnconfirmed(_)
+        ));
+    }
+
     #[test]
     fn service_errors_map_to_reconnect_hint() {
         assert!(matches!(
@@ -479,6 +582,31 @@ mod tests {
         assert!(matches!(
             map_service_error("t", "Transport closed"),
             ProviderError::Network(_)
+        ));
+    }
+
+    /// The official server's result shape: one text block holding JSON
+    /// (`message_context.message_ts` / `channel_id`, slashes escaped).
+    #[test]
+    fn documented_result_fixtures_parse() {
+        let send: rmcp::model::CallToolResult = serde_json::from_str(include_str!(
+            "../../tests/fixtures/slack-mcp-send-message.json"
+        ))
+        .unwrap();
+        let posted = schema::parse_send(&to_output(send), "D0123456789").unwrap();
+        assert_eq!(posted.ts, "1700000000.000100");
+        assert_eq!(posted.channel_id, "D0123456789");
+
+        let read: rmcp::model::CallToolResult = serde_json::from_str(include_str!(
+            "../../tests/fixtures/slack-mcp-read-channel.json"
+        ))
+        .unwrap();
+        let messages = schema::parse_read_channel(&to_output(read));
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].user_id.as_deref(), Some("U0ACME0001"));
+        assert!(schema::same_message(
+            "Hello team\n[Fix login](https://github.com/acme/web/pull/1)",
+            &messages[0].text
         ));
     }
 }

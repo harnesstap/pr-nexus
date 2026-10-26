@@ -23,6 +23,10 @@ pub enum ProviderError {
     Decode(String),
     #[error("provider not supported: {0}")]
     Unsupported(String),
+    /// The write went through but its result could not be read, so the
+    /// message's `ts` and link are unknown. Never retry it: that duplicates.
+    #[error("sent, link unknown: {0}")]
+    SentUnconfirmed(String),
 }
 
 #[derive(Debug, thiserror::Error)]

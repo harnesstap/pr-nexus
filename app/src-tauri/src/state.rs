@@ -15,6 +15,7 @@ use pr_nexus_core::store::Store;
 use pr_nexus_core::sync::{self, SyncKind};
 use pr_nexus_providers::github::{self, GithubClient};
 use pr_nexus_providers::slack_mcp::CancelHandle;
+use pr_nexus_providers::slack_mcp::TokenState;
 use pr_nexus_providers::vault::Vault;
 use tauri::Manager;
 
@@ -59,6 +60,8 @@ pub struct AppState {
     pub chats: Mutex<HashMap<i64, Arc<dyn ChatProvider>>>,
     /// The Slack sign-in in progress, if any.
     pub slack_cancel: Mutex<Option<CancelHandle>>,
+    /// Startup `auth.test` result per Slack account (§7.11).
+    pub slack_tokens: Mutex<HashMap<i64, TokenState>>,
     pub sync: Mutex<SyncStatus>,
     pub device: Mutex<Option<DeviceSession>>,
     pub focused: AtomicBool,
@@ -80,6 +83,7 @@ impl AppState {
             vault: Arc::new(vault),
             chats: Mutex::new(HashMap::new()),
             slack_cancel: Mutex::new(None),
+            slack_tokens: Mutex::new(HashMap::new()),
             sync: Mutex::new(if demo {
                 SyncStatus::demo()
             } else {
@@ -323,6 +327,7 @@ mod tests {
             vault: Arc::new(Vault::memory("test")),
             chats: Mutex::new(HashMap::new()),
             slack_cancel: Mutex::new(None),
+            slack_tokens: Mutex::new(HashMap::new()),
             sync: Mutex::new(SyncStatus::demo()),
             device: Mutex::new(None),
             focused: AtomicBool::new(true),

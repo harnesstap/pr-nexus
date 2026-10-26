@@ -1,0 +1,9 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\"message_context\":{\"message_ts\":\"1700000000.000100\",\"channel_id\":\"D0123456789\"},\"result\":\"Message sent successfully\"}"
+    }
+  ],
+  "isError": false
+}

@@ -7,8 +7,9 @@
 //! - [`loopback`] and [`http`]: the redirect listener and Slack's OAuth error
 //!   shape.
 //!
-//! The only direct Web API call is `auth.test` right after sign-in, to learn
-//! the workspace name and domain (§7.11 step 4). Nothing else bypasses MCP.
+//! The only direct Web API call is `auth.test`: right after sign-in, to learn
+//! the workspace name and domain (§7.11 step 4), and at startup, to check a
+//! saved grant. Nothing else bypasses MCP.
 
 pub mod http;
 pub mod loopback;
@@ -18,7 +19,7 @@ pub mod schema;
 
 pub use loopback::CancelHandle;
 pub use mcp::{SessionConfig, SlackMcpChatProvider};
-pub use oauth::{ConnectConfig, Connected, connect};
+pub use oauth::{ConnectConfig, Connected, TokenState, connect, token_state};
 
 /// `slack.mcp.url` default.
 pub const SLACK_MCP_URL: &str = "https://mcp.slack.com/mcp";

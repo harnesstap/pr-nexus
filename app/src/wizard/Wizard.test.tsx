@@ -55,7 +55,7 @@ function api(overrides: Partial<Api> = {}): Api {
     slackManifestUrl: () => Promise.resolve("https://api.slack.com/apps?new_app=1&manifest_json=%7B%7D"),
     slackWorkspaces: () => Promise.resolve([]),
     slackConnect: () =>
-      Promise.resolve({ id: 9, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true }),
+      Promise.resolve({ id: 9, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false }),
     slackCancelConnect: () => Promise.resolve(),
     slackRemoveWorkspace: () => Promise.resolve(),
     reviewTargets: () => Promise.resolve([]),
@@ -124,7 +124,7 @@ test("the Slack step saves a custom redirect, connects in the browser, then allo
         },
         slackConnect: () =>
           new Promise((resolve) => {
-            release = () => resolve({ id: 3, team_name: "Acme Corp", domain: "acme", user_name: "ada", signed_in: true });
+            release = () => resolve({ id: 3, team_name: "Acme Corp", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false });
           }),
       })}
       boot={{ ...boot, resume_step: "connect_chat" }}
@@ -221,7 +221,7 @@ test("a long Slack sign-in counts down, says still waiting, and offers a retry a
 });
 
 test("a connected workspace can be removed", async () => {
-  let remaining = [{ id: 4, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true }];
+  let remaining = [{ id: 4, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false }];
   render(
     <Wizard
       api={api({

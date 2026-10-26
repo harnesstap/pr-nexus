@@ -10,8 +10,11 @@ use pr_nexus_core::review::permalink;
 use serde_json::Value;
 
 pub const SEND_MESSAGE: &str = "slack_send_message";
+pub const READ_CHANNEL: &str = "slack_read_channel";
 
 /// Tools and input fields PR-Nexus relies on, as listed on 2026-10-25.
+/// `slack_read_channel` is not pinned: it only backs the send-result
+/// recovery, which degrades to "sent, link unknown" without it.
 pub const PINNED_TOOLS: &[(&str, &[&str])] = &[(
     SEND_MESSAGE,
     &["channel_id", "message", "thread_ts", "reply_broadcast"],
@@ -50,19 +53,96 @@ pub struct ToolOutput {
 }
 
 impl ToolOutput {
-    fn haystack(&self) -> String {
-        match &self.structured {
-            Some(value) => format!("{value}\n{}", self.text),
-            None => self.text.clone(),
+    /// Every JSON value in the result: the structured part, and the text
+    /// block when it is itself JSON (the official server wraps its results
+    /// as JSON text, with `\/`-escaped slashes).
+    fn json_values(&self) -> Vec<Value> {
+        let mut values: Vec<Value> = self.structured.iter().cloned().collect();
+        if let Ok(value) = serde_json::from_str::<Value>(self.text.trim()) {
+            values.push(value);
         }
+        values
+    }
+
+    /// Text to search for a link: raw text plus every decoded JSON string.
+    fn haystack(&self) -> String {
+        let mut haystack = self.text.clone();
+        for value in self.json_values() {
+            collect_strings(&value, &mut haystack);
+        }
+        haystack
     }
 }
 
-/// Parse a `slack_send_message` result. The link is required: it carries
-/// `ts`, and for a reply `thread_ts`.
+fn collect_strings(value: &Value, out: &mut String) {
+    match value {
+        Value::String(text) => {
+            out.push('\n');
+            out.push_str(text);
+        }
+        Value::Array(items) => items.iter().for_each(|item| collect_strings(item, out)),
+        Value::Object(map) => map.values().for_each(|item| collect_strings(item, out)),
+        _ => {}
+    }
+}
+
+/// First string under one of `keys`, searched depth-first, that `accept`s.
+fn find_key<'a>(value: &'a Value, keys: &[&str], accept: &dyn Fn(&str) -> bool) -> Option<&'a str> {
+    match value {
+        Value::Object(map) => {
+            for key in keys {
+                if let Some(found) = map.get(*key).and_then(Value::as_str).filter(|v| accept(v)) {
+                    return Some(found);
+                }
+            }
+            map.values().find_map(|item| find_key(item, keys, accept))
+        }
+        Value::Array(items) => items.iter().find_map(|item| find_key(item, keys, accept)),
+        _ => None,
+    }
+}
+
+fn is_channel_id(value: &str) -> bool {
+    value.len() >= 3
+        && value.starts_with(['C', 'G', 'D'])
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+}
+
+/// A `ts` written after a label in prose, e.g. `Message TS: 1700000000.000100`.
+fn labelled_ts(text: &str) -> Option<String> {
+    let lower = text.to_ascii_lowercase();
+    for label in ["message_ts", "message ts", "\"ts\"", "ts:", "ts="] {
+        let mut from = 0;
+        while let Some(offset) = lower[from..].find(label) {
+            let after = from + offset + label.len();
+            let candidate: String = text[after..]
+                .trim_start_matches(|c: char| {
+                    c.is_whitespace() || matches!(c, ':' | '=' | '"' | '`')
+                })
+                .chars()
+                .take_while(|c| c.is_ascii_digit() || *c == '.')
+                .collect();
+            if permalink::is_ts(&candidate) {
+                return Some(candidate);
+            }
+            from = after;
+        }
+    }
+    None
+}
+
+/// Parse a `slack_send_message` result (§7.11).
+///
+/// The server's tool description says only "Return the message link to the
+/// user"; no output schema is published. The result is a text block holding
+/// JSON (`message_context.message_ts` / `channel_id`, slashes escaped) or
+/// prose with the link. Order: a message link anywhere, then a `ts` field,
+/// then a labelled `ts` in prose. The link is derived later from the
+/// workspace domain when only `ts` is known.
 pub fn parse_send(output: &ToolOutput, channel_id: &str) -> Result<PostedMessage, ProviderError> {
-    let haystack = output.haystack();
-    if let Some(link) = permalink::find(&haystack) {
+    if let Some(link) = permalink::find(&output.haystack()) {
         return Ok(PostedMessage {
             channel_id: link.channel_id.clone(),
             ts: link.ts.clone(),
@@ -71,26 +151,105 @@ pub fn parse_send(output: &ToolOutput, channel_id: &str) -> Result<PostedMessage
             permalink: Some(link.url),
         });
     }
-    let json = output
-        .structured
-        .clone()
-        .or_else(|| serde_json::from_str::<Value>(output.text.trim()).ok());
-    let ts = json
-        .as_ref()
-        .and_then(|value| value.get("ts").or_else(|| value.pointer("/message/ts")))
-        .and_then(Value::as_str)
+    let values = output.json_values();
+    let ts_keys = ["message_ts", "ts"];
+    let ts = values
+        .iter()
+        .find_map(|value| find_key(value, &ts_keys, &permalink::is_ts))
+        .map(str::to_owned)
+        .or_else(|| labelled_ts(&output.haystack()))
         .ok_or_else(|| {
             ProviderError::Decode(format!(
                 "{SEND_MESSAGE}: the result has no message link or ts"
             ))
         })?;
+    let channel = values
+        .iter()
+        .find_map(|value| find_key(value, &["channel_id", "channel"], &is_channel_id))
+        .unwrap_or(channel_id);
+    let thread_ts = values
+        .iter()
+        .find_map(|value| find_key(value, &["thread_ts"], &permalink::is_ts))
+        .filter(|root| *root != ts)
+        .map(str::to_owned);
     Ok(PostedMessage {
-        channel_id: channel_id.to_owned(),
-        ts: ts.to_owned(),
-        thread_ts: None,
+        channel_id: channel.to_owned(),
+        ts,
+        thread_ts,
         permalink: None,
         workspace: None,
     })
+}
+
+/// One message from a `slack_read_channel` result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadMessage {
+    pub user_id: Option<String>,
+    pub ts: String,
+    pub text: String,
+}
+
+/// Parse a `slack_read_channel` result. The server returns JSON text
+/// `{"messages": "<blocks>"}` where each block is
+/// `=== Message from <name> (<user id>) at <time> ===` then `Message TS: <ts>`
+/// then the message text.
+pub fn parse_read_channel(output: &ToolOutput) -> Vec<ReadMessage> {
+    let mut body = String::new();
+    for value in output.json_values() {
+        collect_strings(&value, &mut body);
+    }
+    if body.trim().is_empty() {
+        body = output.text.clone();
+    }
+    let mut messages = Vec::new();
+    for block in body.split("=== Message from ").skip(1) {
+        let (header, rest) = block.split_once('\n').unwrap_or((block, ""));
+        let user_id = header.rsplit_once(" at ").map_or(header, |(who, _)| who);
+        let user_id = user_id
+            .rsplit_once('(')
+            .and_then(|(_, id)| id.strip_suffix(')'))
+            .map(str::to_owned);
+        let mut lines = rest.lines();
+        let Some(ts) = lines
+            .next()
+            .and_then(|line| line.trim().strip_prefix("Message TS:"))
+            .map(|ts| ts.trim().to_owned())
+            .filter(|ts| permalink::is_ts(ts))
+        else {
+            continue;
+        };
+        messages.push(ReadMessage {
+            user_id,
+            ts,
+            text: lines.collect::<Vec<_>>().join("\n"),
+        });
+    }
+    messages
+}
+
+/// True when `posted` (Slack's stored text) is the message we sent as `sent`.
+///
+/// Slack rewrites links to `<url|label>` and appends a `Sent using <app>`
+/// attribution, so this compares the URLs in `sent` and, without any, its
+/// first line with punctuation dropped.
+pub fn same_message(sent: &str, posted: &str) -> bool {
+    let urls: Vec<&str> = sent
+        .split(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '|' | '(' | ')'))
+        .filter_map(|word| word.strip_prefix("https://"))
+        .map(|url| url.trim_end_matches(['.', ',', ']']))
+        .filter(|url| !url.is_empty())
+        .collect();
+    if !urls.is_empty() {
+        return urls.iter().all(|url| posted.contains(url));
+    }
+    let squash = |text: &str| -> String {
+        text.chars()
+            .filter(|c| c.is_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect()
+    };
+    let first = sent.lines().map(squash).find(|line| !line.is_empty());
+    first.is_some_and(|line| squash(posted).contains(&line))
 }
 
 /// Map a Slack error code found in a tool error or JSON-RPC error (§7.11).
@@ -182,6 +341,53 @@ mod tests {
         assert_eq!(posted.permalink, None);
         let err = parse_send(&text("done"), "C1").unwrap_err();
         assert!(matches!(err, ProviderError::Decode(message) if message.contains(SEND_MESSAGE)));
+    }
+
+    #[test]
+    fn send_result_json_text_with_message_context() {
+        let output = text(
+            r#"{"message_context":{"message_ts":"1700000000.000100","channel_id":"D0123456789"},"result":"Message sent"}"#,
+        );
+        let posted = parse_send(&output, "D0123456789").unwrap();
+        assert_eq!(posted.ts, "1700000000.000100");
+        assert_eq!(posted.channel_id, "D0123456789");
+        assert_eq!(posted.permalink, None);
+    }
+
+    #[test]
+    fn send_result_escaped_dm_link_and_prose_ts() {
+        let output = text(
+            r#"{"result":"Sent","message_link":"https:\/\/acme.slack.com\/archives\/D0123456789\/p1700000000000100"}"#,
+        );
+        let posted = parse_send(&output, "D0123456789").unwrap();
+        assert_eq!(
+            posted.permalink.as_deref(),
+            Some("https://acme.slack.com/archives/D0123456789/p1700000000000100")
+        );
+        let prose = parse_send(
+            &text("Message sent to DM.\nMessage TS: 1700000000.000100"),
+            "D01",
+        )
+        .unwrap();
+        assert_eq!(prose.ts, "1700000000.000100");
+    }
+
+    #[test]
+    fn read_channel_blocks_parse_and_match_the_sent_text() {
+        let output = text(
+            r#"{"messages":"Channel: DM (D0123456789)\n\n=== Message from Ada Acme (U0ACME0001) at 2026-01-01 10:00:00 UTC === \nMessage TS: 1700000000.000100\nHello team\n<https:\/\/github.com\/acme\/web\/pull\/1|github.com\/acme\/web\/pull\/1>\n*Sent using* <@U0ACMEAPP|PR-Nexus>","pagination_info":"There are no more messages available.\n"}"#,
+        );
+        let messages = parse_read_channel(&output);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].user_id.as_deref(), Some("U0ACME0001"));
+        assert_eq!(messages[0].ts, "1700000000.000100");
+        let sent = "Hello team\nCould someone review [Fix login](https://github.com/acme/web/pull/1)?\nThanks!";
+        assert!(same_message(sent, &messages[0].text));
+        assert!(!same_message(
+            "Hello team\nhttps://github.com/acme/web/pull/2",
+            &messages[0].text
+        ));
+        assert!(same_message("Hello team", &messages[0].text));
     }
 
     #[test]

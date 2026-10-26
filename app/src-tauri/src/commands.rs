@@ -201,7 +201,7 @@ pub fn bootstrap(app: State<'_, std::sync::Arc<AppState>>) -> Result<Bootstrap, 
         },
         slack_workspaces: crate::slack::workspace_accounts(&state.store)?
             .iter()
-            .map(crate::slack::workspace_dto)
+            .map(|account| crate::slack::workspace_dto(state, account))
             .collect(),
         mapping_count: state.store.mapping_count()?,
         sync: sync_dto(state),
