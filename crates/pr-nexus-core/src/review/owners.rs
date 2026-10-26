@@ -731,7 +731,7 @@ mod tests {
         assert_eq!(slugs(&decision.routing_hints), ["team-a"]);
         assert!(decision.post_to_teams.is_empty());
 
-        let picked = team("devx");
+        let picked = team("team-tools");
         let decision = decide_owners(
             &unknown,
             &catalog(&["team-a"]),
@@ -740,7 +740,7 @@ mod tests {
                 ..DecideOptions::default()
             },
         );
-        assert_eq!(slugs(&decision.post_to_teams), ["devx"]);
+        assert_eq!(slugs(&decision.post_to_teams), ["team-tools"]);
         assert!(!decision.needs_user_choice);
 
         let mut blocked = ready_query();
@@ -758,11 +758,11 @@ mod tests {
 
     #[test]
     fn uncovered_paths_stay_mandatory_and_approvals_leave_the_actionable_lists() {
-        let mut wide = catalog(&["team-data", "team-buying", "team-analytics"]);
+        let mut wide = catalog(&["team-data", "team-billing", "team-analytics"]);
         wide.exclusive_teams = vec![team("team-data")];
         wide.coverage_teams = vec![
             team("team-data"),
-            team("team-buying"),
+            team("team-billing"),
             team("team-analytics"),
         ];
         wide.optional_teams.clear();
@@ -771,7 +771,7 @@ mod tests {
         let decision = decide_owners(&query, &wide, &DecideOptions::default());
         assert_eq!(
             slugs(&decision.mandatory_teams),
-            ["team-data", "team-buying", "team-analytics"]
+            ["team-data", "team-billing", "team-analytics"]
         );
         assert_eq!(
             slugs(&decision.post_to_teams),

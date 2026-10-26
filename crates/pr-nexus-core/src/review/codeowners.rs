@@ -369,26 +369,23 @@ mod tests {
     fn last_match_wins_and_keeps_the_team_org() {
         let rules = parse_codeowners(
             "\
-/stack/public-api                                       @acme/team-data
-/stack/*/aws/iam                                        @other/team-fleet
+/services/gateway                                       @acme/team-data
+/services/*/cloud/iam                                   @other/team-infra
 ",
         )
         .unwrap();
-        let owners = owners_for_path(
-            &rules,
-            "stack/public-api/aws/iam/public-api-examples-oidc.tf",
-        );
-        assert_eq!(team_names(owners), ["other/team-fleet"]);
+        let owners = owners_for_path(&rules, "services/gateway/cloud/iam/gateway-oidc.tf");
+        assert_eq!(team_names(owners), ["other/team-infra"]);
         let teams = team_owners_for_paths(
             &rules,
             &[
-                "stack/public-api/aws/mcp-router/main.tf",
-                "stack/public-api/aws/iam/public-api-examples-oidc.tf",
+                "services/gateway/cloud/router/main.tf",
+                "services/gateway/cloud/iam/gateway-oidc.tf",
             ],
         );
         assert_eq!(
             teams,
-            vec![team("acme", "team-data"), team("other", "team-fleet")]
+            vec![team("acme", "team-data"), team("other", "team-infra")]
         );
     }
 
@@ -485,7 +482,7 @@ docs/generated
 
         let uncovered = parse_codeowners(
             "\
-* @acme/team-buying @acme/team-analytics
+* @acme/team-billing @acme/team-analytics
 /users/ @acme/team-data
 ",
         )
@@ -496,7 +493,7 @@ docs/generated
             ownership.coverage,
             vec![
                 team("acme", "team-data"),
-                team("acme", "team-buying"),
+                team("acme", "team-billing"),
                 team("acme", "team-analytics"),
             ]
         );
