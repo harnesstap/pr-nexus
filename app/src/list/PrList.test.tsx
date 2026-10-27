@@ -55,6 +55,7 @@ function Harness({
   onCreateProjectWithPrs = () => Promise.resolve(),
   onEditProject = () => undefined,
   onDetails = () => undefined,
+  detailId = null,
   onRequestReview = () => undefined,
   onBulkReview = () => undefined,
   onOpen = () => undefined,
@@ -70,6 +71,7 @@ function Harness({
   onCreateProjectWithPrs?: (name: string, ids: number[]) => Promise<void>;
   onEditProject?: (id: number) => void;
   onDetails?: (row: ListRow) => void;
+  detailId?: number | null;
   onRequestReview?: (row: ListRow) => void;
   onBulkReview?: (ids: number[]) => void;
   onOpen?: (url: string) => void;
@@ -95,6 +97,7 @@ function Harness({
       onLinkPrs={onLinkPrs}
       onCreateProjectWithPrs={onCreateProjectWithPrs}
       onDetails={onDetails}
+      detailId={detailId}
       onRequestReview={onRequestReview}
       onBulkReview={onBulkReview}
     />
@@ -362,6 +365,27 @@ test("the title button and Enter open a row's details", async () => {
   expect(onDetails).toHaveBeenLastCalledWith(expect.objectContaining({ id: 3 }));
   fireEvent.keyDown(window, { key: "Enter" });
   expect(onDetails).toHaveBeenCalledTimes(2);
+});
+
+test("with the detail panel open, arrows and clicks switch the PR it shows", async () => {
+  const onDetails = vi.fn();
+  const { rerender } = await show(<Harness rows={rows} onDetails={onDetails} />);
+  const order = Array.from(document.querySelectorAll("article"));
+  const idOf = (element: Element) => rows.find((item) => element.getAttribute("aria-label") === `#${item.number} ${item.title}`)?.id;
+  // Closed panel: the arrows are left to the page.
+  fireEvent.keyDown(window, { key: "ArrowDown" });
+  expect(focused()).toBe(order[0].getAttribute("aria-label"));
+  expect(onDetails).not.toHaveBeenCalled();
+
+  rerender(<Harness rows={rows} onDetails={onDetails} detailId={999} />);
+  fireEvent.keyDown(window, { key: "ArrowDown" });
+  expect(focused()).toBe(order[1].getAttribute("aria-label"));
+  expect(onDetails).toHaveBeenLastCalledWith(expect.objectContaining({ id: idOf(order[1]) }));
+  fireEvent.keyDown(window, { key: "k" });
+  expect(focused()).toBe(order[0].getAttribute("aria-label"));
+  fireEvent.mouseDown(order[2]);
+  expect(onDetails).toHaveBeenLastCalledWith(expect.objectContaining({ id: idOf(order[2]) }));
+  expect(onDetails).toHaveBeenCalledTimes(3);
 });
 
 function focused(): string | null {

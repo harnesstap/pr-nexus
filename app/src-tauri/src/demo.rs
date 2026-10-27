@@ -247,7 +247,119 @@ impl DemoProvider {
     }
 }
 
+impl DemoProvider {
+    /// Invented overview built from the stored row and the demo reviews.
+    fn overview(pr: &PullRequest) -> pr_nexus_core::overview::PrOverview {
+        use pr_nexus_core::overview::{
+            CheckItem, CheckState, MergeSettings, Person, PersonKind, PrOverview, ReviewState,
+            Reviewer as Seat, ViewerAccess,
+        };
+        let person = |login: &str| Person {
+            kind: PersonKind::User,
+            login: login.into(),
+            name: None,
+            avatar_url: None,
+        };
+        let last = match pr.checks {
+            ChecksState::Success => CheckState::Passed,
+            ChecksState::Failure | ChecksState::Error => CheckState::Failed,
+            ChecksState::None => CheckState::Skipped,
+            _ => CheckState::Pending,
+        };
+        let checks = ["build", "lint", "test"]
+            .iter()
+            .enumerate()
+            .map(|(index, name)| CheckItem {
+                name: (*name).into(),
+                state: if index == 2 { last } else { CheckState::Passed },
+                url: None,
+                required: index != 1,
+            })
+            .collect::<Vec<_>>();
+        let mut reviewers: Vec<Seat> = Self::reviews(pr.number)
+            .into_iter()
+            .map(|review| Seat {
+                person: person(&review.author_login),
+                state: match review.state.as_str() {
+                    "APPROVED" => ReviewState::Approved,
+                    "CHANGES_REQUESTED" => ReviewState::ChangesRequested,
+                    _ => ReviewState::Commented,
+                },
+            })
+            .collect();
+        for request in &pr.requested_reviewers {
+            let person = match &request.reviewer {
+                pr_nexus_core::domain::Reviewer::User { login } => Person {
+                    name: request.name.clone(),
+                    avatar_url: request.avatar_url.clone(),
+                    ..person(login)
+                },
+                pr_nexus_core::domain::Reviewer::Team(team) => Person {
+                    kind: PersonKind::Team,
+                    login: team.to_string(),
+                    name: request.name.clone(),
+                    avatar_url: request.avatar_url.clone(),
+                },
+            };
+            reviewers.push(Seat {
+                person,
+                state: ReviewState::Pending,
+            });
+        }
+        let approvals = reviewers
+            .iter()
+            .filter(|seat| seat.state == ReviewState::Approved)
+            .count() as u32;
+        let mut participants = vec![person(&pr.author_login)];
+        participants.extend(
+            reviewers
+                .iter()
+                .filter(|seat| seat.person.kind == PersonKind::User)
+                .map(|seat| seat.person.clone()),
+        );
+        PrOverview {
+            state: pr.state.as_str().into(),
+            is_draft: pr.is_draft,
+            base_ref: pr.base_ref.clone(),
+            head_ref: pr.head_ref.clone(),
+            mergeable: pr.mergeable.as_str().into(),
+            merge_state: pr.merge_state.as_str().into(),
+            review_decision: pr.review_decision.map(|decision| decision.as_str().into()),
+            issue_comments: (pr.number % 5) as u32,
+            review_comments: pr.total_threads,
+            checks_total: checks.len() as u32,
+            checks,
+            approvals,
+            required_approvals: Some(1),
+            reviewers,
+            participants_total: participants.len() as u32,
+            participants,
+            viewer: ViewerAccess {
+                login: "ada".into(),
+                permission: Some("write".into()),
+                can_merge_as_admin: false,
+                can_enable_auto_merge: !pr.is_draft,
+                can_disable_auto_merge: false,
+            },
+            merge_settings: MergeSettings {
+                auto_merge_allowed: true,
+                squash: true,
+                merge: true,
+                rebase: false,
+            },
+            auto_merge: None,
+            fetched_at: Utc::now().to_rfc3339(),
+        }
+    }
+}
+
 impl VcsProvider for DemoProvider {
+    fn pull_request_overview(
+        &self,
+        pr: &PullRequest,
+    ) -> Result<pr_nexus_core::overview::PrOverview, ProviderError> {
+        Ok(Self::overview(pr))
+    }
     fn kind(&self) -> VcsKind {
         VcsKind::GitHub
     }

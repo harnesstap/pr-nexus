@@ -402,6 +402,22 @@ pub trait VcsProvider: Send + Sync {
     /// Team members. A team the token cannot read returns `complete: false`.
     fn team_members(&self, team: &TeamRef) -> Result<TeamMembers, ProviderError>;
     fn rate_limit(&self) -> Result<RateBudget, ProviderError>;
+    /// Checks, comments, people, merge rights, and auto-merge for the
+    /// detail panel (§7.2).
+    fn pull_request_overview(
+        &self,
+        _pr: &PullRequest,
+    ) -> Result<crate::overview::PrOverview, ProviderError> {
+        Err(crate::overview::unsupported())
+    }
+    /// Turns auto-merge on with `method`, or off with `None`.
+    fn set_auto_merge(
+        &self,
+        _pr: &PullRequest,
+        _method: Option<crate::overview::MergeMethod>,
+    ) -> Result<(), ProviderError> {
+        Err(crate::overview::unsupported())
+    }
     fn request_team_review(&self, pr: &PullRequest, teams: &[TeamRef])
     -> Result<(), ProviderError>;
 }

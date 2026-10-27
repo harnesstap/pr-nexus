@@ -104,6 +104,8 @@ function api(): Api {
     saveViewState: () => Promise.resolve(),
     openExternal: () => Promise.resolve(),
     prDetail: () => Promise.reject(new Error("unused")),
+    prOverview: () => Promise.resolve(null),
+    setAutoMerge: () => Promise.reject(new Error("unused")),
     prSlackContext: () => Promise.resolve([]),
     prSlackMentions: () => Promise.resolve([]),
     saveSlackMentions: () => Promise.resolve(),

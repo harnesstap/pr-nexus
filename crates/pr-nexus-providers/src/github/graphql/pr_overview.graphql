@@ -1,0 +1,58 @@
+query PullRequestOverview($owner: String!, $name: String!, $number: Int!) {
+  rateLimit { limit remaining resetAt cost }
+  viewer { login }
+  repository(owner: $owner, name: $name) {
+    viewerPermission
+    autoMergeAllowed
+    squashMergeAllowed
+    mergeCommitAllowed
+    rebaseMergeAllowed
+    pullRequest(number: $number) {
+      state
+      isDraft
+      baseRefName
+      headRefName
+      mergeable
+      mergeStateStatus
+      reviewDecision
+      viewerCanMergeAsAdmin
+      viewerCanEnableAutoMerge
+      viewerCanDisableAutoMerge
+      autoMergeRequest { mergeMethod enabledAt enabledBy { login } }
+      comments { totalCount }
+      reviewThreads(first: 100) { nodes { comments { totalCount } } }
+      participants(first: 30) { totalCount nodes { login name avatarUrl(size: 64) } }
+      reviewRequests(first: 30) {
+        nodes {
+          requestedReviewer {
+            __typename
+            ... on User { login name avatarUrl(size: 64) }
+            ... on Team { slug name avatarUrl(size: 64) organization { login } }
+          }
+        }
+      }
+      latestReviews(first: 50) {
+        nodes {
+          state
+          author { __typename login avatarUrl(size: 64) ... on User { name } }
+        }
+      }
+      commits(last: 1) {
+        nodes {
+          commit {
+            statusCheckRollup {
+              contexts(first: 100) {
+                totalCount
+                nodes {
+                  __typename
+                  ... on CheckRun { name status conclusion detailsUrl isRequired(pullRequestNumber: $number) }
+                  ... on StatusContext { context state targetUrl isRequired(pullRequestNumber: $number) }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

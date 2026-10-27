@@ -91,6 +91,39 @@ impl Store {
         })
     }
 
+    pub fn upsert_pr_overview(
+        &self,
+        pr: PrId,
+        json: String,
+        fetched_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(), CoreError> {
+        self.write(move |conn| {
+            conn.execute(
+                "INSERT INTO pr_overview_cache (pr_id, overview_json, fetched_at)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(pr_id) DO UPDATE SET
+                    overview_json = excluded.overview_json,
+                    fetched_at = excluded.fetched_at",
+                params![pr.0, json, format_ts(fetched_at)],
+            )
+            .map_err(db)?;
+            Ok(())
+        })
+    }
+
+    /// The cached detail-panel overview JSON for `pr`.
+    pub fn get_pr_overview(&self, pr: PrId) -> Result<Option<String>, CoreError> {
+        self.read(move |conn| {
+            conn.query_row(
+                "SELECT overview_json FROM pr_overview_cache WHERE pr_id = ?1",
+                [pr.0],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(db)
+        })
+    }
+
     pub fn upsert_team_members(&self, entry: TeamMembersCacheEntry) -> Result<(), CoreError> {
         self.write(move |conn| {
             conn.execute(

@@ -8,6 +8,7 @@ use pr_nexus_core::domain::{
 use pr_nexus_core::linking;
 use pr_nexus_core::mapping::{self, ImportMode};
 use pr_nexus_core::onboarding::{self, OnboardingState};
+use pr_nexus_core::overview::{self, MergeMethod, PrOverview};
 use pr_nexus_core::ownership::{self, OwnershipReport};
 use pr_nexus_core::providers::{SetupStep, VcsProvider};
 use pr_nexus_core::search;
@@ -1261,7 +1262,6 @@ pub struct PrDetail {
     pub codeowners_error: Option<String>,
     /// `true`, `false`, or `unknown`.
     pub codeowners_required: String,
-    pub codeowners_required_reason: String,
     pub code_owner_review_pending: Option<bool>,
     pub mandatory_teams: Vec<String>,
     pub optional_teams: Vec<String>,
@@ -1270,7 +1270,8 @@ pub struct PrDetail {
     pub attribution_unknown: Vec<TeamGap>,
     pub requested_teams: Vec<String>,
     pub users_ignored: Vec<String>,
-    pub rationale: Vec<String>,
+    /// Plain-language sentences for the "Details" expander, blockers first.
+    pub explanations: Vec<crate::explain::Explanation>,
     pub files: Vec<FileOwners>,
     pub files_truncated: bool,
     pub rules_error: Option<String>,
@@ -1291,38 +1292,97 @@ pub async fn pr_detail(
 }
 
 pub(crate) fn pr_detail_blocking(state: &AppState, id: PrId) -> Result<PrDetail, AppError> {
-    let pr = state
+    let pr = stored_pr(state, id)?;
+    let flag = settings::blocked_review_required_is_ready(&state.store)?;
+    let report = with_vcs(state, |provider| {
+        ownership::resolve(&state.store, provider, &pr, flag, Utc::now())
+    })?;
+    Ok(detail_dto(pr.id, report))
+}
+
+fn stored_pr(state: &AppState, id: PrId) -> Result<pr_nexus_core::domain::PullRequest, AppError> {
+    state
         .store
         .get_pull_request(id)?
-        .ok_or_else(|| AppError::new("not_found", "pull request not found"))?;
-    let flag = settings::blocked_review_required_is_ready(&state.store)?;
-    let report = if state.demo {
-        ownership::resolve(
-            &state.store,
-            &crate::demo::DemoProvider,
-            &pr,
-            flag,
-            Utc::now(),
-        )?
-    } else {
-        let account = state::github_account(&state.store)?
-            .ok_or_else(|| AppError::new("unauthorized", "Connect GitHub first"))?;
-        let token = state::resolve_github_token(state, Some(&account))?;
-        let client = GithubClient::new(account.id, token)?;
-        ownership::resolve(&state.store, &client, &pr, flag, Utc::now())?
-    };
-    Ok(detail_dto(pr.id, report))
+        .ok_or_else(|| AppError::new("not_found", "pull request not found"))
+}
+
+/// Runs `work` against GitHub, or the fixture provider in demo mode.
+fn with_vcs<T>(
+    state: &AppState,
+    work: impl FnOnce(&dyn VcsProvider) -> Result<T, pr_nexus_core::error::CoreError>,
+) -> Result<T, AppError> {
+    if state.demo {
+        return Ok(work(&crate::demo::DemoProvider)?);
+    }
+    let account = state::github_account(&state.store)?
+        .ok_or_else(|| AppError::new("unauthorized", "Connect GitHub first"))?;
+    let token = state::resolve_github_token(state, Some(&account))?;
+    let client = GithubClient::new(account.id, token)?;
+    Ok(work(&client)?)
+}
+
+/// The detail panel's cards (§7.2). With `refresh: false` this only reads
+/// the cache (no network), so the panel can draw at once and then ask again
+/// with `refresh: true`.
+#[tauri::command]
+pub async fn pr_overview(
+    app: State<'_, std::sync::Arc<AppState>>,
+    id: i64,
+    refresh: bool,
+) -> Result<Option<PrOverview>, AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        if !refresh {
+            return Ok(overview::cached(&state.store, PrId(id))?);
+        }
+        let pr = stored_pr(state, PrId(id))?;
+        with_vcs(state, |provider| {
+            overview::refresh(&state.store, provider, &pr)
+        })
+        .map(Some)
+    })
+    .await
+}
+
+/// Turns auto-merge on with `method` (`squash`, `merge`, `rebase`), or off
+/// when `method` is null, and returns the refreshed overview.
+#[tauri::command]
+pub async fn set_auto_merge(
+    app: State<'_, std::sync::Arc<AppState>>,
+    id: i64,
+    method: Option<String>,
+) -> Result<PrOverview, AppError> {
+    let method =
+        match method.as_deref() {
+            None => None,
+            Some(name) => Some(MergeMethod::parse(name).ok_or_else(|| {
+                AppError::new("validation", format!("unknown merge method {name}"))
+            })?),
+        };
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        let pr = stored_pr(state, PrId(id))?;
+        with_vcs(state, |provider| {
+            overview::set_auto_merge(&state.store, provider, &pr, method)
+        })
+    })
+    .await
 }
 
 fn detail_dto(id: PrId, report: OwnershipReport) -> PrDetail {
     use pr_nexus_core::domain::{Readiness, TeamRef};
     use pr_nexus_core::providers::ClassicProtection;
     let names = |teams: &[TeamRef]| teams.iter().map(ToString::to_string).collect::<Vec<_>>();
-    let (readiness, readiness_notes) = match report.readiness {
-        Readiness::Ready { notes } => ("ready", notes),
-        Readiness::Blocked { reasons } => ("blocked", reasons),
-        Readiness::Unknown { reasons } => ("unknown", reasons),
+    let (readiness, readiness_notes) = match &report.readiness {
+        Readiness::Ready { notes } => ("ready", notes.clone()),
+        Readiness::Blocked { reasons } => ("blocked", reasons.clone()),
+        Readiness::Unknown { reasons } => ("unknown", reasons.clone()),
     };
+    let explanations =
+        crate::explain::explanations(&report, readiness == "blocked", &readiness_notes);
     let decision = report.decision;
     PrDetail {
         id: id.0,
@@ -1338,7 +1398,6 @@ fn detail_dto(id: PrId, report: OwnershipReport) -> PrDetail {
             pr_nexus_core::domain::Tri::Unknown => "unknown",
         }
         .into(),
-        codeowners_required_reason: decision.codeowners_required_reason,
         code_owner_review_pending: report.code_owner_review_pending,
         mandatory_teams: names(&decision.mandatory_teams),
         optional_teams: names(&decision.optional_teams),
@@ -1354,7 +1413,7 @@ fn detail_dto(id: PrId, report: OwnershipReport) -> PrDetail {
             .collect(),
         requested_teams: decision.requested_teams_informational,
         users_ignored: decision.users_ignored_for_slack,
-        rationale: decision.rationale,
+        explanations,
         files: report
             .files
             .into_iter()
