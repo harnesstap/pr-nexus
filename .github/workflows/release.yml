@@ -225,3 +225,21 @@ jobs:
             gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest=false
             echo "Published $TAG (latest=false, highest is $HIGHEST)."
           fi
+
+  # Bumps Casks/pr-nexus.rb in harnesstap/homebrew-tap. Skips cleanly when the
+  # tap GitHub App credentials (HOMEBREW_TAP_APP_CLIENT_ID variable,
+  # HOMEBREW_TAP_APP_PRIVATE_KEY secret) are absent. Runs after the release is
+  # public, so a tap failure never blocks publishing.
+  homebrew-tap:
+    name: update Homebrew tap
+    needs:
+      - prepare
+      - publish
+    if: needs.publish.result == 'success' && needs.prepare.outputs.skip != 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/homebrew-tap.yml
+    with:
+      tag: ${{ needs.prepare.outputs.tag }}
+    secrets:
+      HOMEBREW_TAP_APP_PRIVATE_KEY: ${{ secrets.HOMEBREW_TAP_APP_PRIVATE_KEY }}

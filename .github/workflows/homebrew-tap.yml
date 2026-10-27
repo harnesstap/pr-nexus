@@ -1,0 +1,131 @@
+name: Homebrew tap
+
+# Renders Casks/pr-nexus.rb for a published release and pushes it to
+# harnesstap/homebrew-tap. release.yml calls it after the release is public;
+# run it by hand to backfill a tag or to check the setup.
+#
+# The push uses a short-lived installation token from a GitHub App installed
+# only on harnesstap/homebrew-tap (repository or organization variable
+# HOMEBREW_TAP_APP_CLIENT_ID, secret HOMEBREW_TAP_APP_PRIVATE_KEY). Without
+# them every step after the check is skipped, so a missing tap credential never
+# fails a release. Runs on a GitHub-hosted runner so the tap credential never
+# reaches the shared self-hosted runners.
+on:
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+    secrets:
+      HOMEBREW_TAP_APP_PRIVATE_KEY:
+        required: false
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published release tag to render into the tap (for example v0.1.0)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# The tap also receives commits from other repositories' releases; the push
+# step rebases and retries.
+concurrency:
+  group: homebrew-tap
+  cancel-in-progress: false
+
+jobs:
+  update:
+    name: update Homebrew tap
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      TAG: ${{ inputs.tag }}
+      TAP_REPO: harnesstap/homebrew-tap
+    steps:
+      - name: Check tap credential and release
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APP_CLIENT_ID: ${{ vars.HOMEBREW_TAP_APP_CLIENT_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.HOMEBREW_TAP_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          echo "run=false" >> "$GITHUB_OUTPUT"
+          if [ -z "$APP_CLIENT_ID" ] || [ -z "$APP_PRIVATE_KEY" ]; then
+            echo "::notice::The HOMEBREW_TAP_APP_CLIENT_ID variable or the HOMEBREW_TAP_APP_PRIVATE_KEY secret is not set; skipping the Homebrew tap update for $TAG."
+            exit 0
+          fi
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::notice::$TAG is not a stable vX.Y.Z tag; the tap only tracks stable releases."
+            exit 0
+          fi
+          INFO="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease,assets)"
+          if [ "$(jq -r '.isDraft or .isPrerelease' <<<"$INFO")" = "true" ]; then
+            echo "::notice::$TAG is a draft or prerelease; skipping the Homebrew tap update."
+            exit 0
+          fi
+          jq '{assets: [.assets[] | {name, digest}]}' <<<"$INFO" > "$RUNNER_TEMP/assets.json"
+          echo "run=true" >> "$GITHUB_OUTPUT"
+
+      # The tagged sources carry the cask template and the app's productName.
+      - name: Check out tagged sources
+        if: steps.check.outputs.run == 'true'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+
+      # Scoped to the tap repository with contents:write only; revoked when the job ends.
+      - name: Mint tap token
+        id: app-token
+        if: steps.check.outputs.run == 'true'
+        # Pinned to v3.3.0 by commit: the tap credential passes through this action.
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.HOMEBREW_TAP_APP_CLIENT_ID }}
+          private-key: ${{ secrets.HOMEBREW_TAP_APP_PRIVATE_KEY }}
+          owner: harnesstap
+          repositories: homebrew-tap
+          permission-contents: write
+
+      - name: Check out tap
+        if: steps.check.outputs.run == 'true'
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ env.TAP_REPO }}
+          token: ${{ steps.app-token.outputs.token }}
+          path: homebrew-tap
+
+      # Writes nothing when the tap already carries this or a newer version.
+      - name: Render cask
+        if: steps.check.outputs.run == 'true'
+        run: bash scripts/render-homebrew-cask.sh "$TAG" "$RUNNER_TEMP/assets.json" homebrew-tap
+
+      - name: Commit and push
+        if: steps.check.outputs.run == 'true'
+        working-directory: homebrew-tap
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+        run: |
+          set -euo pipefail
+          if [ -z "$(git status --porcelain -- Casks/pr-nexus.rb)" ]; then
+            echo "Tap already up to date for $TAG."
+            exit 0
+          fi
+          BOT_ID="$(gh api "/users/${APP_SLUG}%5Bbot%5D" --jq .id)"
+          git config user.name "${APP_SLUG}[bot]"
+          git config user.email "${BOT_ID}+${APP_SLUG}[bot]@users.noreply.github.com"
+          git add Casks/pr-nexus.rb
+          git commit -m "pr-nexus ${TAG#v}"
+          for attempt in 1 2 3; do
+            if git push origin HEAD; then
+              exit 0
+            fi
+            echo "Push attempt $attempt was rejected; rebasing on the tap's main."
+            git pull --rebase origin main
+          done
+          echo "::error::Could not push pr-nexus ${TAG#v} to $TAP_REPO."
+          exit 1

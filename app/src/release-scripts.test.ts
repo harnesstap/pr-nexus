@@ -13,6 +13,7 @@ const prepareScript = join(repoRoot, "scripts", "prepare-release.sh");
 const stampScript = join(repoRoot, "scripts", "stamp-release-version.sh");
 const assetsScript = join(repoRoot, "scripts", "check-release-assets.sh");
 const planScript = join(repoRoot, "scripts", "tag-release-plan.sh");
+const caskScript = join(repoRoot, "scripts", "render-homebrew-cask.sh");
 const dirs: string[] = [];
 
 afterEach(async () => {
@@ -149,12 +150,81 @@ edition = "2024"
 serde = "1"
 `,
   );
+  await mkdir(join(root, "app"), { recursive: true });
+  await writeFile(
+    join(root, "app", "package.json"),
+    '{\n  "name": "pr-nexus",\n  "version": "0.1.0",\n  "devDependencies": {\n    "x": {\n      "version": "9.9.9"\n    }\n  }\n}\n',
+  );
   await execFileAsync("/bin/bash", [stampScript, "v0.2.0"], {
     env: { ...process.env, STAMP_RELEASE_ROOT: root, STAMP_SKIP_CARGO: "1" },
   });
   const text = await readFile(join(root, "Cargo.toml"), "utf8");
   expect(text).toContain('version = "0.2.0"');
   expect(text).toContain('serde = "1"');
+  const pkg = await readFile(join(root, "app", "package.json"), "utf8");
+  expect(JSON.parse(pkg).version).toBe("0.2.0");
+  expect(pkg).toContain('"version": "9.9.9"');
+});
+
+test("app/package.json matches the Cargo workspace version", async () => {
+  const cargo = await readFile(join(repoRoot, "Cargo.toml"), "utf8");
+  const workspaceVersion = /\[workspace\.package\][^[]*?\nversion = "([^"]+)"/.exec(cargo)?.[1];
+  const pkg = JSON.parse(await readFile(join(repoRoot, "app", "package.json"), "utf8")) as {
+    version: string;
+  };
+  expect(workspaceVersion).toBeDefined();
+  expect(pkg.version).toBe(workspaceVersion);
+});
+
+const fakeSha = "ab".repeat(32);
+
+async function renderCask(tag: string, assets: unknown, tap: string, appName = "PR Nexus") {
+  const assetsFile = join(tap, "..", `assets-${tag}.json`);
+  await writeFile(assetsFile, JSON.stringify({ assets }));
+  return execFileAsync("/bin/bash", [caskScript, tag, assetsFile, tap], {
+    env: { ...process.env, CASK_APP_NAME: appName },
+  });
+}
+
+test("homebrew cask renders from the release's own DMG name and digest", async () => {
+  const root = await tempDir("cask-");
+  const tap = join(root, "tap");
+  const result = await renderCask(
+    "v0.1.0",
+    [
+      { name: "pr-nexus_0.1.0_aarch64.dmg", digest: `sha256:${fakeSha}` },
+      { name: "notes.txt", digest: null },
+    ],
+    tap,
+  );
+  expect(result.stdout).toContain("wrote Casks/pr-nexus.rb for 0.1.0");
+  const cask = await readFile(join(tap, "Casks", "pr-nexus.rb"), "utf8");
+  expect(cask).toContain('cask "pr-nexus" do');
+  expect(cask).toContain('version "0.1.0"');
+  expect(cask).toContain(`sha256 "${fakeSha}"`);
+  expect(cask).toContain(
+    'url "https://github.com/harnesstap/pr-nexus/releases/download/v#{version}/pr-nexus_#{version}_aarch64.dmg"',
+  );
+  expect(cask).toContain('app "PR Nexus.app"');
+  expect(cask).toContain('name "PR Nexus"');
+  expect(cask).not.toMatch(/@[A-Z_]+@/);
+
+  // Same or older version: the tap is left alone.
+  const again = await renderCask("v0.0.9", [], tap);
+  expect(again.stdout).toContain("already at pr-nexus 0.1.0");
+  expect(await readFile(join(tap, "Casks", "pr-nexus.rb"), "utf8")).toBe(cask);
+});
+
+test("homebrew cask refuses a release without exactly one hashed arm64 DMG", async () => {
+  const root = await tempDir("cask-bad-");
+  const tap = join(root, "tap");
+  await expect(renderCask("v0.1.0", [{ name: "PR-Nexus_0.1.0_x64.dmg", digest: `sha256:${fakeSha}` }], tap)).rejects.toThrow(
+    /expected one \*_0\.1\.0_aarch64\.dmg asset, found 0/,
+  );
+  await expect(renderCask("v0.1.0", [{ name: "PR-Nexus_0.1.0_aarch64.dmg", digest: null }], tap)).rejects.toThrow(
+    /has no sha256 digest/,
+  );
+  await expect(renderCask("v0.1.0-rc.1", [], tap)).rejects.toThrow(/not a stable vX\.Y\.Z tag/);
 });
 
 test("release asset check requires the arm64 DMG only", async () => {

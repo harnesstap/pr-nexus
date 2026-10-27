@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-# Write the release version into the one place it lives:
-# [workspace.package] version in the root Cargo.toml. Then refresh Cargo.lock.
+# Write the release version into [workspace.package] version in the root
+# Cargo.toml (Tauri reads it from there) and into app/package.json, then
+# refresh Cargo.lock.
 #
 # Usage: scripts/stamp-release-version.sh <version>
 # version may be "1.2.3" or "v1.2.3".
 #
-# STAMP_RELEASE_ROOT  directory that contains Cargo.toml (default: repo root)
-# STAMP_SKIP_CARGO=1  rewrite the manifest only (tests)
+# STAMP_RELEASE_ROOT  directory that contains Cargo.toml and app/package.json
+#                     (default: repo root)
+# STAMP_SKIP_CARGO=1  rewrite the files only, skip `cargo update` (tests)
 set -euo pipefail
 
 if [ "${1:-}" = "" ]; then
@@ -43,6 +45,18 @@ for line in lines:
 if not replaced:
     raise SystemExit(f"no [workspace.package] version in {path}")
 file.write_text("".join(out))
+PY
+
+python3 - "$ROOT/app/package.json" "$VERSION" <<'PY'
+import pathlib, re, sys
+path, version = sys.argv[1], sys.argv[2]
+file = pathlib.Path(path)
+text = file.read_text()
+# The top-level "version" is the only key indented by exactly two spaces.
+new, count = re.subn(r'^(  "version": )"[^"]*"', rf'\g<1>"{version}"', text, count=1, flags=re.M)
+if count != 1:
+    raise SystemExit(f"no top-level version in {path}")
+file.write_text(new)
 PY
 
 if [ "${STAMP_SKIP_CARGO:-}" = "1" ]; then
