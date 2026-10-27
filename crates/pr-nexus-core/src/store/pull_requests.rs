@@ -4,7 +4,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::domain::{
     AccountId, Involvement, PR_BODY_MAX_BYTES, PrId, ProviderRef, PullRequest, RepoRef, Repository,
-    Reviewer, TeamRef,
+    RequestedReviewer, Reviewer, TeamRef,
 };
 use crate::error::CoreError;
 use crate::search;
@@ -345,14 +345,23 @@ fn upsert_pull_request(
 
     conn.execute("DELETE FROM pr_requested_reviewers WHERE pr_id = ?1", [id])
         .map_err(db)?;
-    for reviewer in &pr.requested_reviewers {
-        let (kind, org, login_or_slug) = match reviewer {
+    for request in &pr.requested_reviewers {
+        let (kind, org, login_or_slug) = match &request.reviewer {
             Reviewer::User { login } => ("user", None, login.as_str()),
             Reviewer::Team(team) => ("team", Some(team.org.as_str()), team.slug.as_str()),
         };
         conn.execute(
-            "INSERT INTO pr_requested_reviewers (pr_id, kind, org, login_or_slug) VALUES (?1, ?2, ?3, ?4)",
-            params![id, kind, org, login_or_slug],
+            "INSERT INTO pr_requested_reviewers
+                (pr_id, kind, org, login_or_slug, name, avatar_url)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                id,
+                kind,
+                org,
+                login_or_slug,
+                request.name,
+                request.avatar_url
+            ],
         )
         .map_err(db)?;
     }
@@ -417,7 +426,8 @@ fn list_for_account(
 
     let mut reviewers = conn
         .prepare(
-            "SELECT v.pr_id, v.kind, v.org, v.login_or_slug FROM pr_requested_reviewers v
+            "SELECT v.pr_id, v.kind, v.org, v.login_or_slug, v.name, v.avatar_url
+             FROM pr_requested_reviewers v
              JOIN pull_requests pr ON pr.id = v.pr_id
              JOIN repositories r ON r.id = pr.repo_id
              WHERE r.account_id = ?1 ORDER BY v.rowid",
@@ -514,7 +524,7 @@ fn load_pull_request(conn: &Connection, id: PrId) -> Result<Option<PullRequest>,
 
     let mut reviewers = conn
         .prepare(
-            "SELECT kind, org, login_or_slug FROM pr_requested_reviewers
+            "SELECT kind, org, login_or_slug, name, avatar_url FROM pr_requested_reviewers
              WHERE pr_id = ?1 ORDER BY rowid",
         )
         .map_err(db)?;
@@ -647,7 +657,15 @@ fn map_pull_request_at(row: &rusqlite::Row<'_>, cols: &PrColumns) -> rusqlite::R
     })
 }
 
-fn map_reviewer(row: &rusqlite::Row<'_>) -> rusqlite::Result<Reviewer> {
+fn map_reviewer(row: &rusqlite::Row<'_>) -> rusqlite::Result<RequestedReviewer> {
+    Ok(RequestedReviewer {
+        reviewer: map_reviewer_ref(row)?,
+        name: row.get("name")?,
+        avatar_url: row.get("avatar_url")?,
+    })
+}
+
+fn map_reviewer_ref(row: &rusqlite::Row<'_>) -> rusqlite::Result<Reviewer> {
     let kind: String = row.get("kind")?;
     let login_or_slug: String = row.get("login_or_slug")?;
     let org: Option<String> = row.get("org")?;

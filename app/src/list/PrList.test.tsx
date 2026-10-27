@@ -38,6 +38,7 @@ function row(partial: Partial<SearchRow> & Pick<SearchRow, "id" | "title">): Sea
     readiness_notes: [],
     conflicts: false,
     reviewers_requested: false,
+    pending_reviewers: [],
     slack: null,
     ...partial,
   };
@@ -744,4 +745,25 @@ test("quick filters show counts, filter one at a time and clear on a second clic
   await settle();
   expect(screen.getByRole("checkbox", { name: "Select Draft work" })).toBeInTheDocument();
   expect(screen.getByRole("checkbox", { name: "Select Ship it" })).toBeInTheDocument();
+});
+
+test("a row shows who still has to review, and a row without requests shows no stack", async () => {
+  const reviewers = [
+    { kind: "user" as const, login: "ada", name: "Ada Example", avatar_url: null },
+    { kind: "user" as const, login: "bo", name: null, avatar_url: null },
+    { kind: "team" as const, login: "acme/web", name: "Web Team", avatar_url: null },
+    { kind: "team" as const, login: "acme/api", name: null, avatar_url: null },
+  ];
+  await show(
+    <Harness
+      rows={[
+        row({ id: 1, title: "Needs eyes", project_ids: [1], reviewers_requested: true, pending_reviewers: reviewers }),
+        row({ id: 2, title: "Nobody asked", project_ids: [1] }),
+      ]}
+    />,
+  );
+  const asked = screen.getByRole("article", { name: "#1 Needs eyes" });
+  const stack = within(asked).getByRole("group", { name: "Waiting on 4 reviewers" });
+  expect(within(stack).getByTestId("reviewer-more")).toHaveTextContent("+1");
+  expect(within(screen.getByRole("article", { name: "#2 Nobody asked" })).queryByTestId("reviewer-avatars")).toBeNull();
 });

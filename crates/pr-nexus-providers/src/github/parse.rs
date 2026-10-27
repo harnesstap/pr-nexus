@@ -3,7 +3,7 @@
 use chrono::{DateTime, Utc};
 use pr_nexus_core::domain::{
     AccountId, ChecksState, Involvement, MergeStateStatus, Mergeable, PrId, PrState, ProviderRef,
-    PullRequest, RepoRef, ReviewDecision, Reviewer, TeamRef,
+    PullRequest, RepoRef, RequestedReviewer, ReviewDecision, Reviewer, TeamRef,
 };
 use pr_nexus_core::error::ProviderError;
 use pr_nexus_core::providers::{PrStatus, RateBudget, SyncedPullRequest, VcsUser};
@@ -283,7 +283,7 @@ fn parse_status_node(node: &Value) -> Result<PrStatus, ProviderError> {
     })
 }
 
-fn reviewers(node: &Value) -> Vec<Reviewer> {
+fn reviewers(node: &Value) -> Vec<RequestedReviewer> {
     let Some(nodes) = node
         .pointer("/reviewRequests/nodes")
         .and_then(Value::as_array)
@@ -295,21 +295,35 @@ fn reviewers(node: &Value) -> Vec<Reviewer> {
         let Some(reviewer) = node.get("requestedReviewer") else {
             continue;
         };
-        if let Some(slug) = reviewer.get("slug").and_then(Value::as_str) {
+        let text = |key: &str| {
+            reviewer
+                .get(key)
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+        };
+        let identity = if let Some(slug) = reviewer.get("slug").and_then(Value::as_str) {
             let org = reviewer
                 .pointer("/organization/login")
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_owned();
-            out.push(Reviewer::Team(TeamRef {
+            Reviewer::Team(TeamRef {
                 org,
                 slug: slug.to_owned(),
-            }));
+            })
         } else if let Some(login) = reviewer.get("login").and_then(Value::as_str) {
-            out.push(Reviewer::User {
+            Reviewer::User {
                 login: login.to_owned(),
-            });
-        }
+            }
+        } else {
+            continue;
+        };
+        out.push(RequestedReviewer {
+            reviewer: identity,
+            name: text("name"),
+            avatar_url: text("avatarUrl"),
+        });
     }
     out
 }

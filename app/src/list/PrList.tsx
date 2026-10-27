@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ListRow, ProjectDto } from "../api";
 import { ChevronDownIcon, ChevronRightIcon, CloseIcon, CommentIcon, ExternalIcon, FolderPlusIcon, FunnelIcon, MoreIcon, SearchIcon, SlackIcon } from "../icons";
 import { Tooltip } from "../Tooltip";
+import { ReviewerAvatars } from "./ReviewerAvatars";
 import { QuickFilters } from "./QuickFilters";
 import { AddToProjectMenu } from "./AddToProjectMenu";
 import { isPlainShortcut, isTypingTarget, wantsRowEnter } from "./keys";
@@ -615,6 +616,11 @@ export function PrList({
                       <div className="flex w-40 shrink-0 items-center">
                         {view.show.review && <ReviewPill decision={row.review_decision} />}
                       </div>
+                      {view.show.review && (
+                        <div className="flex w-20 shrink-0 items-center justify-end">
+                          <ReviewerAvatars reviewers={row.pending_reviewers} />
+                        </div>
+                      )}
                       {view.show.threads && <Threads row={row} />}
                       <div className="flex w-44 shrink-0 items-center justify-end">
                         <SlackMark row={row} now={now} showMissing={view.show.notRequested} onOpen={onOpen} />

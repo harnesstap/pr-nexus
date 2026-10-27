@@ -629,6 +629,7 @@ mod tests {
                 readiness_notes: Vec::new(),
                 conflicts: false,
                 reviewers_requested: false,
+                pending_reviewers: Vec::new(),
                 slack: None,
             },
             updated_ms: updated.timestamp_millis(),
@@ -929,5 +930,48 @@ mod tests {
         let page = page(&items, &projects, &request, None);
         assert_eq!(page.sections.len(), 1);
         assert_eq!(page.sections[0].key, "unassigned");
+    }
+
+    #[test]
+    fn pending_reviewers_are_users_then_teams_in_login_order() {
+        use pr_nexus_core::domain::{RequestedReviewer, Reviewer, TeamRef};
+        let user = |login: &str| {
+            RequestedReviewer::bare(Reviewer::User {
+                login: login.to_owned(),
+            })
+        };
+        let team = |slug: &str| {
+            RequestedReviewer::bare(Reviewer::Team(TeamRef {
+                org: "acme".to_owned(),
+                slug: slug.to_owned(),
+            }))
+        };
+        let requests = vec![
+            team("web"),
+            user("zoe"),
+            team("api"),
+            user("Bob"),
+            user("alice"),
+        ];
+        let logins: Vec<String> = crate::commands::pending_reviewers(&requests)
+            .into_iter()
+            .map(|reviewer| format!("{}:{}", reviewer.kind, reviewer.login))
+            .collect();
+        assert_eq!(
+            logins,
+            vec![
+                "user:alice",
+                "user:Bob",
+                "user:zoe",
+                "team:acme/api",
+                "team:acme/web"
+            ]
+        );
+        let mut reversed = requests.clone();
+        reversed.reverse();
+        assert_eq!(
+            crate::commands::pending_reviewers(&reversed),
+            crate::commands::pending_reviewers(&requests)
+        );
     }
 }

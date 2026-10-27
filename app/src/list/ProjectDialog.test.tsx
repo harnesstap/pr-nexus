@@ -33,6 +33,7 @@ function row(id: number, title: string, project_ids: number[]): SearchRow {
     readiness_notes: [],
     conflicts: false,
     reviewers_requested: false,
+    pending_reviewers: [],
     slack: null,
   };
 }

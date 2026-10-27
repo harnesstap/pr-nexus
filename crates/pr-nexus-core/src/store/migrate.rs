@@ -12,6 +12,7 @@ use super::db;
 const MIGRATIONS: &[&str] = &[
     include_str!("../../migrations/0001_initial.sql"),
     include_str!("../../migrations/0002_list_search.sql"),
+    include_str!("../../migrations/0003_reviewer_profiles.sql"),
 ];
 
 pub(super) fn migrate(conn: &mut Connection) -> Result<(), CoreError> {
@@ -43,4 +44,43 @@ pub(super) fn migrate(conn: &mut Connection) -> Result<(), CoreError> {
     }
     tx.commit().map_err(db)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reviewer_profiles_upgrade_keeps_existing_requests() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..2] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 2_i64).unwrap();
+        // The row stands in for one synced before the upgrade; no PR row is needed.
+        conn.pragma_update(None, "foreign_keys", false).unwrap();
+        conn.execute(
+            "INSERT INTO pr_requested_reviewers (pr_id, kind, org, login_or_slug)
+             VALUES (1, 'user', NULL, 'octo')",
+            [],
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.len() as i64);
+        let (login, name, avatar): (String, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT login_or_slug, name, avatar_url FROM pr_requested_reviewers",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(login, "octo");
+        assert_eq!(name, None);
+        assert_eq!(avatar, None);
+    }
 }

@@ -83,6 +83,7 @@ function row(partial: Partial<SearchRow> & Pick<SearchRow, "id" | "title" | "num
     readiness_notes: [],
     conflicts: false,
     reviewers_requested: false,
+    pending_reviewers: [],
     slack: null,
     ...partial,
   };
@@ -116,6 +117,13 @@ const rows: SearchRow[] = [
     review_decision: "review_required",
     unresolved_threads: 1,
     total_threads: 4,
+    reviewers_requested: true,
+    pending_reviewers: [
+      { kind: "user", login: "dana", name: "Dana Example", avatar_url: null },
+      { kind: "user", login: "lee", name: null, avatar_url: null },
+      { kind: "team", login: "acme/auth", name: "Auth Team", avatar_url: null },
+      { kind: "team", login: "acme/security", name: null, avatar_url: null },
+    ],
   }),
   row({
     id: 3,
