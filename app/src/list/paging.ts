@@ -75,7 +75,21 @@ export interface PageDto {
   orgs: { name: string; count: number }[];
   /** Rows per quick filter, over the menu filters and search but ignoring the quick filter. */
   quick: Record<QuickFilter, number>;
+  /** Where else the search matches, so an empty result can point there. Null without a query. */
+  elsewhere: Elsewhere | null;
 }
+
+export interface Elsewhere {
+  /** Matches in the other nav views, same open/archived scope, before menu filters. */
+  views: { view_key: string; count: number }[];
+  /** Matches in this view hidden by the menu or quick filters. */
+  filtered: number;
+  /** Matches in this view that pass the filters but are merged, closed, or only in archived projects. */
+  finished: number;
+}
+
+/** Nav views that list rows by involvement, in sidebar order. */
+const NAV_VIEWS = ["mine", "to_review"] as const;
 
 /** Row plus the fields only search needs. The backend keeps them in SQLite. */
 export type SearchRow = ListRow & { body?: string };
@@ -188,6 +202,22 @@ export function pageFromRows(rows: readonly SearchRow[], projects: readonly Proj
     in_view: scoped.length,
     orgs: [...orgCounts.entries()].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)).map(([name, count]) => ({ name, count })),
     quick,
+    elsewhere: terms.length > 0 ? elsewhereFor(rows, projects, request, terms, now) : null,
+  };
+}
+
+function elsewhereFor(rows: readonly SearchRow[], projects: readonly ProjectDto[], request: PageRequest, terms: readonly string[], now: Date): Elsewhere {
+  const filters = request.filters;
+  const found = rows.filter((row) => !row.hidden && matchesTerms(row, projects, terms));
+  const passes = (row: SearchRow) => passesMenu(row, filters, now) && (!filters.quick || quickMatches(row, filters.quick));
+  const here = rowsForView(found, request.view_key);
+  return {
+    views: NAV_VIEWS.filter((key) => key !== request.view_key).map((key) => ({
+      view_key: key,
+      count: rowsForView(found, key).filter((row) => scopeRow(row, projects, filters)).length,
+    })),
+    filtered: here.filter((row) => scopeRow(row, projects, filters) && !passes(row)).length,
+    finished: here.filter((row) => !scopeRow(row, projects, filters) && passes(row)).length,
   };
 }
 

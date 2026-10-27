@@ -751,14 +751,17 @@ pub async fn list_page(
     request: listing::PageRequest,
 ) -> Result<listing::PageDto, AppError> {
     let app = blocking::Handle::new(&app);
-    blocking::run(move || {
-        let state = app.inner().as_ref();
-        let projects = all_projects(state)?;
-        let items = list_items(state)?;
-        let found = search_ids(state, &projects, &request.query)?;
-        Ok(listing::page(&items, &projects, &request, found.as_ref()))
-    })
-    .await
+    blocking::run(move || page_for(app.inner().as_ref(), &request)).await
+}
+
+fn page_for(
+    state: &AppState,
+    request: &listing::PageRequest,
+) -> Result<listing::PageDto, AppError> {
+    let projects = all_projects(state)?;
+    let items = list_items(state)?;
+    let found = search_ids(state, &projects, &request.query)?;
+    Ok(listing::page(&items, &projects, request, found.as_ref()))
 }
 
 /// Rows by id, in the order asked, for dialogs that outlive the loaded pages.
@@ -1507,4 +1510,177 @@ pub async fn open_external(app: tauri::AppHandle, url: String) -> Result<(), App
             .map_err(|err| AppError::new("network", err.to_string()))
     })
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::Duration;
+    use pr_nexus_core::domain::{Involvement, PrState, RepoRef, Repository};
+
+    use super::*;
+
+    /// Demo data plus `acme/service-ssp`: #123 authored, #124 to review, #125 merged.
+    fn state_with_hyphenated_repo() -> (tempfile::TempDir, AppState) {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::open(dir.path().join("pr-nexus.db")).unwrap();
+        crate::demo::seed_if_empty(&state.store).unwrap();
+        let account = state::github_account(&state.store).unwrap().unwrap();
+        let template = state
+            .store
+            .list_pull_requests_for_account(account.id)
+            .unwrap()
+            .remove(0);
+        let repo = state
+            .store
+            .upsert_repository(Repository {
+                id: 0,
+                account_id: account.id,
+                owner: "acme".into(),
+                name: "service-ssp".into(),
+                node_id: Some("R_ssp".into()),
+                default_branch: Some("main".into()),
+                archived: false,
+            })
+            .unwrap();
+        let specs = [
+            (
+                123,
+                "fix(bids): v2.1 time-outs on /auction #9",
+                Involvement::AUTHOR,
+                PrState::Open,
+            ),
+            (
+                124,
+                "Tune the floor",
+                Involvement::REVIEW_REQUESTED,
+                PrState::Open,
+            ),
+            (
+                125,
+                "Drop the old floor",
+                Involvement::AUTHOR,
+                PrState::Merged,
+            ),
+        ];
+        for (number, title, involvement, pr_state) in specs {
+            let mut pr = template.clone();
+            pr.id = PrId(0);
+            pr.remote.id = format!("PR_ssp_{number}");
+            pr.repo = RepoRef {
+                host: "github.com".into(),
+                owner: "acme".into(),
+                name: "service-ssp".into(),
+            };
+            pr.number = number;
+            pr.title = title.into();
+            pr.url = format!("https://github.com/acme/service-ssp/pull/{number}");
+            pr.head_ref = format!("feat/ssp-{number}");
+            pr.author_login = "grace-h".into();
+            pr.involvement = involvement;
+            pr.state = pr_state;
+            pr.updated_at = Utc::now() - Duration::hours(1);
+            state.store.upsert_pull_request(repo.id, pr).unwrap();
+        }
+        (dir, state)
+    }
+
+    fn request(view_key: &str, query: &str) -> listing::PageRequest {
+        let now = Utc::now();
+        listing::PageRequest {
+            view_key: view_key.into(),
+            grouping: "repository".into(),
+            ordering: "updated".into(),
+            direction: "desc".into(),
+            filters: listing::FiltersDto::default(),
+            query: query.into(),
+            collapsed: Vec::new(),
+            cursor: None,
+            limit: 50,
+            now,
+            day_start: now - Duration::hours(12),
+            week_start: now - Duration::days(7),
+        }
+    }
+
+    fn numbers(page: &listing::PageDto) -> Vec<u64> {
+        let mut numbers: Vec<u64> = page
+            .entries
+            .iter()
+            .filter_map(|entry| entry.row.as_ref().map(|row| row.number))
+            .collect();
+        numbers.sort_unstable();
+        numbers
+    }
+
+    #[test]
+    fn search_finds_repos_by_name_owner_partial_and_punctuation() {
+        let (_dir, state) = state_with_hyphenated_repo();
+        for query in [
+            "service-ssp",
+            "Service-SSP",
+            "acme/service-ssp",
+            "ssp",
+            "service-s",
+            "service\u{2011}ssp",
+            "fix(bids):",
+            "v2.1",
+            "/auction",
+            "#9",
+            "#123",
+            "123",
+            "feat/ssp-123",
+            "grace-h",
+        ] {
+            let page = page_for(&state, &request("mine", query)).unwrap();
+            assert_eq!(numbers(&page), vec![123], "{query}");
+            let ids: Vec<i64> = listing_ids(&page);
+            assert_eq!(ids.len(), 1, "{query}: select-all ids follow the search");
+        }
+        let widgets = page_for(&state, &request("mine", "acme/widgets")).unwrap();
+        assert_eq!(numbers(&widgets), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn an_empty_search_says_where_the_matches_are() {
+        let (_dir, state) = state_with_hyphenated_repo();
+        let mine = page_for(&state, &request("mine", "floor")).unwrap();
+        assert!(mine.entries.iter().all(|entry| entry.row.is_none()));
+        let elsewhere = mine.elsewhere.unwrap();
+        assert_eq!(
+            elsewhere.views,
+            vec![listing::ViewCount {
+                view_key: "to_review".into(),
+                count: 1
+            }]
+        );
+        assert_eq!(elsewhere.finished, 1);
+        assert_eq!(elsewhere.filtered, 0);
+
+        let mut with_closed = request("mine", "floor");
+        with_closed.filters.archived = true;
+        let page = page_for(&state, &with_closed).unwrap();
+        assert_eq!(numbers(&page), vec![125]);
+        assert_eq!(page.summary.finished, 1);
+
+        let to_review = page_for(&state, &request("to_review", "service-ssp")).unwrap();
+        assert_eq!(numbers(&to_review), vec![124]);
+        assert_eq!(to_review.elsewhere.unwrap().views[0].count, 1);
+        assert!(
+            page_for(&state, &request("mine", ""))
+                .unwrap()
+                .elsewhere
+                .is_none()
+        );
+    }
+
+    fn listing_ids(page: &listing::PageDto) -> Vec<i64> {
+        let mut ids: Vec<i64> = page
+            .sections
+            .iter()
+            .flat_map(|section| section.ids.iter().copied())
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    }
 }

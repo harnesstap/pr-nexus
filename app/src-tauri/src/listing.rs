@@ -112,6 +112,26 @@ pub struct QuickCounts {
     pub ready: usize,
 }
 
+/// Where else the search matches, so an empty result can say why and offer
+/// the way there instead of a bare "no match".
+#[derive(Debug, Serialize, PartialEq, Eq, Default)]
+pub struct Elsewhere {
+    /// Matches in the other nav views (`mine`, `to_review`), within the same
+    /// open/archived scope but before any menu filter.
+    pub views: Vec<ViewCount>,
+    /// Matches in this view that the menu or quick filters hide.
+    pub filtered: usize,
+    /// Matches in this view that pass the filters but are merged, closed, or
+    /// only in archived projects; "Archived and closed" brings them back.
+    pub finished: usize,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct ViewCount {
+    pub view_key: String,
+    pub count: usize,
+}
+
 #[derive(Debug, Serialize)]
 pub struct PageDto {
     pub entries: Vec<PageEntry>,
@@ -121,6 +141,8 @@ pub struct PageDto {
     pub in_view: usize,
     pub orgs: Vec<OrgCount>,
     pub quick: QuickCounts,
+    /// Only while searching.
+    pub elsewhere: Option<Elsewhere>,
 }
 
 /// A list row with the times the page logic compares, parsed once.
@@ -174,6 +196,17 @@ pub fn page(
         .filter(|item| search.is_none_or(|ids| ids.contains(&item.row.id)))
         .collect();
     let quick = quick_counts(&matched);
+    let elsewhere = search.map(|ids| {
+        elsewhere(
+            items,
+            &request.view_key,
+            project_view,
+            &live_ids,
+            filters,
+            now_ms,
+            ids,
+        )
+    });
     let mut shown: Vec<&Item> = matched
         .into_iter()
         .filter(|item| {
@@ -272,6 +305,7 @@ pub fn page(
             })
             .collect(),
         quick,
+        elsewhere,
     }
 }
 
@@ -351,6 +385,61 @@ fn in_view(row: &ListRow, view_key: &str, project: Option<i64>) -> bool {
             Some(id) => row.project_ids.contains(&id),
             None => true,
         },
+    }
+}
+
+/// Nav views that list rows by involvement, in sidebar order.
+const NAV_VIEWS: [&str; 2] = ["mine", "to_review"];
+
+fn elsewhere(
+    items: &[Item],
+    view_key: &str,
+    project_view: Option<i64>,
+    live_ids: &HashSet<i64>,
+    filters: &FiltersDto,
+    now_ms: i64,
+    search: &HashSet<i64>,
+) -> Elsewhere {
+    let found: Vec<&Item> = items
+        .iter()
+        .filter(|item| !item.row.hidden && search.contains(&item.row.id))
+        .collect();
+    let views = NAV_VIEWS
+        .iter()
+        .filter(|key| **key != view_key)
+        .map(|key| ViewCount {
+            view_key: (*key).to_owned(),
+            count: found
+                .iter()
+                .filter(|item| in_view(&item.row, key, None))
+                .filter(|item| scope_row(&item.row, live_ids, filters))
+                .count(),
+        })
+        .collect();
+    let passes = |item: &Item| {
+        passes_menu(item, filters, now_ms)
+            && filters
+                .quick
+                .as_deref()
+                .is_none_or(|quick| quick_matches(&item.row, quick))
+    };
+    let here: Vec<&Item> = found
+        .iter()
+        .copied()
+        .filter(|item| in_view(&item.row, view_key, project_view))
+        .collect();
+    let filtered = here
+        .iter()
+        .filter(|item| scope_row(&item.row, live_ids, filters) && !passes(item))
+        .count();
+    let finished = here
+        .iter()
+        .filter(|item| !scope_row(&item.row, live_ids, filters) && passes(item))
+        .count();
+    Elsewhere {
+        views,
+        filtered,
+        finished,
     }
 }
 
@@ -919,6 +1008,42 @@ mod tests {
         assert_eq!(ids(&searched), vec![4]);
         assert_eq!(searched.quick.declined, 1);
         assert_eq!(searched.quick.ci_trouble, 1);
+    }
+
+    #[test]
+    fn elsewhere_counts_matches_hidden_by_view_filters_and_scope() {
+        let mut items = quick_fixture();
+        items[0].row.involvement = REVIEW_REQUESTED;
+        items[1].row.state = "closed".into();
+        let all: HashSet<i64> = items.iter().map(|item| item.row.id).collect();
+        let mut request = request("repository");
+        request.view_key = "mine".into();
+        request.filters.orgs = vec!["acme".into()];
+        let searched = page(&items, &[], &request, Some(&all));
+        assert_eq!(ids(&searched), vec![4, 6, 8]);
+        let elsewhere = searched.elsewhere.unwrap();
+        assert_eq!(
+            elsewhere.views,
+            vec![ViewCount {
+                view_key: "to_review".into(),
+                count: 1
+            }]
+        );
+        // 3, 5 and 7 are in another org; 2 is closed but in the org.
+        assert_eq!(elsewhere.filtered, 3);
+        assert_eq!(elsewhere.finished, 1);
+
+        // The quick filter hides rows like a menu filter does.
+        request.filters.quick = Some("ready".into());
+        let quick = page(&items, &[], &request, Some(&all));
+        assert_eq!(ids(&quick), vec![6]);
+        assert_eq!(quick.elsewhere.unwrap().filtered, 5);
+
+        request.filters.archived = true;
+        request.filters.quick = None;
+        let with_closed = page(&items, &[], &request, Some(&all)).elsewhere.unwrap();
+        assert_eq!(with_closed.finished, 0);
+        assert!(page(&items, &[], &request, None).elsewhere.is_none());
     }
 
     #[test]
