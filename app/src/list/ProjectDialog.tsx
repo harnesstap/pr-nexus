@@ -1,12 +1,15 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Api, ListRow, ProjectDto, ProjectLinkDto, ProjectRuleDto, RuleKind } from "../api";
 import { errorMessage } from "../api";
-import { linkCandidates, PROJECT_COLORS, RULE_KINDS, ruleKindLabel } from "./projects";
+import { PROJECT_COLORS, RULE_KINDS, ruleKindLabel } from "./projects";
+
+/** Candidate search waits this long after the last keystroke. */
+const CANDIDATE_DEBOUNCE_MS = 200;
+const CANDIDATE_LIMIT = 8;
 
 interface Props {
   api: Api;
   project: ProjectDto;
-  rows: ListRow[];
   onClose: () => void;
   /** Rows or projects changed; the list should reload. */
   onChanged: () => Promise<void>;
@@ -18,10 +21,12 @@ type Draft = ProjectRuleDto & { key: string; error: string | null };
  * Project management (§8.2): color, auto-link rules with a live preview, and the
  * linked PRs with their source. Manual links are added here or by dragging rows.
  */
-export function ProjectDialog({ api, project, rows, onClose, onChanged }: Props) {
+export function ProjectDialog({ api, project, onClose, onChanged }: Props) {
   const [rules, setRules] = useState<Draft[]>([]);
   const [links, setLinks] = useState<ProjectLinkDto[]>([]);
   const [query, setQuery] = useState("");
+  const [byId, setById] = useState<Map<number, ListRow>>(() => new Map());
+  const [candidates, setCandidates] = useState<ListRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
 
@@ -50,6 +55,40 @@ export function ProjectDialog({ api, project, rows, onClose, onChanged }: Props)
       cancel = true;
     };
   }, [api, project.id]);
+
+  // Titles for the linked PRs, in one call however many there are.
+  useEffect(() => {
+    let cancel = false;
+    const ids = links.map((link) => link.pr_id);
+    if (ids.length === 0) {
+      setById(new Map());
+      return;
+    }
+    void api.rowsById(ids).then((found) => !cancel && setById(new Map(found.map((row) => [row.id, row]))));
+    return () => {
+      cancel = true;
+    };
+  }, [api, links]);
+
+  // Backend search over every open PR; a stale answer for an older query is dropped.
+  useEffect(() => {
+    const needle = query.trim();
+    if (!needle) {
+      setCandidates([]);
+      return;
+    }
+    let cancel = false;
+    const timer = window.setTimeout(() => {
+      void api
+        .linkCandidates(project.id, needle, CANDIDATE_LIMIT)
+        .then((found) => !cancel && setCandidates(found))
+        .catch((err: unknown) => !cancel && setError(errorMessage(err)));
+    }, CANDIDATE_DEBOUNCE_MS);
+    return () => {
+      cancel = true;
+      window.clearTimeout(timer);
+    };
+  }, [api, project.id, query, links]);
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
@@ -89,8 +128,6 @@ export function ProjectDialog({ api, project, rows, onClose, onChanged }: Props)
     }
   }
 
-  const byId = useMemo(() => new Map(rows.map((row) => [row.id, row])), [rows]);
-  const candidates = linkCandidates(rows, links, query);
   const ruleById = new Map(rules.filter((rule) => rule.id !== null).map((rule) => [rule.id, rule]));
 
   return (

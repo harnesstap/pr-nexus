@@ -43,6 +43,7 @@ const boot: Bootstrap = {
   oauth_client_configured: false,
   gh_ready: true,
   gh_detail: "gh is logged in",
+  gh_probed: true,
 };
 
 function api(overrides: Partial<Api> = {}): Api {
@@ -90,7 +91,7 @@ function api(overrides: Partial<Api> = {}): Api {
     finish: () => Promise.resolve(boot.sync),
     syncNow: () => Promise.resolve(boot.sync),
     syncStatus: () => Promise.resolve(boot.sync),
-    listRows: () => Promise.resolve([]),
+    probeGh: () => Promise.resolve({ gh_ready: false, gh_detail: "" }),
     listProjects: () => Promise.resolve([]),
     createProject: (name) => Promise.resolve({ id: 99, name, color: "#7c5cbf", archived: false, description: "", sort_order: 99 }),
     renameProject: () => Promise.resolve(),

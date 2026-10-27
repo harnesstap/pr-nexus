@@ -541,7 +541,7 @@ fn upsert_link(conn: &Connection, link: &PrProjectLink) -> Result<PrProjectLink,
     .map_err(db)
 }
 
-fn map_link(row: &rusqlite::Row<'_>) -> rusqlite::Result<PrProjectLink> {
+pub(super) fn map_link(row: &rusqlite::Row<'_>) -> rusqlite::Result<PrProjectLink> {
     let source: String = row.get("source")?;
     let rule_id: Option<i64> = row.get("rule_id")?;
     let source = match source.as_str() {

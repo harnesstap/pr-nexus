@@ -368,7 +368,7 @@ fn load_request(
     Ok(Some(request))
 }
 
-fn map_request(row: &rusqlite::Row<'_>) -> rusqlite::Result<ReviewRequest> {
+pub(super) fn map_request(row: &rusqlite::Row<'_>) -> rusqlite::Result<ReviewRequest> {
     let workspace: String = row.get("slack_workspace")?;
     let channel_id: String = row.get("channel_id")?;
     let root_ts: String = row.get("root_ts")?;
@@ -411,7 +411,7 @@ fn map_request(row: &rusqlite::Row<'_>) -> rusqlite::Result<ReviewRequest> {
     })
 }
 
-fn slack_account(conn: &Connection, workspace: &str) -> rusqlite::Result<AccountId> {
+pub(super) fn slack_account(conn: &Connection, workspace: &str) -> rusqlite::Result<AccountId> {
     let id = conn
         .query_row(
             "SELECT id FROM accounts WHERE slack_workspace = ?1",

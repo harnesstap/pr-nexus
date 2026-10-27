@@ -9,24 +9,18 @@ import {
   ciLabel,
   DRAG_MIME,
   dragIds,
-  headerSummary,
-  keptEmptyProjects,
   parseDragIds,
   projectIdOf,
   ciTone,
   filtersActive,
-  groupRows,
   hiddenSelectedCount,
   renameError,
   resetFilters,
   reviewLabel,
   reviewTone,
-  sectionIds,
   slackStatus,
   threadsLabel,
   toggleParent,
-  visibleIds,
-  visibleRows,
   type CheckState,
   type CiFilter,
   type Direction,
@@ -40,9 +34,22 @@ import {
   type StatusFilter,
   type Tone,
 } from "./model";
+import { pageIds, summaryText, type PageDto, type PageEntry, type PageRequest, type PageSection } from "./paging";
+import { usePagedList, type PageParams } from "./usePagedList";
+
+/** A section as drawn: its loaded rows, plus counts and ids over every match. */
+type ShownSection = Section & { count: number; ids: number[] };
+
+/** How close to the bottom (px) the next page starts loading. */
+const LOAD_AHEAD_PX = 600;
+/** Search waits this long after the last keystroke (§8.2). */
+export const SEARCH_DEBOUNCE_MS = 200;
 
 interface Props {
-  rows: ListRow[];
+  /** `list_page`: the backend filters, searches, groups and pages. */
+  loadPage: (request: PageRequest) => Promise<PageDto>;
+  /** Bumped when stored rows change (sync, links, Slack); reloads in place. */
+  version: number;
   projects: ProjectDto[];
   viewKey: string;
   view: SavedView;
@@ -81,7 +88,8 @@ const ORDERINGS: { id: Ordering; label: string }[] = [
 ];
 
 export function PrList({
-  rows,
+  loadPage,
+  version,
   projects,
   viewKey,
   view,
@@ -112,32 +120,89 @@ export function PrList({
   const selected = useMemo(() => new Set(selectedByView[viewKey] ?? []), [selectedByView, viewKey]);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => setDebounced(query), 150);
+    const timer = window.setTimeout(() => setDebounced(query.trim()), SEARCH_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
   }, [query]);
 
-  const shown = useMemo(
-    () => visibleRows(rows, projects, viewKey, view, debounced, now),
-    [rows, projects, viewKey, view, debounced, now],
+  const collapsedKeys = useMemo(
+    () =>
+      Object.keys(collapsed)
+        .filter((key) => collapsed[key])
+        .sort(),
+    [collapsed],
   );
-  const keepEmpty = useMemo(
-    () => keptEmptyProjects(projects, viewKey, view.filters, debounced),
-    [projects, viewKey, view.filters, debounced],
+  const params = useMemo<PageParams>(
+    () => ({
+      view_key: viewKey,
+      grouping: view.grouping,
+      ordering: view.ordering,
+      direction: view.direction,
+      filters: view.filters,
+      query: debounced,
+      collapsed: collapsedKeys,
+    }),
+    [viewKey, view.grouping, view.ordering, view.direction, view.filters, debounced, collapsedKeys],
   );
-  const sections = useMemo(() => groupRows(shown, projects, view, now, keepEmpty), [shown, projects, view, now, keepEmpty]);
+  const list = usePagedList(loadPage, params, version, now);
+  const page = list.page;
+  const sections = useMemo(() => shownSections(list.entries, page?.sections ?? []), [list.entries, page]);
   const currentProject = projectIdOf(viewKey);
   const flat = useMemo(() => sections.flatMap((section) => section.rows.map((row) => ({ section, row }))), [sections]);
-  const ids = visibleIds(sections);
+  // Every matching id, loaded or not: select-all, counts and drag cover them all.
+  const ids = useMemo(() => pageIds(page?.sections ?? []), [page]);
   const hidden = hiddenSelectedCount(selected, ids);
   const global = checkState(ids, selected);
-  const singleSelected = selected.size === 1 ? (rows.find((row) => selected.has(row.id)) ?? null) : null;
+  const singleSelected = selected.size === 1 ? (flat.find((item) => selected.has(item.row.id))?.row ?? null) : null;
   // The focused row stays in range when filters or a sync shrink the list.
   const focus = flat.length === 0 ? -1 : Math.min(focusIndex, flat.length - 1);
   const listRef = useRef<HTMLDivElement>(null);
-  const inView = useMemo(
-    () => visibleRows(rows, projects, viewKey, resetFilters(view), "", now).length,
-    [rows, projects, viewKey, view, now],
-  );
+  const sentinelRef = useRef<HTMLDivElement>(null);
+  const sentinelVisible = useRef(false);
+  const inView = page?.in_view ?? 0;
+  const searching = query.trim() !== "" && (query.trim() !== debounced || list.pending);
+  const { loadMore, hasMore, loadingMore } = list;
+
+  // Infinite scroll: load the next page when the sentinel nears the viewport.
+  useEffect(() => {
+    const root = listRef.current;
+    const sentinel = sentinelRef.current;
+    if (!root || !sentinel || typeof IntersectionObserver === "undefined") {
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (items) => {
+        sentinelVisible.current = items.some((item) => item.isIntersecting);
+        if (sentinelVisible.current) {
+          loadMore();
+        }
+      },
+      { root, rootMargin: `0px 0px ${LOAD_AHEAD_PX}px 0px` },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [loadMore]);
+
+  // A page that does not fill the viewport leaves the sentinel in view, and
+  // the observer does not fire again; keep going until it scrolls away.
+  useEffect(() => {
+    if (sentinelVisible.current && hasMore && !loadingMore) {
+      loadMore();
+    }
+  }, [list.entries, hasMore, loadingMore, loadMore]);
+
+  // Moving the focus with j/k near the last loaded row reads ahead too.
+  useEffect(() => {
+    if (focus >= 0 && focus >= flat.length - 5 && hasMore) {
+      loadMore();
+    }
+  }, [focus, flat.length, hasMore, loadMore]);
+
+  function onListScroll() {
+    const root = listRef.current;
+    if (root && hasMore && root.scrollTop + root.clientHeight >= root.scrollHeight - LOAD_AHEAD_PX) {
+      loadMore();
+    }
+  }
 
   useEffect(() => {
     const element = listRef.current?.querySelector<HTMLElement>('[data-focused="true"]');
@@ -218,7 +283,7 @@ export function PrList({
         });
       } else if (key === "x" && event.shiftKey) {
         if (current) {
-          setSelected(toggleParent(sectionIds(current.section), selected));
+          setSelected(toggleParent(current.section.ids, selected));
         }
       } else if (key === "x") {
         if (current) {
@@ -286,7 +351,7 @@ export function PrList({
             </h1>
           )}
           {editing?.error && editing.where === "title" && <p className="text-xs text-rose-300">{editing.error}</p>}
-          <p className="text-sm text-slate-400">{headerSummary(shown, projects, viewKey, view.filters)}</p>
+          <p className="text-sm text-slate-400">{page ? summaryText(page.summary, viewKey) : "\u00a0"}</p>
         </div>
         <div className="flex items-center gap-2">
           <label className="flex w-80 items-center gap-2 rounded-md border border-slate-700 bg-slate-900 px-3 py-1.5 text-sm focus-within:border-violet-400">
@@ -299,18 +364,44 @@ export function PrList({
               value={query}
               onChange={(event) => setQuery(event.target.value)}
             />
+            {searching && (
+              <span role="status" className="shrink-0 text-xs text-slate-500">
+                Searching…
+              </span>
+            )}
           </label>
-          <FilterMenu view={view} rows={rows} orgs={orgOptions(rows)} menu={menu} setMenu={setMenu} onViewChange={onViewChange} />
+          <FilterMenu view={view} orgs={page?.orgs ?? []} menu={menu} setMenu={setMenu} onViewChange={onViewChange} />
         </div>
       </header>
       <div className="flex items-center gap-2 border-y border-slate-800 px-4 py-2 text-sm text-slate-300">
         <TriCheckbox label="Select all" state={global} onToggle={() => setSelected(toggleParent(ids, selected))} />
         <span>{header}</span>
       </div>
-      <div ref={listRef} className="min-h-0 flex-1 overflow-auto px-3 pb-20 pt-2" aria-label="Pull requests" role="region">
+      <div
+        ref={listRef}
+        className="min-h-0 flex-1 overflow-auto px-3 pb-20 pt-2"
+        aria-label="Pull requests"
+        aria-busy={list.pending || loadingMore}
+        role="region"
+        onScroll={onListScroll}
+      >
+        {!page && list.error && (
+          <div role="alert" className="px-3 py-6 text-sm">
+            <p className="font-medium text-rose-200">Could not load your pull requests.</p>
+            <p className="mt-1 text-slate-400">{list.error}</p>
+            <button type="button" className="mt-3 rounded border border-slate-700 px-3 py-1.5 hover:bg-slate-800" onClick={list.retry}>
+              Try again
+            </button>
+          </div>
+        )}
+        {!page && !list.error && (
+          <p role="status" className="px-3 py-6 text-sm text-slate-400">
+            Loading pull requests…
+          </p>
+        )}
         {sections.map((section) => {
           const open = !collapsed[section.key];
-          const state = checkState(sectionIds(section), selected);
+          const state = checkState(section.ids, selected);
           return (
             <section
               key={section.key}
@@ -350,7 +441,7 @@ export function PrList({
                 <TriCheckbox
                   label={`Select ${section.title}`}
                   state={state}
-                  onToggle={() => setSelected(toggleParent(sectionIds(section), selected))}
+                  onToggle={() => setSelected(toggleParent(section.ids, selected))}
                 />
                 {section.projectId !== null && editing?.id === section.projectId && editing.where === "section" ? (
                   <RenameField
@@ -375,7 +466,7 @@ export function PrList({
                     {section.title}
                   </span>
                 )}
-                <span className="text-xs text-slate-500">({section.rows.length})</span>
+                <span className="text-xs text-slate-500">({section.count})</span>
                 {editing?.error && editing.where === "section" && editing.id === section.projectId && (
                   <span className="text-xs text-rose-300">{editing.error}</span>
                 )}
@@ -406,7 +497,7 @@ export function PrList({
                   </div>
                 )}
               </header>
-              {open && section.rows.length === 0 && (
+              {open && section.count === 0 && (
                 <p className="border-t border-slate-800 px-3 py-3 text-xs text-slate-500">
                   No PRs here yet. Drag PRs onto this project, or add an auto-link rule from ⋯.
                 </p>
@@ -485,7 +576,13 @@ export function PrList({
             </section>
           );
         })}
-        {sections.length === 0 && (
+        {(hasMore || loadingMore) && (
+          <p role="status" className="px-3 py-3 text-center text-xs text-slate-500">
+            Loading more…
+          </p>
+        )}
+        <div ref={sentinelRef} data-testid="list-sentinel" aria-hidden="true" className="h-px" />
+        {page && !list.pending && sections.length === 0 && (
           <EmptyList
             title={viewTitle(viewKey, projects)}
             inView={inView}
@@ -778,15 +875,13 @@ function TriCheckbox({ label, state, onToggle }: { label: string; state: CheckSt
 
 function FilterMenu({
   view,
-  rows,
   orgs,
   menu,
   setMenu,
   onViewChange,
 }: {
   view: SavedView;
-  rows: ListRow[];
-  orgs: string[];
+  orgs: OrgCount[];
   menu: string | null;
   setMenu: (menu: string | null) => void;
   onViewChange: (view: SavedView) => void;
@@ -860,7 +955,7 @@ function FilterMenu({
               Reset
             </button>
           </div>
-          <FilterChoices view={view} rows={rows} orgs={orgs} menu={menu} setMenu={setMenu} onViewChange={onViewChange} />
+          <FilterChoices view={view} orgs={orgs} menu={menu} setMenu={setMenu} onViewChange={onViewChange} />
         </div>
       )}
     </div>
@@ -927,15 +1022,13 @@ function ShowList({ view, onViewChange }: { view: SavedView; onViewChange: (view
 
 function FilterChoices({
   view,
-  rows,
   orgs,
   menu,
   setMenu,
   onViewChange,
 }: {
   view: SavedView;
-  rows: ListRow[];
-  orgs: string[];
+  orgs: OrgCount[];
   menu: string;
   setMenu: (menu: string | null) => void;
   onViewChange: (view: SavedView) => void;
@@ -945,7 +1038,7 @@ function FilterChoices({
       <MenuRow label="Org" value={String(view.filters.orgs.length || "")} onClick={() => setMenu(menu === "org" ? "root" : "org")} />
       {menu === "org" && (
         <ToggleList
-          options={orgs.map((org) => ({ id: org, label: `${org} (${rows.filter((row) => row.owner === org).length})` }))}
+          options={orgs.map((org) => ({ id: org.name, label: `${org.name} (${org.count})` }))}
           selected={view.filters.orgs}
           onToggle={(org) => onViewChange({ ...view, filters: { ...view.filters, orgs: toggleValue(view.filters.orgs, org) } })}
         />
@@ -1023,8 +1116,27 @@ function labelOf<T extends string>(options: { id: T; label: string }[], id: T): 
   return options.find((option) => option.id === id)?.label ?? id;
 }
 
-function orgOptions(rows: readonly ListRow[]): string[] {
-  return [...new Set(rows.map((row) => row.owner))].sort();
+type OrgCount = PageDto["orgs"][number];
+
+/** Loaded entries grouped under their section headers, with backend counts. */
+function shownSections(entries: readonly PageEntry[], all: readonly PageSection[]): ShownSection[] {
+  const meta = new Map(all.map((section) => [section.key, section]));
+  const shown: ShownSection[] = [];
+  let current: ShownSection | null = null;
+  for (const entry of entries) {
+    if (!current || current.key !== entry.section) {
+      const info = meta.get(entry.section);
+      if (!info) {
+        continue;
+      }
+      current = { key: info.key, title: info.title, projectId: info.project_id, rows: [], count: info.count, ids: info.ids };
+      shown.push(current);
+    }
+    if (entry.row) {
+      current.rows.push(entry.row);
+    }
+  }
+  return shown;
 }
 
 function viewTitle(viewKey: string, projects: readonly ProjectDto[]): string {

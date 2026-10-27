@@ -255,7 +255,7 @@ fn map_channel(row: &rusqlite::Row<'_>) -> rusqlite::Result<SlackChannel> {
     })
 }
 
-fn map_ownership(row: &rusqlite::Row<'_>) -> rusqlite::Result<OwnershipCacheEntry> {
+pub(super) fn map_ownership(row: &rusqlite::Row<'_>) -> rusqlite::Result<OwnershipCacheEntry> {
     Ok(OwnershipCacheEntry {
         pr_id: PrId(row.get("pr_id")?),
         head_sha: row.get("head_sha")?,

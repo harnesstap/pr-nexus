@@ -303,6 +303,7 @@ CREATE TABLE view_state (view_key TEXT PRIMARY KEY, state_json TEXT NOT NULL, up
 Rules:
 - Timestamps are RFC 3339 UTC text.
 - Enums are stored as lowercase snake_case text and mapped with `FromStr`/`Display`. Unknown values fail loudly.
+- Migration 0002 adds `pull_requests.search_text` (folded search text, §8.2, filled for older rows at startup) and the index `pr_projects_by_project` on `pr_projects(project_id)`.
 - Migrations live in `crates/pr-nexus-core/migrations/NNNN_*.sql` and run at startup in one transaction. The runner tracks `PRAGMA user_version` (same contract as `rusqlite_migration`; that crate is not a dependency, see §3).
 - **No secrets in SQLite** (§9). A test asserts that no column name matches `token|secret|password`.
 
@@ -1077,7 +1078,15 @@ Row content, each part toggled under **Show**: number and title; `owner/repo`; C
 - The funnel is an icon button immediately right of the search field. It shows a dot when any filter is active. The menu closes on `Esc` and on a click outside it. There is no other persistent filter UI.
 - **Persistence:** grouping, ordering, Show, and filters are saved **per view** in `view_state` (`mine`, `to_review`, `project:<id>`) and restored on launch.
 
-**Search bar:** always visible. Filters the current view as you type (150 ms debounce), case- and accent-insensitive, whitespace-separated terms ANDed. It matches project name, PR title, PR body (`bodyText`), `owner/repo`, and number (`#142` or `142`). It runs in core over the cached rows (a few hundred PRs; no FTS needed). It combines with the menu filters. `/` focuses it, and `Esc` clears it.
+**Search bar:** always visible. Searches the whole view in the backend as you type (200 ms debounce), case- and accent-insensitive, whitespace-separated terms ANDed. A term matches the PR title, description (`bodyText`), `owner/repo`, number (`#142` or `142`), author, branch, or the name of a project the PR is linked to. Each PR stores its folded text in `pull_requests.search_text` (NFD, marks stripped, lowercase; migration 0002), and `list_page` matches it with `instr` per term. That takes under 20 ms over 5,000 PRs, so there is no FTS5 index. While a search is in flight the header shows `Searching…`; a response for an older query is dropped. Results use the same paging, counts, grouping and selection as the unfiltered list. It combines with the menu filters. `/` focuses it, and `Esc` clears it.
+
+**Loading and paging.** The window opens on the local database: `bootstrap` reads only stored state (no `gh` call, no network), and `finish_onboarding` returns at once and starts the first sync in the background. The list never waits for a sync; the sidebar shows `Syncing…` and the list refetches when it ends (polled every 3 s while a sync runs).
+- `list_page` returns one page of the flattened list: section headers and rows in display order, about 50 entries per page, with an opaque cursor. Collapsed sections send only their header.
+- Every page also carries what the header and selection need for the **whole** result, loaded or not: each section's PR ids and count, `N open PRs`, `U unassigned`, and the org choices with counts. So counts, the section and global checkboxes, select-all, the bulk bar, **Add to project** and drag and drop act on every matching PR, not just the rows on screen. Dragging a selected row moves the whole selection; `link_prs` writes all links in one transaction. Rows the UI needs but has not loaded come from `rows_by_id`.
+- More pages load as a sentinel row nears the viewport (`IntersectionObserver`, 600 px ahead, with a `Loading more…` row); `j`/`k` past the last loaded row loads the next page too.
+- When a sync or a write changes the data, the list refetches from the top with the number of rows already loaded, so the scroll position stays put.
+- There is no cap on the number of PRs listed. The GitHub search stops at 500 PRs per bucket (§6).
+- The list query reads no PR bodies and loads labels and reviewers in one query each, not one per PR.
 
 Keyboard: `j/k` move, `x` toggle select, `Shift+x` toggle the focused row's section, `Cmd/Ctrl+A` toggle the global checkbox, `r` open the Slack preview for the selection (or the focused row if nothing is selected), `s` open the focused row's Slack request, `o` open in browser, `f` open the filter menu, `Enter` open the focused row's details, `/` focus the search (`Esc` there clears it), `Esc` clear the selection (also from a focused row checkbox). Single-key shortcuts ignore Cmd, Ctrl and Alt, so Cmd+R and similar keep their system meaning, and do nothing while typing or while a modal is open. The focused row is marked `aria-current` and scrolled into view.
 

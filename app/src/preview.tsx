@@ -1,9 +1,10 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import type { Api, Bootstrap, ContextThread, ListRow, PrDetail, ProjectDto, ReviewTarget } from "./api";
+import type { Api, Bootstrap, ContextThread, PrDetail, ProjectDto, ReviewTarget } from "./api";
 import "./index.css";
 import { ListScreen } from "./list/ListScreen";
 import { memoryProjectApi } from "./memoryProjects";
+import type { SearchRow } from "./list/paging";
 import { Wizard } from "./wizard/Wizard";
 import { fakeSettingsApi } from "./settings/fakes";
 
@@ -52,6 +53,7 @@ const boot: Bootstrap = {
   oauth_client_configured: false,
   gh_ready: true,
   gh_detail: "gh is logged in",
+  gh_probed: true,
 };
 
 const projects: ProjectDto[] = [
@@ -59,13 +61,14 @@ const projects: ProjectDto[] = [
   { id: 2, name: "Billing", color: "#3f6f8f", archived: false, description: "", sort_order: 1 },
 ];
 
-function row(partial: Partial<ListRow> & Pick<ListRow, "id" | "title" | "number">): ListRow {
+function row(partial: Partial<SearchRow> & Pick<SearchRow, "id" | "title" | "number">): SearchRow {
   return {
     url: `https://github.com/acme/widgets/pull/${partial.number}`,
     body: "Demo pull request body for search.",
     owner: "acme",
     repo: "acme/widgets",
     author_login: "ada",
+    head_ref: `feature/demo-${partial.number}`,
     is_draft: false,
     state: "open",
     checks: "success",
@@ -84,7 +87,7 @@ function row(partial: Partial<ListRow> & Pick<ListRow, "id" | "title" | "number"
   };
 }
 
-const rows: ListRow[] = [
+const rows: SearchRow[] = [
   row({
     id: 1,
     number: 142,
@@ -242,7 +245,7 @@ const api: Api = {
   finish: () => Promise.resolve(boot.sync),
   syncNow: () => Promise.resolve(boot.sync),
   syncStatus: () => Promise.resolve(boot.sync),
-  listRows: () => Promise.resolve(rows.map((item) => ({ ...item }))),
+  probeGh: () => Promise.resolve({ gh_ready: true, gh_detail: "gh is logged in" }),
   listProjects: () => Promise.resolve(projects.map((item) => ({ ...item }))),
   createProject: (name) => Promise.resolve({ id: 99, name, color: "#7c5cbf", archived: false, description: "", sort_order: 99 }),
   renameProject: () => Promise.resolve(),

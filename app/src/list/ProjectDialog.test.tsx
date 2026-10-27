@@ -1,12 +1,13 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { expect, test, vi } from "vitest";
-import type { Api, ListRow, ProjectDto } from "../api";
+import type { Api, ProjectDto } from "../api";
+import type { SearchRow } from "./paging";
 import { memoryProjectApi } from "../memoryProjects";
 import { ProjectDialog } from "./ProjectDialog";
 
 const project: ProjectDto = { id: 1, name: "Auth", color: "#7c5cbf", archived: false, description: "", sort_order: 0 };
 
-function row(id: number, title: string, project_ids: number[]): ListRow {
+function row(id: number, title: string, project_ids: number[]): SearchRow {
   return {
     id,
     number: 100 + id,
@@ -16,6 +17,7 @@ function row(id: number, title: string, project_ids: number[]): ListRow {
     owner: "acme",
     repo: "acme/widgets",
     author_login: "ada",
+    head_ref: "main",
     is_draft: false,
     state: "open",
     checks: "success",
@@ -39,7 +41,7 @@ function setup() {
   const api = { ...memory, previewRule: vi.fn(() => Promise.resolve(2)), saveProjectRule: vi.fn(memory.saveProjectRule) } as unknown as Api;
   const onChanged = vi.fn(() => Promise.resolve());
   const onClose = vi.fn();
-  render(<ProjectDialog api={api} project={project} rows={rows} onClose={onClose} onChanged={onChanged} />);
+  render(<ProjectDialog api={api} project={project} onClose={onClose} onChanged={onChanged} />);
   return { api, onChanged, onClose };
 }
 
@@ -67,6 +69,7 @@ test("PRs are added from the picker, removed, and the dialog closes on Escape", 
   expect(within(dialog).getByText("Manual")).toBeInTheDocument();
   fireEvent.change(within(dialog).getByRole("textbox", { name: "Add pull request" }), { target: { value: "passkeys" } });
   const matches = within(dialog).getByRole("list", { name: "Matching pull requests" });
+  await within(matches).findByRole("button", { name: "Add Add passkeys" });
   expect(within(matches).queryByText(/Migrate login/)).not.toBeInTheDocument();
   fireEvent.click(within(matches).getByRole("button", { name: "Add Add passkeys" }));
   expect(await within(dialog).findByText("Linked pull requests (2)")).toBeInTheDocument();
@@ -93,13 +96,13 @@ test("a rule-linked PR that is removed becomes excluded and can be restored", as
     unlinkPr: vi.fn(() => Promise.resolve()),
     restorePr: vi.fn(() => Promise.resolve()),
   } as unknown as Api;
-  render(<ProjectDialog api={api} project={project} rows={rows} onClose={() => undefined} onChanged={() => Promise.resolve()} />);
+  render(<ProjectDialog api={api} project={project} onClose={() => undefined} onChanged={() => Promise.resolve()} />);
   const badge = await screen.findByText("Rule");
   expect(badge).toHaveAttribute("title", "Ticket key: AUTH-*");
-  fireEvent.click(screen.getByRole("button", { name: "Remove Migrate login" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Remove Migrate login" }));
   expect(await screen.findByText("Excluded")).toBeInTheDocument();
   expect(api.unlinkPr).toHaveBeenCalledWith(1, 1);
-  fireEvent.click(screen.getByRole("button", { name: "Restore Migrate login" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Restore Migrate login" }));
   expect(await screen.findByText("Rule")).toBeInTheDocument();
   expect(api.restorePr).toHaveBeenCalledWith(1, 1);
 });

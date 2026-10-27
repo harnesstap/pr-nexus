@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import type { PageDto, PageRequest } from "./list/paging";
 
 export type StepId =
   | "choose_vcs"
@@ -49,6 +50,13 @@ export interface Bootstrap {
   sync: SyncStatus;
   env_token: boolean;
   oauth_client_configured: boolean;
+  gh_ready: boolean;
+  gh_detail: string;
+  /** False after setup: `gh_ready`/`gh_detail` were skipped; call `probeGh`. */
+  gh_probed: boolean;
+}
+
+export interface GhStatus {
   gh_ready: boolean;
   gh_detail: string;
 }
@@ -279,10 +287,10 @@ export interface ListRow {
   number: number;
   title: string;
   url: string;
-  body: string;
   owner: string;
   repo: string;
   author_login: string;
+  head_ref: string;
   is_draft: boolean;
   state: string;
   checks: string;
@@ -402,7 +410,14 @@ export interface Api {
   finish(): Promise<SyncStatus>;
   syncNow(): Promise<SyncStatus>;
   syncStatus(): Promise<SyncStatus>;
-  listRows(): Promise<ListRow[]>;
+  /** One slice of the list with counts over every match (§8.2). */
+  listPage(request: PageRequest): Promise<PageDto>;
+  /** Rows by id in the order asked; unknown ids are skipped. */
+  rowsById(ids: number[]): Promise<ListRow[]>;
+  /** Open PRs matching `query` that the project does not link yet. */
+  linkCandidates(projectId: number, query: string, limit: number): Promise<ListRow[]>;
+  /** Whether the gh CLI has a token (wizard GitHub step). */
+  probeGh(): Promise<GhStatus>;
   listProjects(): Promise<ProjectDto[]>;
   createProject(name: string): Promise<ProjectDto>;
   renameProject(id: number, name: string): Promise<void>;
@@ -478,7 +493,10 @@ export const tauriApi: Api = {
   finish: () => invoke("finish_onboarding"),
   syncNow: () => invoke("sync_now"),
   syncStatus: () => invoke("sync_status"),
-  listRows: () => invoke("list_rows"),
+  listPage: (request) => invoke("list_page", { request }),
+  rowsById: (ids) => invoke("rows_by_id", { ids }),
+  linkCandidates: (projectId, query, limit) => invoke("link_candidates", { projectId, query, limit }),
+  probeGh: () => invoke("probe_gh"),
   listProjects: () => invoke("list_projects"),
   createProject: (name) => invoke("create_project", { name }),
   renameProject: (id, name) => invoke("rename_project", { id, name }),

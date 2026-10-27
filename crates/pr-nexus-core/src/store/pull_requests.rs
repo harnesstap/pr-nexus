@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::domain::{
@@ -5,6 +7,7 @@ use crate::domain::{
     Reviewer, TeamRef,
 };
 use crate::error::CoreError;
+use crate::search;
 
 use super::row::{conv, parse_enum, parse_opt_enum};
 use super::time::{format_ts, parse_bool, sql_bool, ts_col};
@@ -81,30 +84,69 @@ impl Store {
         })
     }
 
+    /// Every pull request of `account_id`, newest update first, with labels and
+    /// requested reviewers. Four queries in total, whatever the count.
     pub fn list_pull_requests_for_account(
         &self,
         account_id: AccountId,
     ) -> Result<Vec<PullRequest>, CoreError> {
+        self.read(move |conn| list_for_account(conn, account_id, true))
+    }
+
+    /// [`Store::list_pull_requests_for_account`] without descriptions, for the list.
+    pub fn list_pull_requests_for_account_slim(
+        &self,
+        account_id: AccountId,
+    ) -> Result<Vec<PullRequest>, CoreError> {
+        self.read(move |conn| list_for_account(conn, account_id, false))
+    }
+
+    /// Ids of `account_id`'s pull requests that match every term.
+    ///
+    /// `terms` must already be folded ([`search::terms`]). A term matches the
+    /// stored search text or the name of a project the pull request is linked
+    /// to; `project_hits[i]` lists the projects whose folded name contains
+    /// `terms[i]`.
+    pub fn search_pull_request_ids(
+        &self,
+        account_id: AccountId,
+        terms: Vec<String>,
+        project_hits: Vec<Vec<i64>>,
+    ) -> Result<Vec<PrId>, CoreError> {
         self.read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT pr.id FROM pull_requests pr
-                     JOIN repositories r ON r.id = pr.repo_id
-                     WHERE r.account_id = ?1
-                     ORDER BY pr.updated_at DESC, pr.number DESC",
-                )
-                .map_err(db)?;
+            let mut sql = String::from(
+                "SELECT pr.id FROM pull_requests pr
+                 JOIN repositories r ON r.id = pr.repo_id
+                 WHERE r.account_id = ?1",
+            );
+            let mut values: Vec<rusqlite::types::Value> = vec![account_id.0.into()];
+            for (index, term) in terms.iter().enumerate() {
+                values.push(term.clone().into());
+                let slot = values.len();
+                sql.push_str(&format!(" AND (instr(pr.search_text, ?{slot}) > 0"));
+                let hits = project_hits.get(index).map(Vec::as_slice).unwrap_or(&[]);
+                if !hits.is_empty() {
+                    let ids = hits
+                        .iter()
+                        .map(i64::to_string)
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    sql.push_str(&format!(
+                        " OR pr.id IN (SELECT pr_id FROM pr_projects
+                           WHERE source <> 'excluded' AND project_id IN ({ids}))"
+                    ));
+                }
+                sql.push(')');
+            }
+            let mut stmt = conn.prepare(&sql).map_err(db)?;
             let ids = stmt
-                .query_map([account_id.0], |row| row.get::<_, i64>(0))
+                .query_map(rusqlite::params_from_iter(values), |row| {
+                    row.get::<_, i64>(0).map(PrId)
+                })
                 .map_err(db)?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(db)?;
-            ids.into_iter()
-                .map(|id| {
-                    load_pull_request(conn, PrId(id))?
-                        .ok_or_else(|| CoreError::Store(format!("pull request {id} disappeared")))
-                })
-                .collect()
+            Ok(ids)
         })
     }
 
@@ -205,18 +247,34 @@ fn upsert_pull_request(
     let number = i64::try_from(pr.number)
         .map_err(|_| CoreError::Validation(format!("pr number {} does not fit i64", pr.number)))?;
     let body = cap_body(&pr.body);
+    let (owner, name): (String, String) = conn
+        .query_row(
+            "SELECT owner, name FROM repositories WHERE id = ?1",
+            [repo_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(db)?;
+    let search_text = search::search_text(&search::SearchFields {
+        title: &pr.title,
+        body: &body,
+        owner: &owner,
+        name: &name,
+        number: pr.number,
+        author: &pr.author_login,
+        head_ref: &pr.head_ref,
+    });
     let id: i64 = conn
         .query_row(
             "INSERT INTO pull_requests (
                 repo_id, number, node_id, title, url, author_login, body, state, is_draft,
                 head_ref, base_ref, head_sha, review_decision, checks_state, mergeable, merge_state,
                 unresolved_threads, total_threads, involvement,
-                created_at, updated_at, last_activity_at, synced_at, hidden
+                created_at, updated_at, last_activity_at, synced_at, hidden, search_text
              ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
                 ?10, ?11, ?12, ?13, ?14, ?15, ?16,
                 ?17, ?18, ?19,
-                ?20, ?21, ?22, ?23, ?24
+                ?20, ?21, ?22, ?23, ?24, ?25
              )
              ON CONFLICT(node_id) DO UPDATE SET
                 repo_id = excluded.repo_id,
@@ -241,7 +299,8 @@ fn upsert_pull_request(
                 updated_at = excluded.updated_at,
                 last_activity_at = excluded.last_activity_at,
                 synced_at = excluded.synced_at,
-                hidden = excluded.hidden
+                hidden = excluded.hidden,
+                search_text = excluded.search_text
              RETURNING id",
             params![
                 repo_id,
@@ -268,6 +327,7 @@ fn upsert_pull_request(
                 format_ts(pr.last_activity_at),
                 format_ts(pr.synced_at),
                 sql_bool(pr.hidden),
+                search_text,
             ],
             |row| row.get(0),
         )
@@ -299,6 +359,131 @@ fn upsert_pull_request(
 
     load_pull_request(conn, PrId(id))?
         .ok_or_else(|| CoreError::Store("upserted pull request disappeared".to_owned()))
+}
+
+fn list_for_account(
+    conn: &Connection,
+    account_id: AccountId,
+    with_body: bool,
+) -> Result<Vec<PullRequest>, CoreError> {
+    let body = if with_body { "pr.body" } else { "'' AS body" };
+    let mut stmt = conn
+        .prepare(&format!(
+            "SELECT pr.id, pr.repo_id, pr.number, pr.node_id, pr.title, pr.url, pr.author_login,
+                    {body}, pr.state, pr.is_draft, pr.head_ref, pr.base_ref, pr.head_sha,
+                    pr.review_decision, pr.checks_state, pr.mergeable, pr.merge_state,
+                    pr.unresolved_threads, pr.total_threads, pr.involvement, pr.created_at,
+                    pr.updated_at, pr.last_activity_at, pr.synced_at, pr.hidden,
+                    r.owner AS repo_owner, r.name AS repo_name, a.id AS account_id,
+                    a.host AS repo_host
+             FROM pull_requests pr
+             JOIN repositories r ON r.id = pr.repo_id
+             JOIN accounts a ON a.id = r.account_id
+             WHERE r.account_id = ?1
+             ORDER BY pr.updated_at DESC, pr.number DESC"
+        ))
+        .map_err(db)?;
+    let cols = PrColumns::of(&stmt).map_err(db)?;
+    let mut prs = stmt
+        .query_map([account_id.0], |row| map_pull_request_at(row, &cols))
+        .map_err(db)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(db)?;
+    let index: HashMap<i64, usize> = prs
+        .iter()
+        .enumerate()
+        .map(|(position, pr)| (pr.id.0, position))
+        .collect();
+
+    let mut labels = conn
+        .prepare(
+            "SELECT l.pr_id, l.name FROM pr_labels l
+             JOIN pull_requests pr ON pr.id = l.pr_id
+             JOIN repositories r ON r.id = pr.repo_id
+             WHERE r.account_id = ?1 ORDER BY l.rowid",
+        )
+        .map_err(db)?;
+    let rows = labels
+        .query_map([account_id.0], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(db)?;
+    for row in rows {
+        let (pr_id, name) = row.map_err(db)?;
+        if let Some(&position) = index.get(&pr_id) {
+            prs[position].labels.push(name);
+        }
+    }
+
+    let mut reviewers = conn
+        .prepare(
+            "SELECT v.pr_id, v.kind, v.org, v.login_or_slug FROM pr_requested_reviewers v
+             JOIN pull_requests pr ON pr.id = v.pr_id
+             JOIN repositories r ON r.id = pr.repo_id
+             WHERE r.account_id = ?1 ORDER BY v.rowid",
+        )
+        .map_err(db)?;
+    let rows = reviewers
+        .query_map([account_id.0], |row| {
+            Ok((row.get::<_, i64>("pr_id")?, map_reviewer(row)?))
+        })
+        .map_err(db)?;
+    for row in rows {
+        let (pr_id, reviewer) = row.map_err(db)?;
+        if let Some(&position) = index.get(&pr_id) {
+            prs[position].requested_reviewers.push(reviewer);
+        }
+    }
+    Ok(prs)
+}
+
+/// Fills `search_text` where it is missing: rows written before migration 2.
+pub(super) fn backfill_search_text(conn: &mut Connection) -> Result<usize, CoreError> {
+    let tx = conn.transaction().map_err(db)?;
+    let pending = {
+        let mut stmt = tx
+            .prepare(
+                "SELECT pr.id, pr.title, pr.body, r.owner, r.name, pr.number, pr.author_login,
+                        pr.head_ref
+                 FROM pull_requests pr JOIN repositories r ON r.id = pr.repo_id
+                 WHERE pr.search_text IS NULL",
+            )
+            .map_err(db)?;
+        stmt.query_map([], |row| {
+            let fields = (
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, String>(7)?,
+            );
+            Ok((row.get::<_, i64>(0)?, fields))
+        })
+        .map_err(db)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(db)?
+    };
+    {
+        let mut update = tx
+            .prepare("UPDATE pull_requests SET search_text = ?1 WHERE id = ?2")
+            .map_err(db)?;
+        for (id, (title, body, owner, name, number, author, head_ref)) in &pending {
+            let text = search::search_text(&search::SearchFields {
+                title,
+                body,
+                owner,
+                name,
+                number: u64::try_from(*number).unwrap_or_default(),
+                author,
+                head_ref,
+            });
+            update.execute(params![text, id]).map_err(db)?;
+        }
+    }
+    tx.commit().map_err(db)?;
+    Ok(pending.len())
 }
 
 fn load_pull_request(conn: &Connection, id: PrId) -> Result<Option<PullRequest>, CoreError> {
@@ -341,52 +526,124 @@ fn load_pull_request(conn: &Connection, id: PrId) -> Result<Option<PullRequest>,
     Ok(Some(pr))
 }
 
+/// Column positions for [`map_pull_request_at`], resolved once per statement.
+/// Looking columns up by name on every row cost most of the list query time.
+struct PrColumns {
+    involvement: usize,
+    number: usize,
+    id: usize,
+    account_id: usize,
+    node_id: usize,
+    repo_host: usize,
+    repo_owner: usize,
+    repo_name: usize,
+    title: usize,
+    url: usize,
+    author_login: usize,
+    body: usize,
+    state: usize,
+    is_draft: usize,
+    head_ref: usize,
+    base_ref: usize,
+    head_sha: usize,
+    review_decision: usize,
+    checks_state: usize,
+    mergeable: usize,
+    merge_state: usize,
+    unresolved_threads: usize,
+    total_threads: usize,
+    created_at: usize,
+    updated_at: usize,
+    last_activity_at: usize,
+    synced_at: usize,
+    hidden: usize,
+}
+
+impl PrColumns {
+    fn of(stmt: &rusqlite::Statement<'_>) -> rusqlite::Result<Self> {
+        Ok(Self {
+            involvement: stmt.column_index("involvement")?,
+            number: stmt.column_index("number")?,
+            id: stmt.column_index("id")?,
+            account_id: stmt.column_index("account_id")?,
+            node_id: stmt.column_index("node_id")?,
+            repo_host: stmt.column_index("repo_host")?,
+            repo_owner: stmt.column_index("repo_owner")?,
+            repo_name: stmt.column_index("repo_name")?,
+            title: stmt.column_index("title")?,
+            url: stmt.column_index("url")?,
+            author_login: stmt.column_index("author_login")?,
+            body: stmt.column_index("body")?,
+            state: stmt.column_index("state")?,
+            is_draft: stmt.column_index("is_draft")?,
+            head_ref: stmt.column_index("head_ref")?,
+            base_ref: stmt.column_index("base_ref")?,
+            head_sha: stmt.column_index("head_sha")?,
+            review_decision: stmt.column_index("review_decision")?,
+            checks_state: stmt.column_index("checks_state")?,
+            mergeable: stmt.column_index("mergeable")?,
+            merge_state: stmt.column_index("merge_state")?,
+            unresolved_threads: stmt.column_index("unresolved_threads")?,
+            total_threads: stmt.column_index("total_threads")?,
+            created_at: stmt.column_index("created_at")?,
+            updated_at: stmt.column_index("updated_at")?,
+            last_activity_at: stmt.column_index("last_activity_at")?,
+            synced_at: stmt.column_index("synced_at")?,
+            hidden: stmt.column_index("hidden")?,
+        })
+    }
+}
+
 fn map_pull_request(row: &rusqlite::Row<'_>) -> rusqlite::Result<PullRequest> {
-    let involvement_bits = u8::try_from(row.get::<_, i64>("involvement")?)
+    map_pull_request_at(row, &PrColumns::of(row.as_ref())?)
+}
+
+fn map_pull_request_at(row: &rusqlite::Row<'_>, cols: &PrColumns) -> rusqlite::Result<PullRequest> {
+    let involvement_bits = u8::try_from(row.get::<_, i64>(cols.involvement)?)
         .map_err(|err| conv(CoreError::Validation(err.to_string())))?;
     let involvement = Involvement::from_bits(involvement_bits).ok_or_else(|| {
         conv(CoreError::Validation(format!(
             "unknown involvement bits {involvement_bits}"
         )))
     })?;
-    let number: i64 = row.get("number")?;
+    let number: i64 = row.get(cols.number)?;
     let number =
         u64::try_from(number).map_err(|err| conv(CoreError::Validation(err.to_string())))?;
     Ok(PullRequest {
-        id: PrId(row.get("id")?),
+        id: PrId(row.get(cols.id)?),
         remote: ProviderRef {
-            account: AccountId(row.get("account_id")?),
-            id: row.get("node_id")?,
+            account: AccountId(row.get(cols.account_id)?),
+            id: row.get(cols.node_id)?,
         },
         repo: RepoRef {
-            host: row.get("repo_host")?,
-            owner: row.get("repo_owner")?,
-            name: row.get("repo_name")?,
+            host: row.get(cols.repo_host)?,
+            owner: row.get(cols.repo_owner)?,
+            name: row.get(cols.repo_name)?,
         },
         number,
-        title: row.get("title")?,
-        url: row.get("url")?,
-        author_login: row.get("author_login")?,
-        body: row.get("body")?,
-        state: parse_enum(row.get("state")?)?,
-        is_draft: parse_bool(row.get("is_draft")?),
-        head_ref: row.get("head_ref")?,
-        base_ref: row.get("base_ref")?,
-        head_sha: row.get("head_sha")?,
+        title: row.get(cols.title)?,
+        url: row.get(cols.url)?,
+        author_login: row.get(cols.author_login)?,
+        body: row.get(cols.body)?,
+        state: parse_enum(row.get(cols.state)?)?,
+        is_draft: parse_bool(row.get(cols.is_draft)?),
+        head_ref: row.get(cols.head_ref)?,
+        base_ref: row.get(cols.base_ref)?,
+        head_sha: row.get(cols.head_sha)?,
         labels: Vec::new(),
-        review_decision: parse_opt_enum(row.get("review_decision")?)?,
-        checks: parse_enum(row.get("checks_state")?)?,
-        mergeable: parse_enum(row.get("mergeable")?)?,
-        merge_state: parse_enum(row.get("merge_state")?)?,
+        review_decision: parse_opt_enum(row.get(cols.review_decision)?)?,
+        checks: parse_enum(row.get(cols.checks_state)?)?,
+        mergeable: parse_enum(row.get(cols.mergeable)?)?,
+        merge_state: parse_enum(row.get(cols.merge_state)?)?,
         requested_reviewers: Vec::new(),
-        unresolved_threads: row.get::<_, i64>("unresolved_threads")? as u32,
-        total_threads: row.get::<_, i64>("total_threads")? as u32,
+        unresolved_threads: row.get::<_, i64>(cols.unresolved_threads)? as u32,
+        total_threads: row.get::<_, i64>(cols.total_threads)? as u32,
         involvement,
-        created_at: ts_col(row.get("created_at")?)?,
-        updated_at: ts_col(row.get("updated_at")?)?,
-        last_activity_at: ts_col(row.get("last_activity_at")?)?,
-        synced_at: ts_col(row.get("synced_at")?)?,
-        hidden: parse_bool(row.get("hidden")?),
+        created_at: ts_col(row.get(cols.created_at)?)?,
+        updated_at: ts_col(row.get(cols.updated_at)?)?,
+        last_activity_at: ts_col(row.get(cols.last_activity_at)?)?,
+        synced_at: ts_col(row.get(cols.synced_at)?)?,
+        hidden: parse_bool(row.get(cols.hidden)?),
     })
 }
 

@@ -165,8 +165,10 @@ pub fn validity(state: &AppState, saved: &OnboardingState) -> Result<StepValidit
     let account = github_account(&state.store)?;
     let orgs = settings::tracked_orgs(&state.store)?;
     let personal = settings::include_personal_repos(&state.store)?;
-    let github_verified =
-        account.is_some() && resolve_github_token(state, account.as_ref()).is_ok();
+    // After setup the token is checked by each sync, which reports a lost
+    // one; reading it here would run `gh` on every launch.
+    let github_verified = account.is_some()
+        && (saved.finished_at.is_some() || resolve_github_token(state, account.as_ref()).is_ok());
     let slack_completed = saved
         .completed
         .iter()

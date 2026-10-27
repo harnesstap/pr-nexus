@@ -651,3 +651,80 @@ fn pull_request_body_is_capped_at_8kb() {
     assert!(saved.body.len() <= 8 * 1024);
     assert!(saved.body.is_char_boundary(saved.body.len()));
 }
+
+#[test]
+fn search_matches_folded_fields_and_linked_project_names() {
+    let (_dir, store) = open_temp();
+    let (account, repo, pr) = seed_pr(&store, "PR_search", PrState::Open);
+    let mut other = sample_pr(&account, "PR_other", PrState::Open);
+    other.number = 7;
+    other.title = "Café menu".to_owned();
+    other.head_ref = "menu".to_owned();
+    other.body = "plain".to_owned();
+    let other = store.upsert_pull_request(repo.id, other).unwrap();
+    let find = |terms: &[&str], hits: Vec<Vec<i64>>| {
+        let mut ids = store
+            .search_pull_request_ids(
+                account.id,
+                terms.iter().map(|term| (*term).to_owned()).collect(),
+                hits,
+            )
+            .unwrap();
+        ids.sort_by_key(|id| id.0);
+        ids
+    };
+    assert_eq!(find(&["latch"], vec![vec![]]), vec![pr.id]);
+    assert_eq!(find(&["cafe"], vec![vec![]]), vec![other.id]);
+    assert_eq!(
+        find(&["acme/widgets", "#7"], vec![vec![], vec![]]),
+        vec![other.id]
+    );
+    assert_eq!(find(&["fix-latch"], vec![vec![]]), vec![pr.id]);
+    assert_eq!(find(&["alice"], vec![vec![]]).len(), 2);
+    assert!(find(&["nowhere"], vec![vec![]]).is_empty());
+
+    let project = store.create_project("Billing".to_owned()).unwrap();
+    store.link_manual(project.id, vec![other.id], at()).unwrap();
+    assert_eq!(find(&["billing"], vec![vec![project.id.0]]), vec![other.id]);
+}
+
+#[test]
+fn opening_backfills_missing_search_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("pr-nexus.db");
+    let account_id = {
+        let store = Store::open(&path).unwrap();
+        let (account, _repo, _pr) = seed_pr(&store, "PR_backfill", PrState::Open);
+        store
+            .write(|conn| {
+                conn.execute("UPDATE pull_requests SET search_text = NULL", params![])
+                    .map_err(db)?;
+                Ok(())
+            })
+            .unwrap();
+        account.id
+    };
+    let store = Store::open(&path).unwrap();
+    let ids = store
+        .search_pull_request_ids(account_id, vec!["latch".to_owned()], vec![vec![]])
+        .unwrap();
+    assert_eq!(ids.len(), 1);
+}
+
+#[test]
+fn slim_rows_drop_the_body_and_facts_load_in_bulk() {
+    let (_dir, store) = open_temp();
+    let (account, _repo, pr) = seed_pr(&store, "PR_slim", PrState::Open);
+    let rows = store
+        .list_pull_requests_for_account_slim(account.id)
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0].body.is_empty());
+    assert_eq!(rows[0].labels, vec!["bug".to_owned()]);
+    assert_eq!(rows[0].requested_reviewers.len(), 2);
+    let project = store.create_project("Billing".to_owned()).unwrap();
+    store.link_manual(project.id, vec![pr.id], at()).unwrap();
+    let facts = store.list_facts(account.id).unwrap();
+    assert_eq!(facts.links.get(&pr.id).map(Vec::len), Some(1));
+    assert!(facts.active_requests.is_empty());
+}

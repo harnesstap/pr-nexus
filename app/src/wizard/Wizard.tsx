@@ -39,7 +39,9 @@ export function Wizard({ api, boot, onFinished, onCancel }: Props) {
   const [ssoOrgs, setSsoOrgs] = useState<string[]>(boot.orgs_needing_sso);
   const [personal, setPersonal] = useState(boot.include_personal);
   const [orgFilter, setOrgFilter] = useState("");
-  const [mode, setMode] = useState<"gh_cli" | "pat" | "device">(boot.gh_ready ? "gh_cli" : "pat");
+  const [gh, setGh] = useState({ ready: boot.gh_ready, detail: boot.gh_detail, probed: boot.gh_probed });
+  // Until the user picks one, the mode follows the gh probe.
+  const [chosenMode, setChosenMode] = useState<"gh_cli" | "pat" | "device" | null>(null);
   const [pat, setPat] = useState("");
   const [deviceCode, setDeviceCode] = useState<string | null>(null);
   const [slackFields, setSlackFields] = useState<SlackFields>({
@@ -60,6 +62,31 @@ export function Wizard({ api, boot, onFinished, onCancel }: Props) {
   const [syncFailed, setSyncFailed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  function chooseMode(next: "gh_cli" | "pat" | "device") {
+    setChosenMode(next);
+  }
+
+  // After setup, bootstrap skips the gh probe (a subprocess); Re-run setup asks here.
+  useEffect(() => {
+    if (gh.probed) {
+      return;
+    }
+    let cancel = false;
+    void api
+      .probeGh()
+      .then((status) => {
+        if (!cancel) {
+          setGh({ ready: status.gh_ready, detail: status.gh_detail, probed: true });
+        }
+      })
+      .catch(() => !cancel && setGh((current) => ({ ...current, probed: true })));
+    return () => {
+      cancel = true;
+    };
+  }, [api, gh.probed]);
+
+  const mode = chosenMode ?? (gh.ready ? "gh_cli" : "pat");
 
   const step = steps[index] ?? "choose_vcs";
   // The Done screen's button sits where Skip/Next were; a short delay keeps a
@@ -325,11 +352,11 @@ export function Wizard({ api, boot, onFinished, onCancel }: Props) {
                 type="radio"
                 name="github-auth"
                 checked={mode === "gh_cli"}
-                onChange={() => setMode("gh_cli")}
+                onChange={() => chooseMode("gh_cli")}
               />
               <span>
                 Use the gh CLI token
-                <span className="mt-1 block text-sm text-slate-400">{boot.gh_detail}</span>
+                <span className="mt-1 block text-sm text-slate-400">{gh.detail}</span>
               </span>
             </label>
             <label className="flex items-start gap-3">
@@ -337,7 +364,7 @@ export function Wizard({ api, boot, onFinished, onCancel }: Props) {
                 type="radio"
                 name="github-auth"
                 checked={mode === "pat"}
-                onChange={() => setMode("pat")}
+                onChange={() => chooseMode("pat")}
               />
               <span className="flex-1">
                 Paste a personal access token
@@ -356,7 +383,7 @@ export function Wizard({ api, boot, onFinished, onCancel }: Props) {
                 type="radio"
                 name="github-auth"
                 checked={mode === "device"}
-                onChange={() => setMode("device")}
+                onChange={() => chooseMode("device")}
               />
               <span>
                 Sign in with GitHub (device flow)

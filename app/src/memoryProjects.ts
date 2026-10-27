@@ -1,4 +1,5 @@
-import type { Api, ListRow, ProjectDto, ProjectLinkDto, ProjectRuleDto } from "./api";
+import type { Api, ProjectDto, ProjectLinkDto, ProjectRuleDto } from "./api";
+import { candidatesFromRows, pageFromRows, type SearchRow } from "./list/paging";
 
 type ProjectApi = Pick<
   Api,
@@ -11,13 +12,17 @@ type ProjectApi = Pick<
   | "linkPrs"
   | "unlinkPr"
   | "restorePr"
+  | "listPage"
+  | "rowsById"
+  | "linkCandidates"
 >;
 
 /**
  * In-memory project links and rules for the browser preview and tests. Rows'
  * `project_ids` are kept in sync; rule matching is a plain substring check.
+ * Paging and search run the TypeScript reference of the backend (`paging.ts`).
  */
-export function memoryProjectApi(rows: ListRow[], projects: ProjectDto[], rules: ProjectRuleDto[] = []): ProjectApi {
+export function memoryProjectApi(rows: SearchRow[], projects: ProjectDto[], rules: ProjectRuleDto[] = []): ProjectApi {
   const links: (ProjectLinkDto & { project_id: number })[] = rows.flatMap((row) =>
     row.project_ids.map((project_id) => ({ project_id, pr_id: row.id, source: "manual" as const, rule_id: null })),
   );
@@ -28,7 +33,17 @@ export function memoryProjectApi(rows: ListRow[], projects: ProjectDto[], rules:
     }
   };
   const find = (projectId: number, prId: number) => links.findIndex((link) => link.project_id === projectId && link.pr_id === prId);
+  const strip = ({ body: _body, ...row }: SearchRow) => (void _body, row);
   return {
+    listPage: (request) => Promise.resolve(structuredClone(pageFromRows(rows, projects, request))),
+    rowsById: (ids) => {
+      const byId = new Map(rows.map((row) => [row.id, row]));
+      return Promise.resolve(ids.flatMap((id) => (byId.has(id) ? [strip({ ...byId.get(id)! })] : [])));
+    },
+    linkCandidates: (projectId, query, limit) => {
+      const linked = new Set(links.filter((link) => link.project_id === projectId && link.source !== "excluded").map((link) => link.pr_id));
+      return Promise.resolve(candidatesFromRows(rows, projects, linked, query, limit));
+    },
     setProjectColor: (id, color) => {
       const project = projects.find((item) => item.id === id);
       if (!project) {

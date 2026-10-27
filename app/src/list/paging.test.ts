@@ -1,0 +1,178 @@
+import { expect, test } from "vitest";
+import type { ProjectDto } from "../api";
+import { checkState, defaultView, filtersActive, resetFilters, toggleParent, type SavedView } from "./model";
+import { PAGE_SIZE, dayBounds, pageFromRows, pageIds, summaryText, candidatesFromRows, type PageRequest, type SearchRow } from "./paging";
+
+const now = new Date("2026-10-26T12:00:00Z");
+
+function row(partial: Partial<SearchRow> & Pick<SearchRow, "id" | "title">): SearchRow {
+  return {
+    number: partial.id,
+    url: "https://github.com/acme/widgets/pull/1",
+    body: "",
+    owner: "acme",
+    repo: "acme/widgets",
+    author_login: "ada",
+    head_ref: "main",
+    is_draft: false,
+    state: "open",
+    checks: "success",
+    review_decision: null,
+    unresolved_threads: 0,
+    total_threads: 0,
+    involvement: 1,
+    updated_at: "2026-10-26T11:00:00Z",
+    created_at: "2026-10-20T11:00:00Z",
+    hidden: false,
+    project_ids: [],
+    readiness: "ready",
+    readiness_notes: [],
+    slack: null,
+    ...partial,
+  };
+}
+
+const auth: ProjectDto = { id: 1, name: "Auth", color: "#7c5cbf", archived: false, description: "", sort_order: 0 };
+const billing: ProjectDto = { id: 2, name: "Billing", color: "#3f6f8f", archived: false, description: "", sort_order: 1 };
+
+function request(viewKey: string, view: SavedView, query = "", extra: Partial<PageRequest> = {}): PageRequest {
+  return {
+    view_key: viewKey,
+    grouping: view.grouping,
+    ordering: view.ordering,
+    direction: view.direction,
+    filters: view.filters,
+    query,
+    collapsed: [],
+    cursor: null,
+    limit: 5000,
+    now: now.toISOString(),
+    ...dayBounds(now),
+    ...extra,
+  };
+}
+
+function shownIds(rows: SearchRow[], projects: ProjectDto[], viewKey: string, view: SavedView, query = ""): number[] {
+  return pageIds(pageFromRows(rows, projects, request(viewKey, view, query)).sections);
+}
+
+test("search and filters keep non-matching rows out of a parent toggle", () => {
+  const rows = [row({ id: 1, title: "Latch", project_ids: [1] }), row({ id: 2, title: "Secret drawer", project_ids: [1], body: "hidden token path" })];
+  const ids = shownIds(rows, [auth], "mine", defaultView(), "latch");
+  expect(ids).toEqual([1]);
+  expect([...toggleParent(ids, new Set())]).toEqual([1]);
+});
+
+test("checking a pull request updates every section that contains it", () => {
+  const page = pageFromRows([row({ id: 7, title: "Shared", project_ids: [1, 2] })], [auth, billing], request("mine", defaultView()));
+  expect(page.sections.map((section) => section.title)).toEqual(["Auth", "Billing"]);
+  const selected = toggleParent(page.sections[0]!.ids, new Set());
+  expect(checkState(page.sections[1]!.ids, selected)).toBe("all");
+});
+
+test("rows outside live projects land in Unassigned", () => {
+  const page = pageFromRows([row({ id: 1, title: "Loose" })], [auth], request("mine", defaultView()));
+  expect(page.sections.at(-1)).toMatchObject({ key: "unassigned", title: "Unassigned", project_id: null });
+});
+
+test("search is accent-insensitive and ANDs terms across title, body, repo, number, author, branch and project", () => {
+  const rows = [
+    row({ id: 12, number: 142, title: "Naïve latch", body: "drawer notes", author_login: "grace", head_ref: "feature/door-hinge", project_ids: [1] }),
+  ];
+  const ids = (query: string) => shownIds(rows, [auth], "mine", defaultView(), query);
+  expect(ids("naive latch")).toEqual([12]);
+  expect(ids("auth 142")).toEqual([12]);
+  expect(ids("#142")).toEqual([12]);
+  expect(ids("widgets drawer")).toEqual([12]);
+  expect(ids("grace hinge")).toEqual([12]);
+  expect(ids("naive missing")).toEqual([]);
+});
+
+test("menu filters combine and reset clears only filters", () => {
+  const projects = [auth, { ...billing, archived: true }];
+  const rows = [
+    row({ id: 1, title: "Open", owner: "acme", readiness: "ready", checks: "success" }),
+    row({ id: 2, title: "Draft", owner: "other", is_draft: true, readiness: "blocked", project_ids: [2] }),
+    row({ id: 3, title: "Old", hidden: true, owner: "acme" }),
+    row({ id: 4, title: "Shipped", state: "merged", owner: "acme" }),
+  ];
+  const filtered = { ...defaultView(), grouping: "org" as const, filters: { ...defaultView().filters, orgs: ["acme"], statuses: ["ready" as const] } };
+  expect(shownIds(rows, projects, "mine", filtered)).toEqual([1]);
+  expect(filtersActive(filtered.filters)).toBe(true);
+  const reset = resetFilters(filtered);
+  expect(reset.grouping).toBe("org");
+  expect(shownIds(rows, projects, "mine", reset)).toEqual([1]);
+  const withArchived = { ...reset, filters: { ...reset.filters, archived: true } };
+  expect(shownIds(rows, projects, "mine", withArchived).sort()).toEqual([1, 2, 4]);
+});
+
+test("merged and closed PRs leave the open list and the header count", () => {
+  const rows = [
+    row({ id: 1, title: "Live", project_ids: [1] }),
+    row({ id: 2, title: "Shipped", state: "merged", project_ids: [1] }),
+    row({ id: 3, title: "Dropped", state: "closed" }),
+  ];
+  const view = defaultView();
+  const open = pageFromRows(rows, [auth], request("mine", view));
+  expect(pageIds(open.sections)).toEqual([1]);
+  expect(summaryText(open.summary, "mine")).toBe("1 open PR across 1 project");
+  expect(shownIds(rows, [auth], "to_review", view, "shipped")).toEqual([]);
+  const archived = { ...view, filters: { ...view.filters, archived: true } };
+  const all = pageFromRows(rows, [auth], request("mine", archived));
+  expect(pageIds(all.sections).sort()).toEqual([1, 2, 3]);
+  expect(summaryText(all.summary, "mine")).toBe("1 open PR across 1 project · 2 merged or closed · 1 unassigned");
+});
+
+test("nav views pick authored, review-requested, or project rows", () => {
+  const rows = [row({ id: 1, title: "Mine", involvement: 1 }), row({ id: 2, title: "Review", involvement: 2, project_ids: [1] })];
+  expect(shownIds(rows, [auth], "mine", defaultView())).toEqual([1]);
+  expect(shownIds(rows, [auth], "to_review", defaultView())).toEqual([2]);
+  expect(shownIds(rows, [auth], "project:1", defaultView())).toEqual([2]);
+});
+
+test("empty project sections stay only without search or filters", () => {
+  const projects: ProjectDto[] = [auth, { ...billing, name: "Empty" }, { id: 3, name: "Old", color: "#3f6f8f", archived: true, description: "", sort_order: 2 }];
+  const rows = [row({ id: 1, title: "A", project_ids: [1] })];
+  const page = pageFromRows(rows, projects, request("mine", defaultView()));
+  expect(page.sections.map((section) => [section.title, section.count])).toEqual([
+    ["Auth", 1],
+    ["Empty", 0],
+  ]);
+  expect(summaryText(page.summary, "mine")).toBe("1 open PR across 2 projects");
+  expect(pageFromRows(rows, projects, request("mine", defaultView(), "a")).sections.map((section) => section.title)).toEqual(["Auth"]);
+  expect(summaryText(pageFromRows([], projects, request("project:2", defaultView())).summary, "project:2")).toBe("0 open PRs in this project");
+});
+
+test("pages walk the whole stream with counts over every match", () => {
+  const rows = Array.from({ length: 130 }, (_, index) => row({ id: index + 1, title: `PR ${index + 1}`, updated_at: new Date(now.getTime() - index * 60_000).toISOString() }));
+  const view = { ...defaultView(), grouping: "repository" as const };
+  const first = pageFromRows(rows, [], request("mine", view, "", { limit: PAGE_SIZE }));
+  expect(first.entries).toHaveLength(PAGE_SIZE);
+  expect(first.sections[0]!.count).toBe(130);
+  expect(first.summary.open).toBe(130);
+  const seen: number[] = [];
+  let cursor: string | null = null;
+  do {
+    const next = pageFromRows(rows, [], request("mine", view, "", { limit: PAGE_SIZE, cursor }));
+    seen.push(...next.entries.flatMap((entry) => (entry.row ? [entry.row.id] : [])));
+    cursor = next.next_cursor;
+  } while (cursor);
+  expect(seen).toEqual(rows.map((item) => item.id));
+  expect(first.entries[1]!.row).not.toHaveProperty("body");
+});
+
+test("collapsed sections keep their header and counts but skip rows", () => {
+  const rows = [row({ id: 1, title: "A", project_ids: [1] }), row({ id: 2, title: "B" })];
+  const page = pageFromRows(rows, [auth], request("mine", defaultView(), "", { collapsed: ["project:1"] }));
+  expect(page.entries.map((entry) => [entry.section, entry.row?.id ?? null])).toEqual([
+    ["project:1", null],
+    ["unassigned", null],
+    ["unassigned", 2],
+  ]);
+  expect(page.sections[0]).toMatchObject({ count: 1, ids: [1] });
+});
+
+test("link candidates put an exact number first and skip linked rows", () => {
+  const rows = [row({ id: 1, number: 120, title: "Newer", project_ids: [1] }), row({ id: 2, number: 12, title: "Older", updated_at: "2026-10-01T00:00:00Z" }), row({ id: 3, number: 312, title: "Newest" })];
+  expect(candidatesFromRows(rows, [auth], new Set([1]), "12", 8).map((item) => item.id)).toEqual([2, 3]);
+});
