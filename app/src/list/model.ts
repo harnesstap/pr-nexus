@@ -290,7 +290,8 @@ export function syncLabel(sync: SyncStatus, now: Date): string {
     return "Demo data · sync off";
   }
   if (sync.phase === "syncing") {
-    return "Syncing…";
+    // "Syncing… 42 so far" once the first search page is stored.
+    return sync.message.startsWith("Syncing") ? sync.message : "Syncing…";
   }
   if (sync.paused || sync.phase === "paused") {
     return "Rate limited";

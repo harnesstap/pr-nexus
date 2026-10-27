@@ -9,7 +9,8 @@ import { PrList } from "./PrList";
 import type { PageRequest } from "./paging";
 
 /** How often sync status is polled while a background sync runs. */
-const SYNC_POLL_MS = 3_000;
+/** Sync status poll while syncing. The backend updates the count at most this often too. */
+const SYNC_POLL_MS = 500;
 import { PrDetailDialog } from "./PrDetailDialog";
 import { ProjectDialog } from "./ProjectDialog";
 import { SlackSettings } from "../slack/SlackSettings";
@@ -93,13 +94,19 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
       return;
     }
     let cancel = false;
+    let seen = "";
     const timer = window.setInterval(() => {
       void api.syncStatus().then((status) => {
         if (cancel) {
           return;
         }
         setSync(status);
-        setVersion((value) => value + 1);
+        // Re-read the list only when sync stored more rows (its count moved).
+        const key = `${status.phase}:${status.message}`;
+        if (key !== seen) {
+          seen = key;
+          setVersion((value) => value + 1);
+        }
         if (status.phase !== "syncing") {
           void api.listProjects().then((next) => !cancel && setProjects(next));
         }
@@ -483,6 +490,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
           <PrList
             loadPage={loadPage}
             version={version}
+            syncProgress={syncing ? syncLabel(sync, now) : null}
             projects={projects}
             viewKey={viewKey}
             view={view}
