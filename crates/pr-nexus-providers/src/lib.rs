@@ -17,7 +17,7 @@ pub use github::GithubClient;
 
 /// Build the VCS client for `kind`.
 ///
-/// Coming-soon kinds return [`ProviderError::Unsupported`]. The token is kept
+/// Kinds other than GitHub return [`ProviderError::Unsupported`]. The token is kept
 /// in the client and is not logged.
 pub fn build_vcs(
     kind: VcsKind,
@@ -27,18 +27,18 @@ pub fn build_vcs(
     match kind {
         VcsKind::GitHub => Ok(Box::new(GithubClient::new(account, token)?)),
         VcsKind::GitLab => Err(ProviderError::Unsupported(
-            "GitLab is not available yet".to_owned(),
+            "GitLab is not supported".to_owned(),
         )),
         VcsKind::Gitea => Err(ProviderError::Unsupported(
-            "Gitea is not available yet".to_owned(),
+            "Gitea is not supported".to_owned(),
         )),
     }
 }
 
 /// Build the chat client for one signed-in workspace.
 ///
-/// Slack talks to the official MCP server with the keychain grant. Discord
-/// and Mattermost are coming soon.
+/// Slack talks to the official MCP server with the keychain grant. It is the
+/// only chat provider in v1; other kinds are rejected.
 pub fn build_chat(
     kind: ChatKind,
     account: AccountId,
@@ -51,10 +51,10 @@ pub fn build_chat(
             session, vault, account, user,
         )?)),
         ChatKind::Discord => Err(ProviderError::Unsupported(
-            "Discord is not available yet".to_owned(),
+            "Discord is not supported".to_owned(),
         )),
         ChatKind::Mattermost => Err(ProviderError::Unsupported(
-            "Mattermost is not available yet".to_owned(),
+            "Mattermost is not supported".to_owned(),
         )),
     }
 }

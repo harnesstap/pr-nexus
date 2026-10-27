@@ -10,13 +10,6 @@ use crate::domain::{AccountId, ChatKind, ProviderRef, PullRequest, TeamRef, VcsK
 use crate::error::ProviderError;
 use crate::review::owners::ReviewBundle;
 
-/// Whether the wizard can connect a provider.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Availability {
-    Available,
-    ComingSoon,
-}
-
 /// One screen of the setup wizard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SetupStep {
@@ -66,7 +59,6 @@ impl SetupStep {
 pub struct VcsDescriptor {
     pub kind: VcsKind,
     pub label: &'static str,
-    pub availability: Availability,
     pub setup: &'static [SetupStep],
 }
 
@@ -74,7 +66,6 @@ pub struct VcsDescriptor {
 pub struct ChatDescriptor {
     pub kind: ChatKind,
     pub label: &'static str,
-    pub availability: Availability,
     pub setup: &'static [SetupStep],
     pub multi_account: bool,
 }
@@ -88,54 +79,23 @@ pub struct ProviderRegistry {
 const GITHUB_SETUP: &[SetupStep] = &[SetupStep::ConnectVcs, SetupStep::ChooseVcsScope];
 const SLACK_SETUP: &[SetupStep] = &[SetupStep::ConnectChat, SetupStep::ChatMapping];
 
-const VCS: &[VcsDescriptor] = &[
-    VcsDescriptor {
-        kind: VcsKind::GitHub,
-        label: "GitHub",
-        availability: Availability::Available,
-        setup: GITHUB_SETUP,
-    },
-    VcsDescriptor {
-        kind: VcsKind::GitLab,
-        label: "GitLab",
-        availability: Availability::ComingSoon,
-        setup: &[],
-    },
-    VcsDescriptor {
-        kind: VcsKind::Gitea,
-        label: "Gitea",
-        availability: Availability::ComingSoon,
-        setup: &[],
-    },
-];
+const VCS: &[VcsDescriptor] = &[VcsDescriptor {
+    kind: VcsKind::GitHub,
+    label: "GitHub",
+    setup: GITHUB_SETUP,
+}];
 
-const CHAT: &[ChatDescriptor] = &[
-    ChatDescriptor {
-        kind: ChatKind::Slack,
-        label: "Slack",
-        availability: Availability::Available,
-        setup: SLACK_SETUP,
-        multi_account: true,
-    },
-    ChatDescriptor {
-        kind: ChatKind::Discord,
-        label: "Discord",
-        availability: Availability::ComingSoon,
-        setup: &[],
-        multi_account: false,
-    },
-    ChatDescriptor {
-        kind: ChatKind::Mattermost,
-        label: "Mattermost",
-        availability: Availability::ComingSoon,
-        setup: &[],
-        multi_account: false,
-    },
-];
+const CHAT: &[ChatDescriptor] = &[ChatDescriptor {
+    kind: ChatKind::Slack,
+    label: "Slack",
+    setup: SLACK_SETUP,
+    multi_account: true,
+}];
 
 impl ProviderRegistry {
-    /// v1 registry: GitHub and Slack are available. The other kinds are shown
-    /// as coming soon and contribute no setup steps.
+    /// v1 registry: only GitHub and Slack. Other `VcsKind` / `ChatKind` values
+    /// stay in the domain for later but have no descriptor, so the wizard never
+    /// offers them and they contribute no setup steps.
     pub const fn v1() -> Self {
         Self {
             vcs: VCS,
@@ -179,23 +139,25 @@ mod tests {
     }
 
     #[test]
-    fn coming_soon_providers_add_no_steps() {
+    fn v1_offers_only_github_and_slack() {
         let registry = ProviderRegistry::v1();
+        let vcs: Vec<_> = registry
+            .vcs
+            .iter()
+            .map(|descriptor| descriptor.kind)
+            .collect();
+        let chat: Vec<_> = registry
+            .chat
+            .iter()
+            .map(|descriptor| descriptor.kind)
+            .collect();
+        assert_eq!(vcs, vec![VcsKind::GitHub]);
+        assert_eq!(chat, vec![ChatKind::Slack]);
         let steps = registry.setup_steps(VcsKind::GitLab, ChatKind::Discord);
         assert_eq!(
             steps,
             vec![SetupStep::ChooseVcs, SetupStep::ChooseChat, SetupStep::Done]
         );
-        for descriptor in registry.vcs {
-            if descriptor.availability == Availability::ComingSoon {
-                assert!(descriptor.setup.is_empty());
-            }
-        }
-        for descriptor in registry.chat {
-            if descriptor.availability == Availability::ComingSoon {
-                assert!(descriptor.setup.is_empty());
-            }
-        }
     }
 
     #[test]
@@ -225,7 +187,6 @@ mod tests {
             .find(|descriptor| descriptor.kind == ChatKind::Slack)
             .expect("slack descriptor");
         assert!(slack.multi_account);
-        assert_eq!(slack.availability, Availability::Available);
     }
 }
 
