@@ -22,6 +22,23 @@ const HEADER: [&str; 5] = [
 ];
 const WORKSPACE: &str = "slack_workspace";
 
+/// Mappings store a workspace as its domain (`acme` for acme.slack.com),
+/// which is what review targets match connected accounts on. A pasted host
+/// or URL is reduced to that domain.
+pub fn workspace_domain(value: &str) -> String {
+    let value = value.trim();
+    let value = value
+        .strip_prefix("https://")
+        .or_else(|| value.strip_prefix("http://"))
+        .unwrap_or(value);
+    let host = value.split('/').next().unwrap_or_default();
+    let lower = host.to_ascii_lowercase();
+    lower
+        .strip_suffix(".slack.com")
+        .map(str::to_owned)
+        .unwrap_or(lower)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImportMode {
     Replace,
@@ -103,7 +120,7 @@ pub fn parse_csv(text: &str, default_workspace: Option<&str>) -> Result<Vec<CsvR
         };
         for row in &mut rows {
             if row.slack_workspace.is_empty() {
-                row.slack_workspace = workspace.to_string();
+                row.slack_workspace = workspace_domain(workspace);
             }
         }
     }
@@ -273,7 +290,7 @@ pub fn save_user_mapping(
             .trim_start_matches('#')
             .to_owned(),
         slack_channel_id: row.slack_channel_id.trim().to_owned(),
-        slack_workspace: row.slack_workspace.trim().to_owned(),
+        slack_workspace: workspace_domain(&row.slack_workspace),
     };
     if row.github_org.is_empty() || row.team_slug.is_empty() {
         return Err(CoreError::Validation(
@@ -564,7 +581,12 @@ fn row_from_record(
         team_name: values.get("github_team_name").cloned().unwrap_or_default(),
         slack_channel_name: channel_name,
         slack_channel_id: channel_id,
-        slack_workspace: values.get(WORKSPACE).cloned().unwrap_or_default(),
+        slack_workspace: workspace_domain(
+            values
+                .get(WORKSPACE)
+                .map(String::as_str)
+                .unwrap_or_default(),
+        ),
     })
 }
 
@@ -633,6 +655,21 @@ acme,team-a,Team A,team-reviews,C0123456789,widgets
 ";
         let rows = parse_csv(with_workspace, None).unwrap();
         assert_eq!(rows[0].slack_workspace, "widgets");
+    }
+
+    #[test]
+    fn workspace_hosts_and_urls_become_the_domain() {
+        assert_eq!(workspace_domain(" acme "), "acme");
+        assert_eq!(workspace_domain("Acme.slack.com"), "acme");
+        assert_eq!(workspace_domain("https://acme.slack.com/"), "acme");
+        let text = "\
+github_org,github_team_slug,github_team_name,slack_channel_name,slack_channel_id,slack_workspace
+acme,team-a,Team A,team-reviews,C0123456789,widgets.slack.com
+acme,team-b,Team B,team-b-reviews,C0123456789,
+";
+        let rows = parse_csv(text, Some("acme.slack.com")).unwrap();
+        assert_eq!(rows[0].slack_workspace, "widgets");
+        assert_eq!(rows[1].slack_workspace, "acme");
     }
 
     #[test]

@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
-import type { Api, ExportMode, ImportMode, ImportPreview, MappingEntry, MappingRow } from "../api";
+import type { Api, ExportMode, ImportMode, ImportPreview, MappingEntry, MappingRow, SlackWorkspace } from "../api";
 import { errorMessage } from "../api";
+import { WorkspaceSelect } from "../slack/WorkspaceSelect";
+import { chosenWorkspace, csvHasWorkspaceColumn, rememberWorkspace } from "../slack/workspaces";
 import { MAPPING_FIELDS, matchesMapping } from "./tabs";
 
 interface Props {
@@ -9,6 +11,10 @@ interface Props {
   skippedInSetup: boolean;
   /** Called after any change so the list's mapping hint can update. */
   onCountChange?: (count: number) => void;
+  /** The connected workspaces at boot; refreshed from the backend on open. */
+  workspaces?: SlackWorkspace[];
+  /** Opens Settings → Accounts when no workspace is connected. */
+  onConnectSlack?: () => void;
 }
 
 const EMPTY_ROW: MappingRow = {
@@ -23,7 +29,8 @@ const EMPTY_ROW: MappingRow = {
 const box = "rounded border border-slate-700 bg-slate-900 px-2 py-1";
 
 /** Settings → Mappings: table, inline edit, reset, CSV import with a dry run, export (§7.8, §8.2). */
-export function MappingSettings({ api, skippedInSetup, onCountChange }: Props) {
+export function MappingSettings({ api, skippedInSetup, onCountChange, workspaces: bootWorkspaces = [], onConnectSlack }: Props) {
+  const [workspaces, setWorkspaces] = useState<SlackWorkspace[]>(bootWorkspaces);
   const [entries, setEntries] = useState<MappingEntry[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -45,6 +52,22 @@ export function MappingSettings({ api, skippedInSetup, onCountChange }: Props) {
           setLoadError(errorMessage(err));
         }
       });
+    return () => {
+      cancel = true;
+    };
+  }, [api]);
+
+  // Slack may have been connected in Accounts since boot.
+  useEffect(() => {
+    let cancel = false;
+    api
+      .slackWorkspaces()
+      .then((next) => {
+        if (!cancel) {
+          setWorkspaces(next);
+        }
+      })
+      .catch(() => undefined);
     return () => {
       cancel = true;
     };
@@ -104,7 +127,7 @@ export function MappingSettings({ api, skippedInSetup, onCountChange }: Props) {
             className="rounded border border-slate-700 px-2 py-1 text-sm hover:bg-slate-800"
             onClick={() => {
               setRowError(null);
-              setEditing({ row: EMPTY_ROW, disabled: false, isNew: true });
+              setEditing({ row: { ...EMPTY_ROW, slack_workspace: chosenWorkspace(workspaces, "") }, disabled: false, isNew: true });
             }}
           >
             Add mapping
@@ -150,6 +173,8 @@ export function MappingSettings({ api, skippedInSetup, onCountChange }: Props) {
               {editing?.isNew && (
                 <EditRow
                   editing={editing}
+                  workspaces={workspaces}
+                  onConnectSlack={onConnectSlack}
                   error={rowError}
                   onChange={setEditing}
                   onSave={() => void saveEdit()}
@@ -164,6 +189,8 @@ export function MappingSettings({ api, skippedInSetup, onCountChange }: Props) {
                     <EditRow
                       key={key}
                       editing={editing}
+                      workspaces={workspaces}
+                      onConnectSlack={onConnectSlack}
                       error={rowError}
                       onChange={setEditing}
                       onSave={() => void saveEdit()}
@@ -236,7 +263,7 @@ export function MappingSettings({ api, skippedInSetup, onCountChange }: Props) {
           </table>
         )}
       </section>
-      <ImportPanel api={api} onImported={(rows) => void reload(`Imported ${rows} ${rows === 1 ? "row" : "rows"}.`)} />
+      <ImportPanel api={api} workspaces={workspaces} onConnectSlack={onConnectSlack} onImported={(rows) => void reload(`Imported ${rows} ${rows === 1 ? "row" : "rows"}.`)} />
       <ExportPanel api={api} />
     </div>
   );
@@ -244,12 +271,16 @@ export function MappingSettings({ api, skippedInSetup, onCountChange }: Props) {
 
 function EditRow({
   editing,
+  workspaces,
+  onConnectSlack,
   error,
   onChange,
   onSave,
   onCancel,
 }: {
   editing: { row: MappingRow; disabled: boolean; isNew: boolean };
+  workspaces: SlackWorkspace[];
+  onConnectSlack?: () => void;
   error: string | null;
   onChange: (next: { row: MappingRow; disabled: boolean; isNew: boolean }) => void;
   onSave: () => void;
@@ -272,7 +303,15 @@ function EditRow({
         <input aria-label="Team name" placeholder="Team name (optional)" className={`${box} mt-1 w-full`} value={editing.row.team_name} onChange={(e) => set("team_name", e.target.value)} />
       </td>
       <td className="py-2 pr-2">
-        <input aria-label="Slack workspace" placeholder="acme.slack.com" className={`${box} w-36`} value={editing.row.slack_workspace} onChange={(e) => set("slack_workspace", e.target.value)} />
+        <WorkspaceSelect
+          label="Slack workspace"
+          className={`${box} w-44`}
+          workspaces={workspaces}
+          value={editing.row.slack_workspace}
+          onChange={(domain) => set("slack_workspace", domain)}
+          onConnect={onConnectSlack}
+          allowUnlisted
+        />
       </td>
       <td className="py-2 pr-2">
         <input aria-label="Channel name" placeholder="team-reviews" className={`${box} w-36`} value={editing.row.slack_channel_name} onChange={(e) => set("slack_channel_name", e.target.value)} />
@@ -301,9 +340,22 @@ function EditRow({
   );
 }
 
-function ImportPanel({ api, onImported }: { api: Api; onImported: (rows: number) => void }) {
+function ImportPanel({
+  api,
+  workspaces,
+  onConnectSlack,
+  onImported,
+}: {
+  api: Api;
+  workspaces: SlackWorkspace[];
+  onConnectSlack?: () => void;
+  onImported: (rows: number) => void;
+}) {
   const [csv, setCsv] = useState("");
-  const [workspace, setWorkspace] = useState("");
+  const [picked, setPicked] = useState("");
+  const workspace = chosenWorkspace(workspaces, picked);
+  // The backend needs a default only for rows without their own workspace.
+  const needsWorkspace = csv.trim() !== "" && !workspace && !csvHasWorkspaceColumn(csv);
   const [mode, setMode] = useState<ImportMode>("merge");
   const [preview, setPreview] = useState<{ key: string; diff: ImportPreview } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -324,6 +376,7 @@ function ImportPanel({ api, onImported }: { api: Api; onImported: (rows: number)
     setError(null);
     try {
       const { rows } = await api.applyMappingImport(csv, workspace, mode);
+      rememberWorkspace(workspace);
       setCsv("");
       setPreview(null);
       onImported(rows);
@@ -348,13 +401,23 @@ function ImportPanel({ api, onImported }: { api: Api; onImported: (rows: number)
           Replace the imported rows
         </label>
       </fieldset>
-      <label className="block text-sm">
-        Default Slack workspace
+      <div className="text-sm">
+        <span>Default Slack workspace</span>
         <span className="mt-0.5 block text-xs text-slate-500">
           Used for rows without a <code>slack_workspace</code> column.
         </span>
-        <input className={`${box} mt-1 w-64`} placeholder="acme.slack.com" value={workspace} onChange={(e) => setWorkspace(e.target.value)} />
-      </label>
+        <div className="mt-1">
+          <WorkspaceSelect
+            label="Default Slack workspace"
+            className={`${box} w-80`}
+            workspaces={workspaces}
+            value={workspace}
+            onChange={setPicked}
+            onConnect={onConnectSlack}
+            connectLabel="Connect Slack in Accounts"
+          />
+        </div>
+      </div>
       <label className="block text-sm">
         Mapping CSV
         <textarea
@@ -379,13 +442,18 @@ function ImportPanel({ api, onImported }: { api: Api; onImported: (rows: number)
         />
       </label>
       <div className="flex items-center gap-2">
-        <button type="button" className="rounded border border-slate-700 px-3 py-1.5 text-sm hover:bg-slate-800 disabled:opacity-50" disabled={!csv.trim()} onClick={() => void runPreview()}>
+        <button type="button" className="rounded border border-slate-700 px-3 py-1.5 text-sm hover:bg-slate-800 disabled:opacity-50" disabled={!csv.trim() || needsWorkspace} onClick={() => void runPreview()}>
           Preview changes
         </button>
         <button type="button" className="rounded bg-violet-500 px-3 py-1.5 text-sm disabled:opacity-50" disabled={!current} onClick={() => void apply()}>
           Apply import
         </button>
       </div>
+      {needsWorkspace && (
+        <p className="text-xs text-amber-200">
+          Connect a Slack workspace, or add a <code>slack_workspace</code> column to the CSV.
+        </p>
+      )}
       {error && (
         <p role="alert" className="text-sm text-rose-300">
           {error}
