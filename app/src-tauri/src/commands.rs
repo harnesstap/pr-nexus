@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 use tauri_plugin_opener::OpenerExt;
 
+use crate::blocking;
 use crate::error::AppError;
 use crate::slack_link;
 use crate::state::{self, AppState};
@@ -151,210 +152,234 @@ fn sync_dto(state: &AppState) -> SyncDto {
 }
 
 #[tauri::command]
-pub fn bootstrap(app: State<'_, std::sync::Arc<AppState>>) -> Result<Bootstrap, AppError> {
-    let state = app.inner().as_ref();
-    let saved = onboarding::load(&state.store)?;
-    let validity = state::validity(state, &saved)?;
-    let resume = onboarding::resume_step(&state::registry_steps(), Some(&saved), validity);
-    let account = state::github_account(&state.store)?;
-    let mut orgs = settings::viewer_orgs(&state.store)?;
-    for org in settings::seen_orgs(&state.store)? {
-        if !orgs
-            .iter()
-            .any(|existing| existing.eq_ignore_ascii_case(&org))
-        {
-            orgs.push(org);
+pub async fn bootstrap(app: State<'_, std::sync::Arc<AppState>>) -> Result<Bootstrap, AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        let saved = onboarding::load(&state.store)?;
+        let validity = state::validity(state, &saved)?;
+        let resume = onboarding::resume_step(&state::registry_steps(), Some(&saved), validity);
+        let account = state::github_account(&state.store)?;
+        let mut orgs = settings::viewer_orgs(&state.store)?;
+        for org in settings::seen_orgs(&state.store)? {
+            if !orgs
+                .iter()
+                .any(|existing| existing.eq_ignore_ascii_case(&org))
+            {
+                orgs.push(org);
+            }
         }
-    }
-    let (gh_ready, gh_detail) = if github::github_token_from_env().is_some() {
-        (true, "Using PR_NEXUS_GITHUB_TOKEN".to_owned())
-    } else {
-        match github::read_gh_token() {
-            github::GhProbe::Ready { .. } => (true, "gh is logged in".to_owned()),
-            github::GhProbe::Unavailable { reason } => (false, reason),
-        }
-    };
-    let oauth = github::oauth_client_id_from_env()
-        .or(settings::oauth_client_id(&state.store)?.into())
-        .filter(|value| !value.is_empty());
-    Ok(Bootstrap {
-        resume_step: resume.as_str().to_owned(),
-        steps: state::registry_steps()
-            .into_iter()
-            .map(|step| step.as_str().to_owned())
-            .collect(),
-        keyring_warning: state.vault.warning(),
-        keyring_available: state.vault.available(),
-        github_login: account.as_ref().map(|account| account.login.clone()),
-        github_connected: account.is_some(),
-        tracked_orgs: settings::tracked_orgs(&state.store)?,
-        include_personal: settings::include_personal_repos(&state.store)?,
-        org_choices: orgs,
-        orgs_needing_sso: settings::sso_orgs(&state.store)?,
-        slack_client_id: settings::slack_client_id(&state.store)?,
-        slack_redirect_uri: settings::slack_redirect_uri(&state.store)?,
-        slack_secret_saved: {
-            let id = settings::slack_client_id(&state.store)?;
-            !id.trim().is_empty()
-                && state
-                    .vault
-                    .get(&format!("slack-client:{}", id.trim()))
-                    .ok()
-                    .flatten()
-                    .is_some()
-        },
-        slack_workspaces: crate::slack::workspace_accounts(&state.store)?
-            .iter()
-            .map(|account| crate::slack::workspace_dto(state, account))
-            .collect(),
-        slack_mentions: settings::slack_mentions(&state.store)?.as_str().to_owned(),
-        bump_broadcast: settings::bump_broadcast(&state.store)?,
-        mapping_count: state.store.mapping_count()?,
-        sync: sync_dto(state),
-        env_token: github::github_token_from_env().is_some(),
-        oauth_client_configured: oauth.is_some(),
-        gh_ready,
-        gh_detail,
-        onboarding: saved,
+        let (gh_ready, gh_detail) = if github::github_token_from_env().is_some() {
+            (true, "Using PR_NEXUS_GITHUB_TOKEN".to_owned())
+        } else {
+            match github::read_gh_token() {
+                github::GhProbe::Ready { .. } => (true, "gh is logged in".to_owned()),
+                github::GhProbe::Unavailable { reason } => (false, reason),
+            }
+        };
+        let oauth = github::oauth_client_id_from_env()
+            .or(settings::oauth_client_id(&state.store)?.into())
+            .filter(|value| !value.is_empty());
+        Ok(Bootstrap {
+            resume_step: resume.as_str().to_owned(),
+            steps: state::registry_steps()
+                .into_iter()
+                .map(|step| step.as_str().to_owned())
+                .collect(),
+            keyring_warning: state.vault.warning(),
+            keyring_available: state.vault.available(),
+            github_login: account.as_ref().map(|account| account.login.clone()),
+            github_connected: account.is_some(),
+            tracked_orgs: settings::tracked_orgs(&state.store)?,
+            include_personal: settings::include_personal_repos(&state.store)?,
+            org_choices: orgs,
+            orgs_needing_sso: settings::sso_orgs(&state.store)?,
+            slack_client_id: settings::slack_client_id(&state.store)?,
+            slack_redirect_uri: settings::slack_redirect_uri(&state.store)?,
+            slack_secret_saved: {
+                let id = settings::slack_client_id(&state.store)?;
+                !id.trim().is_empty()
+                    && state
+                        .vault
+                        .get(&format!("slack-client:{}", id.trim()))
+                        .ok()
+                        .flatten()
+                        .is_some()
+            },
+            slack_workspaces: crate::slack::workspace_accounts(&state.store)?
+                .iter()
+                .map(|account| crate::slack::workspace_dto(state, account))
+                .collect(),
+            slack_mentions: settings::slack_mentions(&state.store)?.as_str().to_owned(),
+            bump_broadcast: settings::bump_broadcast(&state.store)?,
+            mapping_count: state.store.mapping_count()?,
+            sync: sync_dto(state),
+            env_token: github::github_token_from_env().is_some(),
+            oauth_client_configured: oauth.is_some(),
+            gh_ready,
+            gh_detail,
+            onboarding: saved,
+        })
     })
+    .await
 }
 
 #[tauri::command]
-pub fn save_providers(
+pub async fn save_providers(
     app: State<'_, std::sync::Arc<AppState>>,
     vcs: String,
     chat: String,
 ) -> Result<(), AppError> {
-    let state = app.inner().as_ref();
-    if vcs != "github" || chat != "slack" {
-        return Err(AppError::new(
-            "validation",
-            "Only GitHub and Slack can be selected",
-        ));
-    }
-    settings::set_provider_kind(&state.store, &vcs, &chat)?;
-    Ok(())
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        if vcs != "github" || chat != "slack" {
+            return Err(AppError::new(
+                "validation",
+                "Only GitHub and Slack can be selected",
+            ));
+        }
+        settings::set_provider_kind(&state.store, &vcs, &chat)?;
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn save_onboarding(
+pub async fn save_onboarding(
     app: State<'_, std::sync::Arc<AppState>>,
     patch: OnboardingPatch,
 ) -> Result<(), AppError> {
-    let state = app.inner().as_ref();
-    onboarding::save(
-        &state.store,
-        &OnboardingState {
-            step: patch.step,
-            completed: patch.completed,
-            mapping_skipped: patch.mapping_skipped,
-            slack_skipped: patch.slack_skipped,
-            finished_at: patch.finished_at,
-        },
-    )?;
-    Ok(())
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        onboarding::save(
+            &state.store,
+            &OnboardingState {
+                step: patch.step,
+                completed: patch.completed,
+                mapping_skipped: patch.mapping_skipped,
+                slack_skipped: patch.slack_skipped,
+                finished_at: patch.finished_at,
+            },
+        )?;
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn connect_github(
+pub async fn connect_github(
     app: State<'_, std::sync::Arc<AppState>>,
     mode: String,
     pat: Option<String>,
 ) -> Result<GithubSession, AppError> {
-    let state = app.inner().as_ref();
-    let auth_mode = match mode.as_str() {
-        "gh_cli" => AuthMode::GhCli,
-        "pat" => AuthMode::Pat,
-        other => {
-            return Err(AppError::new(
-                "validation",
-                format!("unknown GitHub auth mode {other}"),
-            ));
-        }
-    };
-    let token = if let Some(token) = github::github_token_from_env() {
-        token
-    } else if auth_mode == AuthMode::GhCli {
-        match github::read_gh_token() {
-            github::GhProbe::Ready { token } => token,
-            github::GhProbe::Unavailable { reason } => {
-                return Err(AppError::new("unauthorized", reason));
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        let auth_mode = match mode.as_str() {
+            "gh_cli" => AuthMode::GhCli,
+            "pat" => AuthMode::Pat,
+            other => {
+                return Err(AppError::new(
+                    "validation",
+                    format!("unknown GitHub auth mode {other}"),
+                ));
             }
-        }
-    } else {
-        pat.filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| AppError::new("validation", "Paste a personal access token"))?
-    };
-    store_github(
-        state,
-        auth_mode,
-        token,
-        github::github_token_from_env().is_some(),
-    )
+        };
+        let token = if let Some(token) = github::github_token_from_env() {
+            token
+        } else if auth_mode == AuthMode::GhCli {
+            match github::read_gh_token() {
+                github::GhProbe::Ready { token } => token,
+                github::GhProbe::Unavailable { reason } => {
+                    return Err(AppError::new("unauthorized", reason));
+                }
+            }
+        } else {
+            pat.filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| AppError::new("validation", "Paste a personal access token"))?
+        };
+        store_github(
+            state,
+            auth_mode,
+            token,
+            github::github_token_from_env().is_some(),
+        )
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn start_device_flow(
+pub async fn start_device_flow(
     app: State<'_, std::sync::Arc<AppState>>,
 ) -> Result<DevicePrompt, AppError> {
-    let state = app.inner().as_ref();
-    let client_id = github::oauth_client_id_from_env()
-        .or(settings::oauth_client_id(&state.store)?.into())
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            AppError::new(
-                "unsupported",
-                "Device flow needs github.oauth_client_id or PR_NEXUS_GITHUB_OAUTH_CLIENT_ID",
-            )
-        })?;
-    let http = reqwest_client()?;
-    let started = github::start_device_flow(&http, "https://github.com", &client_id)?;
-    *state.device.lock().expect("device") = Some(state::DeviceSession {
-        device_code: started.device_code,
-        client_id,
-    });
-    Ok(DevicePrompt {
-        user_code: started.user_code,
-        verification_uri: started.verification_uri,
-        expires_in: started.expires_in,
-        interval: started.interval,
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        let client_id = github::oauth_client_id_from_env()
+            .or(settings::oauth_client_id(&state.store)?.into())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                AppError::new(
+                    "unsupported",
+                    "Device flow needs github.oauth_client_id or PR_NEXUS_GITHUB_OAUTH_CLIENT_ID",
+                )
+            })?;
+        let http = reqwest_client()?;
+        let started = github::start_device_flow(&http, "https://github.com", &client_id)?;
+        *state.device.lock().expect("device") = Some(state::DeviceSession {
+            device_code: started.device_code,
+            client_id,
+        });
+        Ok(DevicePrompt {
+            user_code: started.user_code,
+            verification_uri: started.verification_uri,
+            expires_in: started.expires_in,
+            interval: started.interval,
+        })
     })
+    .await
 }
 
 #[tauri::command]
-pub fn poll_device_flow(
+pub async fn poll_device_flow(
     app: State<'_, std::sync::Arc<AppState>>,
 ) -> Result<DeviceResult, AppError> {
-    let state = app.inner().as_ref();
-    let session = state
-        .device
-        .lock()
-        .expect("device")
-        .as_ref()
-        .map(|session| (session.client_id.clone(), session.device_code.clone()))
-        .ok_or_else(|| AppError::new("validation", "Device flow has not started"))?;
-    let http = reqwest_client()?;
-    match github::poll_device_flow(&http, "https://github.com", &session.0, &session.1)? {
-        github::DevicePoll::Pending { .. } => Ok(DeviceResult {
-            status: "pending".into(),
-            login: None,
-        }),
-        github::DevicePoll::Denied => Err(AppError::new(
-            "unauthorized",
-            "GitHub denied the device flow",
-        )),
-        github::DevicePoll::Expired => {
-            Err(AppError::new("unauthorized", "The device code expired"))
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        let session = state
+            .device
+            .lock()
+            .expect("device")
+            .as_ref()
+            .map(|session| (session.client_id.clone(), session.device_code.clone()))
+            .ok_or_else(|| AppError::new("validation", "Device flow has not started"))?;
+        let http = reqwest_client()?;
+        match github::poll_device_flow(&http, "https://github.com", &session.0, &session.1)? {
+            github::DevicePoll::Pending { .. } => Ok(DeviceResult {
+                status: "pending".into(),
+                login: None,
+            }),
+            github::DevicePoll::Denied => Err(AppError::new(
+                "unauthorized",
+                "GitHub denied the device flow",
+            )),
+            github::DevicePoll::Expired => {
+                Err(AppError::new("unauthorized", "The device code expired"))
+            }
+            github::DevicePoll::Token(token) => {
+                let session = store_github(state, AuthMode::OauthDevice, token, false)?;
+                *state.device.lock().expect("device") = None;
+                Ok(DeviceResult {
+                    status: "connected".into(),
+                    login: Some(session.login),
+                })
+            }
         }
-        github::DevicePoll::Token(token) => {
-            let session = store_github(state, AuthMode::OauthDevice, token, false)?;
-            *state.device.lock().expect("device") = None;
-            Ok(DeviceResult {
-                status: "connected".into(),
-                login: Some(session.login),
-            })
-        }
-    }
+    })
+    .await
 }
 
 fn store_github(
@@ -395,49 +420,57 @@ fn store_github(
 }
 
 #[tauri::command]
-pub fn save_orgs(
+pub async fn save_orgs(
     app: State<'_, std::sync::Arc<AppState>>,
     orgs: Vec<String>,
     include_personal: bool,
 ) -> Result<(), AppError> {
-    let state = app.inner().as_ref();
-    settings::set_tracked_orgs(&state.store, &orgs)?;
-    settings::set_include_personal_repos(&state.store, include_personal)?;
-    Ok(())
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        settings::set_tracked_orgs(&state.store, &orgs)?;
+        settings::set_include_personal_repos(&state.store, include_personal)?;
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn save_slack_settings(
+pub async fn save_slack_settings(
     app: State<'_, std::sync::Arc<AppState>>,
     client_id: String,
     client_secret: Option<String>,
     redirect_uri: String,
 ) -> Result<(), AppError> {
-    let state = app.inner().as_ref();
-    settings::set_slack_client_id(&state.store, client_id.trim())?;
-    let redirect = if redirect_uri.trim().is_empty() {
-        DEFAULT_REDIRECT
-    } else {
-        redirect_uri.trim()
-    };
-    settings::set_slack_redirect_uri(&state.store, redirect)?;
-    if let Some(secret) = client_secret.filter(|value| !value.is_empty()) {
-        let id = client_id.trim();
-        if !id.is_empty() {
-            state.vault.set(&format!("slack-client:{id}"), &secret)?;
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        settings::set_slack_client_id(&state.store, client_id.trim())?;
+        let redirect = if redirect_uri.trim().is_empty() {
+            DEFAULT_REDIRECT
+        } else {
+            redirect_uri.trim()
+        };
+        settings::set_slack_redirect_uri(&state.store, redirect)?;
+        if let Some(secret) = client_secret.filter(|value| !value.is_empty()) {
+            let id = client_id.trim();
+            if !id.is_empty() {
+                state.vault.set(&format!("slack-client:{id}"), &secret)?;
+            }
         }
-    }
-    // Open sessions carry the old client settings.
-    state
-        .chats
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clear();
-    Ok(())
+        // Open sessions carry the old client settings.
+        state
+            .chats
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn slack_manifest_url(redirect_uri: String) -> Result<String, AppError> {
+pub async fn slack_manifest_url(redirect_uri: String) -> Result<String, AppError> {
     let redirect = if redirect_uri.trim().is_empty() {
         DEFAULT_REDIRECT
     } else {
@@ -447,65 +480,88 @@ pub fn slack_manifest_url(redirect_uri: String) -> Result<String, AppError> {
 }
 
 #[tauri::command]
-pub fn import_mapping(
+pub async fn import_mapping(
     app: State<'_, std::sync::Arc<AppState>>,
     csv: String,
     workspace: String,
 ) -> Result<ImportSummary, AppError> {
-    let state = app.inner().as_ref();
-    let rows = mapping::parse_csv(&csv, Some(workspace.trim()))?;
-    mapping::apply_import(&state.store, &rows, ImportMode::Merge, Utc::now())?;
-    Ok(ImportSummary { rows: rows.len() })
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        let rows = mapping::parse_csv(&csv, Some(workspace.trim()))?;
+        mapping::apply_import(&state.store, &rows, ImportMode::Merge, Utc::now())?;
+        Ok(ImportSummary { rows: rows.len() })
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn finish_onboarding(app: State<'_, std::sync::Arc<AppState>>) -> Result<SyncDto, AppError> {
-    let state = app.inner().as_ref();
-    let mut saved = onboarding::load(&state.store)?;
-    saved.step = SetupStep::Done.as_str().into();
-    if !saved.completed.iter().any(|step| step == "done") {
-        saved.completed.push("done".into());
-    }
-    saved.finished_at = Some(Utc::now().to_rfc3339());
-    onboarding::save(&state.store, &saved)?;
-    let _ = state::run_sync(state, SyncKind::Manual);
-    Ok(sync_dto(state))
+pub async fn finish_onboarding(
+    app: State<'_, std::sync::Arc<AppState>>,
+) -> Result<SyncDto, AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        let mut saved = onboarding::load(&state.store)?;
+        saved.step = SetupStep::Done.as_str().into();
+        if !saved.completed.iter().any(|step| step == "done") {
+            saved.completed.push("done".into());
+        }
+        saved.finished_at = Some(Utc::now().to_rfc3339());
+        onboarding::save(&state.store, &saved)?;
+        let _ = state::run_sync(state, SyncKind::Manual);
+        Ok(sync_dto(state))
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn sync_now(app: State<'_, std::sync::Arc<AppState>>) -> Result<SyncDto, AppError> {
-    let state = app.inner().as_ref();
-    let _ = state::run_sync(state, SyncKind::Manual);
-    Ok(sync_dto(state))
+pub async fn sync_now(app: State<'_, std::sync::Arc<AppState>>) -> Result<SyncDto, AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        let _ = state::run_sync(state, SyncKind::Manual);
+        Ok(sync_dto(state))
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn sync_status(app: State<'_, std::sync::Arc<AppState>>) -> Result<SyncDto, AppError> {
-    let state = app.inner().as_ref();
-    Ok(sync_dto(state))
+pub async fn sync_status(app: State<'_, std::sync::Arc<AppState>>) -> Result<SyncDto, AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        Ok(sync_dto(state))
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn set_focus(app: State<'_, std::sync::Arc<AppState>>, focused: bool) {
-    let state = app.inner().as_ref();
-    state
-        .focused
-        .store(focused, std::sync::atomic::Ordering::Relaxed);
+pub async fn set_focus(
+    app: State<'_, std::sync::Arc<AppState>>,
+    focused: bool,
+) -> Result<(), AppError> {
+    state::set_focused(app.inner(), focused);
+    Ok(())
 }
 
 #[tauri::command]
-pub fn list_rows(app: State<'_, std::sync::Arc<AppState>>) -> Result<Vec<ListRow>, AppError> {
-    let state = app.inner().as_ref();
-    let Some(account) = state::github_account(&state.store)? else {
-        return Ok(Vec::new());
-    };
-    let flag = settings::blocked_review_required_is_ready(&state.store)?;
-    let prs = state.store.list_pull_requests_for_account(account.id)?;
-    let mut rows = Vec::with_capacity(prs.len());
-    for pr in prs {
-        rows.push(to_row(state, &pr, flag)?);
-    }
-    Ok(rows)
+pub async fn list_rows(app: State<'_, std::sync::Arc<AppState>>) -> Result<Vec<ListRow>, AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        let Some(account) = state::github_account(&state.store)? else {
+            return Ok(Vec::new());
+        };
+        let flag = settings::blocked_review_required_is_ready(&state.store)?;
+        let prs = state.store.list_pull_requests_for_account(account.id)?;
+        let mut rows = Vec::with_capacity(prs.len());
+        for pr in prs {
+            rows.push(to_row(state, &pr, flag)?);
+        }
+        Ok(rows)
+    })
+    .await
 }
 
 fn project_dto(project: Project) -> ProjectDto {
@@ -520,54 +576,77 @@ fn project_dto(project: Project) -> ProjectDto {
 }
 
 #[tauri::command]
-pub fn list_projects(
+pub async fn list_projects(
     app: State<'_, std::sync::Arc<AppState>>,
 ) -> Result<Vec<ProjectDto>, AppError> {
-    let state = app.inner().as_ref();
-    Ok(state
-        .store
-        .list_projects()?
-        .into_iter()
-        .map(project_dto)
-        .collect())
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        Ok(state
+            .store
+            .list_projects()?
+            .into_iter()
+            .map(project_dto)
+            .collect())
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn create_project(
+pub async fn create_project(
     app: State<'_, std::sync::Arc<AppState>>,
     name: String,
 ) -> Result<ProjectDto, AppError> {
-    let state = app.inner().as_ref();
-    Ok(project_dto(state.store.create_project(name)?))
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        Ok(project_dto(state.store.create_project(name)?))
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn rename_project(
+pub async fn rename_project(
     app: State<'_, std::sync::Arc<AppState>>,
     id: i64,
     name: String,
 ) -> Result<(), AppError> {
-    let state = app.inner().as_ref();
-    state.store.rename_project(ProjectId(id), name)?;
-    Ok(())
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        state.store.rename_project(ProjectId(id), name)?;
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn archive_project(
+pub async fn archive_project(
     app: State<'_, std::sync::Arc<AppState>>,
     id: i64,
     archived: bool,
 ) -> Result<(), AppError> {
-    let state = app.inner().as_ref();
-    state.store.set_project_archived(ProjectId(id), archived)?;
-    Ok(())
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        state.store.set_project_archived(ProjectId(id), archived)?;
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn delete_project(app: State<'_, std::sync::Arc<AppState>>, id: i64) -> Result<(), AppError> {
-    let state = app.inner().as_ref();
-    state.store.delete_project(ProjectId(id))?;
-    Ok(())
+pub async fn delete_project(
+    app: State<'_, std::sync::Arc<AppState>>,
+    id: i64,
+) -> Result<(), AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        state.store.delete_project(ProjectId(id))?;
+        Ok(())
+    })
+    .await
 }
 
 #[derive(Serialize, Deserialize)]
@@ -614,149 +693,185 @@ fn relink_all(state: &AppState) -> Result<(), AppError> {
 }
 
 #[tauri::command]
-pub fn set_project_color(
+pub async fn set_project_color(
     app: State<'_, std::sync::Arc<AppState>>,
     id: i64,
     color: String,
 ) -> Result<ProjectDto, AppError> {
-    let state = app.inner().as_ref();
-    Ok(project_dto(
-        state.store.set_project_color(ProjectId(id), color)?,
-    ))
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        Ok(project_dto(
+            state.store.set_project_color(ProjectId(id), color)?,
+        ))
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn list_project_rules(
+pub async fn list_project_rules(
     app: State<'_, std::sync::Arc<AppState>>,
     project_id: i64,
 ) -> Result<Vec<RuleDto>, AppError> {
-    let state = app.inner().as_ref();
-    let mut rules = state.store.list_project_rules(ProjectId(project_id))?;
-    rules.sort_by(|a, b| b.priority.cmp(&a.priority).then(a.id.cmp(&b.id)));
-    Ok(rules.into_iter().map(rule_dto).collect())
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        let mut rules = state.store.list_project_rules(ProjectId(project_id))?;
+        rules.sort_by(|a, b| b.priority.cmp(&a.priority).then(a.id.cmp(&b.id)));
+        Ok(rules.into_iter().map(rule_dto).collect())
+    })
+    .await
 }
 
 /// Creates (`id: null`) or updates a rule, then re-evaluates every rule (§8.1).
 #[tauri::command]
-pub fn save_project_rule(
+pub async fn save_project_rule(
     app: State<'_, std::sync::Arc<AppState>>,
     rule: RuleDto,
 ) -> Result<RuleDto, AppError> {
-    let state = app.inner().as_ref();
-    let kind = parse_kind(&rule.kind)?;
-    let pattern = linking::validate(kind, &rule.pattern)?;
-    let value = ProjectRule {
-        id: rule.id.unwrap_or(0),
-        project: ProjectId(rule.project_id),
-        kind,
-        pattern,
-        priority: rule.priority,
-    };
-    let saved = match rule.id {
-        Some(_) => state.store.update_project_rule(value)?,
-        None => state.store.insert_project_rule(value)?,
-    };
-    relink_all(state)?;
-    Ok(rule_dto(saved))
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        let kind = parse_kind(&rule.kind)?;
+        let pattern = linking::validate(kind, &rule.pattern)?;
+        let value = ProjectRule {
+            id: rule.id.unwrap_or(0),
+            project: ProjectId(rule.project_id),
+            kind,
+            pattern,
+            priority: rule.priority,
+        };
+        let saved = match rule.id {
+            Some(_) => state.store.update_project_rule(value)?,
+            None => state.store.insert_project_rule(value)?,
+        };
+        relink_all(state)?;
+        Ok(rule_dto(saved))
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn delete_project_rule(
+pub async fn delete_project_rule(
     app: State<'_, std::sync::Arc<AppState>>,
     id: i64,
 ) -> Result<(), AppError> {
-    let state = app.inner().as_ref();
-    state.store.delete_project_rule(id)?;
-    relink_all(state)
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        state.store.delete_project_rule(id)?;
+        relink_all(state)
+    })
+    .await
 }
 
 /// Live preview: how many open PRs `kind`/`pattern` would link.
 #[tauri::command]
-pub fn preview_rule(
+pub async fn preview_rule(
     app: State<'_, std::sync::Arc<AppState>>,
     kind: String,
     pattern: String,
 ) -> Result<usize, AppError> {
-    let state = app.inner().as_ref();
-    let kind = parse_kind(&kind)?;
-    Ok(linking::preview_count(
-        &state.store,
-        &account_prs(state)?,
-        kind,
-        &pattern,
-    )?)
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        let kind = parse_kind(&kind)?;
+        Ok(linking::preview_count(
+            &state.store,
+            &account_prs(state)?,
+            kind,
+            &pattern,
+        )?)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn list_project_links(
+pub async fn list_project_links(
     app: State<'_, std::sync::Arc<AppState>>,
     project_id: i64,
 ) -> Result<Vec<LinkDto>, AppError> {
-    let state = app.inner().as_ref();
-    Ok(state
-        .store
-        .list_project_links(ProjectId(project_id))?
-        .into_iter()
-        .map(|link| {
-            let (source, rule_id) = match link.source {
-                LinkSource::Manual => ("manual", None),
-                LinkSource::Rule(id) => ("rule", Some(id)),
-                LinkSource::Excluded => ("excluded", None),
-            };
-            LinkDto {
-                pr_id: link.pr.0,
-                source: source.to_owned(),
-                rule_id,
-            }
-        })
-        .collect())
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        Ok(state
+            .store
+            .list_project_links(ProjectId(project_id))?
+            .into_iter()
+            .map(|link| {
+                let (source, rule_id) = match link.source {
+                    LinkSource::Manual => ("manual", None),
+                    LinkSource::Rule(id) => ("rule", Some(id)),
+                    LinkSource::Excluded => ("excluded", None),
+                };
+                LinkDto {
+                    pr_id: link.pr.0,
+                    source: source.to_owned(),
+                    rule_id,
+                }
+            })
+            .collect())
+    })
+    .await
 }
 
 /// Manual links: drag-and-drop onto a project, or "Add pull request" in the project dialog.
 #[tauri::command]
-pub fn link_prs(
+pub async fn link_prs(
     app: State<'_, std::sync::Arc<AppState>>,
     project_id: i64,
     pr_ids: Vec<i64>,
 ) -> Result<usize, AppError> {
-    let state = app.inner().as_ref();
-    let project = ProjectId(project_id);
-    if state.store.get_project(project)?.is_none() {
-        return Err(AppError::new("validation", "Project not found"));
-    }
-    Ok(state
-        .store
-        .link_manual(project, pr_ids.into_iter().map(PrId).collect(), Utc::now())?)
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        let project = ProjectId(project_id);
+        if state.store.get_project(project)?.is_none() {
+            return Err(AppError::new("validation", "Project not found"));
+        }
+        Ok(state
+            .store
+            .link_manual(project, pr_ids.into_iter().map(PrId).collect(), Utc::now())?)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn unlink_pr(
+pub async fn unlink_pr(
     app: State<'_, std::sync::Arc<AppState>>,
     project_id: i64,
     pr_id: i64,
 ) -> Result<(), AppError> {
-    let state = app.inner().as_ref();
-    let project = ProjectId(project_id);
-    let pr = PrId(pr_id);
-    let rule_matches = match state.store.get_pull_request(pr)? {
-        Some(value) => linking::rule_matches(&state.store, &value, project)?,
-        None => false,
-    };
-    state
-        .store
-        .unlink_pr(project, pr, rule_matches, Utc::now())?;
-    Ok(())
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        let project = ProjectId(project_id);
+        let pr = PrId(pr_id);
+        let rule_matches = match state.store.get_pull_request(pr)? {
+            Some(value) => linking::rule_matches(&state.store, &value, project)?,
+            None => false,
+        };
+        state
+            .store
+            .unlink_pr(project, pr, rule_matches, Utc::now())?;
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn restore_pr(
+pub async fn restore_pr(
     app: State<'_, std::sync::Arc<AppState>>,
     project_id: i64,
     pr_id: i64,
 ) -> Result<(), AppError> {
-    let state = app.inner().as_ref();
-    state.store.restore_pr(ProjectId(project_id), PrId(pr_id))?;
-    relink_all(state)
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        state.store.restore_pr(ProjectId(project_id), PrId(pr_id))?;
+        relink_all(state)
+    })
+    .await
 }
 
 #[derive(Serialize)]
@@ -902,30 +1017,38 @@ fn detail_dto(id: PrId, report: OwnershipReport) -> PrDetail {
 }
 
 #[tauri::command]
-pub fn load_view_state(
+pub async fn load_view_state(
     app: State<'_, std::sync::Arc<AppState>>,
     view_key: String,
 ) -> Result<Option<String>, AppError> {
-    let state = app.inner().as_ref();
-    Ok(state
-        .store
-        .get_view_state(view_key)?
-        .map(|entry| entry.state_json))
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        Ok(state
+            .store
+            .get_view_state(view_key)?
+            .map(|entry| entry.state_json))
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn save_view_state(
+pub async fn save_view_state(
     app: State<'_, std::sync::Arc<AppState>>,
     view_key: String,
     state_json: String,
 ) -> Result<(), AppError> {
-    let state = app.inner().as_ref();
-    state.store.put_view_state(ViewState {
-        view_key,
-        state_json,
-        updated_at: Utc::now(),
-    })?;
-    Ok(())
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        state.store.put_view_state(ViewState {
+            view_key,
+            state_json,
+            updated_at: Utc::now(),
+        })?;
+        Ok(())
+    })
+    .await
 }
 
 pub(crate) fn indicator(request: pr_nexus_core::domain::ReviewRequest) -> SlackIndicator {
@@ -989,21 +1112,25 @@ fn to_row(state: &AppState, pr: &PullRequest, flag: bool) -> Result<ListRow, App
 fn reqwest_client() -> Result<reqwest::blocking::Client, AppError> {
     reqwest::blocking::Client::builder()
         .user_agent("pr-nexus")
+        .timeout(github::REQUEST_TIMEOUT)
         .build()
         .map_err(|err| AppError::new("network", err.to_string()))
 }
 
 #[tauri::command]
-pub fn open_external(app: tauri::AppHandle, url: String) -> Result<(), AppError> {
-    let slack_https = url.starts_with("https://") && url.contains(".slack.com/");
-    let allowed = url.starts_with("https://github.com/")
-        || url.starts_with("https://api.slack.com/")
-        || slack_https
-        || url.starts_with("slack://");
-    if !allowed {
-        return Err(AppError::new("validation", "That link cannot be opened"));
-    }
-    app.opener()
-        .open_url(url, None::<&str>)
-        .map_err(|err| AppError::new("network", err.to_string()))
+pub async fn open_external(app: tauri::AppHandle, url: String) -> Result<(), AppError> {
+    blocking::run(move || {
+        let slack_https = url.starts_with("https://") && url.contains(".slack.com/");
+        let allowed = url.starts_with("https://github.com/")
+            || url.starts_with("https://api.slack.com/")
+            || slack_https
+            || url.starts_with("slack://");
+        if !allowed {
+            return Err(AppError::new("validation", "That link cannot be opened"));
+        }
+        app.opener()
+            .open_url(url, None::<&str>)
+            .map_err(|err| AppError::new("network", err.to_string()))
+    })
+    .await
 }

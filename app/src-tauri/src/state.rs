@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, PoisonError, TryLockError};
 use std::thread;
 use std::time::Duration;
 
@@ -63,6 +63,8 @@ pub struct AppState {
     /// Startup `auth.test` result per Slack account (§7.11).
     pub slack_tokens: Mutex<HashMap<i64, TokenState>>,
     pub sync: Mutex<SyncStatus>,
+    /// Held while a sync runs, so overlapping requests join it (see [`run_sync`]).
+    pub sync_gate: Mutex<()>,
     pub device: Mutex<Option<DeviceSession>>,
     pub focused: AtomicBool,
     pub wake: Arc<(Mutex<bool>, Condvar)>,
@@ -89,6 +91,7 @@ impl AppState {
             } else {
                 SyncStatus::idle()
             }),
+            sync_gate: Mutex::new(()),
             device: Mutex::new(None),
             focused: AtomicBool::new(true),
             wake: Arc::new((Mutex::new(false), Condvar::new())),
@@ -181,7 +184,29 @@ pub fn validity(state: &AppState, saved: &OnboardingState) -> Result<StepValidit
     })
 }
 
-pub fn run_sync(state: &AppState, kind: SyncKind) -> Result<sync::SyncReport, AppError> {
+/// Runs one sync, or joins the one already in flight. The scheduler thread,
+/// `sync_now` and `finish_onboarding` can all ask at once (the startup sync
+/// and the wizard's Done step do); only one talks to GitHub at a time.
+/// `Ok(None)` means another sync was already running: this call waited for
+/// it to end and did not start a second one. `state.sync` holds its result.
+pub fn run_sync(state: &AppState, kind: SyncKind) -> Result<Option<sync::SyncReport>, AppError> {
+    let _running = match state.sync_gate.try_lock() {
+        Ok(guard) => guard,
+        Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+        Err(TryLockError::WouldBlock) => {
+            drop(
+                state
+                    .sync_gate
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner),
+            );
+            return Ok(None);
+        }
+    };
+    sync_once(state, kind).map(Some)
+}
+
+fn sync_once(state: &AppState, kind: SyncKind) -> Result<sync::SyncReport, AppError> {
     if state.demo {
         *state.sync.lock().expect("sync status") = SyncStatus::demo();
         return Ok(sync::SyncReport {
@@ -261,6 +286,12 @@ pub fn run_sync(state: &AppState, kind: SyncKind) -> Result<sync::SyncReport, Ap
     outcome
 }
 
+/// Picks the focused or unfocused poll interval (§6). An atomic store, safe
+/// on the main thread.
+pub fn set_focused(state: &AppState, focused: bool) {
+    state.focused.store(focused, Ordering::Relaxed);
+}
+
 pub fn spawn_scheduler(state: Arc<AppState>) {
     if state.demo {
         return;
@@ -321,9 +352,8 @@ pub fn registry_steps() -> Vec<SetupStep> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn demo_state_never_syncs_and_reports_demo_phase() {
-        let path = std::env::temp_dir().join(format!("pr-nexus-demo-{}.db", std::process::id()));
+    fn demo_state(name: &str) -> (AppState, PathBuf) {
+        let path = std::env::temp_dir().join(format!("pr-nexus-{name}-{}.db", std::process::id()));
         let state = AppState {
             store: Store::open(&path).unwrap(),
             vault: Arc::new(Vault::memory("test")),
@@ -331,17 +361,48 @@ mod tests {
             slack_cancel: Mutex::new(None),
             slack_tokens: Mutex::new(HashMap::new()),
             sync: Mutex::new(SyncStatus::demo()),
+            sync_gate: Mutex::new(()),
             device: Mutex::new(None),
             focused: AtomicBool::new(true),
             wake: Arc::new((Mutex::new(false), Condvar::new())),
             demo: true,
         };
-        let report = run_sync(&state, SyncKind::Manual).unwrap();
+        (state, path)
+    }
+
+    #[test]
+    fn demo_state_never_syncs_and_reports_demo_phase() {
+        let (state, path) = demo_state("demo");
+        let Some(report) = run_sync(&state, SyncKind::Manual).unwrap() else {
+            panic!("nothing else was syncing");
+        };
         assert_eq!(report.fetched, 0);
         let status = state.sync.lock().unwrap();
         assert_eq!(status.phase, "demo");
         assert!(!status.message.contains("failed"));
         drop(status);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_sync_requested_while_one_runs_waits_and_joins_it() {
+        let (state, path) = demo_state("coalesce");
+        let state = Arc::new(state);
+        let running = state.sync_gate.lock().unwrap();
+        let waiter = {
+            let state = Arc::clone(&state);
+            thread::spawn(move || run_sync(&state, SyncKind::Manual).unwrap())
+        };
+        thread::sleep(Duration::from_millis(100));
+        assert!(
+            !waiter.is_finished(),
+            "the second caller waits for the first"
+        );
+        drop(running);
+        assert!(
+            waiter.join().unwrap().is_none(),
+            "it joined instead of syncing again"
+        );
         let _ = std::fs::remove_file(&path);
     }
 }

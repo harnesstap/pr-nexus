@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 use tauri_plugin_opener::OpenerExt;
 
+use crate::blocking;
 use crate::commands::{SlackIndicator, indicator};
 use crate::error::AppError;
 use crate::state::AppState;
@@ -211,46 +212,59 @@ pub async fn slack_connect(
 }
 
 #[tauri::command]
-pub fn slack_cancel_connect(app: Shared<'_>) {
-    if let Some(cancel) = lock(&app.slack_cancel).take() {
-        cancel.cancel();
-    }
+pub async fn slack_cancel_connect(app: Shared<'_>) -> Result<(), AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        if let Some(cancel) = lock(&app.slack_cancel).take() {
+            cancel.cancel();
+        }
+        Ok(())
+    })
+    .await
 }
 
 /// Deletes the local grant. Never calls `auth.revoke` (§7.13 R1). The row
 /// stays, signed out, when messages reference it, so history keeps its links.
 #[tauri::command]
-pub fn slack_remove_workspace(app: Shared<'_>, id: i64) -> Result<(), AppError> {
-    let state = app.inner().as_ref();
-    let account = state
-        .store
-        .get_account(AccountId(id))?
-        .filter(|account| account.kind == AccountKind::Slack)
-        .ok_or_else(|| AppError::new("not_found", "Slack workspace not found"))?;
-    lock(&state.chats).remove(&id);
-    if let Some(key) = &account.keychain_key {
-        state.vault.remove(key)?;
-    }
-    if state.store.delete_account(account.id).is_err() {
-        state.store.upsert_account(Account {
-            keychain_key: None,
-            ..account
-        })?;
-    }
-    Ok(())
+pub async fn slack_remove_workspace(app: Shared<'_>, id: i64) -> Result<(), AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        let account = state
+            .store
+            .get_account(AccountId(id))?
+            .filter(|account| account.kind == AccountKind::Slack)
+            .ok_or_else(|| AppError::new("not_found", "Slack workspace not found"))?;
+        lock(&state.chats).remove(&id);
+        if let Some(key) = &account.keychain_key {
+            state.vault.remove(key)?;
+        }
+        if state.store.delete_account(account.id).is_err() {
+            state.store.upsert_account(Account {
+                keychain_key: None,
+                ..account
+            })?;
+        }
+        Ok(())
+    })
+    .await
 }
 
 /// Channels for the PR: active requests first, then the mapping rows of
 /// `teams` (`org/slug`).
 #[tauri::command]
-pub fn review_targets(
+pub async fn review_targets(
     app: Shared<'_>,
     pr_id: i64,
     teams: Vec<String>,
 ) -> Result<Vec<TargetChoice>, AppError> {
-    let state = app.inner().as_ref();
-    let pr = load_pr(&state.store, pr_id)?;
-    targets_for(&state.store, &pr, &teams)
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        let pr = load_pr(&state.store, pr_id)?;
+        targets_for(&state.store, &pr, &teams)
+    })
+    .await
 }
 
 /// Active requests first, then the mapping rows of `teams` (`org/slug`).
@@ -320,30 +334,34 @@ fn push_choice(
 }
 
 #[tauri::command]
-pub fn review_preview(
+pub async fn review_preview(
     app: Shared<'_>,
     pr_id: i64,
     target: ReviewTarget,
 ) -> Result<ReviewPreview, AppError> {
-    let state = app.inner().as_ref();
-    let pr = load_pr(&state.store, pr_id)?;
-    let target = validate_target(target)?;
-    let plan = plan(state, &pr, &target)?;
-    let signed_in = state.demo || signed_in_account(state, &target.workspace)?.is_some();
-    let (action, bump_count, permalink) = match &plan.action {
-        Action::Request => ("request", 0, None),
-        Action::Bump { request } => ("bump", request.bump_count, request.permalink.clone()),
-    };
-    Ok(ReviewPreview {
-        target,
-        action: action.into(),
-        text: plan.text,
-        warnings: plan.warnings,
-        signed_in,
-        bump_count,
-        permalink,
-        broadcast: settings::bump_broadcast(&state.store)?,
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        let pr = load_pr(&state.store, pr_id)?;
+        let target = validate_target(target)?;
+        let plan = plan(state, &pr, &target)?;
+        let signed_in = state.demo || signed_in_account(state, &target.workspace)?.is_some();
+        let (action, bump_count, permalink) = match &plan.action {
+            Action::Request => ("request", 0, None),
+            Action::Bump { request } => ("bump", request.bump_count, request.permalink.clone()),
+        };
+        Ok(ReviewPreview {
+            target,
+            action: action.into(),
+            text: plan.text,
+            warnings: plan.warnings,
+            signed_in,
+            bump_count,
+            permalink,
+            broadcast: settings::bump_broadcast(&state.store)?,
+        })
     })
+    .await
 }
 
 /// Plans again (the state may have moved since the preview) and posts.

@@ -9,6 +9,7 @@ use std::path::Path;
 
 use serde::Serialize;
 
+use crate::blocking;
 use crate::error::AppError;
 
 /// Mapping files are a few hundred rows; anything this large is the wrong file.
@@ -22,8 +23,8 @@ pub struct MappingFile {
 }
 
 #[tauri::command]
-pub fn read_mapping_file(path: String) -> Result<MappingFile, AppError> {
-    read(Path::new(&path))
+pub async fn read_mapping_file(path: String) -> Result<MappingFile, AppError> {
+    blocking::run(move || read(Path::new(&path))).await
 }
 
 fn read(path: &Path) -> Result<MappingFile, AppError> {
