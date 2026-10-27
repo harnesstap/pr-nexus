@@ -487,6 +487,8 @@ fn every_scoped_query_is_searched_and_repeats_are_dropped() {
 fn status_node(id: &str) -> serde_json::Value {
     json!({
         "id": id,
+        "state": "MERGED",
+        "updatedAt": "2026-01-02T04:00:00Z",
         "reviewDecision": "APPROVED",
         "mergeable": "CONFLICTING",
         "mergeStateStatus": "DIRTY",
@@ -560,6 +562,16 @@ fn status_reads_the_slow_fields_by_id_in_small_chunks() {
         (1, 2)
     );
     assert!(status[0].last_commit_at.is_some());
+    // Incremental sync reads state and updatedAt to spot a finished or
+    // otherwise changed pull request without a search hit (§6).
+    assert_eq!(
+        status[0].state,
+        Some(pr_nexus_core::domain::PrState::Merged)
+    );
+    assert_eq!(
+        status[0].updated_at.map(|at| at.to_rfc3339()),
+        Some("2026-01-02T04:00:00+00:00".to_owned())
+    );
     let ids_back: Vec<_> = status.iter().map(|s| s.remote_id.clone()).collect();
     let ids_sent: Vec<_> = ids.iter().map(|id| id.id.clone()).collect();
     assert_eq!(ids_back, ids_sent, "answers keep the order of the ids");

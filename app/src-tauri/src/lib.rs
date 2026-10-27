@@ -101,6 +101,7 @@ pub fn run() {
             mapping_file::read_mapping_file,
             commands::finish_onboarding,
             commands::sync_now,
+            commands::full_resync,
             commands::sync_status,
             commands::set_focus,
             commands::list_page,

@@ -444,7 +444,7 @@ fragment PrListFields on PullRequest {
 }
 
 # status.graphql: nodes(ids: $ids) { ... on PullRequest { … } }
-  id reviewDecision mergeable mergeStateStatus
+  id state updatedAt reviewDecision mergeable mergeStateStatus
   commits(last: 1) { nodes { commit { committedDate statusCheckRollup { state } } } }
   reviewThreads(first: 100) { totalCount nodes { isResolved } }
 
@@ -460,6 +460,14 @@ Unresolved threads come from counting `reviewThreads.nodes[].isResolved == false
 - the manual refresh button in the sidebar footer (§8.2), which also shows sync status: `Synced · 2m ago`, `Syncing…`, or an error such as `Rate limited · resets 14:32` (time from `resetAt`, shown in local time) or `Sync failed · <reason>`.
 - One sync at a time. A request that arrives while one runs (the startup sync, the scheduler, the refresh button, setup's Done step) waits for it and returns its status instead of starting a second one.
 - Sync and every other app command run off the main thread (Tauri `async` commands that hand blocking work to the blocking pool), so a slow GitHub or Slack call never freezes the window.
+
+**Incremental sync.** A sync is either *full* (a reconcile) or *incremental*.
+- **High-water mark.** `settings["sync.mark"]` keeps, per scope (viewer login, personal repos, tracked orgs; lowercased, orgs sorted and deduplicated), the newest `updatedAt` seen, the last full pass, and the last all-open status refresh. It is written only after a pass succeeds, so a failed pass retries the same window. It moves to the newest `updatedAt` stored, never backwards.
+- **Full** runs at app start, when there is no mark, when the last full pass is older than 6 h, when the scope changes (viewer or orgs), and on **Full resync** (sync details in the sidebar footer, with a tooltip). It runs the open-PR searches and refreshes local open rows that no search returned, as before.
+- **Incremental** runs the same searches with `is:open` dropped and `updated:>=<mark − 5 min>` added (UTC, the overlap covers clock skew and search index lag), split by date buckets exactly like the full search. A hit that is now merged or closed moves its stored row; a closed hit with no local row is ignored.
+- **Volatile fields.** `reviewDecision`, `mergeable` and the check rollup can change without `updatedAt` moving. Every incremental pass re-reads them with `status.graphql` (`nodes(ids:)`, chunks of 10, since mergeability costs about 0.3 s per PR) for open rows whose checks are pending or expected or whose mergeability is unknown. Every 30 min it re-reads all open rows. A status answer whose `state` is final or whose `updatedAt` is newer than the stored row triggers a full `refresh.graphql` for that row.
+- **Changed rows only.** A row or repository that matches what is stored is not written. The sync status carries a `revision` that bumps only when stored rows changed; the list re-reads on a revision change (polled every 500 ms while syncing and every 15 s otherwise). The footer shows `Synced · 3 updated · 2m ago` after an incremental pass that changed rows.
+- **Cost.** For about 100 open PRs with nothing changed, a full pass costs about 20 requests and 200 row writes. An incremental pass costs 2–3 requests and no writes (plus 10 status requests on the 30-min refresh).
 
 **Rate limits.**
 - Read `rateLimit { remaining resetAt cost }` in every GraphQL query and the REST `x-ratelimit-*` headers.

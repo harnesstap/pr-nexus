@@ -37,7 +37,7 @@ const boot: Bootstrap = {
   slack_mentions: "off",
   bump_broadcast: true,
   mapping_count: 0,
-  sync: { phase: "idle", message: "Not synced yet", synced_at: null, paused: false },
+  sync: { phase: "idle", message: "Not synced yet", synced_at: null, paused: false, revision: 0 },
   env_token: false,
   oauth_client_configured: false,
   gh_ready: true,
@@ -93,6 +93,7 @@ function api(overrides: Partial<Api> = {}): Api {
     finish: () => Promise.resolve(boot.sync),
     syncNow: () => Promise.resolve(boot.sync),
     syncStatus: () => Promise.resolve(boot.sync),
+    fullResync: () => Promise.resolve(boot.sync),
     probeGh: () => Promise.resolve({ gh_ready: false, gh_detail: "" }),
     listProjects: () => Promise.resolve([]),
     createProject: (name) => Promise.resolve({ id: 99, name, color: "#7c5cbf", archived: false, description: "", sort_order: 99 }),
@@ -429,8 +430,8 @@ test("orgs hidden behind SSO are listed with an authorization hint", () => {
 });
 
 test("a failed first sync offers Retry sync, which runs the sync again", async () => {
-  const failed = { phase: "error", message: "Sync failed · 502: GitHub timed out", synced_at: null, paused: false };
-  const synced = { phase: "ok", message: "Synced · 3 pull requests", synced_at: "2026-10-26T10:00:00Z", paused: false };
+  const failed = { phase: "error", message: "Sync failed · 502: GitHub timed out", synced_at: null, paused: false, revision: 0 };
+  const synced = { phase: "ok", message: "Synced · 3 pull requests", synced_at: "2026-10-26T10:00:00Z", paused: false, revision: 0 };
   const syncNow = vi.fn().mockResolvedValueOnce(failed).mockResolvedValueOnce(synced);
   render(
     <Wizard
@@ -449,7 +450,7 @@ test("a failed first sync offers Retry sync, which runs the sync again", async (
 test("a successful first sync shows no Retry sync button", async () => {
   render(
     <Wizard
-      api={api({ syncNow: () => Promise.resolve({ phase: "ok", message: "Synced · 0 pull requests", synced_at: null, paused: false }) })}
+      api={api({ syncNow: () => Promise.resolve({ phase: "ok", message: "Synced · 0 pull requests", synced_at: null, paused: false, revision: 0 }) })}
       boot={{ ...boot, resume_step: "done", github_connected: true, github_login: "ada" }}
       onFinished={() => undefined}
     />,

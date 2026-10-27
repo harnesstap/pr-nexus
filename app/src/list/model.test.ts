@@ -72,7 +72,7 @@ test("saved view state round-trips", () => {
 
 test("demo mode shows a neutral sync label instead of an error", () => {
   const now = new Date("2026-10-26T00:00:00Z");
-  const demo = { phase: "demo", message: "Demo data · sync disabled", synced_at: null, paused: false };
+  const demo = { phase: "demo", message: "Demo data · sync disabled", synced_at: null, paused: false, revision: 0 };
   expect(syncLabel(demo, now)).toBe("Demo data · sync off");
   expect(syncLabel({ ...demo, phase: "error", message: "Sync failed · boom" }, now)).toBe(
     "Sync failed · boom",
@@ -81,10 +81,18 @@ test("demo mode shows a neutral sync label instead of an error", () => {
 
 test("syncing shows the running count once the first page is stored", () => {
   const now = new Date("2026-10-26T00:00:00Z");
-  const base = { phase: "syncing", message: "Syncing…", synced_at: null, paused: false };
+  const base = { phase: "syncing", message: "Syncing…", synced_at: null, paused: false, revision: 0 };
   expect(syncLabel(base, now)).toBe("Syncing…");
   expect(syncLabel({ ...base, message: "Syncing… 340 so far" }, now)).toBe("Syncing… 340 so far");
   expect(syncLabel({ ...base, message: "Synced · 12 pull requests" }, now)).toBe("Syncing…");
+});
+
+test("an incremental pass keeps its updated count next to the age", () => {
+  const now = new Date("2026-10-26T00:02:00Z");
+  const base = { phase: "ok", message: "Synced · 3 updated", synced_at: "2026-10-26T00:00:00Z", paused: false, revision: 4 };
+  expect(syncLabel(base, now)).toMatch(/^Synced · 3 updated · /);
+  expect(syncLabel({ ...base, message: "Synced · 0 updated" }, now)).not.toMatch(/updated/);
+  expect(syncLabel({ ...base, message: "Synced · 120 pull requests" }, now)).not.toMatch(/pull requests/);
 });
 
 test("slack status prefers the latest bump and threads label explains the count", () => {

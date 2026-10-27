@@ -8,6 +8,8 @@ query PullRequestStatus($ids: [ID!]!) {
   nodes(ids: $ids) {
     ... on PullRequest {
       id
+      state
+      updatedAt
       reviewDecision
       mergeable
       mergeStateStatus

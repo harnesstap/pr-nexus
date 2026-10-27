@@ -26,6 +26,9 @@ pub struct SyncStatus {
     pub message: String,
     pub synced_at: Option<DateTime<Utc>>,
     pub paused: bool,
+    /// Goes up whenever sync changed stored rows, so the list re-reads only
+    /// then (§6).
+    pub revision: u64,
 }
 
 impl SyncStatus {
@@ -35,6 +38,7 @@ impl SyncStatus {
             message: "Not synced yet".into(),
             synced_at: None,
             paused: false,
+            revision: 0,
         }
     }
 
@@ -44,6 +48,7 @@ impl SyncStatus {
             message: "Demo data · sync disabled".into(),
             synced_at: None,
             paused: false,
+            revision: 0,
         }
     }
 }
@@ -208,9 +213,14 @@ pub fn run_sync(state: &AppState, kind: SyncKind) -> Result<Option<sync::SyncRep
     sync_once(state, kind).map(Some)
 }
 
-/// The sync status while search pages are still arriving.
-pub(crate) fn progress_message(stored: usize) -> String {
-    format!("Syncing… {stored} so far")
+/// The sync status while search pages are still arriving: a full
+/// reconcile counts what it has seen, an incremental pass what changed.
+pub(crate) fn progress_message(progress: sync::SyncProgress) -> String {
+    match (progress.full, progress.updated) {
+        (true, _) => format!("Syncing… {} so far", progress.seen),
+        (false, 0) => "Syncing…".into(),
+        (false, updated) => format!("Syncing… {updated} updated"),
+    }
 }
 
 fn sync_once(state: &AppState, kind: SyncKind) -> Result<sync::SyncReport, AppError> {
@@ -221,6 +231,8 @@ fn sync_once(state: &AppState, kind: SyncKind) -> Result<sync::SyncReport, AppEr
             stored: 0,
             refreshed: 0,
             hidden: 0,
+            updated: 0,
+            full: false,
             paused: false,
             message: "Demo data · sync disabled".into(),
         });
@@ -239,33 +251,45 @@ fn sync_once(state: &AppState, kind: SyncKind) -> Result<sync::SyncReport, AppEr
         // Each search page is stored as it arrives; the header shows the
         // running count, updated at most every `PROGRESS_EVERY`.
         let mut throttle = sync::Throttle::new(sync::PROGRESS_EVERY);
+        let mut shown = 0usize;
         let report = sync::sync_account_with_progress(
             &state.store,
             &client,
             account.id,
             kind,
             Utc::now(),
-            &mut |stored| {
+            &mut |progress| {
                 if throttle.ready(std::time::Instant::now()) {
-                    state.sync.lock().expect("sync status").message = progress_message(stored);
+                    let mut status = state.sync.lock().expect("sync status");
+                    status.message = progress_message(progress);
+                    if progress.updated != shown {
+                        shown = progress.updated;
+                        status.revision += 1;
+                    }
                 }
             },
         )?;
         // §8.1: re-evaluate auto-link rules after every sync.
         let prs = state.store.list_pull_requests_for_account(account.id)?;
-        pr_nexus_core::linking::relink(&state.store, &prs)?;
+        let links = pr_nexus_core::linking::relink(&state.store, &prs)?;
+        let mut changed = report.updated > 0 || links.added + links.removed > 0;
         // §7.1: a BLOCKED pull request with no review decision needs its
         // code-owner status before the list can call it Ready.
         if !report.paused {
             let flag = settings::blocked_review_required_is_ready(&state.store)?;
-            let _ = pr_nexus_core::ownership::resolve_unknown_code_owner_reviews(
+            let resolved = pr_nexus_core::ownership::resolve_unknown_code_owner_reviews(
                 &state.store,
                 &client,
                 &prs,
                 flag,
                 Utc::now(),
                 pr_nexus_core::ownership::MAX_RESOLVES_PER_SYNC,
-            );
+            )
+            .unwrap_or(0);
+            changed |= resolved > 0;
+        }
+        if changed {
+            state.sync.lock().expect("sync status").revision += 1;
         }
         Ok::<_, AppError>(report)
     })();
@@ -324,7 +348,8 @@ pub fn spawn_scheduler(state: Arc<AppState>) {
                 .ok()
                 .is_some_and(|saved| saved.is_finished())
             {
-                let _ = run_sync(&state, SyncKind::Manual);
+                // App start: a full reconcile (§6).
+                let _ = run_sync(&state, SyncKind::Full);
             }
             loop {
                 let interval = interval_secs(&state);

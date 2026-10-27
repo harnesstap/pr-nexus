@@ -260,6 +260,15 @@ fn parse_status_node(node: &Value) -> Result<PrStatus, ProviderError> {
     let (unresolved_threads, total_threads) = threads(node);
     Ok(PrStatus {
         remote_id: text(node, "id")?,
+        state: node
+            .get("state")
+            .and_then(Value::as_str)
+            .map(pr_state)
+            .transpose()?,
+        updated_at: node
+            .get("updatedAt")
+            .and_then(Value::as_str)
+            .and_then(parse_time),
         review_decision: node
             .get("reviewDecision")
             .and_then(Value::as_str)

@@ -301,6 +301,11 @@ export function syncLabel(sync: SyncStatus, now: Date): string {
     return `Sync failed · ${reason}`;
   }
   if (sync.synced_at) {
+    // An incremental pass reports "Synced · 3 updated" (§6); keep that count.
+    const updated = /^Synced · (\d+) updated$/.exec(sync.message);
+    if (updated && updated[1] !== "0") {
+      return `Synced · ${updated[1]} updated · ${ago(sync.synced_at, now)}`;
+    }
     return `Synced · ${ago(sync.synced_at, now)}`;
   }
   return "Not synced yet";

@@ -25,7 +25,7 @@ const boot: Bootstrap = {
   slack_mentions: "off",
   bump_broadcast: true,
   mapping_count: 0,
-  sync: { phase: "idle", message: "Synced", synced_at: "2026-10-26T00:00:00Z", paused: false },
+  sync: { phase: "idle", message: "Synced", synced_at: "2026-10-26T00:00:00Z", paused: false, revision: 0 },
   env_token: false,
   oauth_client_configured: false,
   gh_ready: false,
@@ -81,6 +81,7 @@ function api(projects: ProjectDto[], rows: SearchRow[] = []): Api {
     finish: () => Promise.resolve(boot.sync),
     syncNow: () => Promise.resolve(boot.sync),
     syncStatus: () => Promise.resolve(boot.sync),
+    fullResync: () => Promise.resolve(boot.sync),
     probeGh: () => Promise.resolve({ gh_ready: false, gh_detail: "" }),
     listProjects: () => Promise.resolve([...projects]),
     createProject: vi.fn((name: string) => {
@@ -279,4 +280,15 @@ test("details open beside the list, follow the clicked row, and close on Esc", a
   expect(await within(screen.getByTestId("detail-panel")).findByRole("heading", { name: /Add passkeys/ })).toBeInTheDocument();
   fireEvent.keyDown(document, { key: "Escape" });
   await waitFor(() => expect(screen.queryByTestId("detail-panel")).not.toBeInTheDocument());
+});
+
+test("the sync details offer a full resync that calls the full command", async () => {
+  const fake = api([]);
+  const fullResync = vi.fn(() => Promise.resolve({ ...boot.sync, revision: 1 }));
+  const syncNow = vi.fn(() => Promise.resolve(boot.sync));
+  render(<ListScreen api={{ ...fake, fullResync, syncNow }} boot={boot} onBoot={() => {}} />);
+  fireEvent.click(await screen.findByRole("button", { name: /sync details/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Full resync" }));
+  await waitFor(() => expect(fullResync).toHaveBeenCalledTimes(1));
+  expect(syncNow).not.toHaveBeenCalled();
 });

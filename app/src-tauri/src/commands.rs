@@ -33,6 +33,7 @@ pub struct SyncDto {
     pub message: String,
     pub synced_at: Option<String>,
     pub paused: bool,
+    pub revision: u64,
 }
 
 /// The keychain banner (§9): state, text, and whether Retry is offered.
@@ -244,6 +245,7 @@ fn sync_dto(state: &AppState) -> SyncDto {
         message: status.message.clone(),
         synced_at: status.synced_at.map(|value| value.to_rfc3339()),
         paused: status.paused,
+        revision: status.revision,
     }
 }
 
@@ -661,6 +663,22 @@ pub async fn sync_now(app: State<'_, std::sync::Arc<AppState>>) -> Result<SyncDt
     blocking::run(move || {
         let state = app.inner().as_ref();
         let _ = state::run_sync(state, SyncKind::Manual);
+        Ok(sync_dto(state))
+    })
+    .await
+}
+
+/// "Full resync": a full reconcile now, whatever the mark says (§6). When an
+/// incremental sync is already running this waits for it, then runs the
+/// full one.
+#[tauri::command]
+pub async fn full_resync(app: State<'_, std::sync::Arc<AppState>>) -> Result<SyncDto, AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        if let Ok(None) = state::run_sync(state, SyncKind::Full) {
+            let _ = state::run_sync(state, SyncKind::Full);
+        }
         Ok(sync_dto(state))
     })
     .await

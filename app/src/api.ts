@@ -24,6 +24,8 @@ export interface SyncStatus {
   message: string;
   synced_at: string | null;
   paused: boolean;
+  /** Bumps only when a sync changed stored rows; re-read the list on a change (§6). */
+  revision: number;
 }
 
 /** The keychain state (§9). `waiting` usually means a system prompt is on screen. */
@@ -522,6 +524,8 @@ export interface Api {
   finish(): Promise<SyncStatus>;
   syncNow(): Promise<SyncStatus>;
   syncStatus(): Promise<SyncStatus>;
+  /** Re-read every open pull request instead of only what changed (§6). */
+  fullResync(): Promise<SyncStatus>;
   /** One slice of the list with counts over every match (§8.2). */
   listPage(request: PageRequest): Promise<PageDto>;
   /** Rows by id in the order asked; unknown ids are skipped. */
@@ -617,6 +621,7 @@ export const tauriApi: Api = {
   finish: () => invoke("finish_onboarding"),
   syncNow: () => invoke("sync_now"),
   syncStatus: () => invoke("sync_status"),
+  fullResync: () => invoke("full_resync"),
   listPage: (request) => invoke("list_page", { request }),
   rowsById: (ids) => invoke("rows_by_id", { ids }),
   linkCandidates: (projectId, query, limit) => invoke("link_candidates", { projectId, query, limit }),
