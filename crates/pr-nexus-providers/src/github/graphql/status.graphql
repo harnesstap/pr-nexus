@@ -1,0 +1,32 @@
+query PullRequestStatus($ids: [ID!]!) {
+  rateLimit {
+    limit
+    remaining
+    resetAt
+    cost
+  }
+  nodes(ids: $ids) {
+    ... on PullRequest {
+      id
+      reviewDecision
+      mergeable
+      mergeStateStatus
+      commits(last: 1) {
+        nodes {
+          commit {
+            committedDate
+            statusCheckRollup {
+              state
+            }
+          }
+        }
+      }
+      reviewThreads(first: 100) {
+        totalCount
+        nodes {
+          isResolved
+        }
+      }
+    }
+  }
+}

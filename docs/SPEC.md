@@ -344,6 +344,9 @@ pub trait VcsProvider: Send + Sync {
     fn search_pull_requests(&self, q: &PrQuery) -> Result<Vec<SyncedPullRequest>, ProviderError>;
     /// Refresh known PRs by provider id (catches merged/closed PRs that left the search results).
     fn refresh_pull_requests(&self, ids: &[ProviderRef]) -> Result<Vec<SyncedPullRequest>, ProviderError>;
+    /// The slow status fields (review decision, mergeability, checks, threads) by provider id.
+    /// Search leaves them out (§6); sync asks only for the PRs it keeps.
+    fn pull_request_status(&self, ids: &[ProviderRef]) -> Result<Vec<PrStatus>, ProviderError>;
     /// Everything ownership resolution needs, for one PR (§6, §7.2). M9.
     fn ownership_inputs(&self, pr: &PullRequest) -> Result<OwnershipInputs, ProviderError>;
     fn team_members(&self, team: &TeamRef) -> Result<TeamMembers, ProviderError>;
@@ -414,30 +417,36 @@ pub fn build_chat(kind: ChatKind, account: AccountId, token: SecretString) -> Re
 
 | Bucket | Query | Notes |
 |---|---|---|
-| `mine` | `is:pr is:open author:@me archived:false sort:updated-desc` | primary |
-| `review_requested` | `is:pr is:open review-requested:@me archived:false sort:updated-desc` | "To review" filter, shipped in v1 (default D4) |
+| `mine` | `is:pr is:open author:@me archived:false sort:updated-desc` + scope | primary |
+| `review_requested` | `is:pr is:open review-requested:@me archived:false sort:updated-desc` + scope | "To review" filter, shipped in v1 (default D4) |
 
 - Use `search(type: ISSUE, query:…, first: $first)` with cursor pagination and a hard cap of 500 per bucket. `ISSUE_ADVANCED` was removed on 2025-09-04, so do not use it.
-- **Page sizes and GitHub timeouts.** GitHub stops a GraphQL query after about 10 s and answers `502 Bad Gateway` with an HTML page. With the full fragment below, 50 PRs per page crosses that on busy repos, so search pages and `nodes(ids:[…])` refresh chunks start at **20** (`PAGE_SIZES` = 20, 10, 5). When a page fails with 502/503/504, a GraphQL error that reports a timeout ("Something went wrong while executing your query…"), or a client timeout, the client waits (1 s, then 2 s), drops to the next smaller size for that page and the rest of the bucket, and tries again: at most 3 tries per page (20 → 10 → 5). Each GitHub request has a 15 s client timeout, so one page gives up after at most 3 × 15 s + 1 s + 2 s = 48 s. Other errors are not retried. When every try times out, the sync fails with a message that names the query and says GitHub timed out, for example `502: GitHub timed out on the search for review requests (3 tries, down to 5 per page). Try again in a minute.`
-- **Org filtering happens client-side.** Several `org:` qualifiers separated by spaces are ANDed, so `org:acme org:acme-labs` matches nothing. The search runs unfiltered, and results are kept only for the orgs the user tracks (`github.tracked_orgs`, picked in onboarding and Settings → Accounts; §8). Nothing is hardcoded and there is no default org. Until the user picks orgs, the PR list shows an empty state with a "Choose orgs to track" button. Personal (user-owned) repos are a separate opt-in toggle. In the UI the org list is also a filter chip, not a navigation level.
-- **PRs that disappear** from a bucket (merged, closed, or no longer requested) are refreshed once via `nodes(ids:[…])` so their final state is stored. Merged/closed PRs leave the open list at that sync. The list's **Archived and closed** filter still shows them, with a Merged/Closed badge, for `settings.sync.keep_closed_days` (default 7); then they become `hidden`. The same sync closes their active review requests (`pr_merged` / `pr_closed`, §7.4).
+- **Searches are scoped on the server.** The scope is ` org:NAME` for each tracked org (`github.tracked_orgs`, picked in onboarding and Settings → Accounts; §8), plus ` user:LOGIN` (the viewer) when personal repos are on. Several `org:`/`user:` qualifiers are ORed, so `org:acme org:acme-labs` matches PRs in either org. GitHub caps the query string at 256 characters, so `sync::search_queries` packs the qualifiers into as few strings as fit and the bucket runs one search per string; a PR found by two strings is kept once. Org names that are not plain logins (letters, digits, `-`, `_`, `.`) are dropped, and repeats are dropped case-insensitively. With no tracked org and personal repos off, nothing is searched. Nothing is hardcoded and there is no default org. Until the user picks orgs, the PR list shows an empty state with a "Choose orgs to track" button. In the UI the org list is also a filter chip, not a navigation level.
+- **The client-side org filter stays as a safety net.** Results are still kept only for tracked orgs (and the viewer's own repos when personal repos are on), so a qualifier GitHub ignores cannot leak other orgs into the list.
+- **Search is slim; status is a second query.** Mergeability (`mergeable`, `mergeStateStatus`) is by far the slowest part of a search page: on a busy public repo a page of 20 took about 7 s with it and 3 s without, and GitHub stops at about 10 s. Checks and review decision add more. So the search fragment (`ListFields` below) carries only the cheap fields, and sync then asks `nodes(ids:[…])` with `status.graphql` for review decision, mergeability, merge state, last commit (date and check rollup) and review threads, **only for the PRs it keeps** after the org filter. A PR the status query does not answer keeps the status already stored for it. The readiness rules (§7) and the thread counts in the list need these fields, so they are not lazy.
+- **Page sizes and GitHub timeouts.** Search pages, status chunks and refresh chunks start at **10** (`PAGE_SIZES` = 10, 5, 3); mergeability costs about 0.3 s per PR, so 10 stays well under GitHub's limit. When a page fails with 502/503/504, a GraphQL error that reports a timeout ("Something went wrong while executing your query…"), or a client timeout, the client waits (1 s, then 2 s), drops to the next smaller size for that page and the rest of the query, and tries again: at most 3 tries per page (10 → 5 → 3). Each GitHub request has a 15 s client timeout, so one page gives up after at most 3 × 15 s + 1 s + 2 s = 48 s. Other errors are not retried. When every try times out, the sync fails with a message that names the query and says GitHub timed out, for example `502: GitHub timed out on the search for review requests (3 tries, down to 3 per page). Try again in a minute.`
+- **PRs that disappear** from a bucket (merged, closed, or no longer requested) are refreshed once via `nodes(ids:[…])` with the full fragment so their final state is stored. Only rows in a tracked org (or a personal repo with the toggle on) are refreshed. Merged/closed PRs leave the open list at that sync. The list's **Archived and closed** filter still shows them, with a Merged/Closed badge, for `settings.sync.keep_closed_days` (default 7); then they become `hidden`. The same sync closes their active review requests (`pr_merged` / `pr_closed`, §7.4).
+- `scripts/prn-search-timing.sh` runs the same search and status queries with `gh api graphql` and prints only timings, for checking a heavy account (`--org NAME` once per tracked org, `--user LOGIN` for personal repos, `--sizes "10 5 3"`).
 
-**Fragment** (one GraphQL file per query under `crates/pr-nexus-providers/src/github/graphql/`):
+**Fragments** (one GraphQL file per query under `crates/pr-nexus-providers/src/github/graphql/`):
 
 ```graphql
-fragment PrFields on PullRequest {
+# search.graphql
+fragment PrListFields on PullRequest {
   id number title url bodyText isDraft state createdAt updatedAt
   author { login } headRefName baseRefName headRefOid
   repository { id owner { login } name isArchived defaultBranchRef { name } }
   labels(first: 20) { nodes { name } }
-  reviewDecision mergeable mergeStateStatus
-  commits(last: 1) { nodes { commit { committedDate statusCheckRollup { state } } } }
   reviewRequests(first: 20) { nodes { requestedReviewer {
     ... on User { login } ... on Team { slug organization { login } } } } }
-  reviewThreads(first: 100) { totalCount nodes { isResolved } }
-  latestOpinionatedReviews(first: 50) { nodes { state author { login __typename } submittedAt
-    onBehalfOf(first: 10) { nodes { slug organization { login } } } } }
 }
+
+# status.graphql: nodes(ids: $ids) { ... on PullRequest { … } }
+  id reviewDecision mergeable mergeStateStatus
+  commits(last: 1) { nodes { commit { committedDate statusCheckRollup { state } } } }
+  reviewThreads(first: 100) { totalCount nodes { isResolved } }
+
+# refresh.graphql: PrFields = PrListFields + the status fields
 ```
 
 Unresolved threads come from counting `reviewThreads.nodes[].isResolved == false`. With more than 100 threads, show "100+".
@@ -1478,7 +1487,7 @@ Release runbook (CONTRIBUTING.md):
 | **M3** | Message builder | 12+ golden fixtures generated from the Python script pass byte for byte. Wire-escaping unit tests. |
 | **M4** | CODEOWNERS + owner decision | The skill's `test_helpers.py` cases are ported and pass, and the Δ1–Δ4 tests pass. Readiness table (§7.1) implemented as a pure function with a test per row. `decide_owners` rules 1–9 tested with fixtures. |
 | **M5** | Mapping | Empty mapping on first run. CSV import (replace, merge, dry-run diff, target-workspace picker for rows without a workspace; the skill's 5-column CSV accepted) and export (effective/user/imported, fixed header, sorted). Layer precedence and tombstone tests on placeholder fixtures. |
-| **M6** | Wizard + GitHub sync | `ProviderRegistry` (§5.1) with `setup_steps` unit tests. Setup wizard shell (§8.3): one step per screen, progress indicator, Back/Next, `onboarding.state` persistence and resume (including re-validation of completed steps). Steps 1–4 and 7 (a single preselected provider card each, GitHub then Slack; Connect GitHub with gh token, PAT, device flow; orgs picker with personal-repos toggle; Done with first sync). Tracked-orgs picker also in Settings; empty state until orgs are picked. Search buckets, client-side tracked-org filter, nodes refresh, polling scheduler, rate-limit pause. HTTP fixture tests via `wiremock`. Typed errors mapped (401, 403-SSO, 403-secondary, 404). |
+| **M6** | Wizard + GitHub sync | `ProviderRegistry` (§5.1) with `setup_steps` unit tests. Setup wizard shell (§8.3): one step per screen, progress indicator, Back/Next, `onboarding.state` persistence and resume (including re-validation of completed steps). Steps 1–4 and 7 (a single preselected provider card each, GitHub then Slack; Connect GitHub with gh token, PAT, device flow; orgs picker with personal-repos toggle; Done with first sync). Tracked-orgs picker also in Settings; empty state until orgs are picked. Search buckets scoped by `org:` qualifiers, client-side tracked-org filter, status and nodes refresh, polling scheduler, rate-limit pause. HTTP fixture tests via `wiremock`. Typed errors mapped (401, 403-SSO, 403-secondary, 404). |
 | **M7** | List UI | Dark compact style (§8.2). Sidebar navigation with the sync-status footer and refresh button. Grouped, collapsible list with three-level tri-state selection (global, section, row) and no per-row action buttons. No header overflow button. Inline project rename by double-click. Minimal section `⋯` menu (auto-link rules, archive, delete). Floating bulk bar. Slack request indicator with link icon. Filter menu (Grouping, Ordering, Show, Filters with Reset), persisted per view in `view_state`. Search bar over project name, title, body, repo, and number. Keyboard shortcuts. vitest: tri-state derivation (none/partial/all) for section and global; parent toggle selects or deselects only visible children; a filter or search excludes hidden rows from parent toggles; checking a multi-project PR updates every section containing it; bulk count and planner input dedupe by `PrId`; hidden-selected count; inline rename (Enter saves, Esc cancels, empty or duplicate name rejected, Unassigned not editable); filter and search predicates; view-state restore. |
 | **M8** | Projects | CRUD, rules with live preview, manual/rule/excluded semantics tested. Unassigned section. Manual links by drag and drop and from the project dialog (D21). Relink after every sync and rule change. Header counts (§8.2). Empty project sections. Window state and release context menu (§8.2 Desktop shell). |
 | **M9** | Ownership inputs | Files (paginated, capped), CODEOWNERS lookup order, `rules/branches`, protection with 403→Unknown, reviews with onBehalfOf, team members cache. Detail view shows readiness, owners, and the rationale. |

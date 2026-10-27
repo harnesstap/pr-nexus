@@ -1,4 +1,5 @@
-//! GitHub sync: two search buckets, a client-side org filter, and a nodes refresh.
+//! GitHub sync: two search buckets scoped to the tracked orgs, a status pass,
+//! a client-side org filter as a safety net, and a nodes refresh.
 //!
 //! The provider performs HTTP. This module decides what to keep and what to hide.
 
@@ -9,18 +10,22 @@ use crate::domain::{
     RequestStatus,
 };
 use crate::error::CoreError;
-use crate::providers::{PrQuery, RateBudget, SearchBucket, SyncedPullRequest, VcsProvider};
+use crate::providers::{
+    PrQuery, PrStatus, RateBudget, SearchBucket, SyncedPullRequest, VcsProvider,
+};
 use crate::settings;
 use crate::store::Store;
 
 pub const MINE_QUERY: &str = "is:pr is:open author:@me archived:false sort:updated-desc";
 pub const REVIEW_QUERY: &str =
     "is:pr is:open review-requested:@me archived:false sort:updated-desc";
-/// Page sizes for search and `nodes` refresh, largest first. GitHub stops a
-/// GraphQL query after about 10 s and answers 502; with the full PR fragment
-/// 50 nodes already crosses that on busy repos, so sync starts at 20 and drops
-/// to the next size on a 502/503/504 or a GraphQL timeout (§6).
-pub const PAGE_SIZES: [u32; 3] = [20, 10, 5];
+/// Page sizes for search, status and `nodes` refresh, largest first. GitHub
+/// stops a GraphQL query after about 10 s and answers 502. Mergeability is the
+/// slow part, about 0.3 s per pull request, so sync starts at 10 and drops to
+/// the next size on a 502/503/504 or a GraphQL timeout (§6).
+pub const PAGE_SIZES: [u32; 3] = [10, 5, 3];
+/// GitHub rejects a search string longer than this.
+pub const SEARCH_QUERY_MAX: usize = 256;
 pub const SEARCH_CAP: u32 = 500;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +56,44 @@ pub fn search_query(bucket: SearchBucket) -> &'static str {
         SearchBucket::Mine => MINE_QUERY,
         SearchBucket::ReviewRequested => REVIEW_QUERY,
     }
+}
+
+/// The bucket's search strings, narrowed on GitHub's side to the tracked
+/// scope: one ` org:NAME` per tracked org, plus ` user:LOGIN` when personal
+/// repositories are on. GitHub ORs several owner qualifiers. A string never
+/// exceeds [`SEARCH_QUERY_MAX`]; the qualifiers spill into more strings.
+/// Names with characters GitHub logins never have are skipped.
+pub fn search_queries(bucket: SearchBucket, scope: &TrackedScope) -> Vec<String> {
+    let base = search_query(bucket);
+    let mut owners: Vec<String> = Vec::new();
+    let mut add = |qualifier: &str, name: &str| {
+        let valid = !name.is_empty()
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+        let term = format!(" {qualifier}:{name}");
+        if valid && !owners.iter().any(|known| known.eq_ignore_ascii_case(&term)) {
+            owners.push(term);
+        }
+    };
+    for org in &scope.orgs {
+        add("org", org);
+    }
+    if scope.include_personal {
+        add("user", &scope.viewer_login);
+    }
+    let mut queries = Vec::new();
+    let mut current = base.to_owned();
+    for term in owners {
+        if current.len() + term.len() > SEARCH_QUERY_MAX && current.len() > base.len() {
+            queries.push(std::mem::replace(&mut current, base.to_owned()));
+        }
+        current.push_str(&term);
+    }
+    if current.len() > base.len() {
+        queries.push(current);
+    }
+    queries
 }
 
 pub fn in_scope(owner: &str, scope: &TrackedScope) -> bool {
@@ -132,32 +175,71 @@ pub fn sync_account(
     let mut fetched: Vec<SyncedPullRequest> = Vec::new();
     for bucket in [SearchBucket::Mine, SearchBucket::ReviewRequested] {
         let page = provider
-            .search_pull_requests(&PrQuery { bucket })
+            .search_pull_requests(&PrQuery {
+                bucket,
+                queries: search_queries(bucket, &scope),
+            })
             .map_err(CoreError::from)?;
         merge_bucket(&mut fetched, page);
     }
-    if let Ok(budget) = provider.rate_limit() {
-        settings::set_rate_budget(store, &budget)?;
-    }
 
+    // Search is scoped on GitHub's side; this filter is the safety net.
     let mut seen_ids = Vec::new();
-    let mut seen_orgs = Vec::new();
-    let mut stored = 0usize;
-    for item in &fetched {
-        let owner = item.pull_request.repo.owner.clone();
-        remember_org(&mut seen_orgs, &owner, &scope.viewer_login);
+    let mut seen_orgs = settings::seen_orgs(store)?;
+    let mut kept: Vec<SyncedPullRequest> = Vec::new();
+    for item in fetched.iter() {
+        let owner = &item.pull_request.repo.owner;
+        remember_org(&mut seen_orgs, owner, &scope.viewer_login);
         seen_ids.push(item.pull_request.remote.id.clone());
-        if in_scope(&owner, &scope) {
-            upsert_synced(store, account_id, item, now)?;
-            stored += 1;
+        if in_scope(owner, &scope) {
+            kept.push(item.clone());
         }
     }
     settings::set_seen_orgs(store, &seen_orgs)?;
 
     let existing = store.list_pull_requests_for_account(account_id)?;
+    let ids: Vec<ProviderRef> = kept
+        .iter()
+        .map(|item| item.pull_request.remote.clone())
+        .collect();
+    let statuses = if ids.is_empty() {
+        Vec::new()
+    } else {
+        provider
+            .pull_request_status(&ids)
+            .map_err(CoreError::from)?
+    };
+    let mut stored = 0usize;
+    for item in &mut kept {
+        let id = &item.pull_request.remote.id;
+        let status = statuses
+            .iter()
+            .find(|status| &status.remote_id == id)
+            .cloned()
+            .or_else(|| {
+                existing
+                    .iter()
+                    .find(|pr| &pr.remote.id == id)
+                    .map(PrStatus::of)
+            });
+        if let Some(status) = status {
+            status.apply_to(&mut item.pull_request);
+        }
+        upsert_synced(store, account_id, item, now)?;
+        stored += 1;
+    }
+    if let Ok(budget) = provider.rate_limit() {
+        settings::set_rate_budget(store, &budget)?;
+    }
+
+    let existing = store.list_pull_requests_for_account(account_id)?;
     let missing: Vec<ProviderRef> = existing
         .iter()
-        .filter(|pr| pr.state == PrState::Open && !seen_ids.iter().any(|id| id == &pr.remote.id))
+        .filter(|pr| {
+            pr.state == PrState::Open
+                && in_scope(&pr.repo.owner, &scope)
+                && !seen_ids.iter().any(|id| id == &pr.remote.id)
+        })
         .map(|pr| pr.remote.clone())
         .collect();
     let mut refreshed_rows = if missing.is_empty() {
@@ -361,7 +443,10 @@ mod tests {
         mine: Vec<SyncedPullRequest>,
         review: Vec<SyncedPullRequest>,
         refresh: Vec<SyncedPullRequest>,
+        status: Vec<PrStatus>,
         budget: RateBudget,
+        queries: std::sync::Mutex<Vec<PrQuery>>,
+        status_asked: std::sync::Mutex<Vec<String>>,
     }
 
     impl VcsProvider for Fake {
@@ -380,6 +465,7 @@ mod tests {
             &self,
             query: &PrQuery,
         ) -> Result<Vec<SyncedPullRequest>, ProviderError> {
+            self.queries.lock().unwrap().push(query.clone());
             Ok(match query.bucket {
                 SearchBucket::Mine => self.mine.clone(),
                 SearchBucket::ReviewRequested => self.review.clone(),
@@ -393,6 +479,18 @@ mod tests {
                 .refresh
                 .iter()
                 .filter(|item| ids.iter().any(|id| id.id == item.pull_request.remote.id))
+                .cloned()
+                .collect())
+        }
+        fn pull_request_status(&self, ids: &[ProviderRef]) -> Result<Vec<PrStatus>, ProviderError> {
+            self.status_asked
+                .lock()
+                .unwrap()
+                .extend(ids.iter().map(|id| id.id.clone()));
+            Ok(self
+                .status
+                .iter()
+                .filter(|status| ids.iter().any(|id| id.id == status.remote_id))
                 .cloned()
                 .collect())
         }
@@ -460,7 +558,10 @@ mod tests {
             mine: vec![pr("N1", "acme", 1, Involvement::AUTHOR)],
             review: Vec::new(),
             refresh: Vec::new(),
+            status: Vec::new(),
             budget: sample_budget(5000, 4000),
+            queries: Default::default(),
+            status_asked: Default::default(),
         };
         let report = sync_account(&store, &fake, account, SyncKind::Manual, ts(20)).unwrap();
         assert_eq!(report.message, "Choose orgs to track");
@@ -484,7 +585,10 @@ mod tests {
             mine: vec![authored, other],
             review: vec![requested],
             refresh: Vec::new(),
+            status: Vec::new(),
             budget: sample_budget(5000, 4000),
+            queries: Default::default(),
+            status_asked: Default::default(),
         };
         let report = sync_account(&store, &fake, account, SyncKind::Manual, ts(30)).unwrap();
         assert_eq!(report.stored, 1);
@@ -518,7 +622,10 @@ mod tests {
             mine: vec![live.clone()],
             review: Vec::new(),
             refresh: vec![gone],
+            status: Vec::new(),
             budget: sample_budget(5000, 4000),
+            queries: Default::default(),
+            status_asked: Default::default(),
         };
         sync_account(&store, &fake, account, SyncKind::Manual, ts(30)).unwrap();
         // Seed an open row that search no longer returns, then sync again.
@@ -548,7 +655,10 @@ mod tests {
             mine: vec![live.clone(), merged_pr.clone()],
             review: Vec::new(),
             refresh: Vec::new(),
+            status: Vec::new(),
             budget: sample_budget(5000, 4000),
+            queries: Default::default(),
+            status_asked: Default::default(),
         };
         sync_account(&store, &first, account, SyncKind::Manual, ts(20)).unwrap();
         let stored = store.list_pull_requests_for_account(account).unwrap();
@@ -585,7 +695,10 @@ mod tests {
             mine: vec![live],
             review: Vec::new(),
             refresh: vec![done],
+            status: Vec::new(),
             budget: sample_budget(5000, 4000),
+            queries: Default::default(),
+            status_asked: Default::default(),
         };
         let report = sync_account(&store, &second, account, SyncKind::Manual, ts(70)).unwrap();
         assert_eq!(report.refreshed, 1);
@@ -616,7 +729,10 @@ mod tests {
             mine: vec![pr("N1", "acme", 1, Involvement::AUTHOR)],
             review: Vec::new(),
             refresh: Vec::new(),
+            status: Vec::new(),
             budget: budget.clone(),
+            queries: Default::default(),
+            status_asked: Default::default(),
         };
         let paused = sync_account(&store, &fake, account, SyncKind::Scheduled, ts(30)).unwrap();
         assert!(paused.paused);
@@ -648,6 +764,174 @@ mod tests {
             include_personal: false,
             viewer_login: "ada".into(),
         }));
+    }
+
+    fn scope(orgs: &[&str], personal: bool) -> TrackedScope {
+        TrackedScope {
+            orgs: orgs.iter().map(|org| (*org).to_owned()).collect(),
+            include_personal: personal,
+            viewer_login: "ada".into(),
+        }
+    }
+
+    #[test]
+    fn searches_are_scoped_to_the_tracked_orgs() {
+        assert_eq!(
+            search_queries(SearchBucket::Mine, &scope(&["acme", "acme-labs"], false)),
+            vec![format!("{MINE_QUERY} org:acme org:acme-labs")]
+        );
+        assert_eq!(
+            search_queries(SearchBucket::ReviewRequested, &scope(&["acme"], true)),
+            vec![format!("{REVIEW_QUERY} org:acme user:ada")]
+        );
+        assert_eq!(
+            search_queries(SearchBucket::Mine, &scope(&[], true)),
+            vec![format!("{MINE_QUERY} user:ada")]
+        );
+        assert!(search_queries(SearchBucket::Mine, &scope(&[], false)).is_empty());
+    }
+
+    #[test]
+    fn long_org_lists_spill_into_more_searches_under_the_length_cap() {
+        let orgs: Vec<String> = (0..40).map(|n| format!("acme-team-{n:02}")).collect();
+        let names: Vec<&str> = orgs.iter().map(String::as_str).collect();
+        let queries = search_queries(SearchBucket::ReviewRequested, &scope(&names, true));
+        assert!(queries.len() > 1, "{queries:?}");
+        for query in &queries {
+            assert!(query.len() <= SEARCH_QUERY_MAX, "{} chars", query.len());
+            assert!(query.starts_with(REVIEW_QUERY));
+        }
+        let joined = queries.join(" ");
+        for org in &orgs {
+            assert_eq!(
+                joined.matches(&format!(" org:{org} ")).count()
+                    + usize::from(joined.ends_with(&format!(" org:{org}"))),
+                1,
+                "{org}"
+            );
+        }
+        assert_eq!(joined.matches(" user:ada").count(), 1);
+    }
+
+    #[test]
+    fn odd_or_repeated_org_names_never_reach_the_search_string() {
+        let queries = search_queries(
+            SearchBucket::Mine,
+            &scope(&["acme", "ACME", "bad name", "x\"y", ""], false),
+        );
+        assert_eq!(queries, vec![format!("{MINE_QUERY} org:acme")]);
+    }
+
+    fn status(id: &str, checks: ChecksState) -> PrStatus {
+        PrStatus {
+            remote_id: id.into(),
+            review_decision: Some(crate::domain::ReviewDecision::Approved),
+            checks,
+            mergeable: Mergeable::Conflicting,
+            merge_state: MergeStateStatus::Dirty,
+            unresolved_threads: 2,
+            total_threads: 5,
+            last_commit_at: Some(ts(15)),
+        }
+    }
+
+    #[test]
+    fn sync_sends_scoped_searches_and_reads_status_only_for_kept_prs() {
+        let (_dir, store, account) = open_store();
+        let fake = Fake {
+            mine: vec![
+                pr("N1", "acme", 1, Involvement::AUTHOR),
+                pr("N2", "elsewhere", 2, Involvement::AUTHOR),
+            ],
+            review: Vec::new(),
+            refresh: Vec::new(),
+            status: vec![status("N1", ChecksState::Failure)],
+            budget: sample_budget(5000, 4000),
+            queries: Default::default(),
+            status_asked: Default::default(),
+        };
+        sync_account(&store, &fake, account, SyncKind::Manual, ts(30)).unwrap();
+        let sent: Vec<Vec<String>> = fake
+            .queries
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|query| query.queries.clone())
+            .collect();
+        assert_eq!(
+            sent,
+            vec![
+                vec![format!("{MINE_QUERY} org:acme")],
+                vec![format!("{REVIEW_QUERY} org:acme")],
+            ]
+        );
+        assert_eq!(*fake.status_asked.lock().unwrap(), vec!["N1".to_owned()]);
+        let rows = store.list_pull_requests_for_account(account).unwrap();
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(row.checks, ChecksState::Failure);
+        assert_eq!(row.mergeable, Mergeable::Conflicting);
+        assert_eq!(row.merge_state, MergeStateStatus::Dirty);
+        assert_eq!((row.unresolved_threads, row.total_threads), (2, 5));
+        assert_eq!(row.last_activity_at, ts(15));
+    }
+
+    #[test]
+    fn a_pr_without_a_status_answer_keeps_its_stored_status() {
+        let (_dir, store, account) = open_store();
+        let mut first = Fake {
+            mine: vec![pr("N1", "acme", 1, Involvement::AUTHOR)],
+            review: Vec::new(),
+            refresh: Vec::new(),
+            status: vec![status("N1", ChecksState::Pending)],
+            budget: sample_budget(5000, 4000),
+            queries: Default::default(),
+            status_asked: Default::default(),
+        };
+        sync_account(&store, &first, account, SyncKind::Manual, ts(30)).unwrap();
+        first.status.clear();
+        sync_account(&store, &first, account, SyncKind::Manual, ts(40)).unwrap();
+        let row = &store.list_pull_requests_for_account(account).unwrap()[0];
+        assert_eq!(row.checks, ChecksState::Pending);
+        assert_eq!(row.merge_state, MergeStateStatus::Dirty);
+        assert_eq!(row.unresolved_threads, 2);
+    }
+
+    #[test]
+    fn untracked_open_rows_are_not_refreshed() {
+        let (_dir, store, account) = open_store();
+        let live = pr("N1", "acme", 1, Involvement::AUTHOR);
+        let fake = Fake {
+            mine: vec![live.clone()],
+            review: Vec::new(),
+            refresh: Vec::new(),
+            status: Vec::new(),
+            budget: sample_budget(5000, 4000),
+            queries: Default::default(),
+            status_asked: Default::default(),
+        };
+        sync_account(&store, &fake, account, SyncKind::Manual, ts(30)).unwrap();
+        let repo = store
+            .upsert_repository(Repository {
+                id: 0,
+                account_id: account,
+                owner: "elsewhere".into(),
+                name: "widgets".into(),
+                node_id: None,
+                default_branch: None,
+                archived: false,
+            })
+            .unwrap();
+        let mut stale = live.pull_request.clone();
+        stale.remote.id = "N7".into();
+        stale.remote.account = account;
+        stale.number = 7;
+        stale.repo.owner = "elsewhere".into();
+        store.upsert_pull_request(repo.id, stale).unwrap();
+        let report = sync_account(&store, &fake, account, SyncKind::Manual, ts(40)).unwrap();
+        assert_eq!(report.refreshed, 0);
+        let rows = store.list_pull_requests_for_account(account).unwrap();
+        assert!(rows.iter().find(|row| row.number == 7).unwrap().hidden);
     }
 
     fn sample_budget(limit: u32, remaining: u32) -> RateBudget {

@@ -82,6 +82,12 @@ impl VcsProvider for Fake {
     ) -> Result<Vec<SyncedPullRequest>, ProviderError> {
         Err(ProviderError::Unsupported("not used".into()))
     }
+    fn pull_request_status(
+        &self,
+        _: &[ProviderRef],
+    ) -> Result<Vec<crate::providers::PrStatus>, ProviderError> {
+        Err(ProviderError::Unsupported("not used".into()))
+    }
     fn ownership_probe(&self, _: &PullRequest) -> Result<OwnershipProbe, ProviderError> {
         Ok(OwnershipProbe {
             head_sha: "h1".into(),

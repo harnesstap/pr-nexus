@@ -40,6 +40,7 @@ fn search_page_parses_a_pull_request() {
     let rows = client
         .search_pull_requests(&PrQuery {
             bucket: SearchBucket::Mine,
+            queries: vec!["is:pr is:open author:@me org:acme".into()],
         })
         .unwrap();
     assert_eq!(rows.len(), 1);
@@ -48,8 +49,6 @@ fn search_page_parses_a_pull_request() {
     assert_eq!(pr.number, 12);
     assert_eq!(pr.remote.id, "PR_node_12");
     assert!(pr.involvement.contains(Involvement::AUTHOR));
-    assert_eq!(pr.unresolved_threads, 1);
-    assert_eq!(pr.total_threads, 2);
     assert_eq!(rows[0].default_branch.as_deref(), Some("main"));
     let budget = client.rate_limit().unwrap();
     assert_eq!(budget.remaining, 4900);
@@ -279,12 +278,13 @@ fn search_retries_a_gateway_timeout_with_a_smaller_page() {
     let server = server();
     mount_slow(
         &server,
-        |vars| vars["first"] == 20,
+        |vars| vars["first"] == 10,
         ResponseTemplate::new(200).set_body_string(search_body()),
     );
     let rows = fast_client(&server)
         .search_pull_requests(&PrQuery {
             bucket: SearchBucket::Mine,
+            queries: vec!["is:pr is:open author:@me org:acme".into()],
         })
         .unwrap();
     assert_eq!(rows.len(), 1);
@@ -292,7 +292,7 @@ fn search_retries_a_gateway_timeout_with_a_smaller_page() {
         .iter()
         .map(|vars| vars["first"].clone())
         .collect();
-    assert_eq!(firsts, vec![json!(20), json!(10)]);
+    assert_eq!(firsts, vec![json!(10), json!(5)]);
 }
 
 #[test]
@@ -306,6 +306,7 @@ fn search_gives_up_after_three_timeouts_and_names_the_query() {
     let err = fast_client(&server)
         .search_pull_requests(&PrQuery {
             bucket: SearchBucket::ReviewRequested,
+            queries: vec!["is:pr is:open review-requested:@me org:acme".into()],
         })
         .unwrap_err();
     match err {
@@ -321,7 +322,7 @@ fn search_gives_up_after_three_timeouts_and_names_the_query() {
         .iter()
         .map(|vars| vars["first"].clone())
         .collect();
-    assert_eq!(firsts, vec![json!(20), json!(10), json!(5)]);
+    assert_eq!(firsts, vec![json!(10), json!(5), json!(3)]);
 }
 
 #[test]
@@ -356,6 +357,7 @@ fn a_graphql_timeout_error_is_retried_like_a_gateway_timeout() {
     let rows = fast_client(&server)
         .search_pull_requests(&PrQuery {
             bucket: SearchBucket::Mine,
+            queries: vec!["is:pr is:open author:@me org:acme".into()],
         })
         .unwrap();
     assert_eq!(rows.len(), 1);
@@ -372,6 +374,7 @@ fn other_server_errors_are_not_retried() {
     let err = fast_client(&server)
         .search_pull_requests(&PrQuery {
             bucket: SearchBucket::Mine,
+            queries: vec!["is:pr is:open author:@me org:acme".into()],
         })
         .unwrap_err();
     assert!(matches!(err, ProviderError::Api { ref code, .. } if code == "500"));
@@ -390,7 +393,7 @@ fn refresh_shrinks_its_chunks_after_a_gateway_timeout() {
             .and(|request: &wiremock::Request| {
                 graphql_variables(request)["ids"]
                     .as_array()
-                    .is_some_and(|ids| ids.len() > 10)
+                    .is_some_and(|ids| ids.len() > 5)
             })
             .respond_with(ResponseTemplate::new(504).set_body_string(GATEWAY_PAGE))
             .with_priority(1)
@@ -426,5 +429,119 @@ fn refresh_shrinks_its_chunks_after_a_gateway_timeout() {
         .iter()
         .map(|vars| vars["ids"].as_array().map_or(0, Vec::len))
         .collect();
-    assert_eq!(sizes, vec![20, 10, 10, 5]);
+    assert_eq!(sizes, vec![10, 5, 5, 5, 5, 5]);
+}
+
+#[test]
+fn every_scoped_query_is_searched_and_repeats_are_dropped() {
+    let server = server();
+    mount(
+        &server,
+        ResponseTemplate::new(200).set_body_string(search_body()),
+    );
+    let rows = fast_client(&server)
+        .search_pull_requests(&PrQuery {
+            bucket: SearchBucket::Mine,
+            queries: vec![
+                "is:pr is:open author:@me org:acme".into(),
+                "is:pr is:open author:@me org:acme-labs".into(),
+            ],
+        })
+        .unwrap();
+    assert_eq!(rows.len(), 1, "the same pull request from both queries");
+    let queries: Vec<_> = sent_variables(&server)
+        .iter()
+        .map(|vars| vars["query"].clone())
+        .collect();
+    assert_eq!(
+        queries,
+        vec![
+            json!("is:pr is:open author:@me org:acme"),
+            json!("is:pr is:open author:@me org:acme-labs"),
+        ]
+    );
+}
+
+fn status_node(id: &str) -> serde_json::Value {
+    json!({
+        "id": id,
+        "reviewDecision": "APPROVED",
+        "mergeable": "CONFLICTING",
+        "mergeStateStatus": "DIRTY",
+        "commits": { "nodes": [ { "commit": {
+            "committedDate": "2026-01-02T03:04:05Z",
+            "statusCheckRollup": { "state": "FAILURE" }
+        } } ] },
+        "reviewThreads": { "totalCount": 2, "nodes": [
+            { "isResolved": true }, { "isResolved": false }
+        ] }
+    })
+}
+
+#[test]
+fn status_reads_the_slow_fields_by_id_in_small_chunks() {
+    use pr_nexus_core::domain::{ChecksState, MergeStateStatus, Mergeable, ReviewDecision};
+    let server = server();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async {
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(|request: &wiremock::Request| {
+                graphql_variables(request)["ids"]
+                    .as_array()
+                    .is_some_and(|ids| ids.len() > 5)
+            })
+            .respond_with(ResponseTemplate::new(504).set_body_string(GATEWAY_PAGE))
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(|request: &wiremock::Request| {
+                let ids = graphql_variables(request)["ids"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default();
+                let mut nodes: Vec<_> = ids
+                    .iter()
+                    .map(|id| status_node(id.as_str().unwrap()))
+                    .collect();
+                // A pull request that is gone answers null.
+                nodes.push(serde_json::Value::Null);
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "data": {
+                        "rateLimit": { "limit": 5000, "remaining": 4999,
+                            "resetAt": "2026-01-01T01:00:00Z", "cost": 1 },
+                        "nodes": nodes,
+                    }
+                }))
+            })
+            .with_priority(2)
+            .mount(&server)
+            .await;
+    });
+    drop(runtime);
+    let ids: Vec<ProviderRef> = (0..12)
+        .map(|n| ProviderRef {
+            account: AccountId(1),
+            id: format!("PR_node_{n}"),
+        })
+        .collect();
+    let status = fast_client(&server).pull_request_status(&ids).unwrap();
+    assert_eq!(status.len(), 12);
+    assert_eq!(status[0].remote_id, "PR_node_0");
+    assert_eq!(status[0].review_decision, Some(ReviewDecision::Approved));
+    assert_eq!(status[0].mergeable, Mergeable::Conflicting);
+    assert_eq!(status[0].merge_state, MergeStateStatus::Dirty);
+    assert_eq!(status[0].checks, ChecksState::Failure);
+    assert_eq!(
+        (status[0].unresolved_threads, status[0].total_threads),
+        (1, 2)
+    );
+    assert!(status[0].last_commit_at.is_some());
+    let sizes: Vec<_> = sent_variables(&server)
+        .iter()
+        .map(|vars| vars["ids"].as_array().map_or(0, Vec::len))
+        .collect();
+    assert_eq!(sizes, vec![10, 5, 5, 2]);
 }
