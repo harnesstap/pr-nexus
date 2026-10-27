@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import type { Api, Bootstrap, ListRow, ProjectDto, ReplacedLinkDto } from "../api";
 import { errorMessage } from "../api";
 import { ClockIcon, CloseIcon, FolderIcon, GearIcon, HomeIcon, LogoIcon, PlusIcon, RefreshIcon } from "../icons";
@@ -8,9 +8,10 @@ import { DRAG_MIME, TOAST_MS, bulkToast, defaultView, parseDragIds, parseViewSta
 import { PrList } from "./PrList";
 import type { PageRequest } from "./paging";
 
-/** How often sync status is polled while a background sync runs. */
 /** Sync status poll while syncing. The backend updates the count at most this often too. */
 const SYNC_POLL_MS = 500;
+/** Idle poll that notices scheduled background syncs (§6). */
+const IDLE_POLL_MS = 15_000;
 import { DetailPanel } from "../detail/DetailPanel";
 import { ProjectDialog } from "./ProjectDialog";
 import { SlackSettings } from "../slack/SlackSettings";
@@ -39,6 +40,15 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
   const [views, setViews] = useState<Record<string, SavedView>>({});
   const [loaded, setLoaded] = useState<string | null>(null);
   const [sync, setSync] = useState(boot.sync);
+  // The last sync revision the list was read at: re-read only when it moves,
+  // so a sync that changed nothing costs no list query (§6).
+  const revision = useRef(boot.sync.revision);
+  const noteRevision = useCallback((next: number) => {
+    if (next !== revision.current) {
+      revision.current = next;
+      setVersion((value) => value + 1);
+    }
+  }, []);
   const [detail, setDetail] = useState(false);
   const [now, setNow] = useState(() => new Date());
   const [orgs, setOrgs] = useState(boot.tracked_orgs);
@@ -99,19 +109,13 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
       return;
     }
     let cancel = false;
-    let seen = "";
     const timer = window.setInterval(() => {
       void api.syncStatus().then((status) => {
         if (cancel) {
           return;
         }
         setSync(status);
-        // Re-read the list only when sync stored more rows (its count moved).
-        const key = `${status.phase}:${status.message}`;
-        if (key !== seen) {
-          seen = key;
-          setVersion((value) => value + 1);
-        }
+        noteRevision(status.revision);
         if (status.phase !== "syncing") {
           void api.listProjects().then((next) => !cancel && setProjects(next));
         }
@@ -121,7 +125,31 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
       cancel = true;
       window.clearInterval(timer);
     };
-  }, [api, syncing]);
+  }, [api, syncing, noteRevision]);
+
+  // Between syncs, poll slowly so a scheduled background sync that changed
+  // rows shows up, and so its "Syncing…" phase starts the fast poll above.
+  useEffect(() => {
+    if (syncing) {
+      return;
+    }
+    let cancel = false;
+    const timer = window.setInterval(() => {
+      void api.syncStatus().then((status) => {
+        if (cancel) {
+          return;
+        }
+        if (status.phase === "syncing" || status.revision !== revision.current) {
+          setSync(status);
+        }
+        noteRevision(status.revision);
+      });
+    }, IDLE_POLL_MS);
+    return () => {
+      cancel = true;
+      window.clearInterval(timer);
+    };
+  }, [api, syncing, noteRevision]);
 
   const loadPage = useCallback((request: PageRequest) => api.listPage(request), [api]);
 
@@ -174,11 +202,11 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
     setProjects(await api.listProjects());
   }
 
-  async function refresh() {
+  async function refresh(full = false) {
     setError(null);
     setSync({ ...sync, phase: "syncing", message: "Syncing…" });
     try {
-      const status = await api.syncNow();
+      const status = await (full ? api.fullResync() : api.syncNow());
       setSync(status);
       await reload();
       onBoot(await api.bootstrap());
@@ -423,7 +451,26 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
               </button>
             </Tooltip>
           </div>
-          {detail && <p className="px-2 pt-1 text-xs text-slate-500">{sync.message}</p>}
+          {detail && (
+            <div className="flex items-center justify-between gap-2 px-2 pt-1 text-xs text-slate-500">
+              <p>{sync.message}</p>
+              <Tooltip
+                label="Full resync"
+                detail="Re-read every open PR from GitHub, not only what changed. Runs on its own at start and every 6 hours."
+                side="top"
+                align="end"
+              >
+                <button
+                  type="button"
+                  disabled={syncing}
+                  className="shrink-0 rounded px-1 hover:bg-slate-800 hover:text-slate-200 disabled:opacity-50"
+                  onClick={() => void refresh(true)}
+                >
+                  Full resync
+                </button>
+              </Tooltip>
+            </div>
+          )}
         </footer>
       </aside>
       <main className="relative flex min-w-0 flex-1 flex-col">

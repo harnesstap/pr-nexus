@@ -11,6 +11,7 @@ mod mappings;
 mod migrate;
 mod projects;
 mod pull_requests;
+pub(crate) use pull_requests::cap_body;
 mod reviews;
 mod row;
 mod time;

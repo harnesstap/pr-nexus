@@ -7,8 +7,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::domain::{
-    AccountId, ChatKind, ChecksState, MergeStateStatus, Mergeable, ProviderRef, PullRequest,
-    ReviewDecision, TeamRef, VcsKind,
+    AccountId, ChatKind, ChecksState, MergeStateStatus, Mergeable, PrState, ProviderRef,
+    PullRequest, ReviewDecision, TeamRef, VcsKind,
 };
 use crate::error::ProviderError;
 use crate::review::owners::ReviewBundle;
@@ -218,6 +218,12 @@ pub struct PrQuery {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrStatus {
     pub remote_id: String,
+    /// Open, merged or closed, when the answer carried it. The volatile pass
+    /// uses it to spot a pull request that finished without a search hit.
+    pub state: Option<PrState>,
+    /// GitHub's `updatedAt`, when the answer carried it. Newer than the
+    /// stored row means more than the status changed.
+    pub updated_at: Option<DateTime<Utc>>,
     pub review_decision: Option<ReviewDecision>,
     pub checks: ChecksState,
     pub mergeable: Mergeable,
@@ -247,6 +253,8 @@ impl PrStatus {
     pub fn of(pr: &PullRequest) -> Self {
         Self {
             remote_id: pr.remote.id.clone(),
+            state: Some(pr.state),
+            updated_at: Some(pr.updated_at),
             review_decision: pr.review_decision,
             checks: pr.checks,
             mergeable: pr.mergeable,

@@ -690,7 +690,7 @@ fn map_reviewer_ref(row: &rusqlite::Row<'_>) -> rusqlite::Result<Reviewer> {
     }
 }
 
-fn cap_body(body: &str) -> String {
+pub(crate) fn cap_body(body: &str) -> String {
     if body.len() <= PR_BODY_MAX_BYTES {
         return body.to_owned();
     }

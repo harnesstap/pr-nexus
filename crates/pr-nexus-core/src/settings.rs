@@ -23,6 +23,8 @@ pub const KEEP_CLOSED_DAYS: &str = "sync.keep_closed_days";
 pub const FOCUSED_INTERVAL: &str = "sync.focused_interval_s";
 pub const UNFOCUSED_INTERVAL: &str = "sync.unfocused_interval_s";
 pub const RATE_BUDGET: &str = "github.rate_budget";
+/// Incremental sync's high-water mark (§6), see [`SyncMark`].
+pub const SYNC_MARK: &str = "sync.mark";
 pub const SLACK_CLIENT_ID: &str = "slack.mcp.client_id";
 pub const SLACK_REDIRECT: &str = "slack.mcp.redirect_uri";
 pub const BLOCKED_IS_READY: &str = "review.blocked_review_required_is_ready";
@@ -77,6 +79,62 @@ pub fn seen_orgs(store: &Store) -> Result<Vec<String>, CoreError> {
 
 pub fn set_seen_orgs(store: &Store, orgs: &[String]) -> Result<(), CoreError> {
     put_json(store, SEEN_ORGS, orgs)
+}
+
+/// Where incremental sync picks up (§6). Written only at the end of a pass
+/// that succeeded, so a failed or partial pass never moves it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncMark {
+    /// The tracked scope the mark belongs to (viewer, orgs, personal repos).
+    /// A different scope means a full reconcile.
+    pub scope: String,
+    /// Latest GitHub `updatedAt` seen in that scope.
+    pub updated_at: DateTime<Utc>,
+    /// When the last full reconcile ended.
+    pub full_at: DateTime<Utc>,
+    /// When the status of every open pull request was last read.
+    pub rollup_at: DateTime<Utc>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct StoredMark {
+    scope: String,
+    updated_at: String,
+    full_at: String,
+    rollup_at: String,
+}
+
+pub fn sync_mark(store: &Store) -> Result<Option<SyncMark>, CoreError> {
+    // A mark that no longer decodes is treated as missing: a full sync.
+    let Ok(Some(stored)) = get_json::<StoredMark>(store, SYNC_MARK) else {
+        return Ok(None);
+    };
+    let (Ok(updated_at), Ok(full_at), Ok(rollup_at)) = (
+        parse_time(&stored.updated_at),
+        parse_time(&stored.full_at),
+        parse_time(&stored.rollup_at),
+    ) else {
+        return Ok(None);
+    };
+    Ok(Some(SyncMark {
+        scope: stored.scope,
+        updated_at,
+        full_at,
+        rollup_at,
+    }))
+}
+
+pub fn set_sync_mark(store: &Store, mark: &SyncMark) -> Result<(), CoreError> {
+    put_json(
+        store,
+        SYNC_MARK,
+        &StoredMark {
+            scope: mark.scope.clone(),
+            updated_at: mark.updated_at.to_rfc3339(),
+            full_at: mark.full_at.to_rfc3339(),
+            rollup_at: mark.rollup_at.to_rfc3339(),
+        },
+    )
 }
 
 pub fn keep_closed_days(store: &Store) -> Result<i64, CoreError> {

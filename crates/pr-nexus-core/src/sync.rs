@@ -1,19 +1,25 @@
 //! GitHub sync: two search buckets scoped to the tracked orgs, a status pass,
 //! a client-side org filter as a safety net, and a nodes refresh.
 //!
+//! A full reconcile searches every open pull request. An incremental pass
+//! searches only what changed since the high-water mark and reads the status
+//! of open rows that are still moving (§6).
+//!
 //! The provider performs HTTP. This module decides what to keep and what to hide.
 
-use chrono::{DateTime, Utc};
+use std::collections::{HashMap, HashSet};
+
+use chrono::{DateTime, Duration, Utc};
 
 use crate::domain::{
-    AccountId, AccountKind, CloseReason, PrState, ProviderRef, PullRequest, Repository,
-    RequestStatus,
+    AccountId, AccountKind, ChecksState, CloseReason, Involvement, Mergeable, PrState, ProviderRef,
+    PullRequest, Repository, RequestStatus,
 };
 use crate::error::CoreError;
 use crate::providers::{
     PrQuery, PrStatus, RateBudget, SearchBucket, SyncedPullRequest, VcsProvider,
 };
-use crate::settings;
+use crate::settings::{self, SyncMark};
 use crate::store::Store;
 
 pub const MINE_QUERY: &str = "is:pr is:open author:@me archived:false sort:updated-desc";
@@ -28,6 +34,15 @@ pub const PAGE_SIZES: [u32; 3] = [10, 5, 3];
 pub const SEARCH_QUERY_MAX: usize = 256;
 /// Sync reports how many pull requests it has stored at most this often.
 pub const PROGRESS_EVERY: std::time::Duration = std::time::Duration::from_millis(500);
+/// An incremental search reaches this far behind the mark, for search-index
+/// lag and clock skew.
+pub const MARK_OVERLAP_MINUTES: i64 = 5;
+/// A mark older than this, counted from the last full reconcile, means a full
+/// reconcile: it is what catches a pull request that left a view.
+pub const FULL_EVERY_HOURS: i64 = 6;
+/// The status of every open pull request is read at least this often, not
+/// only the ones whose checks or mergeability are still moving.
+pub const ROLLUP_EVERY_MINUTES: i64 = 30;
 
 /// Lets a progress update through at most once per `every`.
 #[derive(Debug, Clone)]
@@ -57,8 +72,31 @@ impl Throttle {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyncKind {
+    /// The timer. Pauses on a low rate budget. Incremental when it can be.
     Scheduled,
+    /// The Refresh button. Ignores the pause. Incremental when it can be.
     Manual,
+    /// App start and "Full resync": always a full reconcile.
+    Full,
+}
+
+/// Why a pass is a full reconcile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FullReason {
+    Requested,
+    NoMark,
+    StaleMark,
+    ScopeChanged,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncPlan {
+    Full(FullReason),
+    /// Search `updated:>=since`; `rollup` reads the status of every open row.
+    Incremental {
+        since: DateTime<Utc>,
+        rollup: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,8 +105,36 @@ pub struct SyncReport {
     pub stored: usize,
     pub refreshed: usize,
     pub hidden: usize,
+    /// Rows whose stored content changed (written or hidden/shown).
+    pub updated: usize,
+    pub full: bool,
     pub paused: bool,
     pub message: String,
+}
+
+impl SyncReport {
+    fn idle(paused: bool, message: String) -> Self {
+        Self {
+            fetched: 0,
+            stored: 0,
+            refreshed: 0,
+            hidden: 0,
+            updated: 0,
+            full: false,
+            paused,
+            message,
+        }
+    }
+}
+
+/// What [`sync_account_with_progress`] reports while it runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SyncProgress {
+    pub full: bool,
+    /// In-scope pull requests the search returned so far.
+    pub seen: usize,
+    /// Rows written so far because their content changed.
+    pub updated: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,7 +157,26 @@ pub fn search_query(bucket: SearchBucket) -> &'static str {
 /// exceeds [`SEARCH_QUERY_MAX`]; the qualifiers spill into more strings.
 /// Names with characters GitHub logins never have are skipped.
 pub fn search_queries(bucket: SearchBucket, scope: &TrackedScope) -> Vec<String> {
-    let base = search_query(bucket);
+    scoped_queries(search_query(bucket), scope)
+}
+
+/// The incremental form of [`search_queries`]: no `is:open`, so a pull
+/// request merged or closed since the mark comes back too, and
+/// `updated:>=since`.
+pub fn incremental_queries(
+    bucket: SearchBucket,
+    scope: &TrackedScope,
+    since: DateTime<Utc>,
+) -> Vec<String> {
+    let base = format!(
+        "{} updated:>={}",
+        search_query(bucket).replace(" is:open", ""),
+        since.format("%Y-%m-%dT%H:%M:%SZ")
+    );
+    scoped_queries(&base, scope)
+}
+
+fn scoped_queries(base: &str, scope: &TrackedScope) -> Vec<String> {
     let mut owners: Vec<String> = Vec::new();
     let mut add = |qualifier: &str, name: &str| {
         let valid = !name.is_empty()
@@ -121,6 +206,58 @@ pub fn search_queries(bucket: SearchBucket, scope: &TrackedScope) -> Vec<String>
         queries.push(current);
     }
     queries
+}
+
+/// Identifies the tracked scope a mark belongs to. Order and case of the
+/// orgs do not matter.
+pub fn scope_key(scope: &TrackedScope) -> String {
+    let mut orgs: Vec<String> = scope
+        .orgs
+        .iter()
+        .map(|org| org.to_ascii_lowercase())
+        .filter(|org| !org.is_empty())
+        .collect();
+    orgs.sort();
+    orgs.dedup();
+    format!(
+        "{}|{}|{}",
+        scope.viewer_login.to_ascii_lowercase(),
+        scope.include_personal,
+        orgs.join(",")
+    )
+}
+
+/// Full or incremental, from the kind of sync and the stored mark.
+pub fn plan_sync(
+    kind: SyncKind,
+    mark: Option<&SyncMark>,
+    scope_key: &str,
+    now: DateTime<Utc>,
+) -> SyncPlan {
+    if kind == SyncKind::Full {
+        return SyncPlan::Full(FullReason::Requested);
+    }
+    let Some(mark) = mark else {
+        return SyncPlan::Full(FullReason::NoMark);
+    };
+    if mark.scope != scope_key {
+        return SyncPlan::Full(FullReason::ScopeChanged);
+    }
+    if now - mark.full_at >= Duration::hours(FULL_EVERY_HOURS) {
+        return SyncPlan::Full(FullReason::StaleMark);
+    }
+    SyncPlan::Incremental {
+        since: mark.updated_at - Duration::minutes(MARK_OVERLAP_MINUTES),
+        rollup: now - mark.rollup_at >= Duration::minutes(ROLLUP_EVERY_MINUTES),
+    }
+}
+
+/// An open pull request whose checks or mergeability GitHub is still working
+/// out. Its status changes without a search hit, so incremental sync reads
+/// it on every pass.
+pub fn status_is_moving(pr: &PullRequest) -> bool {
+    matches!(pr.checks, ChecksState::Pending | ChecksState::Expected)
+        || pr.mergeable == Mergeable::Unknown
 }
 
 pub fn in_scope(owner: &str, scope: &TrackedScope) -> bool {
@@ -166,15 +303,15 @@ pub fn sync_account(
 }
 
 /// [`sync_account`], storing each search page as it arrives and calling
-/// `progress` with the number of in-scope pull requests stored so far. The
-/// caller throttles what it shows (see [`Throttle`]).
+/// `progress` as it goes. The caller throttles what it shows (see
+/// [`Throttle`]).
 pub fn sync_account_with_progress(
     store: &Store,
     provider: &dyn VcsProvider,
     account_id: AccountId,
     kind: SyncKind,
     now: DateTime<Utc>,
-    progress: &mut dyn FnMut(usize),
+    progress: &mut dyn FnMut(SyncProgress),
 ) -> Result<SyncReport, CoreError> {
     let account = store
         .get_account(account_id)?
@@ -190,52 +327,49 @@ pub fn sync_account_with_progress(
         viewer_login: account.login,
     };
     if scope_is_empty(&scope) {
-        return Ok(SyncReport {
-            fetched: 0,
-            stored: 0,
-            refreshed: 0,
-            hidden: 0,
-            paused: false,
-            message: "Choose orgs to track".into(),
-        });
+        return Ok(SyncReport::idle(false, "Choose orgs to track".into()));
     }
     if kind == SyncKind::Scheduled
         && let Some(budget) = settings::rate_budget(store)?
         && scheduled_poll_paused(&budget, now)
     {
-        return Ok(SyncReport {
-            fetched: 0,
-            stored: 0,
-            refreshed: 0,
-            hidden: 0,
-            paused: true,
-            message: format!("Rate limited · resets {}", budget.reset_at.format("%H:%M")),
-        });
+        return Ok(SyncReport::idle(
+            true,
+            format!("Rate limited · resets {}", budget.reset_at.format("%H:%M")),
+        ));
     }
+
+    let key = scope_key(&scope);
+    let mark = settings::sync_mark(store)?;
+    let plan = plan_sync(kind, mark.as_ref(), &key, now);
+    let full = matches!(plan, SyncPlan::Full(_));
 
     // Rows as they were before this sync: their status and involvement fill
     // in for what a search page does not carry.
     let existing = store.list_pull_requests_for_account(account_id)?;
+    let mut writer = Writer::new(store, account_id, now, &existing)?;
     let mut fetched: Vec<SyncedPullRequest> = Vec::new();
     let mut early = EarlyRows::default();
     for bucket in [SearchBucket::Mine, SearchBucket::ReviewRequested] {
+        let queries = match plan {
+            SyncPlan::Full(_) => search_queries(bucket, &scope),
+            SyncPlan::Incremental { since, .. } => incremental_queries(bucket, &scope, since),
+        };
         let mut failed: Option<CoreError> = None;
         let page = provider
-            .search_pull_requests_paged(
-                &PrQuery {
-                    bucket,
-                    queries: search_queries(bucket, &scope),
-                },
-                &mut |rows| {
-                    if failed.is_some() {
-                        return;
-                    }
-                    match early.store(store, account_id, rows, &scope, &existing, now) {
-                        Ok(()) => progress(early.involvement.len()),
-                        Err(err) => failed = Some(err),
-                    }
-                },
-            )
+            .search_pull_requests_paged(&PrQuery { bucket, queries }, &mut |rows| {
+                if failed.is_some() {
+                    return;
+                }
+                match early.store(&mut writer, rows, &scope, &existing) {
+                    Ok(()) => progress(SyncProgress {
+                        full,
+                        seen: early.involvement.len(),
+                        updated: writer.updated(),
+                    }),
+                    Err(err) => failed = Some(err),
+                }
+            })
             .map_err(CoreError::from)?;
         if let Some(err) = failed {
             return Err(err);
@@ -244,110 +378,200 @@ pub fn sync_account_with_progress(
     }
 
     // Search is scoped on GitHub's side; this filter is the safety net.
-    let mut seen_ids = Vec::new();
+    let mut seen_ids: HashSet<String> = HashSet::new();
     let mut seen_orgs = settings::seen_orgs(store)?;
     let mut kept: Vec<SyncedPullRequest> = Vec::new();
+    let mut latest: Option<DateTime<Utc>> = None;
     for item in fetched.iter() {
         let owner = &item.pull_request.repo.owner;
         remember_org(&mut seen_orgs, owner, &scope.viewer_login);
-        seen_ids.push(item.pull_request.remote.id.clone());
-        if in_scope(owner, &scope) {
+        seen_ids.insert(item.pull_request.remote.id.clone());
+        if in_scope(owner, &scope) && keeps_hit(item, &existing) {
+            latest = latest.max(Some(item.pull_request.updated_at));
             kept.push(item.clone());
         }
     }
     settings::set_seen_orgs(store, &seen_orgs)?;
 
+    // Incremental: open rows the search did not return whose status may have
+    // moved anyway: checks or mergeability still pending, or every open row
+    // when the periodic rollup is due.
+    let rollup = match plan {
+        SyncPlan::Full(_) => false,
+        SyncPlan::Incremental { rollup, .. } => rollup,
+    };
+    let volatile: Vec<&PullRequest> = if full {
+        Vec::new()
+    } else {
+        existing
+            .iter()
+            .filter(|pr| {
+                pr.state == PrState::Open
+                    && in_scope(&pr.repo.owner, &scope)
+                    && !seen_ids.contains(&pr.remote.id)
+                    && (rollup || status_is_moving(pr))
+            })
+            .collect()
+    };
+
     let ids: Vec<ProviderRef> = kept
         .iter()
         .map(|item| item.pull_request.remote.clone())
+        .chain(volatile.iter().map(|pr| pr.remote.clone()))
         .collect();
-    let statuses = if ids.is_empty() {
-        Vec::new()
+    let statuses: HashMap<String, PrStatus> = if ids.is_empty() {
+        HashMap::new()
     } else {
         provider
             .pull_request_status(&ids)
             .map_err(CoreError::from)?
+            .into_iter()
+            .map(|status| (status.remote_id.clone(), status))
+            .collect()
     };
     let mut stored = 0usize;
     for item in &mut kept {
         let id = &item.pull_request.remote.id;
-        let status = statuses
-            .iter()
-            .find(|status| &status.remote_id == id)
-            .cloned()
-            .or_else(|| {
-                existing
-                    .iter()
-                    .find(|pr| &pr.remote.id == id)
-                    .map(PrStatus::of)
-            });
+        let status = statuses.get(id).cloned().or_else(|| {
+            existing
+                .iter()
+                .find(|pr| &pr.remote.id == id)
+                .map(PrStatus::of)
+        });
         if let Some(status) = status {
             status.apply_to(&mut item.pull_request);
         }
-        upsert_synced(store, account_id, item, now)?;
+        writer.write(item)?;
         stored += 1;
     }
     if let Ok(budget) = provider.rate_limit() {
         settings::set_rate_budget(store, &budget)?;
     }
 
-    let existing = store.list_pull_requests_for_account(account_id)?;
-    let missing: Vec<ProviderRef> = existing
-        .iter()
-        .filter(|pr| {
-            pr.state == PrState::Open
-                && in_scope(&pr.repo.owner, &scope)
-                && !seen_ids.iter().any(|id| id == &pr.remote.id)
-        })
-        .map(|pr| pr.remote.clone())
-        .collect();
-    let mut refreshed_rows = if missing.is_empty() {
+    // Open rows to read again in full: in a full reconcile, the ones the
+    // search no longer returns; incrementally, the volatile ones whose status
+    // answer says they finished or changed beyond their status.
+    let mut status_only: Vec<SyncedPullRequest> = Vec::new();
+    let stale: Vec<ProviderRef> = if full {
+        writer
+            .rows()
+            .filter(|pr| {
+                pr.state == PrState::Open
+                    && in_scope(&pr.repo.owner, &scope)
+                    && !seen_ids.contains(&pr.remote.id)
+            })
+            .map(|pr| pr.remote.clone())
+            .collect()
+    } else {
+        let mut stale = Vec::new();
+        for pr in &volatile {
+            let Some(status) = statuses.get(&pr.remote.id) else {
+                continue;
+            };
+            let finished = status.state.is_some_and(|state| state != PrState::Open);
+            let touched = status.updated_at.is_some_and(|at| at > pr.updated_at);
+            if finished || touched {
+                stale.push(pr.remote.clone());
+            } else {
+                let mut row = (*pr).clone();
+                status.apply_to(&mut row);
+                status_only.push(writer.synced_from(row));
+            }
+        }
+        stale
+    };
+    for item in &status_only {
+        writer.write(item)?;
+    }
+    let mut refreshed_rows = if stale.is_empty() {
         Vec::new()
     } else {
         provider
-            .refresh_pull_requests(&missing)
+            .refresh_pull_requests(&stale)
             .map_err(CoreError::from)?
     };
     for item in &mut refreshed_rows {
-        if let Some(prev) = existing
-            .iter()
-            .find(|pr| pr.remote.id == item.pull_request.remote.id)
-        {
+        let id = item.pull_request.remote.id.clone();
+        if let Some(prev) = existing.iter().find(|pr| pr.remote.id == id) {
             item.pull_request.involvement = prev.involvement;
+        }
+        if let Some(status) = statuses.get(&id) {
+            status.apply_to(&mut item.pull_request);
         }
     }
     let refreshed = refreshed_rows.len();
     for item in &refreshed_rows {
-        seen_ids.push(item.pull_request.remote.id.clone());
         if in_scope(&item.pull_request.repo.owner, &scope) {
-            upsert_synced(store, account_id, item, now)?;
+            latest = latest.max(Some(item.pull_request.updated_at));
+            writer.write(item)?;
         }
     }
 
     let keep_days = settings::keep_closed_days(store)?;
-    let existing = store.list_pull_requests_for_account(account_id)?;
     let mut hidden = 0usize;
-    for pr in existing {
+    let rows: Vec<PullRequest> = writer.rows().cloned().collect();
+    for pr in rows {
         close_requests_of_finished(store, &pr, now)?;
         let out_of_scope = !in_scope(&pr.repo.owner, &scope);
         let expired = should_hide_closed(pr.state, pr.updated_at, now, keep_days);
         let next = out_of_scope || expired;
         if next != pr.hidden {
-            store.set_pull_request_hidden(pr.id, next)?;
+            writer.set_hidden(&pr, next)?;
             if next {
                 hidden += 1;
             }
         }
     }
 
+    // The pass succeeded: only now does the mark move.
+    let previous = mark.filter(|mark| mark.scope == key);
+    let updated_at = latest
+        .into_iter()
+        .chain(previous.as_ref().map(|mark| mark.updated_at))
+        .max()
+        .unwrap_or(now);
+    settings::set_sync_mark(
+        store,
+        &SyncMark {
+            scope: key,
+            updated_at,
+            full_at: match (&previous, full) {
+                (Some(previous), false) => previous.full_at,
+                _ => now,
+            },
+            rollup_at: match (&previous, full || rollup) {
+                (Some(previous), false) => previous.rollup_at,
+                _ => now,
+            },
+        },
+    )?;
+
+    let updated = writer.updated();
     Ok(SyncReport {
         fetched: fetched.len(),
         stored,
         refreshed,
         hidden,
+        updated,
+        full,
         paused: false,
-        message: format!("{stored} pull requests"),
+        message: if full {
+            format!("{stored} pull requests")
+        } else {
+            format!("{updated} updated")
+        },
     })
+}
+
+/// A search hit worth storing. A full search only returns open pull
+/// requests. An incremental one also returns finished ones; those matter
+/// only when the row is already stored, so an old closed pull request with a
+/// fresh comment does not appear in the list.
+fn keeps_hit(item: &SyncedPullRequest, existing: &[PullRequest]) -> bool {
+    item.pull_request.state == PrState::Open
+        || existing
+            .iter()
+            .any(|pr| pr.remote.id == item.pull_request.remote.id)
 }
 
 /// §7.4: once sync sees a PR merged or closed, its active review requests close
@@ -398,11 +622,11 @@ fn merge_bucket(into: &mut Vec<SyncedPullRequest>, page: Vec<SyncedPullRequest>)
 }
 
 /// In-scope search rows stored while the search runs, so the list fills in
-/// page by page. The status pass and the final upsert overwrite them.
+/// page by page. The status pass and the final write overwrite them.
 #[derive(Default)]
 struct EarlyRows {
     /// Involvement stored so far this sync, by node id.
-    involvement: std::collections::HashMap<String, crate::domain::Involvement>,
+    involvement: HashMap<String, Involvement>,
 }
 
 impl EarlyRows {
@@ -411,15 +635,13 @@ impl EarlyRows {
     /// never drops the other bucket's flag.
     fn store(
         &mut self,
-        store: &Store,
-        account_id: AccountId,
+        writer: &mut Writer<'_>,
         rows: &[SyncedPullRequest],
         scope: &TrackedScope,
         existing: &[PullRequest],
-        now: DateTime<Utc>,
     ) -> Result<(), CoreError> {
         for item in rows {
-            if !in_scope(&item.pull_request.repo.owner, scope) {
+            if !in_scope(&item.pull_request.repo.owner, scope) || !keeps_hit(item, existing) {
                 continue;
             }
             let id = item.pull_request.remote.id.clone();
@@ -429,38 +651,139 @@ impl EarlyRows {
                 PrStatus::of(before).apply_to(&mut row.pull_request);
                 row.pull_request.involvement |= before.involvement;
             }
-            let known = self
-                .involvement
-                .entry(id)
-                .or_insert(crate::domain::Involvement::empty());
+            let known = self.involvement.entry(id).or_insert(Involvement::empty());
             *known |= row.pull_request.involvement;
             row.pull_request.involvement = *known;
-            upsert_synced(store, account_id, &row, now)?;
+            writer.write(&row)?;
         }
         Ok(())
     }
 }
 
-fn upsert_synced(
-    store: &Store,
+/// Writes a pull request or its repository only when what would be stored
+/// differs from what is stored, so an unchanged row costs no transaction
+/// and no list refresh.
+struct Writer<'a> {
+    store: &'a Store,
     account_id: AccountId,
-    item: &SyncedPullRequest,
     now: DateTime<Utc>,
-) -> Result<PullRequest, CoreError> {
-    let repo = store.upsert_repository(Repository {
-        id: 0,
-        account_id,
-        owner: item.pull_request.repo.owner.clone(),
-        name: item.pull_request.repo.name.clone(),
-        node_id: item.repo_node_id.clone(),
-        default_branch: item.default_branch.clone(),
-        archived: item.repo_archived,
-    })?;
-    let mut pr = item.pull_request.clone();
-    pr.remote.account = account_id;
-    pr.synced_at = now;
-    pr.hidden = false;
-    store.upsert_pull_request(repo.id, pr)
+    /// Stored rows by node id, kept current as this sync writes.
+    rows: HashMap<String, PullRequest>,
+    /// Node ids in the order they were first known, for a stable walk.
+    order: Vec<String>,
+    repos: HashMap<(String, String), Repository>,
+    changed: HashSet<String>,
+}
+
+impl<'a> Writer<'a> {
+    fn new(
+        store: &'a Store,
+        account_id: AccountId,
+        now: DateTime<Utc>,
+        existing: &[PullRequest],
+    ) -> Result<Self, CoreError> {
+        let repos = store
+            .list_repositories(account_id)?
+            .into_iter()
+            .map(|repo| ((repo.owner.clone(), repo.name.clone()), repo))
+            .collect();
+        Ok(Self {
+            store,
+            account_id,
+            now,
+            rows: existing
+                .iter()
+                .map(|pr| (pr.remote.id.clone(), pr.clone()))
+                .collect(),
+            order: existing.iter().map(|pr| pr.remote.id.clone()).collect(),
+            repos,
+            changed: HashSet::new(),
+        })
+    }
+
+    fn updated(&self) -> usize {
+        self.changed.len()
+    }
+
+    fn rows(&self) -> impl Iterator<Item = &PullRequest> {
+        self.order.iter().filter_map(|id| self.rows.get(id))
+    }
+
+    /// A stored row as a [`SyncedPullRequest`], with its repository's facts.
+    fn synced_from(&self, pr: PullRequest) -> SyncedPullRequest {
+        let repo = self
+            .repos
+            .get(&(pr.repo.owner.clone(), pr.repo.name.clone()));
+        SyncedPullRequest {
+            repo_node_id: repo.and_then(|repo| repo.node_id.clone()),
+            default_branch: repo.and_then(|repo| repo.default_branch.clone()),
+            repo_archived: repo.is_some_and(|repo| repo.archived),
+            pull_request: pr,
+        }
+    }
+
+    fn write(&mut self, item: &SyncedPullRequest) -> Result<bool, CoreError> {
+        let mut pr = item.pull_request.clone();
+        pr.remote.account = self.account_id;
+        pr.hidden = false;
+        pr.body = crate::store::cap_body(&pr.body);
+        let id = pr.remote.id.clone();
+        let key = (pr.repo.owner.clone(), pr.repo.name.clone());
+        let wanted = Repository {
+            id: 0,
+            account_id: self.account_id,
+            owner: key.0.clone(),
+            name: key.1.clone(),
+            node_id: item.repo_node_id.clone(),
+            default_branch: item.default_branch.clone(),
+            archived: item.repo_archived,
+        };
+        let repo = match self.repos.get(&key) {
+            Some(repo)
+                if Repository {
+                    id: 0,
+                    ..repo.clone()
+                } == wanted =>
+            {
+                repo.clone()
+            }
+            _ => {
+                let repo = self.store.upsert_repository(wanted)?;
+                self.repos.insert(key, repo.clone());
+                repo
+            }
+        };
+        if let Some(before) = self.rows.get(&id)
+            && same_content(before, &pr)
+        {
+            return Ok(false);
+        }
+        pr.synced_at = self.now;
+        let saved = self.store.upsert_pull_request(repo.id, pr)?;
+        if !self.rows.contains_key(&id) {
+            self.order.push(id.clone());
+        }
+        self.rows.insert(id.clone(), saved);
+        self.changed.insert(id);
+        Ok(true)
+    }
+
+    fn set_hidden(&mut self, pr: &PullRequest, hidden: bool) -> Result<(), CoreError> {
+        self.store.set_pull_request_hidden(pr.id, hidden)?;
+        if let Some(row) = self.rows.get_mut(&pr.remote.id) {
+            row.hidden = hidden;
+        }
+        self.changed.insert(pr.remote.id.clone());
+        Ok(())
+    }
+}
+
+/// Equal apart from what sync stamps on every write.
+fn same_content(stored: &PullRequest, next: &PullRequest) -> bool {
+    let mut next = next.clone();
+    next.id = stored.id;
+    next.synced_at = stored.synced_at;
+    next == *stored
 }
 
 /// Remember a secondary limit so the next scheduled poll waits.
@@ -550,6 +873,9 @@ mod tests {
         budget: RateBudget,
         queries: std::sync::Mutex<Vec<PrQuery>>,
         status_asked: std::sync::Mutex<Vec<String>>,
+        /// The status pass fails, as a network error mid-sync would.
+        fail_status: bool,
+        refresh_asked: std::sync::Mutex<Vec<String>>,
     }
 
     impl VcsProvider for Fake {
@@ -590,6 +916,10 @@ mod tests {
             &self,
             ids: &[ProviderRef],
         ) -> Result<Vec<SyncedPullRequest>, ProviderError> {
+            self.refresh_asked
+                .lock()
+                .unwrap()
+                .extend(ids.iter().map(|id| id.id.clone()));
             Ok(self
                 .refresh
                 .iter()
@@ -602,6 +932,9 @@ mod tests {
                 .lock()
                 .unwrap()
                 .extend(ids.iter().map(|id| id.id.clone()));
+            if self.fail_status {
+                return Err(ProviderError::Network("connection reset".into()));
+            }
             Ok(self
                 .status
                 .iter()
@@ -682,6 +1015,8 @@ mod tests {
             budget: sample_budget(5000, 4000),
             queries: Default::default(),
             status_asked: Default::default(),
+            fail_status: false,
+            refresh_asked: Default::default(),
         };
         let mut counts = Vec::new();
         let report = sync_account_with_progress(
@@ -690,11 +1025,12 @@ mod tests {
             account,
             SyncKind::Manual,
             ts(30),
-            &mut |stored| {
+            &mut |progress| {
                 // Rows are in the store before the search (and status pass) ends.
                 let rows = store.list_pull_requests_for_account(account).unwrap();
-                assert_eq!(rows.len(), stored);
-                counts.push(stored);
+                assert_eq!(rows.len(), progress.seen);
+                assert_eq!(progress.updated, progress.seen);
+                counts.push(progress.seen);
             },
         )
         .unwrap();
@@ -738,6 +1074,8 @@ mod tests {
             budget: sample_budget(5000, 4000),
             queries: Default::default(),
             status_asked: Default::default(),
+            fail_status: false,
+            refresh_asked: Default::default(),
         };
         let report = sync_account(&store, &fake, account, SyncKind::Manual, ts(20)).unwrap();
         assert_eq!(report.message, "Choose orgs to track");
@@ -765,6 +1103,8 @@ mod tests {
             budget: sample_budget(5000, 4000),
             queries: Default::default(),
             status_asked: Default::default(),
+            fail_status: false,
+            refresh_asked: Default::default(),
         };
         let report = sync_account(&store, &fake, account, SyncKind::Manual, ts(30)).unwrap();
         assert_eq!(report.stored, 1);
@@ -802,6 +1142,8 @@ mod tests {
             budget: sample_budget(5000, 4000),
             queries: Default::default(),
             status_asked: Default::default(),
+            fail_status: false,
+            refresh_asked: Default::default(),
         };
         sync_account(&store, &fake, account, SyncKind::Manual, ts(30)).unwrap();
         // Seed an open row that search no longer returns, then sync again.
@@ -812,7 +1154,7 @@ mod tests {
         missing.remote.account = account;
         store.upsert_pull_request(repo_id, missing).unwrap();
 
-        let report = sync_account(&store, &fake, account, SyncKind::Manual, ts(30)).unwrap();
+        let report = sync_account(&store, &fake, account, SyncKind::Full, ts(30)).unwrap();
         assert_eq!(report.refreshed, 1);
         let rows = store.list_pull_requests_for_account(account).unwrap();
         let closed = rows.iter().find(|row| row.number == 9).unwrap();
@@ -835,6 +1177,8 @@ mod tests {
             budget: sample_budget(5000, 4000),
             queries: Default::default(),
             status_asked: Default::default(),
+            fail_status: false,
+            refresh_asked: Default::default(),
         };
         sync_account(&store, &first, account, SyncKind::Manual, ts(20)).unwrap();
         let stored = store.list_pull_requests_for_account(account).unwrap();
@@ -875,8 +1219,10 @@ mod tests {
             budget: sample_budget(5000, 4000),
             queries: Default::default(),
             status_asked: Default::default(),
+            fail_status: false,
+            refresh_asked: Default::default(),
         };
-        let report = sync_account(&store, &second, account, SyncKind::Manual, ts(70)).unwrap();
+        let report = sync_account(&store, &second, account, SyncKind::Full, ts(70)).unwrap();
         assert_eq!(report.refreshed, 1);
         let rows = store.list_pull_requests_for_account(account).unwrap();
         let gone = rows.iter().find(|row| row.number == 2).unwrap();
@@ -909,6 +1255,8 @@ mod tests {
             budget: budget.clone(),
             queries: Default::default(),
             status_asked: Default::default(),
+            fail_status: false,
+            refresh_asked: Default::default(),
         };
         let paused = sync_account(&store, &fake, account, SyncKind::Scheduled, ts(30)).unwrap();
         assert!(paused.paused);
@@ -1001,6 +1349,8 @@ mod tests {
     fn status(id: &str, checks: ChecksState) -> PrStatus {
         PrStatus {
             remote_id: id.into(),
+            state: None,
+            updated_at: None,
             review_decision: Some(crate::domain::ReviewDecision::Approved),
             checks,
             mergeable: Mergeable::Conflicting,
@@ -1025,6 +1375,8 @@ mod tests {
             budget: sample_budget(5000, 4000),
             queries: Default::default(),
             status_asked: Default::default(),
+            fail_status: false,
+            refresh_asked: Default::default(),
         };
         sync_account(&store, &fake, account, SyncKind::Manual, ts(30)).unwrap();
         let sent: Vec<Vec<String>> = fake
@@ -1063,6 +1415,8 @@ mod tests {
             budget: sample_budget(5000, 4000),
             queries: Default::default(),
             status_asked: Default::default(),
+            fail_status: false,
+            refresh_asked: Default::default(),
         };
         sync_account(&store, &first, account, SyncKind::Manual, ts(30)).unwrap();
         first.status.clear();
@@ -1085,6 +1439,8 @@ mod tests {
             budget: sample_budget(5000, 4000),
             queries: Default::default(),
             status_asked: Default::default(),
+            fail_status: false,
+            refresh_asked: Default::default(),
         };
         sync_account(&store, &fake, account, SyncKind::Manual, ts(30)).unwrap();
         let repo = store
@@ -1108,6 +1464,438 @@ mod tests {
         assert_eq!(report.refreshed, 0);
         let rows = store.list_pull_requests_for_account(account).unwrap();
         assert!(rows.iter().find(|row| row.number == 7).unwrap().hidden);
+    }
+
+    fn fake(mine: Vec<SyncedPullRequest>, status: Vec<PrStatus>) -> Fake {
+        Fake {
+            mine,
+            review: Vec::new(),
+            refresh: Vec::new(),
+            status,
+            budget: sample_budget(5000, 4000),
+            queries: Default::default(),
+            status_asked: Default::default(),
+            fail_status: false,
+            refresh_asked: Default::default(),
+        }
+    }
+
+    fn live_status(id: &str, checks: ChecksState, updated_at: DateTime<Utc>) -> PrStatus {
+        PrStatus {
+            state: Some(PrState::Open),
+            updated_at: Some(updated_at),
+            mergeable: Mergeable::Mergeable,
+            merge_state: MergeStateStatus::Clean,
+            review_decision: None,
+            unresolved_threads: 0,
+            total_threads: 0,
+            last_commit_at: None,
+            ..status(id, checks)
+        }
+    }
+
+    fn row(store: &Store, account: AccountId, number: u64) -> PullRequest {
+        store
+            .list_pull_requests_for_account(account)
+            .unwrap()
+            .into_iter()
+            .find(|pr| pr.number == number)
+            .unwrap()
+    }
+
+    #[test]
+    fn plan_picks_full_for_each_trigger_and_incremental_otherwise() {
+        let key = "ada|false|acme";
+        let mark = SyncMark {
+            scope: key.into(),
+            updated_at: ts(10),
+            full_at: ts(0),
+            rollup_at: ts(0),
+        };
+        assert_eq!(
+            plan_sync(SyncKind::Full, Some(&mark), key, ts(1)),
+            SyncPlan::Full(FullReason::Requested)
+        );
+        assert_eq!(
+            plan_sync(SyncKind::Manual, None, key, ts(1)),
+            SyncPlan::Full(FullReason::NoMark)
+        );
+        assert_eq!(
+            plan_sync(
+                SyncKind::Scheduled,
+                Some(&mark),
+                "ada|false|acme,beta",
+                ts(1)
+            ),
+            SyncPlan::Full(FullReason::ScopeChanged)
+        );
+        assert_eq!(
+            plan_sync(
+                SyncKind::Scheduled,
+                Some(&mark),
+                key,
+                ts(FULL_EVERY_HOURS * 60)
+            ),
+            SyncPlan::Full(FullReason::StaleMark)
+        );
+        assert_eq!(
+            plan_sync(SyncKind::Manual, Some(&mark), key, ts(1)),
+            SyncPlan::Incremental {
+                since: ts(10 - MARK_OVERLAP_MINUTES),
+                rollup: false
+            }
+        );
+        assert_eq!(
+            plan_sync(
+                SyncKind::Scheduled,
+                Some(&mark),
+                key,
+                ts(ROLLUP_EVERY_MINUTES)
+            ),
+            SyncPlan::Incremental {
+                since: ts(10 - MARK_OVERLAP_MINUTES),
+                rollup: true
+            }
+        );
+    }
+
+    #[test]
+    fn scope_key_ignores_org_order_and_case() {
+        let a = scope(&["Acme", "beta"], false);
+        let b = scope(&["beta", "acme", "ACME"], false);
+        assert_eq!(scope_key(&a), scope_key(&b));
+        assert_ne!(scope_key(&a), scope_key(&scope(&["acme", "beta"], true)));
+    }
+
+    #[test]
+    fn incremental_search_drops_is_open_and_carries_the_overlap() {
+        let (_dir, store, account) = open_store();
+        let mut newest = pr("N2", "acme", 2, Involvement::AUTHOR);
+        newest.pull_request.updated_at = ts(25);
+        let first = fake(
+            vec![pr("N1", "acme", 1, Involvement::AUTHOR), newest],
+            Vec::new(),
+        );
+        let report = sync_account(&store, &first, account, SyncKind::Full, ts(30)).unwrap();
+        assert!(report.full);
+        let mark = settings::sync_mark(&store).unwrap().unwrap();
+        assert_eq!(mark.updated_at, ts(25));
+        assert_eq!(mark.full_at, ts(30));
+
+        let second = fake(Vec::new(), Vec::new());
+        let report = sync_account(&store, &second, account, SyncKind::Scheduled, ts(40)).unwrap();
+        assert!(!report.full);
+        assert_eq!(report.message, "0 updated");
+        let queries: Vec<String> = second
+            .queries
+            .lock()
+            .unwrap()
+            .iter()
+            .flat_map(|query| query.queries.clone())
+            .collect();
+        assert_eq!(
+            queries,
+            vec![
+                "is:pr author:@me archived:false sort:updated-desc \
+                 updated:>=2023-11-14T22:33:20Z org:acme"
+                    .to_owned(),
+                "is:pr review-requested:@me archived:false sort:updated-desc \
+                 updated:>=2023-11-14T22:33:20Z org:acme"
+                    .to_owned(),
+            ]
+        );
+        // ts(25) minus the 5-minute overlap.
+        assert_eq!(
+            ts(25 - MARK_OVERLAP_MINUTES)
+                .format("%Y-%m-%dT%H:%M:%SZ")
+                .to_string(),
+            "2023-11-14T22:33:20Z"
+        );
+        // Nothing moving, no rollup due: no status read at all.
+        assert!(second.status_asked.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn incremental_queries_respect_the_length_cap() {
+        let orgs: Vec<String> = (0..40).map(|n| format!("org-number-{n}")).collect();
+        let names: Vec<&str> = orgs.iter().map(String::as_str).collect();
+        let queries = incremental_queries(SearchBucket::Mine, &scope(&names, false), ts(0));
+        assert!(queries.len() > 1);
+        assert!(queries.iter().all(|query| query.len() <= SEARCH_QUERY_MAX));
+        assert!(queries.iter().all(|query| query.contains(" updated:>=")));
+        assert!(queries.iter().all(|query| !query.contains("is:open")));
+    }
+
+    #[test]
+    fn an_incremental_hit_that_merged_moves_to_closed_without_a_refresh() {
+        let (_dir, store, account) = open_store();
+        let first = fake(
+            vec![
+                pr("N1", "acme", 1, Involvement::AUTHOR),
+                pr("N2", "acme", 2, Involvement::AUTHOR),
+            ],
+            Vec::new(),
+        );
+        sync_account(&store, &first, account, SyncKind::Full, ts(30)).unwrap();
+
+        let mut merged = pr("N2", "acme", 2, Involvement::AUTHOR);
+        merged.pull_request.state = PrState::Merged;
+        merged.pull_request.updated_at = ts(35);
+        // An old closed pull request with a fresh comment: never stored, so
+        // the incremental search must not add it.
+        let mut stranger = pr("N3", "acme", 3, Involvement::AUTHOR);
+        stranger.pull_request.state = PrState::Closed;
+        stranger.pull_request.updated_at = ts(36);
+        let second = fake(vec![merged, stranger], Vec::new());
+        let report = sync_account(&store, &second, account, SyncKind::Manual, ts(40)).unwrap();
+        assert!(!report.full);
+        assert_eq!(report.updated, 1);
+        assert_eq!(report.refreshed, 0);
+        assert!(second.refresh_asked.lock().unwrap().is_empty());
+        assert_eq!(row(&store, account, 2).state, PrState::Merged);
+        assert_eq!(row(&store, account, 1).state, PrState::Open);
+        assert!(
+            store
+                .list_pull_requests_for_account(account)
+                .unwrap()
+                .iter()
+                .all(|pr| pr.number != 3)
+        );
+        assert_eq!(
+            settings::sync_mark(&store).unwrap().unwrap().updated_at,
+            ts(35)
+        );
+    }
+
+    #[test]
+    fn a_rollup_only_change_lands_without_a_search_hit() {
+        let (_dir, store, account) = open_store();
+        let mut pending = pr("N1", "acme", 1, Involvement::AUTHOR);
+        pending.pull_request.checks = ChecksState::Pending;
+        let settled = pr("N2", "acme", 2, Involvement::AUTHOR);
+        let first = fake(vec![pending, settled], Vec::new());
+        sync_account(&store, &first, account, SyncKind::Full, ts(30)).unwrap();
+
+        // CI finished: updatedAt does not move, so search returns nothing.
+        let second = fake(
+            Vec::new(),
+            vec![live_status("N1", ChecksState::Success, ts(10))],
+        );
+        let report = sync_account(&store, &second, account, SyncKind::Scheduled, ts(40)).unwrap();
+        assert_eq!(report.updated, 1);
+        assert_eq!(report.refreshed, 0);
+        // Only the moving row is read; the settled one waits for the rollup.
+        assert_eq!(*second.status_asked.lock().unwrap(), vec!["N1".to_owned()]);
+        assert_eq!(row(&store, account, 1).checks, ChecksState::Success);
+        assert_eq!(row(&store, account, 1).synced_at, ts(40));
+        assert_eq!(row(&store, account, 2).synced_at, ts(30));
+
+        // The periodic rollup reads every open row.
+        let third = fake(
+            Vec::new(),
+            vec![
+                live_status("N1", ChecksState::Success, ts(10)),
+                live_status("N2", ChecksState::Failure, ts(10)),
+            ],
+        );
+        let report = sync_account(
+            &store,
+            &third,
+            account,
+            SyncKind::Scheduled,
+            ts(30 + ROLLUP_EVERY_MINUTES),
+        )
+        .unwrap();
+        assert_eq!(report.updated, 1);
+        let mut asked = third.status_asked.lock().unwrap().clone();
+        asked.sort();
+        assert_eq!(asked, vec!["N1".to_owned(), "N2".to_owned()]);
+        assert_eq!(row(&store, account, 2).checks, ChecksState::Failure);
+        assert_eq!(
+            settings::sync_mark(&store).unwrap().unwrap().rollup_at,
+            ts(30 + ROLLUP_EVERY_MINUTES)
+        );
+    }
+
+    #[test]
+    fn a_volatile_row_that_finished_or_changed_is_refreshed_in_full() {
+        let (_dir, store, account) = open_store();
+        let mut pending = pr("N1", "acme", 1, Involvement::AUTHOR);
+        pending.pull_request.checks = ChecksState::Pending;
+        let mut unknown = pr("N2", "acme", 2, Involvement::REVIEW_REQUESTED);
+        unknown.pull_request.mergeable = Mergeable::Unknown;
+        let first = fake(vec![pending], Vec::new());
+        let first = Fake {
+            review: vec![unknown],
+            ..first
+        };
+        sync_account(&store, &first, account, SyncKind::Full, ts(30)).unwrap();
+
+        // N1 merged; N2 left the review-requested view after a review, so no
+        // search finds it, but its updatedAt moved.
+        let mut merged = pr("N1", "acme", 1, Involvement::empty());
+        merged.pull_request.state = PrState::Merged;
+        merged.pull_request.updated_at = ts(12);
+        let mut reviewed = pr("N2", "acme", 2, Involvement::empty());
+        reviewed.pull_request.title = "PR 2, reworked".into();
+        reviewed.pull_request.updated_at = ts(14);
+        let second = Fake {
+            refresh: vec![merged, reviewed],
+            ..fake(
+                Vec::new(),
+                vec![
+                    PrStatus {
+                        state: Some(PrState::Merged),
+                        ..live_status("N1", ChecksState::Success, ts(12))
+                    },
+                    live_status("N2", ChecksState::Success, ts(14)),
+                ],
+            )
+        };
+        let report = sync_account(&store, &second, account, SyncKind::Scheduled, ts(40)).unwrap();
+        assert_eq!(report.refreshed, 2);
+        assert_eq!(report.updated, 2);
+        assert_eq!(row(&store, account, 1).state, PrState::Merged);
+        let n2 = row(&store, account, 2);
+        assert_eq!(n2.title, "PR 2, reworked");
+        // Involvement is kept from the stored row, like a full refresh.
+        assert!(n2.involvement.contains(Involvement::REVIEW_REQUESTED));
+        assert_eq!(
+            settings::sync_mark(&store).unwrap().unwrap().updated_at,
+            ts(14)
+        );
+    }
+
+    #[test]
+    fn unchanged_rows_are_not_rewritten_or_reported() {
+        let (_dir, store, account) = open_store();
+        let rows: Vec<_> = (1..=100)
+            .map(|n| pr(&format!("N{n}"), "acme", n, Involvement::AUTHOR))
+            .collect();
+        let first = fake(rows.clone(), Vec::new());
+        let report = sync_account(&store, &first, account, SyncKind::Full, ts(30)).unwrap();
+        assert_eq!(report.updated, 100);
+
+        // A full reconcile that finds the same 100 rows writes none of them.
+        let again = fake(rows.clone(), Vec::new());
+        let report = sync_account(&store, &again, account, SyncKind::Full, ts(40)).unwrap();
+        assert_eq!(report.updated, 0);
+        assert!(
+            store
+                .list_pull_requests_for_account(account)
+                .unwrap()
+                .iter()
+                .all(|pr| pr.synced_at == ts(30))
+        );
+
+        // The overlap returns the newest rows again; still nothing written.
+        let overlap = fake(rows[..3].to_vec(), Vec::new());
+        let mut updates = Vec::new();
+        let report = sync_account_with_progress(
+            &store,
+            &overlap,
+            account,
+            SyncKind::Manual,
+            ts(50),
+            &mut |progress| updates.push(progress.updated),
+        )
+        .unwrap();
+        assert!(!report.full);
+        assert_eq!(report.updated, 0);
+        assert!(updates.iter().all(|&count| count == 0));
+        assert!(
+            store
+                .list_pull_requests_for_account(account)
+                .unwrap()
+                .iter()
+                .all(|pr| pr.synced_at == ts(30))
+        );
+    }
+
+    #[test]
+    fn changing_the_tracked_orgs_forces_a_full_reconcile() {
+        let (_dir, store, account) = open_store();
+        let first = fake(vec![pr("N1", "acme", 1, Involvement::AUTHOR)], Vec::new());
+        sync_account(&store, &first, account, SyncKind::Full, ts(30)).unwrap();
+        settings::set_tracked_orgs(&store, &["acme".into(), "beta".into()]).unwrap();
+        let second = fake(vec![pr("N1", "acme", 1, Involvement::AUTHOR)], Vec::new());
+        let report = sync_account(&store, &second, account, SyncKind::Scheduled, ts(40)).unwrap();
+        assert!(report.full);
+        assert!(
+            second
+                .queries
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|query| query.queries.iter().all(|q| q.contains("is:open")))
+        );
+        // The next pass is incremental again.
+        let third = fake(Vec::new(), Vec::new());
+        assert!(
+            !sync_account(&store, &third, account, SyncKind::Scheduled, ts(50))
+                .unwrap()
+                .full
+        );
+    }
+
+    #[test]
+    fn a_stale_mark_forces_a_full_reconcile() {
+        let (_dir, store, account) = open_store();
+        let first = fake(vec![pr("N1", "acme", 1, Involvement::AUTHOR)], Vec::new());
+        sync_account(&store, &first, account, SyncKind::Full, ts(30)).unwrap();
+        let later = ts(30 + FULL_EVERY_HOURS * 60);
+        let second = fake(vec![pr("N1", "acme", 1, Involvement::AUTHOR)], Vec::new());
+        let report = sync_account(&store, &second, account, SyncKind::Scheduled, later).unwrap();
+        assert!(report.full);
+        assert_eq!(settings::sync_mark(&store).unwrap().unwrap().full_at, later);
+    }
+
+    #[test]
+    fn a_missing_mark_forces_a_full_reconcile() {
+        let (_dir, store, account) = open_store();
+        let first = fake(vec![pr("N1", "acme", 1, Involvement::AUTHOR)], Vec::new());
+        let report = sync_account(&store, &first, account, SyncKind::Manual, ts(30)).unwrap();
+        assert!(report.full);
+        assert_eq!(report.message, "1 pull requests");
+    }
+
+    #[test]
+    fn the_mark_moves_only_after_a_pass_that_succeeded() {
+        let (_dir, store, account) = open_store();
+        // A first pass that fails leaves no mark.
+        let failing = Fake {
+            fail_status: true,
+            ..fake(vec![pr("N1", "acme", 1, Involvement::AUTHOR)], Vec::new())
+        };
+        assert!(sync_account(&store, &failing, account, SyncKind::Full, ts(20)).is_err());
+        assert_eq!(settings::sync_mark(&store).unwrap(), None);
+
+        let first = fake(vec![pr("N1", "acme", 1, Involvement::AUTHOR)], Vec::new());
+        sync_account(&store, &first, account, SyncKind::Full, ts(30)).unwrap();
+        let before = settings::sync_mark(&store).unwrap().unwrap();
+
+        let mut newer = pr("N2", "acme", 2, Involvement::AUTHOR);
+        newer.pull_request.updated_at = ts(38);
+        let failing = Fake {
+            fail_status: true,
+            ..fake(vec![newer.clone()], Vec::new())
+        };
+        assert!(sync_account(&store, &failing, account, SyncKind::Manual, ts(40)).is_err());
+        assert_eq!(settings::sync_mark(&store).unwrap().unwrap(), before);
+
+        // The retry searches from the old mark and finds the same row.
+        let retry = fake(vec![newer], Vec::new());
+        sync_account(&store, &retry, account, SyncKind::Manual, ts(41)).unwrap();
+        assert!(
+            retry.queries.lock().unwrap()[0].queries[0].contains(&format!(
+                "updated:>={}",
+                (before.updated_at - Duration::minutes(MARK_OVERLAP_MINUTES))
+                    .format("%Y-%m-%dT%H:%M:%SZ")
+            ))
+        );
+        let after = settings::sync_mark(&store).unwrap().unwrap();
+        assert_eq!(after.updated_at, ts(38));
+        assert_eq!(after.full_at, before.full_at);
     }
 
     fn sample_budget(limit: u32, remaining: u32) -> RateBudget {
