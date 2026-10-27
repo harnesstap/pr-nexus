@@ -24,8 +24,8 @@ use serde_json::{Value, json};
 
 use super::oauth::{self, KeychainCredentialStore};
 use super::schema::{
-    self, READ_CHANNEL, READ_THREAD, READ_USER_PROFILE, SEARCH_PUBLIC, SEARCH_PUBLIC_AND_PRIVATE,
-    SEND_MESSAGE, ToolOutput, ToolShape,
+    self, READ_CHANNEL, READ_THREAD, READ_USER_PROFILE, SEARCH_CHANNELS, SEARCH_PUBLIC,
+    SEARCH_PUBLIC_AND_PRIVATE, SEARCH_USERS, SEND_MESSAGE, ToolOutput, ToolShape,
 };
 use super::{USER_SCOPES, install_tls_provider};
 use crate::vault::Vault;
@@ -367,6 +367,25 @@ pub fn search_arguments(phrase: &str, limit: u32) -> JsonObject {
     args
 }
 
+/// Directory search arguments for the target picker (§7.11): every word of
+/// `query` as a keyword, concise results, archived channels left out.
+pub fn directory_arguments(query: &str, limit: u32, channels: bool) -> JsonObject {
+    let keywords: Vec<&str> = query.split_whitespace().collect();
+    let mut args = JsonObject::new();
+    args.insert("keywords".into(), json!(keywords));
+    args.insert("natural_language_query".into(), json!(""));
+    args.insert("limit".into(), json!(limit.clamp(1, 20)));
+    args.insert("response_format".into(), json!("concise"));
+    if channels {
+        args.insert(
+            "channel_types".into(),
+            json!("public_channel,private_channel"),
+        );
+        args.insert("include_archived".into(), json!(false));
+    }
+    args
+}
+
 /// `slack_send_message` arguments (§7.11 tool table).
 pub fn send_arguments(message: &OutgoingMessage<'_>) -> JsonObject {
     let mut args = JsonObject::new();
@@ -486,6 +505,16 @@ impl ChatProvider for SlackMcpChatProvider {
         let output = self.read(tool, search_arguments(phrase, limit))?;
         Ok(schema::parse_search(&output))
     }
+
+    fn search_channels(&self, query: &str, limit: u32) -> Result<Vec<ChatChannel>, ProviderError> {
+        let output = self.read(SEARCH_CHANNELS, directory_arguments(query, limit, true))?;
+        Ok(schema::parse_channels(&output))
+    }
+
+    fn search_users(&self, query: &str, limit: u32) -> Result<Vec<ChatUser>, ProviderError> {
+        let output = self.read(SEARCH_USERS, directory_arguments(query, limit, false))?;
+        Ok(schema::parse_users(&output))
+    }
 }
 
 #[cfg(test)]
@@ -542,6 +571,28 @@ mod tests {
             text: value.into(),
             ..ToolOutput::default()
         }
+    }
+
+    #[test]
+    fn target_search_calls_the_directory_tools() {
+        let (slack, fake) = provider(text(
+            r###"{"results":"## Channels (1 results)\n1. #team-reviews (C0ACME0001) - public_channel - Not Archived"}"###,
+        ));
+        let channels = slack.search_channels("team reviews", 50).unwrap();
+        assert_eq!(channels[0].id, "C0ACME0001");
+        let calls = fake.calls.lock().unwrap();
+        assert_eq!(calls[0].0, SEARCH_CHANNELS);
+        assert_eq!(calls[0].1["keywords"], json!(["team", "reviews"]));
+        assert_eq!(calls[0].1["limit"], json!(20));
+        assert_eq!(
+            calls[0].1["channel_types"],
+            json!("public_channel,private_channel")
+        );
+        drop(calls);
+        assert!(slack.search_users("grace", 5).unwrap().is_empty());
+        let calls = fake.calls.lock().unwrap();
+        assert_eq!(calls[1].0, SEARCH_USERS);
+        assert!(calls[1].1.get("channel_types").is_none());
     }
 
     #[test]

@@ -49,6 +49,7 @@ function api(projects: ProjectDto[], rows: SearchRow[] = []): Api {
     slackCancelConnect: () => Promise.resolve(),
     slackRemoveWorkspace: () => Promise.resolve(),
     reviewTargets: () => Promise.resolve([]),
+    searchSlackTargets: () => Promise.resolve([]),
     reviewPreview: (_prId: number, target: ReviewTarget) =>
       Promise.resolve({
         target,

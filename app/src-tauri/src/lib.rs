@@ -76,6 +76,7 @@ pub fn run() {
             slack::slack_remove_workspace,
             slack::review_targets,
             slack::review_preview,
+            slack::slack_search_targets,
             slack::send_review,
             bulk::bulk_preview,
             bulk::send_bulk,

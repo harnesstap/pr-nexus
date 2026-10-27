@@ -93,8 +93,9 @@ test("all PRs can go to one typed DM channel", async () => {
   render(<BulkDialog api={api} prIds={[1, 2]} onClose={() => undefined} onSent={() => undefined} onOpen={() => undefined} />);
   await screen.findByText("Bump #42");
   fireEvent.click(screen.getByRole("radio", { name: "All to one channel" }));
-  fireEvent.change(screen.getByRole("textbox", { name: "Channel or DM ID" }), { target: { value: "D0123456789" } });
-  fireEvent.change(screen.getByRole("textbox", { name: "Channel name" }), { target: { value: "me" } });
+  fireEvent.click(screen.getByRole("button", { name: "Enter an ID" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Channel, DM or member ID" }), { target: { value: "D0123456789" } });
+  fireEvent.change(screen.getByRole("textbox", { name: "Name" }), { target: { value: "me" } });
   fireEvent.click(screen.getByRole("button", { name: "Preview" }));
   expect(await screen.findByRole("region", { name: "acme DM · me" })).toBeInTheDocument();
   expect(calls.previews.at(-1)?.target).toEqual({ workspace: "acme", channel_id: "D0123456789", channel_name: "me" });

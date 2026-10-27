@@ -103,10 +103,11 @@ test("without a mapping the channel is entered by hand and errors are shown", as
   });
   render(<ReviewDialog api={api} row={row} onClose={() => undefined} onOpen={() => undefined} onSent={() => undefined} />);
   expect(await screen.findByText(/No mapped channel/)).toBeInTheDocument();
-  fireEvent.change(screen.getByRole("textbox", { name: "Channel or DM ID" }), { target: { value: "C1" } });
+  fireEvent.click(screen.getByRole("button", { name: "Enter an ID" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Channel, DM or member ID" }), { target: { value: "C1" } });
   fireEvent.click(screen.getByRole("button", { name: "Preview" }));
   expect(await screen.findByText(/such as C0123456789/)).toBeInTheDocument();
-  fireEvent.change(screen.getByRole("textbox", { name: "Channel or DM ID" }), { target: { value: "C0123456789" } });
+  fireEvent.change(screen.getByRole("textbox", { name: "Channel, DM or member ID" }), { target: { value: "C0123456789" } });
   fireEvent.click(screen.getByRole("button", { name: "Preview" }));
   expect(await screen.findByLabelText("Message preview")).toHaveTextContent("hand");
   expect(screen.getByRole("button", { name: "Send request" })).toBeEnabled();
@@ -121,4 +122,23 @@ test("a send whose link is unknown is a notice, not an error, and Send stays off
   expect(await screen.findByRole("status")).toHaveTextContent(notice);
   expect(screen.getByRole("button", { name: "Send request" })).toBeDisabled();
   expect(screen.getByRole("button", { name: "Close" })).toBeInTheDocument();
+});
+
+test("a searched member replaces the mapped channel and the request keeps the PR's teams", async () => {
+  const { api, calls } = fake({
+    searchSlackTargets: (workspace, query) =>
+      Promise.resolve(
+        query === "@grace" ? [{ kind: "member" as const, target: { workspace, channel_id: "U0ACME0002", channel_name: "Grace Hopper" } }] : [],
+      ),
+  });
+  render(<ReviewDialog api={api} row={row} onClose={() => undefined} onOpen={() => undefined} onSent={() => undefined} />);
+  await screen.findByLabelText("Message preview");
+  const box = screen.getByRole("combobox", { name: "Channel or person" });
+  fireEvent.focus(box);
+  fireEvent.change(box, { target: { value: "@grace" } });
+  fireEvent.click(await screen.findByRole("option", { name: /@Grace Hopper/ }));
+  expect(await screen.findByText("New message in @Grace Hopper.")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Send request" }));
+  await waitFor(() => expect(calls.sent).toHaveLength(1));
+  expect(calls.sent[0]).toEqual([{ workspace: "acme", channel_id: "U0ACME0002", channel_name: "Grace Hopper" }, ["@acme/platform"]]);
 });

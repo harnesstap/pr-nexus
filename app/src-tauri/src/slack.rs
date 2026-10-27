@@ -61,6 +61,18 @@ pub struct TargetChoice {
     pub source: String,
 }
 
+/// One target picker search result (§7.11): a channel, or a member who
+/// gets a direct message (the user ID is the send target).
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+pub struct TargetMatch {
+    pub target: ReviewTarget,
+    /// `channel` or `member`.
+    pub kind: String,
+}
+
+/// Results per kind; the MCP tools return at most 20.
+const TARGET_SEARCH_LIMIT: u32 = 10;
+
 #[derive(Debug, Serialize, Clone, PartialEq, Eq)]
 pub struct ReviewPreview {
     pub target: ReviewTarget,
@@ -333,6 +345,84 @@ fn push_choice(
     });
 }
 
+/// Search one workspace for a send target (§7.11). `#term` searches
+/// channels, `@term` members, a bare term both. An empty term returns
+/// nothing without calling Slack.
+#[tauri::command]
+pub async fn slack_search_targets(
+    app: Shared<'_>,
+    workspace: String,
+    query: String,
+) -> Result<Vec<TargetMatch>, AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        let workspace = workspace.trim().to_ascii_lowercase();
+        let (channels, members, term) = target_query(&query);
+        if workspace.is_empty() || term.is_empty() {
+            return Ok(Vec::new());
+        }
+        let chat = chat_for(state, &workspace)?;
+        search_targets(chat.as_ref(), &workspace, term, channels, members)
+    })
+    .await
+}
+
+/// `(search channels, search members, term)` for a picker query.
+pub(crate) fn target_query(query: &str) -> (bool, bool, &str) {
+    let query = query.trim();
+    if let Some(term) = query.strip_prefix('#') {
+        (true, false, term.trim())
+    } else if let Some(term) = query.strip_prefix('@') {
+        (false, true, term.trim())
+    } else {
+        (true, true, query)
+    }
+}
+
+/// Channels first, then members. With both kinds asked, one kind failing
+/// still returns the other; the error surfaces only when nothing worked.
+pub(crate) fn search_targets(
+    chat: &dyn ChatProvider,
+    workspace: &str,
+    term: &str,
+    channels: bool,
+    members: bool,
+) -> Result<Vec<TargetMatch>, AppError> {
+    let mut found = Vec::new();
+    let mut failure = None;
+    if channels {
+        match chat.search_channels(term, TARGET_SEARCH_LIMIT) {
+            Ok(items) => found.extend(items.into_iter().map(|channel| TargetMatch {
+                target: ReviewTarget {
+                    workspace: workspace.to_owned(),
+                    channel_id: channel.id,
+                    channel_name: channel.name,
+                },
+                kind: "channel".into(),
+            })),
+            Err(err) => failure = Some(err),
+        }
+    }
+    if members {
+        match chat.search_users(term, TARGET_SEARCH_LIMIT) {
+            Ok(items) => found.extend(items.into_iter().map(|user| TargetMatch {
+                target: ReviewTarget {
+                    workspace: workspace.to_owned(),
+                    channel_id: user.id,
+                    channel_name: user.name,
+                },
+                kind: "member".into(),
+            })),
+            Err(err) => failure = failure.or(Some(err)),
+        }
+    }
+    match failure {
+        Some(err) if found.is_empty() => Err(err.into()),
+        _ => Ok(found),
+    }
+}
+
 #[tauri::command]
 pub async fn review_preview(
     app: Shared<'_>,
@@ -443,18 +533,18 @@ pub(crate) fn validate_target(target: ReviewTarget) -> Result<ReviewTarget, AppE
         return Err(AppError::new("validation", "Choose a Slack workspace"));
     }
     let id_ok = channel_id.len() >= 9
-        && channel_id.starts_with(['C', 'G', 'D'])
+        && channel_id.starts_with(['C', 'G', 'D', 'U', 'W'])
         && channel_id.chars().all(|c| c.is_ascii_alphanumeric());
     if !id_ok {
         return Err(AppError::new(
             "validation",
-            "Enter a Slack channel ID such as C0123456789 (channel details → About), or a DM ID starting with D",
+            "Enter a Slack channel ID such as C0123456789 (channel details → About), a DM ID starting with D, or a member ID starting with U",
         ));
     }
     let name = target
         .channel_name
         .trim()
-        .trim_start_matches('#')
+        .trim_start_matches(['#', '@'])
         .to_owned();
     Ok(ReviewTarget {
         workspace,
@@ -681,6 +771,45 @@ impl ChatProvider for DemoChat {
     fn search_messages(&self, _: &str, _: bool, _: u32) -> Result<Vec<SearchHit>, ProviderError> {
         Ok(Vec::new())
     }
+    fn search_channels(&self, query: &str, _: u32) -> Result<Vec<ChatChannel>, ProviderError> {
+        Ok(demo_matches(DEMO_CHANNELS, query)
+            .map(|(id, name)| ChatChannel {
+                id: id.into(),
+                name: name.into(),
+            })
+            .collect())
+    }
+    fn search_users(&self, query: &str, _: u32) -> Result<Vec<ChatUser>, ProviderError> {
+        Ok(demo_matches(DEMO_MEMBERS, query)
+            .map(|(id, name)| ChatUser {
+                id: id.into(),
+                name: name.into(),
+            })
+            .collect())
+    }
+}
+
+const DEMO_CHANNELS: &[(&str, &str)] = &[
+    ("C0ACME0001", "team-reviews"),
+    ("C0ACME0002", "frontend"),
+    ("C0ACME0003", "platform"),
+    ("C0ACME0004", "releases"),
+];
+const DEMO_MEMBERS: &[(&str, &str)] = &[
+    ("U0ACME0002", "Grace Hopper"),
+    ("U0ACME0003", "Linus Acme"),
+    ("U0ACME0004", "Margaret Hamilton"),
+];
+
+fn demo_matches<'a>(
+    items: &'a [(&'a str, &'a str)],
+    query: &str,
+) -> impl Iterator<Item = (&'a str, &'a str)> {
+    let query = query.trim().to_lowercase();
+    items
+        .iter()
+        .copied()
+        .filter(move |(_, name)| name.to_lowercase().contains(&query))
 }
 
 pub(crate) fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -710,9 +839,77 @@ mod tests {
         assert!(validate_target(target("acme", "team-reviews", "")).is_err());
         let dm = validate_target(target("acme", " d0123456789 ", "")).unwrap();
         assert_eq!(dm, target("acme", "D0123456789", "D0123456789"));
-        assert!(validate_target(target("acme", "U0123456789", "")).is_err());
+        let member = validate_target(target("acme", "u0123456789", "@Grace Hopper")).unwrap();
+        assert_eq!(member, target("acme", "U0123456789", "Grace Hopper"));
+        assert!(validate_target(target("acme", "X0123456789", "")).is_err());
         assert!(validate_target(target("acme", "D012", "")).is_err());
         assert!(validate_target(target("", "C0123456789", "")).is_err());
+    }
+
+    #[test]
+    fn picker_prefix_picks_the_kind() {
+        assert_eq!(target_query("#front"), (true, false, "front"));
+        assert_eq!(target_query(" @ grace "), (false, true, "grace"));
+        assert_eq!(target_query("plat"), (true, true, "plat"));
+        assert_eq!(target_query("#"), (true, false, ""));
+    }
+
+    /// Channel search works, people search lacks its scope.
+    struct HalfChat;
+
+    impl ChatProvider for HalfChat {
+        fn kind(&self) -> ChatKind {
+            ChatKind::Slack
+        }
+        fn whoami(&self) -> Result<ChatUser, ProviderError> {
+            Err(ProviderError::Unsupported("test".into()))
+        }
+        fn list_channels(&self, _: Option<String>) -> Result<Page<ChatChannel>, ProviderError> {
+            Err(ProviderError::Unsupported("test".into()))
+        }
+        fn channel_info(&self, _: &str) -> Result<ChatChannel, ProviderError> {
+            Err(ProviderError::Unsupported("test".into()))
+        }
+        fn post(&self, _: &OutgoingMessage<'_>) -> Result<PostedMessage, ProviderError> {
+            Err(ProviderError::Unsupported("test".into()))
+        }
+        fn account_id(&self) -> AccountId {
+            AccountId(1)
+        }
+        fn search_channels(&self, query: &str, _: u32) -> Result<Vec<ChatChannel>, ProviderError> {
+            Ok(vec![ChatChannel {
+                id: "C0ACME0001".into(),
+                name: format!("{query}-reviews"),
+            }])
+        }
+        fn search_users(&self, _: &str, _: u32) -> Result<Vec<ChatUser>, ProviderError> {
+            Err(ProviderError::Forbidden("missing_scope".into()))
+        }
+    }
+
+    #[test]
+    fn search_keeps_what_worked_and_reports_a_lone_failure() {
+        let both = search_targets(&HalfChat, "acme", "team", true, true).unwrap();
+        assert_eq!(both.len(), 1);
+        assert_eq!(both[0].kind, "channel");
+        assert_eq!(both[0].target, target("acme", "C0ACME0001", "team-reviews"));
+        assert!(search_targets(&HalfChat, "acme", "grace", false, true).is_err());
+    }
+
+    #[test]
+    fn demo_search_matches_by_name() {
+        let demo = DemoChat {
+            account: AccountId(1),
+            workspace: "acme".into(),
+        };
+        let people = search_targets(&demo, "acme", "grace", false, true).unwrap();
+        assert_eq!(people[0].kind, "member");
+        assert_eq!(people[0].target.channel_id, "U0ACME0002");
+        assert!(
+            search_targets(&demo, "acme", "nothing-matches", true, true)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

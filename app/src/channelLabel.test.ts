@@ -21,3 +21,9 @@ test("channels read as #name and DMs as DM, never #D…", () => {
     "DM · ada",
   );
 });
+
+test("members read as @name: Slack delivers them as a direct message", () => {
+  expect(channelLabel({ channel_id: "U0123456789", channel_name: "Grace Hopper" })).toBe("@Grace Hopper");
+  expect(channelLabel({ channel_id: "W0123456789", channel_name: "@grace" })).toBe("@grace");
+  expect(channelLabel({ channel_id: "U0123456789", channel_name: "" })).toBe("@U0123456789");
+});

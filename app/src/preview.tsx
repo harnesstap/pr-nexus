@@ -216,6 +216,17 @@ const api: Api = {
   slackCancelConnect: () => Promise.resolve(),
   slackRemoveWorkspace: () => Promise.resolve(),
   reviewTargets: () => Promise.resolve([]),
+  searchSlackTargets: (workspace: string, query: string) => {
+    const term = query.replace(/^[#@]/, "").trim().toLowerCase();
+    const people = query.startsWith("#") ? [] : [{ id: "U0ACME0002", name: "Grace Hopper" }];
+    const channels = query.startsWith("@") ? [] : [{ id: "C0ACME0001", name: "team-reviews" }];
+    return Promise.resolve([
+      ...channels.map((item) => ({ kind: "channel" as const, item })),
+      ...people.map((item) => ({ kind: "member" as const, item })),
+    ]
+      .filter(({ item }) => item.name.toLowerCase().includes(term))
+      .map(({ kind, item }) => ({ kind, target: { workspace, channel_id: item.id, channel_name: item.name } })));
+  },
   reviewPreview: (_prId: number, target: ReviewTarget) =>
     Promise.resolve({
       target,

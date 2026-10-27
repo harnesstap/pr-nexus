@@ -31,6 +31,7 @@ pub const USER_SCOPES: &[&str] = &[
     "chat:write",
     "search:read.public",
     "search:read.private",
+    "search:read.users",
     "channels:read",
     "groups:read",
     "channels:history",

@@ -26,11 +26,22 @@ pub struct Target {
 }
 
 impl Target {
-    /// How the channel reads in text: `#reviews`, or `DM` for a direct
-    /// message (`D…`), never `#D…`. Mirrors `channelLabel` in the app.
+    /// How the channel reads in text: `#reviews`, `DM` for a direct
+    /// message (`D…`), never `#D…`, or `@name` for a member
+    /// (`U…`). Mirrors `channelLabel` in the app.
     pub fn label(&self) -> String {
-        let name = self.channel_name.trim().trim_start_matches('#');
-        if self.channel_id.starts_with('D') {
+        let name = self.channel_name.trim().trim_start_matches(['#', '@']);
+        if self.channel_id.starts_with(['U', 'W']) {
+            // A member ID: Slack delivers it as a direct message.
+            format!(
+                "@{}",
+                if name.is_empty() {
+                    &self.channel_id
+                } else {
+                    name
+                }
+            )
+        } else if self.channel_id.starts_with('D') {
             if name.is_empty() || name == self.channel_id {
                 "DM".to_owned()
             } else {
@@ -528,5 +539,10 @@ pub(crate) mod tests {
         assert_eq!(target("C0123456789", "#reviews").label(), "#reviews");
         assert_eq!(target("D0123456789", "D0123456789").label(), "DM");
         assert_eq!(target("D0123456789", "ada").label(), "DM · ada");
+        assert_eq!(
+            target("U0123456789", "@Grace Hopper").label(),
+            "@Grace Hopper"
+        );
+        assert_eq!(target("U0123456789", "").label(), "@U0123456789");
     }
 }

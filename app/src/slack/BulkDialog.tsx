@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { Api, BulkCard, BulkPreview, BulkRequest, BulkResult, ChannelKey, ReviewTarget, SlackWorkspace } from "../api";
 import { channelLabel, errorMessage } from "../api";
-import { plainText } from "../textInput";
+import { TargetCombobox } from "./TargetCombobox";
 
 interface Props {
   api: Api;
@@ -31,7 +31,7 @@ function sameKey(a: ChannelKey, b: ChannelKey) {
 export function BulkDialog({ api, prIds, onClose, onSent, onOpen }: Props) {
   const [ids, setIds] = useState(prIds);
   const [oneChannel, setOneChannel] = useState(false);
-  const [manual, setManual] = useState<ReviewTarget>({ workspace: "", channel_id: "", channel_name: "" });
+  const [target, setTarget] = useState<ReviewTarget | null>(null);
   const [workspaces, setWorkspaces] = useState<SlackWorkspace[]>([]);
   const [single, setSingle] = useState<ChannelKey[]>([]);
   const [preview, setPreview] = useState<BulkPreview | null>(null);
@@ -41,12 +41,12 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen }: Props) {
   const [result, setResult] = useState<BulkResult | null>(null);
 
   const request = useCallback(
-    (next: Partial<{ ids: number[]; oneChannel: boolean; single: ChannelKey[] }> = {}): BulkRequest => ({
+    (next: Partial<{ ids: number[]; oneChannel: boolean; single: ChannelKey[]; target: ReviewTarget }> = {}): BulkRequest => ({
       pr_ids: next.ids ?? ids,
-      target: (next.oneChannel ?? oneChannel) ? manual : null,
+      target: (next.oneChannel ?? oneChannel) ? (next.target ?? target) : null,
       single_top_level: next.single ?? single,
     }),
-    [ids, oneChannel, manual, single],
+    [ids, oneChannel, target, single],
   );
 
   const load = useCallback(
@@ -73,8 +73,6 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen }: Props) {
         return;
       }
       setWorkspaces(signedIn);
-      const first = signedIn.find((item) => item.signed_in) ?? signedIn[0];
-      setManual((current) => ({ ...current, workspace: first?.domain ?? "" }));
     })();
     api
       .bulkPreview({ pr_ids: prIds, target: null, single_top_level: [] })
@@ -143,7 +141,6 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen }: Props) {
     void load(request({ ids: failed }));
   }
 
-  const input = "mt-1 w-full rounded border border-slate-700 bg-slate-950 px-2 py-1.5";
   const messageCount = preview?.cards.reduce((sum, card) => sum + card.messages.length, 0) ?? 0;
   const unsigned = preview?.cards.filter((card) => !card.signed_in) ?? [];
   const failedCount = result?.results.filter((item) => item.outcome === "failed").length ?? 0;
@@ -177,38 +174,17 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen }: Props) {
               </label>
             </fieldset>
             {oneChannel && (
-              <div className="mt-2 grid grid-cols-3 gap-2">
-                <label className="block">
-                  Workspace
-                  <select className={input} value={manual.workspace} onChange={(event) => setManual({ ...manual, workspace: event.target.value })}>
-                    {workspaces.length === 0 && <option value="">No workspace connected</option>}
-                    {workspaces.map((item) => (
-                      <option key={item.id} value={item.domain}>
-                        {item.team_name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="block">
-                  Channel or DM ID
-                  <input {...plainText}
-                    className={input}
-                    placeholder="C0123456789 or D0123456789"
-                    value={manual.channel_id}
-                    onChange={(event) => setManual({ ...manual, channel_id: event.target.value })}
-                  />
-                </label>
-                <label className="block">
-                  Channel name
-                  <input {...plainText} className={input} placeholder="#reviews" value={manual.channel_name} onChange={(event) => setManual({ ...manual, channel_name: event.target.value })} />
-                </label>
-                <button
-                  type="button"
-                  className="col-span-3 justify-self-start rounded border border-slate-600 px-3 py-1.5"
-                  onClick={() => void load(request({ oneChannel: true }))}
-                >
-                  Preview
-                </button>
+              <div className="mt-2">
+                <TargetCombobox
+                  api={api}
+                  workspaces={workspaces}
+                  suggestions={[]}
+                  value={target}
+                  onSelect={(next) => {
+                    setTarget(next);
+                    void load(request({ oneChannel: true, target: next }));
+                  }}
+                />
               </div>
             )}
             {loading && <p className="mt-4 text-slate-400">Planning messages…</p>}

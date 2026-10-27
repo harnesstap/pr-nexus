@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Api, ListRow, ReviewPreview, ReviewTarget, SlackIndicator, SlackWorkspace, TargetChoice } from "../api";
 import { channelLabel, errorMessage } from "../api";
-import { plainText } from "../textInput";
+import { TargetCombobox } from "./TargetCombobox";
 
 interface Props {
   api: Api;
@@ -12,8 +12,6 @@ interface Props {
   onOpen: (url: string) => void;
 }
 
-const MANUAL = "manual";
-
 /**
  * Request or bump review on Slack for one PR (§7.11). Shows the exact text
  * before anything is posted; Send is the only call that reaches Slack.
@@ -22,8 +20,9 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen }: Props) {
   const [teams, setTeams] = useState<string[]>([]);
   const [choices, setChoices] = useState<TargetChoice[] | null>(null);
   const [workspaces, setWorkspaces] = useState<SlackWorkspace[]>([]);
-  const [selected, setSelected] = useState<string>(MANUAL);
-  const [manual, setManual] = useState<ReviewTarget>({ workspace: "", channel_id: "", channel_name: "" });
+  const [target, setTarget] = useState<ReviewTarget | null>(null);
+  /** The suggestion picked, whose teams go in the request; null for a searched target. */
+  const [chosen, setChosen] = useState<TargetChoice | null>(null);
   const [preview, setPreview] = useState<ReviewPreview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
@@ -54,10 +53,9 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen }: Props) {
         setTeams(wanted);
         setWorkspaces(signedIn);
         setChoices(found);
-        const firstSigned = signedIn.find((item) => item.signed_in);
-        setManual((current) => ({ ...current, workspace: firstSigned?.domain ?? signedIn[0]?.domain ?? "" }));
         if (found.length > 0) {
-          setSelected("0");
+          setTarget(found[0].target);
+          setChosen(found[0]);
           const next = await api.reviewPreview(row.id, found[0].target);
           if (!cancel) {
             setPreview(next);
@@ -86,14 +84,10 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen }: Props) {
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  function choose(value: string) {
-    setSelected(value);
-    if (value === MANUAL) {
-      setPreview(null);
-      setError(null);
-    } else if (choices) {
-      void loadPreview(choices[Number(value)].target);
-    }
+  function choose(next: ReviewTarget, choice: TargetChoice | null) {
+    setTarget(next);
+    setChosen(choice);
+    void loadPreview(next);
   }
 
   async function send() {
@@ -103,7 +97,6 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen }: Props) {
     setSending(true);
     setError(null);
     try {
-      const chosen = selected === MANUAL ? null : choices?.[Number(selected)];
       onSent(await api.sendReview(row.id, preview.target, chosen?.teams.length ? chosen.teams : teams));
     } catch (err) {
       if (err && typeof err === "object" && (err as { kind?: unknown }).kind === "sent_unconfirmed") {
@@ -115,7 +108,6 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen }: Props) {
     }
   }
 
-  const input = "mt-1 w-full rounded border border-slate-700 bg-slate-950 px-2 py-1.5";
   const bump = preview?.action === "bump";
   return (
     <div
@@ -138,64 +130,15 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen }: Props) {
           <p className="mt-4 text-slate-400">Finding channels…</p>
         ) : (
           <div className="mt-4 space-y-3">
-            <label className="block">
-              Channel
-              <select className={input} value={selected} onChange={(event) => choose(event.target.value)}>
-                {choices.map((choice, index) => (
-                  <option key={`${choice.target.workspace}/${choice.target.channel_id}`} value={String(index)}>
-                    {choice.target.workspace} · {channelLabel(choice.target)}
-                    {choice.source === "request" ? " (open request)" : choice.teams.length ? ` (${choice.teams.join(", ")})` : ""}
-                  </option>
-                ))}
-                <option value={MANUAL}>Another channel…</option>
-              </select>
-            </label>
+            <TargetCombobox
+              api={api}
+              workspaces={workspaces}
+              suggestions={choices}
+              value={target}
+              onSelect={choose}
+            />
             {choices.length === 0 && (
-              <p className="text-xs text-slate-400">No mapped channel for this PR's teams. Enter one below.</p>
-            )}
-            {selected === MANUAL && (
-              <div className="grid grid-cols-3 gap-2">
-                <label className="block">
-                  Workspace
-                  <select
-                    className={input}
-                    value={manual.workspace}
-                    onChange={(event) => setManual({ ...manual, workspace: event.target.value })}
-                  >
-                    {workspaces.length === 0 && <option value="">No workspace connected</option>}
-                    {workspaces.map((item) => (
-                      <option key={item.id} value={item.domain}>
-                        {item.team_name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="block">
-                  Channel or DM ID
-                  <input {...plainText}
-                    className={input}
-                    placeholder="C0123456789 or D0123456789"
-                    value={manual.channel_id}
-                    onChange={(event) => setManual({ ...manual, channel_id: event.target.value })}
-                  />
-                </label>
-                <label className="block">
-                  Channel name
-                  <input {...plainText}
-                    className={input}
-                    placeholder="#reviews"
-                    value={manual.channel_name}
-                    onChange={(event) => setManual({ ...manual, channel_name: event.target.value })}
-                  />
-                </label>
-                <button
-                  type="button"
-                  className="col-span-3 justify-self-start rounded border border-slate-600 px-3 py-1.5"
-                  onClick={() => void loadPreview(manual)}
-                >
-                  Preview
-                </button>
-              </div>
+              <p className="text-xs text-slate-400">No mapped channel for this PR's teams. Search for one above.</p>
             )}
             {preview && (
               <div className="space-y-2">
