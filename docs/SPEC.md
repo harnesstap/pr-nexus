@@ -823,7 +823,8 @@ Registration follows the MCP spec's priority order: a **pre-registered client** 
 - `search:read.public`, plus `search:read.private` (optional, for private-channel discovery);
 - `channels:read`, `groups:read`;
 - `channels:history`, `groups:history`;
-- `users:read`.
+- `users:read`;
+- `search:read.users`, for the target picker's people search (`slack_search_users`). Apps created before this scope was added must add it under **OAuth & Permissions → User Token Scopes** (or be recreated from the manifest) and reconnect; until then people search fails with `missing_scope`, the picker says so, and channel search and ID entry keep working.
 
 The MCP search tools use the `search:read.*` scopes, not the legacy `search:read`. If the app lacks an optional scope, the matching feature degrades as described in §7.4 and §7.10.
 
@@ -835,6 +836,8 @@ The MCP search tools use the `search:read.*` scopes, not the legacy `search:read
 | `permalink` | none: taken from or built from results | A link in the result wins: `ts` is parsed from `/archives/<C…\|G…\|D…>/p<16 digits>` (`p1700000000000100` → `1700000000.000100`), and `thread_ts` from the query string. Otherwise the link is built from the workspace domain, channel, and `ts`: `https://<domain>.slack.com/archives/<channel>/p<ts without the dot>`, plus `?thread_ts=<root>&cid=<channel>` for a reply. There is no permalink tool. Discovered messages carry their own link from search. | — |
 | `search` | `slack_search_public`, then `slack_search_public_and_private` when the target channel may be private | keywords plus `in:<#C…>`, `from:`, `after:` filters, `include_bots=true`, sorted by timestamp | special |
 | `list_channels` | `slack_list_user_channels` (channels the user is in; `team_id` on Enterprise Grid), plus `slack_search_channels` for the picker's search box | Archived channels are included by default. The picker hides them. | T2 |
+| `search_channels` | `slack_search_channels` (`keywords` from the term, `natural_language_query` empty, `channel_types=public_channel,private_channel`, `include_archived=false`, `limit` ≤ 20, `response_format=concise`) | The target picker's `#` search. The concise result lists `#name (C…) - <type> - …`; archived rows and DM IDs are dropped. | T2 |
+| `search_users` | `slack_search_users` (same fields, no channel types) | The target picker's `@` search. Each line is `Name - U… - email - title`; only the name and user ID are kept (emails are never stored). Needs `search:read.users`. | T2 |
 | `channel_info` | `slack_search_channels` (by name or ID) | name, public/private, **archive status**. Archived → refuse (§7.3). | T2 |
 | `thread` | `slack_read_thread` | channel + root `ts`, for the context panel (§7.10) | T3 |
 | `whoami`, author names | `slack_read_user_profile` (current user or a user ID) | cached | T4 |
@@ -857,7 +860,14 @@ The MCP search tools use the `search:read.*` scopes, not the legacy `search:read
 - **Tools not used:**
   - `slack_send_message_draft`: the in-app preview replaces drafts (D13), and drafts have no `reply_broadcast`;
   - `slack_read_channel`: no history crawling (§1); it is used only to recover the `ts` of a message just sent (above), and is not pinned, so recovery degrades when it disappears;
-  - `slack_add_reaction`, `slack_get_reactions`, and `slack_search_users`.
+  - `slack_add_reaction` and `slack_get_reactions`.
+
+**Target picker (`TargetCombobox`).** The review dialog's target field and the bulk dialog's **All to one channel** field are one Select2-style combobox (ARIA `combobox` input with `aria-autocomplete=list`, `aria-activedescendant` and `aria-describedby` on the helper line, over a `listbox` of `option`s):
+- **Order.** Suggestions first, under **Code owners and open requests**: the PR's open request targets and the mapped channels of its CODEOWNERS teams (`review_targets`), filtered by the typed term against the channel name and team. Then **Channels** and **People · direct message** from search, without repeating a suggestion. The bulk dialog has no suggestions.
+- **Search.** Typing `#term` searches channels, `@term` searches people, a bare term searches both (`slack_search_targets(workspace, query)`, up to 10 of each). The call waits 250 ms after the last keystroke and results are cached per workspace and query while the dialog is open. Search runs only in the workspace picked in the field's workspace select (shown when more than one workspace is connected; defaults to the current target's, else the first signed-in one). When one kind fails and the other returns results, the results are shown; when nothing is found and a call failed, the list shows `Search failed: <reason>`.
+- **Members.** Picking a person stores their user ID (`U…`/`W…`) as the target channel: `slack_send_message` delivers it as a direct message, the request record keeps the ID and the person's name, bumps reply in that DM thread, and the UI labels it `@Name`.
+- **Keyboard.** ↑/↓ move the active option, Enter picks it, Esc closes the list without closing the dialog, Tab leaves. When not editing, the field shows the chosen target's label.
+- **Fallback.** A term shaped like a Slack ID (`C`, `G`, `D`, `U` or `W` plus 8 or more letters and digits) adds **Use <ID>**. The helper line (`Type # to search channels or @ to search people; a person gets a direct message.`) ends with **Enter an ID**, which shows ID and name fields and a **Preview** button, for workspaces where search is unavailable.
 
 **Multi-workspace (MUST, v1): any number of workspaces.**
 - The user picks which workspaces to use by connecting them in onboarding or Settings → Accounts; no workspace is preconfigured. There is one Slack account per workspace (`accounts.slack_workspace` UNIQUE), each with its own OAuth grant and keychain tokens, and its own MCP session.

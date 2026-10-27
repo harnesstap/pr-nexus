@@ -5,7 +5,9 @@
 
 use chrono::{Duration, Utc};
 use pr_nexus_core::error::ProviderError;
-use pr_nexus_core::providers::{PostedMessage, SearchHit, ThreadMessage, ThreadReplies};
+use pr_nexus_core::providers::{
+    ChatChannel, ChatUser, PostedMessage, SearchHit, ThreadMessage, ThreadReplies,
+};
 use pr_nexus_core::review::permalink;
 use serde_json::Value;
 
@@ -15,6 +17,8 @@ pub const READ_THREAD: &str = "slack_read_thread";
 pub const READ_USER_PROFILE: &str = "slack_read_user_profile";
 pub const SEARCH_PUBLIC: &str = "slack_search_public";
 pub const SEARCH_PUBLIC_AND_PRIVATE: &str = "slack_search_public_and_private";
+pub const SEARCH_CHANNELS: &str = "slack_search_channels";
+pub const SEARCH_USERS: &str = "slack_search_users";
 
 /// Tools and input fields PR Nexus relies on, as listed on 2026-10-25.
 /// `slack_read_channel` is not pinned: it only backs the send-result
@@ -412,6 +416,63 @@ pub fn parse_search(output: &ToolOutput) -> Vec<SearchHit> {
     hits
 }
 
+/// The numbered result lines of a directory search (`1. …`), numbers removed.
+fn numbered_lines(body: &str) -> impl Iterator<Item = &str> {
+    body.lines().filter_map(|line| {
+        let line = line.trim();
+        let digits = line.bytes().take_while(u8::is_ascii_digit).count();
+        (digits > 0)
+            .then(|| line[digits..].strip_prefix(". "))
+            .flatten()
+            .map(str::trim)
+    })
+}
+
+/// Parse a concise `slack_search_channels` result: JSON text
+/// `{"results": "## Channels (N results)\n1. #name (C…) - public_channel - …"}`.
+/// Archived channels are skipped.
+pub fn parse_channels(output: &ToolOutput) -> Vec<ChatChannel> {
+    let body = field_or_text(output, "results");
+    numbered_lines(&body)
+        .filter(|line| !line.ends_with("- Archived"))
+        .filter_map(|line| {
+            let rest = line.strip_prefix('#')?;
+            let (name, rest) = rest.split_once(" (")?;
+            let (id, _) = rest.split_once(')')?;
+            (is_channel_id(id) && !id.starts_with('D')).then(|| ChatChannel {
+                id: id.to_owned(),
+                name: name.trim().to_owned(),
+            })
+        })
+        .collect()
+}
+
+fn is_user_id(value: &str) -> bool {
+    value.len() >= 3
+        && value.starts_with(['U', 'W'])
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+}
+
+/// Parse a concise `slack_search_users` result: JSON text
+/// `{"results": "## Users (N results)\n1. Ada Acme - U… - ada@acme.test - Title"}`.
+/// Only the name and ID are kept; emails never are.
+pub fn parse_users(output: &ToolOutput) -> Vec<ChatUser> {
+    let body = field_or_text(output, "results");
+    numbered_lines(&body)
+        .filter_map(|line| {
+            let mut parts = line.split(" - ");
+            let name = parts.next()?.trim();
+            let id = parts.next()?.trim();
+            (is_user_id(id) && !name.is_empty()).then(|| ChatUser {
+                id: id.to_owned(),
+                name: name.to_owned(),
+            })
+        })
+        .collect()
+}
+
 /// True when `posted` (Slack's stored text) is the message we sent as `sent`.
 ///
 /// Slack rewrites links to `<url|label>` and appends a `Sent using <app>`
@@ -624,5 +685,54 @@ mod tests {
             properties: vec!["channel".into(), "text".into()],
         }];
         assert!(pin_mismatch(&renamed).unwrap().contains("channel_id"));
+    }
+
+    #[test]
+    fn channel_search_keeps_name_and_id_and_skips_archived() {
+        let output = text(
+            r##"{"results":"# Search Results for: \n\n## Channels (3 results)\n1. #team-reviews (C0ACME0001) - public_channel - Creator: Ada Acme  - 2020-01-01 - Not Archived\n2. #old-reviews (C0ACME0002) - public_channel - Creator: Ada Acme  - 2019-01-01 - Archived\n3. #secret-reviews (G0ACME0003) - private_channel - Creator: Ada Acme  - 2021-01-01 - Not Archived\n","pagination_info":"next"}"##,
+        );
+        assert_eq!(
+            parse_channels(&output),
+            vec![
+                ChatChannel {
+                    id: "C0ACME0001".into(),
+                    name: "team-reviews".into(),
+                },
+                ChatChannel {
+                    id: "G0ACME0003".into(),
+                    name: "secret-reviews".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn user_search_keeps_name_and_id_never_email() {
+        let output = text(
+            r###"{"results":"## Users (2 results)\n1. Ada Acme - U0ACME0001 - ada@acme.test - Staff Engineer\n2. Bob Acme - W0ACME0002 - bob@acme.test - Designer\nNot a result line\n"}"###,
+        );
+        let users = parse_users(&output);
+        assert_eq!(
+            users,
+            vec![
+                ChatUser {
+                    id: "U0ACME0001".into(),
+                    name: "Ada Acme".into(),
+                },
+                ChatUser {
+                    id: "W0ACME0002".into(),
+                    name: "Bob Acme".into(),
+                },
+            ]
+        );
+        assert!(users.iter().all(|user| !user.name.contains('@')));
+    }
+
+    #[test]
+    fn directory_search_with_no_results_is_empty() {
+        let output = text(r##"{"results":"# Search Results for: \n\nNo channels found"}"##);
+        assert!(parse_channels(&output).is_empty());
+        assert!(parse_users(&output).is_empty());
     }
 }

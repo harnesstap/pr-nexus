@@ -428,6 +428,24 @@ pub trait ChatProvider: Send + Sync {
     ) -> Result<Vec<SearchHit>, ProviderError> {
         Err(ProviderError::Unsupported("search is not supported".into()))
     }
+    /// Channels whose name or purpose matches `query`, for the target
+    /// picker (§7.11, `slack_search_channels`).
+    fn search_channels(
+        &self,
+        _query: &str,
+        _limit: u32,
+    ) -> Result<Vec<ChatChannel>, ProviderError> {
+        Err(ProviderError::Unsupported(
+            "channel search is not supported".into(),
+        ))
+    }
+    /// Members whose name or email matches `query`, for the target picker
+    /// (§7.11, `slack_search_users`). A member is messaged by direct message.
+    fn search_users(&self, _query: &str, _limit: u32) -> Result<Vec<ChatUser>, ProviderError> {
+        Err(ProviderError::Unsupported(
+            "people search is not supported".into(),
+        ))
+    }
 }
 
 /// One message of a thread read for the context panel (§7.10).

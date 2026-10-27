@@ -212,6 +212,12 @@ export interface TargetChoice {
   source: "request" | "mapping";
 }
 
+/** A target picker search result (§7.11): a channel, or a member who gets a DM. */
+export interface TargetMatch {
+  target: ReviewTarget;
+  kind: "channel" | "member";
+}
+
 export interface ReviewPreview {
   target: ReviewTarget;
   action: "request" | "bump";
@@ -417,6 +423,8 @@ export interface Api {
   slackRemoveWorkspace(id: number): Promise<void>;
   reviewTargets(prId: number, teams: string[]): Promise<TargetChoice[]>;
   reviewPreview(prId: number, target: ReviewTarget): Promise<ReviewPreview>;
+  /** `#term` channels, `@term` members, a bare term both; scoped to one workspace. */
+  searchSlackTargets(workspace: string, query: string): Promise<TargetMatch[]>;
   sendReview(prId: number, target: ReviewTarget, teams: string[]): Promise<SlackIndicator>;
   bulkPreview(request: BulkRequest): Promise<BulkPreview>;
   sendBulk(request: BulkRequest, fingerprints: string[]): Promise<BulkResult>;
@@ -494,6 +502,7 @@ export const tauriApi: Api = {
   slackRemoveWorkspace: (id) => invoke("slack_remove_workspace", { id }),
   reviewTargets: (prId, teams) => invoke("review_targets", { prId, teams }),
   reviewPreview: (prId, target) => invoke("review_preview", { prId, target }),
+  searchSlackTargets: (workspace, query) => invoke("slack_search_targets", { workspace, query }),
   sendReview: (prId, target, teams) => invoke("send_review", { prId, target, teams }),
   bulkPreview: (request) => invoke("bulk_preview", { request }),
   sendBulk: (request, fingerprints) => invoke("send_bulk", { request, fingerprints }),
@@ -552,11 +561,15 @@ export const tauriApi: Api = {
 };
 
 /**
- * How a channel reads in the UI: `#reviews`, or `DM` for a direct message
- * (IDs starting with D). DM user names are not resolved: that needs im:read.
+ * How a channel reads in the UI: `#reviews`, `DM` for a direct message
+ * (IDs starting with D), or `@name` for a member (U or W), who gets a DM.
+ * DM user names are not resolved: that needs im:read.
  */
 export function channelLabel(target: { channel_id: string; channel_name: string }): string {
-  const name = target.channel_name.trim().replace(/^#/, "");
+  const name = target.channel_name.trim().replace(/^[#@]/, "");
+  if (/^[UW]/.test(target.channel_id)) {
+    return `@${name || target.channel_id}`;
+  }
   if (target.channel_id.startsWith("D")) {
     return name && name !== target.channel_id ? `DM · ${name}` : "DM";
   }
