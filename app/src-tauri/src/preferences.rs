@@ -10,6 +10,7 @@ use pr_nexus_core::domain::MappingLayer;
 use pr_nexus_core::mapping::{self, CsvRow, ExportMode, ImportMode};
 use pr_nexus_core::settings::{self, Preferences};
 use pr_nexus_core::update;
+use pr_nexus_providers::vault::KeyringState;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
@@ -266,7 +267,10 @@ pub async fn app_info(app: Shared<'_>, paths: State<'_, AppPaths>) -> Result<App
         repository: update::repo_slug(env!("CARGO_PKG_REPOSITORY")).unwrap_or_default(),
         db_path: paths.db.display().to_string(),
         log_dir: paths.logs.display().to_string(),
-        keyring_in_memory: !app.inner().vault.available(),
+        keyring_in_memory: !matches!(
+            app.inner().vault.status().state,
+            KeyringState::Ready | KeyringState::Waiting
+        ),
         os: std::env::consts::OS.to_owned(),
     })
 }

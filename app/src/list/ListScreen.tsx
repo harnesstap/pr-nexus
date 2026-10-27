@@ -17,6 +17,7 @@ import { BulkDialog } from "../slack/BulkDialog";
 import { ReviewDialog } from "../slack/ReviewDialog";
 import { SettingsScreen } from "../settings/SettingsScreen";
 import type { SettingsTab } from "../settings/tabs";
+import { KeyringBanner } from "../KeyringBanner";
 import { MappingHint, UpdateBanner } from "./Banners";
 import { showMappingHint } from "./hints";
 import { plainText } from "../textInput";
@@ -408,9 +409,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
             onDismiss={() => setMappingHint(false)}
           />
         )}
-        {boot.keyring_warning && (
-          <p className="border-b border-amber-500/40 bg-amber-500/10 px-4 py-2 text-sm text-amber-100">{boot.keyring_warning}</p>
-        )}
+        <KeyringBanner api={api} initial={boot.keyring} onReady={() => void api.bootstrap().then(onBoot)} />
         {viewKey === "settings" ? (
           <section className="min-h-0 flex-1 overflow-auto px-6 py-8">
             <h1 className="mx-auto mb-4 max-w-3xl text-lg font-semibold">Settings</h1>

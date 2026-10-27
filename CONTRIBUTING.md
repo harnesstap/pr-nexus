@@ -44,7 +44,7 @@ Development overrides (none of these are required for a normal launch):
 | `PR_NEXUS_GITHUB_OAUTH_CLIENT_ID` | OAuth client id for the device flow. Empty by default; `gh` and a pasted PAT still work. |
 | `PR_NEXUS_DEMO=1` | Seed invented `acme` data and skip the wizard when the database has no accounts. |
 
-If the keyring probe fails or times out (common on a desktop without a secret service), the app does not crash. The vault stays in memory and the wizard or list shows the warning. Example:
+Keychain calls never block the window. While a system prompt is pending the window shows a "Waiting for keychain access" hint; a missing secret service (common on a Linux desktop or CI) or a denied prompt keeps the vault in memory and shows the reason with a Retry button. Example:
 
 ```bash
 PR_NEXUS_DB_PATH=/tmp/pr-nexus.db \

@@ -63,6 +63,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::bootstrap,
+            commands::keyring_status,
+            commands::keyring_retry,
             commands::save_providers,
             commands::save_onboarding,
             commands::connect_github,

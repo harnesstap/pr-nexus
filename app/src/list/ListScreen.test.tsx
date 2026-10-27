@@ -10,8 +10,7 @@ const boot: Bootstrap = {
   onboarding: { step: "done", completed: [], mapping_skipped: true, slack_skipped: true, finished_at: "2026-10-26T00:00:00Z" },
   resume_step: "done",
   steps: ["choose_vcs", "choose_chat", "connect_vcs", "choose_vcs_scope", "connect_chat", "chat_mapping", "done"],
-  keyring_warning: null,
-  keyring_available: true,
+  keyring: { state: "ready", message: null, can_retry: false, unsaved: false },
   github_login: "ada",
   github_connected: true,
   tracked_orgs: ["acme"],
@@ -36,6 +35,8 @@ const boot: Bootstrap = {
 function api(projects: ProjectDto[], rows: SearchRow[] = []): Api {
   return {
     bootstrap: () => Promise.resolve(boot),
+    keyringStatus: () => Promise.resolve({ state: "ready", message: null, can_retry: false, unsaved: false }),
+    keyringRetry: () => Promise.resolve({ state: "ready", message: null, can_retry: false, unsaved: false }),
     saveProviders: () => Promise.resolve(),
     saveOnboarding: () => Promise.resolve(),
     connectGithub: () => Promise.reject(new Error("unused")),

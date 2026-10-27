@@ -1,0 +1,3 @@
+kind: Fixed
+body: 'Keychain: a slow answer to the macOS prompt no longer reads as "Keyring unavailable". Keychain calls run on one background thread (one prompt at a time) and never block the window, which shows "Waiting for keychain access" until the prompt is answered (up to 5 minutes). Tokens entered meanwhile are saved as soon as the keychain answers. Deny, a missing keychain and other errors each get their own message and a Retry button.'
+time: 2026-10-26T22:20:00.000000-10:00

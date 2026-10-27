@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { Api, Bootstrap, MappingFile, OnboardingState } from "../api";
 import { errorMessage } from "../api";
+import { KeyringBanner } from "../KeyringBanner";
 import { MappingFileButton } from "../mapping/MappingFileButton";
 import { OrgOption } from "../orgs";
 import { DEFAULT_REDIRECT, SlackPanel, type SlackFields } from "../slack/SlackPanel";
@@ -311,6 +312,7 @@ export function Wizard({ api, boot, onFinished, onCancel }: Props) {
 
   return (
     <main className="mx-auto flex min-h-screen max-w-3xl flex-col px-6 py-8 text-slate-100">
+      <KeyringBanner api={api} initial={boot.keyring} />
       <header>
         <div className="flex items-center justify-between">
           <p className="text-sm text-slate-400">PR Nexus setup</p>

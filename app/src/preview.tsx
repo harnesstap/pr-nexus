@@ -28,8 +28,7 @@ const boot: Bootstrap = {
   },
   resume_step: "choose_vcs",
   steps: [...steps],
-  keyring_warning: null,
-  keyring_available: true,
+  keyring: { state: "ready", message: null, can_retry: false, unsaved: false },
   github_login: "ada",
   github_connected: true,
   tracked_orgs: ["acme"],
@@ -203,6 +202,8 @@ function previewDetail(id: number): PrDetail {
 
 const api: Api = {
   bootstrap: () => Promise.resolve(boot),
+  keyringStatus: () => Promise.resolve({ state: "ready", message: null, can_retry: false, unsaved: false }),
+  keyringRetry: () => Promise.resolve({ state: "ready", message: null, can_retry: false, unsaved: false }),
   saveProviders: () => Promise.resolve(),
   saveOnboarding: () => Promise.resolve(),
   connectGithub: () => Promise.resolve({ login: "ada", organizations: ["acme"], organizations_needing_sso: [] }),
