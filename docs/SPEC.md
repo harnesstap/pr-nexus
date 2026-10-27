@@ -612,6 +612,7 @@ There is no age-based expiry. An old request is still the right thread to bump; 
   - `merge`: upsert into user rows; empty cells do not overwrite non-empty ones.
   - A dry-run diff is shown before applying: added, changed, unchanged, and rows that the user layer shadows.
   - Unknown columns are an error. Missing optional columns default to empty.
+- **CSV source.** The text is pasted, or loaded with **Choose file…** (wizard step 6 and Settings → Mappings). That button opens the native open dialog through `tauri-plugin-dialog` (filters: CSV, All files) and only returns a path to the webview; the `read_mapping_file` command reads it in Rust (regular file, at most 1 MiB, UTF-8, a leading BOM dropped) and fills the CSV box with the text and the file name. The usual import commands then parse and validate it, so a file and a paste fail the same way. The app has no `fs` plugin scope.
 - Export modes: `effective` (merged view), `user` (corrections only, for backup), and `imported`.
 - **No company data in the repo.** Test fixtures use made-up orgs, teams, and channels (`acme`, `team-a`, `#team-reviews`). The CSV parser is tested on those fixtures (header, column count, unique `(org, slug)`, `C…`/`G…` ID shape).
 - The settings UI has a mappings table with filters (org, empty channel, overridden) and inline edits that write user rows. It has a "Reset to imported" action per row, which deletes the user row.
@@ -1146,7 +1147,7 @@ Onboarding is a **wizard of separate screens, shown one step at a time**, not a 
 | 3 | Connect GitHub | The three auth modes of §9 in order: `gh` CLI token (preselected when `gh auth status` succeeds), PAT, device flow. Validates with `viewer` and shows the login and scope check; SSO errors show the authorization link. | the account is verified |
 | 4 | Choose orgs to track | Checkboxes for every org the user belongs to (§5 `list_organizations`: GraphQL, REST `/user/orgs`, orgs seen in search; SSO-blocked orgs carry a hint), a filter box, and the **Include my personal repos** toggle. Writes `github.tracked_orgs` and `github.include_personal_repos`. | at least one org is checked or personal repos is on |
 | 5 | Connect Slack workspace(s) | The **Create your Slack app** link with its help text (§7.11), then the Slack MCP client fields: client ID (required once, empty by default: no client ID ships), client secret (optional, saved to the keychain; needed for apps created from the link; shows "saved in the keychain" once stored), and redirect URI (pre-filled with the default that the manifest registers, editable: it must match a redirect URL on the app). Below them come the list of connected workspaces (team name, `domain.slack.com`, `@user`, "signed out" when the tokens are gone, Remove), then **Sign in with Slack** for **one workspace at a time**. Sign-in saves the fields first, then opens the system browser; while waiting the button reads "Waiting for Slack…" with **Cancel**, with a countdown ("m:ss left", then "Still waiting for Slack."); the 10-minute timeout shows "Sign-in timed out, click to retry.", and denial and port-in-use errors are shown inline. Once one workspace is connected, the button becomes **Add another workspace**. | at least one workspace is signed in; otherwise Skip |
-| 6 | Team → channel mapping | CSV import with the default-workspace field and dry-run preview (§7.5), or **Skip**. The screen explains each column and shows an example with made-up data (`github_org,github_team_slug,github_team_name,slack_channel_name,slack_channel_id`, optional `slack_workspace`). A note says it can be done later in Settings → Mappings or from the preview's "Change channel". | always: the primary button reads **Import & next** when CSV is pasted, otherwise **Next** (continues without a mapping), or Skip |
+| 6 | Team → channel mapping | CSV import (pasted, or **Choose file…** in the native file dialog) with the default-workspace field and dry-run preview (§7.5), or **Skip**. The screen explains each column and shows an example with made-up data (`github_org,github_team_slug,github_team_name,slack_channel_name,slack_channel_id`, optional `slack_workspace`). A note says it can be done later in Settings → Mappings or from the preview's "Change channel". | always: the primary button reads **Import & next** when CSV is pasted, otherwise **Next** (continues without a mapping), or Skip |
 | 7 | Done | Summary (account, orgs, workspaces, mapping rows or "skipped") and the **first sync** starting, with live progress. "Open PR-Nexus" goes to My PRs. | — |
 
 **Navigation and rules.**
@@ -1263,7 +1264,7 @@ Step 6 (the only one with Skip):
 │ ● ● ● ● ● ● ○   Step 6 of 7 · Team → channel mapping (optional)            │
 │                                                                            │
 │ Tell PR-Nexus which Slack channel each GitHub team reviews in.             │
-│ [Import CSV…]   Target workspace for rows without one: [acme ▾]            │
+│ [Choose file…]  Target workspace for rows without one: [acme ▾]            │
 │                                                                            │
 │ Preview: 42 rows · 40 new · 2 invalid (shown below)                        │
 │ You can also map channels later in Settings → Mappings, or from            │
@@ -1312,7 +1313,7 @@ Detect `X-GitHub-SSO: required; url=…` and show the authorization link.
 - In Linux CI there is no secret service. The app probes the keyring for at most two seconds. If the probe fails, times out, or `PR_NEXUS_DISABLE_KEYRING=1` is set, the vault stays in memory and the UI shows a warning. The process does not crash. `PR_NEXUS_GITHUB_TOKEN`, when set, is the GitHub token for that process: it is preferred over `gh` and the keychain, and it is never written to the vault or to SQLite. `PR_NEXUS_DB_PATH` points the store at a chosen file (a temp database in development).
 
 **Webview hardening**:
-- Tauri v2 capabilities give the main window only `core:default`, `opener:allow-open-url` limited to `https://github.com/*`, `https://*.slack.com/*`, and `slack://*` (request deep links, §8.2), and the app's own commands.
+- Tauri v2 capabilities give the main window only `core:default`, `opener:allow-open-url` limited to `https://github.com/*`, `https://*.slack.com/*`, and `slack://*` (request deep links, §8.2), `dialog:allow-open` (the mapping CSV picker, §7.5; Rust reads the picked file), and the app's own commands.
 - No shell or fs plugins in the webview.
 - CSP: `default-src 'self'; img-src 'self' https://avatars.githubusercontent.com data:; connect-src ipc: http://ipc.localhost`. All network access happens in Rust.
 - Message text, titles, and Slack replies render as text, never as HTML.

@@ -186,6 +186,26 @@ test("Import: Apply stays disabled until a preview of the same CSV, and the diff
   expect(window.localStorage.getItem("pr-nexus.mapping-workspace")).toBe("acme");
 });
 
+test("Import: Choose file loads the picked CSV for the same preview", async () => {
+  const previewed: string[] = [];
+  const api = fakeSettingsApi({
+    pickMappingFile: () => Promise.resolve({ path: "/home/ada/teams.csv", name: "teams.csv", csv: "github_org,github_team_slug\nacme,web" }),
+    previewMappingImport: (csv) => {
+      previewed.push(csv);
+      return Promise.reject({ kind: "validation", message: "mapping csv: missing column slack_channel_id" });
+    },
+    slackWorkspaces: () => Promise.resolve([acme]),
+  }) as Api;
+  render(<Harness api={api} start="mappings" />);
+  await screen.findByRole("option", { name: "Acme (acme.slack.com)" });
+  fireEvent.click(screen.getByRole("button", { name: "Choose file…" }));
+  expect(await screen.findByTitle("/home/ada/teams.csv")).toHaveTextContent("Loaded teams.csv");
+  expect(screen.getByRole("textbox", { name: "Mapping CSV" })).toHaveValue("github_org,github_team_slug\nacme,web");
+  fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("mapping csv: missing column slack_channel_id");
+  expect(previewed).toEqual(["github_org,github_team_slug\nacme,web"]);
+});
+
 test("Import: with no workspace connected the select is disabled and links to Accounts", async () => {
   render(<Harness api={fakeSettingsApi() as Api} start="mappings" />);
   const select = await screen.findByRole("combobox", { name: "Default Slack workspace" });

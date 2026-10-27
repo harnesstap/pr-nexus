@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import type { Api, ExportMode, ImportMode, ImportPreview, MappingEntry, MappingRow, SlackWorkspace } from "../api";
+import type { Api, ExportMode, ImportMode, ImportPreview, MappingEntry, MappingFile, MappingRow, SlackWorkspace } from "../api";
 import { errorMessage } from "../api";
+import { MappingFileButton } from "../mapping/MappingFileButton";
 import { WorkspaceSelect } from "../slack/WorkspaceSelect";
 import { chosenWorkspace, csvHasWorkspaceColumn, rememberWorkspace } from "../slack/workspaces";
 import { MAPPING_FIELDS, matchesMapping } from "./tabs";
@@ -352,6 +353,7 @@ function ImportPanel({
   onImported: (rows: number) => void;
 }) {
   const [csv, setCsv] = useState("");
+  const [csvFile, setCsvFile] = useState<MappingFile | null>(null);
   const [picked, setPicked] = useState("");
   const workspace = chosenWorkspace(workspaces, picked);
   // The backend needs a default only for rows without their own workspace.
@@ -378,6 +380,7 @@ function ImportPanel({
       const { rows } = await api.applyMappingImport(csv, workspace, mode);
       rememberWorkspace(workspace);
       setCsv("");
+      setCsvFile(null);
       setPreview(null);
       onImported(rows);
     } catch (err) {
@@ -424,23 +427,22 @@ function ImportPanel({
           className={`${box} mt-1 h-28 w-full font-mono text-xs`}
           placeholder="github_org,github_team_slug,github_team_name,slack_channel_name,slack_channel_id"
           value={csv}
-          onChange={(e) => setCsv(e.target.value)}
-        />
-      </label>
-      <label className="block text-xs text-slate-400">
-        Or load a file
-        <input
-          type="file"
-          accept=".csv,text/csv"
-          className="ml-2 text-xs"
-          onChange={(event) => {
-            const file = event.target.files?.[0];
-            if (file) {
-              void file.text().then(setCsv);
-            }
+          onChange={(e) => {
+            setCsv(e.target.value);
+            setCsvFile(null);
           }}
         />
       </label>
+      <MappingFileButton
+        api={api}
+        file={csvFile}
+        onLoaded={(file) => {
+          setError(null);
+          setCsv(file.csv);
+          setCsvFile(file);
+        }}
+        onError={setError}
+      />
       <div className="flex items-center gap-2">
         <button type="button" className="rounded border border-slate-700 px-3 py-1.5 text-sm hover:bg-slate-800 disabled:opacity-50" disabled={!csv.trim() || needsWorkspace} onClick={() => void runPreview()}>
           Preview changes

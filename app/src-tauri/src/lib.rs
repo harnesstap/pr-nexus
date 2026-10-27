@@ -4,6 +4,7 @@ mod context;
 mod demo;
 mod error;
 mod logging;
+mod mapping_file;
 mod preferences;
 mod slack;
 mod slack_link;
@@ -17,6 +18,7 @@ use tauri::Manager;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         // Remembers size, position and maximized state; VISIBLE stays with the config.
         .plugin(
             tauri_plugin_window_state::Builder::new()
@@ -90,6 +92,7 @@ pub fn run() {
             preferences::check_update,
             commands::slack_manifest_url,
             commands::import_mapping,
+            mapping_file::read_mapping_file,
             commands::finish_onboarding,
             commands::sync_now,
             commands::sync_status,
