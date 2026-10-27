@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/harnesstap/pr-nexus/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/harnesstap/pr-nexus/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/harnesstap/pr-nexus?sort=semver)](https://github.com/harnesstap/pr-nexus/releases/latest)
-[![License: UNLICENSED](https://img.shields.io/badge/license-UNLICENSED-lightgrey)](Cargo.toml)
+[![License](https://img.shields.io/github/license/harnesstap/pr-nexus)](LICENSE)
 [![Platform: macOS Apple Silicon](https://img.shields.io/badge/platform-macOS%20%28Apple%20Silicon%29-black?logo=apple)](#install)
 
 Desktop app (Tauri + Rust) to track your open GitHub pull requests by project and request or bump reviews from the owning teams on Slack.
@@ -47,3 +47,7 @@ bun run tauri dev
 ```
 
 Linux needs the WebKitGTK packages listed in `.github/actions/linux-tauri-deps/action.yml`.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

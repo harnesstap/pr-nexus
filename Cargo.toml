@@ -6,7 +6,7 @@ members = ["crates/pr-nexus-core", "crates/pr-nexus-providers", "app/src-tauri"]
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.90"
-license = "UNLICENSED"
+license = "MIT"
 repository = "https://github.com/harnesstap/pr-nexus"
 publish = false
 
