@@ -77,8 +77,10 @@ interface Props {
   onCreateProjectWithPrs: (name: string, prIds: number[]) => Promise<void>;
   /** The current view's selection, for the sidebar's "Add N selected PRs". */
   onSelectionChange?: (prIds: number[]) => void;
-  /** Opens the readiness and code-owner details for one row. */
+  /** Opens the detail panel for one row. */
   onDetails: (row: ListRow) => void;
+  /** The PR the detail panel shows; moving the focus then switches it. */
+  detailId?: number | null;
   /** Opens the Slack request/bump preview for one row. */
   onRequestReview: (row: ListRow) => void;
   /** Two or more PRs from the bottom bar (§7.9). */
@@ -120,6 +122,7 @@ export function PrList({
   onCreateProjectWithPrs,
   onSelectionChange,
   onDetails,
+  detailId = null,
   onRequestReview,
   onBulkReview,
 }: Props) {
@@ -307,15 +310,20 @@ export function PrList({
       const current = focus >= 0 ? flat[focus] : undefined;
       // Shift+x reports "X" in a browser.
       const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
-      if ((key === "j" || key === "k") && !event.shiftKey) {
+      // ↑/↓ also move while the detail panel is open, so it can step through PRs.
+      // Inside the panel the arrows still scroll it.
+      const arrow = detailId !== null && (key === "ArrowDown" || key === "ArrowUp") && !target?.closest("[data-detail-panel]");
+      if (((key === "j" || key === "k") && !event.shiftKey) || arrow) {
         event.preventDefault();
-        setFocusIndex((index) => {
-          if (flat.length === 0) {
-            return 0;
-          }
-          const delta = key === "j" ? 1 : -1;
-          return Math.min(flat.length - 1, Math.max(0, Math.min(index, flat.length - 1) + delta));
-        });
+        if (flat.length === 0) {
+          return;
+        }
+        const delta = key === "j" || key === "ArrowDown" ? 1 : -1;
+        const next = Math.min(flat.length - 1, Math.max(0, focus + delta));
+        setFocusIndex(next);
+        if (detailId !== null && flat[next].row.id !== detailId) {
+          onDetails(flat[next].row);
+        }
       } else if (key === "x" && event.shiftKey) {
         if (current) {
           setSelected(toggleParent(current.section.ids, selected));
@@ -572,7 +580,13 @@ export function PrList({
                         setDragBadge(event.dataTransfer, ids.length);
                       }}
                       onDragEnd={() => setDropTarget(null)}
-                      onMouseDown={() => setFocusIndex(index)}
+                      onMouseDown={() => {
+                        setFocusIndex(index);
+                        // With the panel open, clicking a row shows that PR.
+                        if (detailId !== null && detailId !== row.id) {
+                          onDetails(row);
+                        }
+                      }}
                       aria-label={`#${row.number} ${row.title}`}
                       aria-current={index === focus ? "true" : undefined}
                       data-focused={index === focus ? "true" : undefined}

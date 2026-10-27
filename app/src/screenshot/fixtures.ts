@@ -1,4 +1,5 @@
-import type { Bootstrap, PendingReviewer, ProjectDto, SlackIndicator } from "../api";
+import type { Bootstrap, ContextThread, PendingReviewer, PrOverview, ProjectDto, SlackIndicator } from "../api";
+import { mockDetail, mockOverview } from "../detail/mock";
 import type { SearchRow } from "../list/paging";
 
 /** Made-up data for the README screenshot. Every name is generic. */
@@ -111,3 +112,67 @@ export const boot: Bootstrap = {
   gh_detail: "gh is logged in",
   gh_probed: true,
 };
+
+/** The PR the detail-panel screenshot opens: #479 above. */
+export const detailRowId = 2;
+
+const ada: PendingReviewer = { kind: "user", login: "ada", name: "Ada Park", avatar_url: avatar("AP", 265) };
+const grace: PendingReviewer = { kind: "user", login: "grace", name: "Grace Ito", avatar_url: avatar("GI", 95) };
+
+export const overview: PrOverview = mockOverview({
+  head_ref: "feature/479",
+  issue_comments: 4,
+  review_comments: 7,
+  checks: [
+    { name: "build", state: "passed", url: null, required: true },
+    { name: "lint", state: "passed", url: null, required: true },
+    { name: "typecheck", state: "passed", url: null, required: true },
+    { name: "unit tests", state: "failed", url: "https://ci.example.test/runs/1", required: true },
+    { name: "e2e (chrome)", state: "passed", url: null, required: false },
+    { name: "preview deploy", state: "pending", url: null, required: false },
+  ],
+  checks_total: 6,
+  reviewers: [
+    { ...people.kim, state: "approved" },
+    { ...people.sam, state: "changes_requested" },
+    { ...people.web, state: "pending" },
+  ],
+  participants: [ada, people.kim, people.sam, grace, people.noor, people.theo],
+  participants_total: 8,
+  viewer: { login: "ada", permission: "write", can_merge_as_admin: false, can_enable_auto_merge: true, can_disable_auto_merge: false },
+  merge_settings: { auto_merge_allowed: true, squash: true, merge: true, rebase: true },
+});
+
+export const detail = mockDetail(detailRowId, {
+  files: [
+    { path: "src/checkout/AddressField.tsx", teams: ["@acme/web"] },
+    { path: "src/checkout/useAutocomplete.ts", teams: ["@acme/web"] },
+    { path: "src/checkout/AddressField.test.tsx", teams: ["@acme/web"] },
+    { path: "docs/checkout.md", teams: [] },
+  ],
+});
+
+const slackRoot = "1700000000.000100";
+export const slackThreads: ContextThread[] = [
+  {
+    workspace: "acme",
+    channel_id: "C0ACME0001",
+    channel_name: "web-reviews",
+    root_ts: slackRoot,
+    permalink: "https://acme.slack.com/archives/C0ACME0001/p1700000000000100",
+    status: "active",
+    close_reason: null,
+    requested_at: ago(20),
+    last_bumped_at: null,
+    bump_count: 0,
+    messages: [
+      { ts: slackRoot, at: ago(20), author: "Ada Park", user_id: null, text: "Could someone from web review #479? Address autocomplete for checkout.", permalink: null, is_bot: false },
+      { ts: "1700000100.000200", at: ago(18), author: "Kim Lee", user_id: null, text: "Approved, nice work on the keyboard handling.", permalink: null, is_bot: false },
+      { ts: "1700000200.000300", at: ago(6), author: "Sam Rivera", user_id: null, text: "Left a few comments on the debounce, the unit tests need an update.", permalink: null, is_bot: false },
+    ],
+    has_more: false,
+    fetched_at: ago(0.1),
+    from_cache: false,
+    error: null,
+  },
+];

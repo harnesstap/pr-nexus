@@ -991,3 +991,22 @@ fn manual_links_are_all_or_nothing_and_undo_restores_what_they_replaced() {
             .all(|link| link.pr != ruled.id)
     );
 }
+
+#[test]
+fn pr_overview_cache_upserts_and_follows_its_pull_request() {
+    let (_dir, store) = open_temp();
+    let (_, _, pr) = seed_pr(&store, "PR_overview", PrState::Open);
+    assert_eq!(store.get_pr_overview(pr.id).unwrap(), None);
+    store
+        .upsert_pr_overview(pr.id, r#"{"v":1}"#.into(), at())
+        .unwrap();
+    store
+        .upsert_pr_overview(pr.id, r#"{"v":2}"#.into(), at())
+        .unwrap();
+    assert_eq!(
+        store.get_pr_overview(pr.id).unwrap().as_deref(),
+        Some(r#"{"v":2}"#)
+    );
+    // Unparseable JSON from an older build reads as "no cache".
+    assert_eq!(crate::overview::cached(&store, pr.id).unwrap(), None);
+}

@@ -749,7 +749,7 @@ When the user clicks Send, for each affected PR:
 
 ### 7.10 Chat context panel (scoped read)
 
-The PR detail has a right-hand panel titled "Slack". It shows **only** threads PR Nexus knows about for this PR: the roots of its `review_requests` rows (active first, then closed, labeled with the close reason) and their `review_messages`. For each thread root, it calls `slack_read_thread(channel, ts)` (the first 50 replies are shown) and caches the result in `chat_thread_cache` for 5 min. It renders replies with the author's name (`slack_read_user_profile`, cached), time, and text, and links to the permalink. The card header always shows what the DB knows, the same status as the list row (`Bumped · 9h ago` / `Requested · 2d ago`, with the request time and bump count on hover) and the permalink, so a signed-out workspace still shows the last action, the last cached copy of the replies (if any), and an "Open ↗" link.
+The PR detail has a collapsed section titled "Slack threads and mentions" (its latest request is also summarised above it, §8). It shows **only** threads PR Nexus knows about for this PR: the roots of its `review_requests` rows (active first, then closed, labeled with the close reason) and their `review_messages`. For each thread root, it calls `slack_read_thread(channel, ts)` (the first 50 replies are shown) and caches the result in `chat_thread_cache` for 5 min. It renders replies with the author's name (`slack_read_user_profile`, cached), time, and text, and links to the permalink. The card header always shows what the DB knows, the same status as the list row (`Bumped · 9h ago` / `Requested · 2d ago`, with the request time and bump count on hover) and the permalink, so a signed-out workspace still shows the last action, the last cached copy of the replies (if any), and an "Open ↗" link.
 - There is no channel browsing, no history crawling, and no posting from the panel in v1. (Posting is only through the Slack preview.)
 - Optional "Mentions" (off by default): `slack_search_public` (or `slack_search_public_and_private`) for `"github.com/ORG/REPO/pull/N"` with `include_bots=true` across the workspace, limited to 20 results, to find discussions in other channels. It is one call per click, not polled.
 
@@ -1115,23 +1115,33 @@ Row content, each part toggled under **Show**: number and title; `owner/repo`; C
 
 Keyboard: `j/k` move, `x` toggle select, `Shift+x` toggle the focused row's section, `Cmd/Ctrl+A` toggle the global checkbox, `r` open the Slack preview for the selection (or the focused row if nothing is selected), `s` open the focused row's Slack request, `o` open in browser, `f` open the filter menu, `p` open Add to project for the selection (or the focused row), `Enter` open the focused row's details, `/` focus the search (`Esc` there clears it), `Esc` clear the selection (also from a focused row checkbox). Single-key shortcuts ignore Cmd, Ctrl and Alt, so Cmd+R and similar keep their system meaning, and do nothing while typing or while a modal is open. The focused row is marked `aria-current` and scrolled into view.
 
-**PR detail**:
+**PR detail** (a slide-over on the right, not a modal; `bun run screenshot -- --detail <file>` renders it with mock data):
 
 ```
-┌ acme/repo-a #412 · Add retry budget ────────────────────────── [Open in GitHub] ───┐
-│ main ← feat/PROJ-123-retry   by you · updated 2h ago   Projects: [Billing ×] [+]   │
-│ CI ✓ success · Mergeable ✓ · Review: REVIEW_REQUIRED · Threads 0/3 unresolved      │
-│ Readiness: Ready (note: GitHub BLOCKED, waiting for reviews)                       │
-│ Owners: team-a (exclusive) · platform (optional) · approved: —                     │
-│ Requested on GitHub (info only): @alice                                            │
-│ Slack: requested 3d ago · bumped 1d ago (1×) in acme · #team-a-reviews             │
-│        Open in Slack ↗ · Dismiss request                       [Bump request]      │
-├───────────────────────────────────────────────┬────────────────────────────────────┤
-│ Why these teams? ▸                            │ Slack                              │
-│ Files (37) ▸                                  │ #team-a-reviews · request · 3d     │
-│                                               │   bob: looking tomorrow            │
-└───────────────────────────────────────────────┴────────────────────────────────────┘
+┌ list (stays interactive) ──────────┬ [Open] acme/repo-a · main ← feat/retry  [S][GH][×] ┐
+│ #412 Add retry budget    ◀ open    │ #412 Add retry budget                              │
+│ #409 …                             │ ┌Checks─┐┌Comments┐┌Approvals┐┌Mergeable┐          │
+│                                    │ │ 4/6 ▬ ││ 11     ││ 1/2 (KL)││ Clean   │          │
+│                                    │ └1 fail─┘└4 · 7───┘└────────-┘└─────────┘          │
+│                                    │ ✕ You can't merge: a reviewer requested changes.   │
+│                                    │   [Enable auto-merge][Squash ▾]                    │
+│                                    │ Reviewers (KL)✓ (SR)✕ (Web)…   Participants ●●●+2  │
+│                                    │ Slack: #team-a-reviews · requested 3d · Open ↗     │
+│                                    │   bob: looking tomorrow                            │
+│                                    │ ▸ Files changed (37)            with code owners   │
+│                                    │ ▸ Details                                          │
+│                                    │ ▸ Slack threads and mentions                       │
+└────────────────────────────────────┴────────────────────────────────────────────────────┘
 ```
+
+- The panel takes 40% of the window by default; its left edge drags (or takes ←/→ when focused) between 28% and 70%, kept per device. Clicking another row switches it; `j`/`k` and ↑/↓ move between PRs while it is open; `Esc` or ✕ closes it.
+- Header: number, title, `repo · base ← head`, an Open/Draft/Merged/Closed pill, and icon buttons with tooltips: Request on Slack (`r`), Open on GitHub (`o`), Close.
+- Cards: **Checks** passed/total with a bar (click lists failing and running checks with log links), **Comments** (on the PR · in code), **Approvals** approved/required with approver avatars (`a/?` when the requirement is unreadable, §7.2), **Mergeable**. Below them, a sentence saying whether the viewer can merge and why. "Can merge" is derived (permission, draft, conflicts, `mergeStateStatus`, review decision, required checks); GitHub has no exact flag for it.
+- Auto-merge: enable with a method the repository allows (squash by default) or disable, through GraphQL `enablePullRequestAutoMerge` / `disablePullRequestAutoMerge`; the current state is shown, unavailable controls are disabled with a tooltip giving the reason, and the result is a toast. GitHub refuses auto-merge on a PR that is already mergeable (`CLEAN`); the panel says a direct merge is possible instead.
+- People: requested reviewers (users and teams) as avatars with a status ring; participants stacked, at most 6, then `+N` with the rest in a tooltip.
+- Slack: "Slack: no request yet · Request" when there is none; otherwise the latest request's root message and its last two replies. The full §7.10 view stays available as a collapsed section.
+- Collapsed sections: **Files changed (n)** with their code-owner teams, and **Details**, the ownership and readiness reasons as plain sentences.
+- Data: `pr_overview(id, refresh)` returns the cached copy (`pr_overview_cache`) first, then GitHub's; the panel refetches after each sync. A skeleton shows until the first copy arrives.
 
 **Slack preview modal** (approved design, centered; see `docs/ui/slack-preview.jpg`):
 

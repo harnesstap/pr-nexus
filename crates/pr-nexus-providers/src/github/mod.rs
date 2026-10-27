@@ -10,6 +10,7 @@
 
 mod auth;
 mod http;
+mod overview;
 mod ownership;
 mod parse;
 pub mod search;
@@ -425,6 +426,21 @@ impl VcsProvider for GithubClient {
 
     fn team_members(&self, team: &TeamRef) -> Result<TeamMembers, ProviderError> {
         ownership::team_members(self, &team.org, &team.slug)
+    }
+
+    fn pull_request_overview(
+        &self,
+        pr: &PullRequest,
+    ) -> Result<pr_nexus_core::overview::PrOverview, ProviderError> {
+        overview::fetch(self, pr)
+    }
+
+    fn set_auto_merge(
+        &self,
+        pr: &PullRequest,
+        method: Option<pr_nexus_core::overview::MergeMethod>,
+    ) -> Result<(), ProviderError> {
+        overview::set_auto_merge(self, pr, method)
     }
 
     fn rate_limit(&self) -> Result<RateBudget, ProviderError> {

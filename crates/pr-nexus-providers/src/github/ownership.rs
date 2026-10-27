@@ -144,7 +144,7 @@ pub(crate) fn inputs(
 }
 
 /// Rate limits and lost auth stop the whole resolution. Anything else degrades to Unknown.
-fn fatal(err: &ProviderError) -> bool {
+pub(crate) fn fatal(err: &ProviderError) -> bool {
     matches!(
         err,
         ProviderError::RateLimited { .. } | ProviderError::Unauthorized(_)
@@ -303,7 +303,7 @@ pub(crate) fn team_members(
 }
 
 /// Percent-encodes a branch name for one URL path segment (`release/1.0` → `release%2F1.0`).
-fn segment(name: &str) -> String {
+pub(crate) fn segment(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     for byte in name.bytes() {
         if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {

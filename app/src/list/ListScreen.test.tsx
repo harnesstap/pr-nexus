@@ -4,6 +4,7 @@ import type { Api, Bootstrap, ProjectDto, ReviewTarget } from "../api";
 import type { SearchRow } from "./paging";
 import { ListScreen } from "./ListScreen";
 import { memoryProjectApi } from "../memoryProjects";
+import { mockDetail, mockOverview } from "../detail/mock";
 import { fakeSettingsApi } from "../settings/fakes";
 
 const boot: Bootstrap = {
@@ -95,6 +96,8 @@ function api(projects: ProjectDto[], rows: SearchRow[] = []): Api {
     saveViewState: () => Promise.resolve(),
     openExternal: () => Promise.resolve(),
     prDetail: () => Promise.reject(new Error("unused")),
+    prOverview: () => Promise.resolve(null),
+    setAutoMerge: () => Promise.reject(new Error("unused")),
     prSlackContext: () => Promise.resolve([]),
     prSlackMentions: () => Promise.resolve([]),
     saveSlackMentions: () => Promise.resolve(),
@@ -230,4 +233,50 @@ test("Add to project → New project from selection creates it, confirms, and hi
   const entry = await within(screen.getByRole("region", { name: "Projects" })).findByRole("button", { name: "Launch" });
   expect(entry).toHaveAttribute("data-project-id");
   expect(entry.className).toMatch(/ring-violet-400/);
+});
+
+function listRow(id: number, title: string): SearchRow {
+  return {
+    id,
+    number: id,
+    title,
+    url: `https://github.com/acme/widgets/pull/${id}`,
+    body: "",
+    owner: "acme",
+    repo: "acme/widgets",
+    author_login: "ada",
+    head_ref: `feature/pr-${id}`,
+    is_draft: false,
+    state: "open",
+    checks: "success",
+    review_decision: null,
+    unresolved_threads: 0,
+    total_threads: 0,
+    involvement: 1,
+    updated_at: "2026-10-26T11:00:00Z",
+    created_at: "2026-10-20T11:00:00Z",
+    hidden: false,
+    project_ids: [],
+    readiness: "ready",
+    readiness_notes: [],
+    conflicts: false,
+    reviewers_requested: false,
+    pending_reviewers: [],
+    slack: null,
+  };
+}
+
+test("details open beside the list, follow the clicked row, and close on Esc", async () => {
+  const fake = api([], [listRow(1, "Migrate login"), listRow(2, "Add passkeys")]);
+  fake.prDetail = (id: number) => Promise.resolve(mockDetail(id));
+  fake.prOverview = vi.fn(() => Promise.resolve(mockOverview()));
+  render(<ListScreen api={fake} boot={boot} onBoot={() => undefined} />);
+  fireEvent.click(await screen.findByRole("button", { name: /Migrate login/ }));
+  const panel = await screen.findByTestId("detail-panel");
+  expect(within(panel).getByRole("heading", { name: /Migrate login/ })).toBeInTheDocument();
+  // The list stays usable: another row switches the panel instead of being blocked by it.
+  fireEvent.click(screen.getByRole("button", { name: /Add passkeys/ }));
+  expect(await within(screen.getByTestId("detail-panel")).findByRole("heading", { name: /Add passkeys/ })).toBeInTheDocument();
+  fireEvent.keyDown(document, { key: "Escape" });
+  await waitFor(() => expect(screen.queryByTestId("detail-panel")).not.toBeInTheDocument());
 });

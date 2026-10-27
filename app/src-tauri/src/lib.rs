@@ -4,6 +4,7 @@ mod commands;
 mod context;
 mod demo;
 mod error;
+mod explain;
 mod listing;
 mod logging;
 mod mapping_file;
@@ -126,6 +127,8 @@ pub fn run() {
             commands::save_view_state,
             commands::open_external,
             commands::pr_detail,
+            commands::pr_overview,
+            commands::set_auto_merge,
         ])
         .run(tauri::generate_context!())
         .expect("error while running PR Nexus");

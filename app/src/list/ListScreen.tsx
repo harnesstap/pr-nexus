@@ -11,7 +11,7 @@ import type { PageRequest } from "./paging";
 /** How often sync status is polled while a background sync runs. */
 /** Sync status poll while syncing. The backend updates the count at most this often too. */
 const SYNC_POLL_MS = 500;
-import { PrDetailDialog } from "./PrDetailDialog";
+import { DetailPanel } from "../detail/DetailPanel";
 import { ProjectDialog } from "./ProjectDialog";
 import { SlackSettings } from "../slack/SlackSettings";
 import { BulkDialog } from "../slack/BulkDialog";
@@ -57,6 +57,11 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
   const [editingProject, setEditingProject] = useState<number | null>(null);
   const [detailRow, setDetailRow] = useState<ListRow | null>(null);
   const [reviewRow, setReviewRow] = useState<ListRow | null>(null);
+  const closeDetail = () => {
+    setDetailRow(null);
+    // The detail may have resolved code-owner status the list row now uses.
+    void reload();
+  };
   const [bulkIds, setBulkIds] = useState<number[] | null>(null);
   const [notice, setNotice] = useState<Toast | null>(null);
   /** The bulk run's summary, shown as a toast once its dialog closes. */
@@ -487,36 +492,54 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
             </button>
           </div>
         ) : (
-          <PrList
-            loadPage={loadPage}
-            version={version}
-            syncProgress={syncing ? syncLabel(sync, now) : null}
-            projects={projects}
-            viewKey={viewKey}
-            view={view}
-            now={now}
-            onViewChange={(next) => setViews((current) => ({ ...current, [viewKey]: next }))}
-            onShowView={setViewKey}
-            onOpen={(url) => void api.openExternal(url)}
-            onRename={async (id, name) => {
-              await api.renameProject(id, name);
-              await reload();
-            }}
-            onArchive={(id) => {
-              const project = projects.find((item) => item.id === id);
-              void api.archiveProject(id, !(project?.archived ?? false)).then(reload);
-            }}
-            onDelete={(id) => {
-              void api.deleteProject(id).then(reload);
-            }}
-            onEditProject={setEditingProject}
-            onLinkPrs={(projectId, ids) => void linkPrs(projectId, ids)}
-            onCreateProjectWithPrs={createProjectWithPrs}
-            onSelectionChange={setSelection}
-            onDetails={setDetailRow}
-            onRequestReview={setReviewRow}
-            onBulkReview={setBulkIds}
-          />
+          <div className="flex min-h-0 flex-1">
+            <div className="flex min-w-0 flex-1 flex-col">
+            <PrList
+              loadPage={loadPage}
+              version={version}
+              syncProgress={syncing ? syncLabel(sync, now) : null}
+              projects={projects}
+              viewKey={viewKey}
+              view={view}
+              now={now}
+              onViewChange={(next) => setViews((current) => ({ ...current, [viewKey]: next }))}
+              onShowView={setViewKey}
+              onOpen={(url) => void api.openExternal(url)}
+              onRename={async (id, name) => {
+                await api.renameProject(id, name);
+                await reload();
+              }}
+              onArchive={(id) => {
+                const project = projects.find((item) => item.id === id);
+                void api.archiveProject(id, !(project?.archived ?? false)).then(reload);
+              }}
+              onDelete={(id) => {
+                void api.deleteProject(id).then(reload);
+              }}
+              onEditProject={setEditingProject}
+              onLinkPrs={(projectId, ids) => void linkPrs(projectId, ids)}
+              onCreateProjectWithPrs={createProjectWithPrs}
+              onSelectionChange={setSelection}
+              detailId={detailRow?.id ?? null}
+              onDetails={setDetailRow}
+              onRequestReview={setReviewRow}
+              onBulkReview={setBulkIds}
+            />
+            </div>
+            {detailRow && (
+              <DetailPanel
+                key={detailRow.id}
+                api={api}
+                row={detailRow}
+                version={version}
+                onClose={closeDetail}
+                onOpen={(url) => void api.openExternal(url)}
+                onRequestReview={() => setReviewRow(detailRow)}
+                onNotice={(text) => setNotice({ text })}
+                slack={{ mentions: boot.slack_mentions }}
+              />
+            )}
+          </div>
         )}
         {notice && (
           <p
@@ -542,18 +565,6 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
           </p>
         )}
         {error && <p className="px-4 py-2 text-sm text-rose-300">{error}</p>}
-        {detailRow && (
-          <PrDetailDialog key={detailRow.id} api={api} row={detailRow} slack={{ mentions: boot.slack_mentions }} onClose={() => {
-              setDetailRow(null);
-              // The detail may have resolved code-owner status the list row now uses.
-              void reload();
-            }}
-            onOpen={(url) => void api.openExternal(url)}
-            onRequestReview={() => {
-              setDetailRow(null);
-              setReviewRow(detailRow);
-            }} />
-        )}
         {reviewRow && (
           <ReviewDialog
             key={reviewRow.id}

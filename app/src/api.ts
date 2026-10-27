@@ -405,6 +405,64 @@ export interface FileOwners {
   teams: string[];
 }
 
+export interface Explanation {
+  tone: "good" | "warn" | "bad" | "info";
+  text: string;
+}
+
+export type MergeMethod = "squash" | "merge" | "rebase";
+
+export interface OverviewCheck {
+  name: string;
+  state: "passed" | "failed" | "pending" | "skipped";
+  url: string | null;
+  required: boolean;
+}
+
+/** A user or team; `login` is `org/slug` for a team. */
+export interface Person {
+  kind: "user" | "team";
+  login: string;
+  name: string | null;
+  avatar_url: string | null;
+}
+
+export interface OverviewReviewer extends Person {
+  state: "approved" | "changes_requested" | "commented" | "pending" | "dismissed";
+}
+
+/** The detail panel's at-a-glance facts (§7.2), cached per PR. */
+export interface PrOverview {
+  state: "open" | "closed" | "merged";
+  is_draft: boolean;
+  base_ref: string;
+  head_ref: string;
+  mergeable: "mergeable" | "conflicting" | "unknown";
+  /** GitHub's mergeStateStatus, lower case. */
+  merge_state: "clean" | "blocked" | "behind" | "dirty" | "unstable" | "has_hooks" | "draft" | "unknown";
+  review_decision: "approved" | "changes_requested" | "review_required" | null;
+  issue_comments: number;
+  review_comments: number;
+  checks: OverviewCheck[];
+  checks_total: number;
+  approvals: number;
+  /** Null when the token cannot see the branch rules. */
+  required_approvals: number | null;
+  reviewers: OverviewReviewer[];
+  participants: Person[];
+  participants_total: number;
+  viewer: {
+    login: string;
+    permission: "admin" | "maintain" | "write" | "triage" | "read" | null;
+    can_merge_as_admin: boolean;
+    can_enable_auto_merge: boolean;
+    can_disable_auto_merge: boolean;
+  };
+  merge_settings: { auto_merge_allowed: boolean; squash: boolean; merge: boolean; rebase: boolean };
+  auto_merge: { method: MergeMethod; enabled_by: string | null; enabled_at: string | null } | null;
+  fetched_at: string;
+}
+
 /** Readiness, owners, and why for one PR (§6, §7.2). */
 export interface PrDetail {
   id: number;
@@ -415,7 +473,6 @@ export interface PrDetail {
   codeowners_path: string | null;
   codeowners_error: string | null;
   codeowners_required: "true" | "false" | "unknown";
-  codeowners_required_reason: string;
   code_owner_review_pending: boolean | null;
   mandatory_teams: string[];
   optional_teams: string[];
@@ -424,7 +481,8 @@ export interface PrDetail {
   attribution_unknown: TeamGap[];
   requested_teams: string[];
   users_ignored: string[];
-  rationale: string[];
+  /** Plain-language sentences for the Details expander, blockers first. */
+  explanations: Explanation[];
   files: FileOwners[];
   files_truncated: boolean;
   rules_error: string | null;
@@ -495,6 +553,10 @@ export interface Api {
   saveViewState(viewKey: string, stateJson: string): Promise<void>;
   openExternal(url: string): Promise<void>;
   prDetail(id: number): Promise<PrDetail>;
+  /** The detail panel's cards. `refresh: false` reads only the cache (null when empty). */
+  prOverview(id: number, refresh: boolean): Promise<PrOverview | null>;
+  /** Turns auto-merge on with `method`, or off with null; returns the fresh overview. */
+  setAutoMerge(id: number, method: MergeMethod | null): Promise<PrOverview>;
   prSlackContext(prId: number, refresh: boolean): Promise<ContextThread[]>;
   prSlackMentions(prId: number): Promise<MentionGroup[]>;
   saveSlackMentions(scope: MentionsScope): Promise<void>;
@@ -579,6 +641,8 @@ export const tauriApi: Api = {
   saveViewState: (viewKey, stateJson) => invoke("save_view_state", { viewKey, stateJson }),
   openExternal: (url) => invoke("open_external", { url }),
   prDetail: (id) => invoke("pr_detail", { id }),
+  prOverview: (id, refresh) => invoke("pr_overview", { id, refresh }),
+  setAutoMerge: (id, method) => invoke("set_auto_merge", { id, method }),
   prSlackContext: (prId, refresh) => invoke("pr_slack_context", { prId, refresh }),
   prSlackMentions: (prId) => invoke("pr_slack_mentions", { prId }),
   saveSlackMentions: (scope) => invoke("save_slack_mentions", { scope }),
