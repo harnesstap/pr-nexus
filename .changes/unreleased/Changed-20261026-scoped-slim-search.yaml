@@ -1,3 +1,3 @@
 kind: Changed
-body: Sync searches only the tracked orgs (and your personal repos when that is on), keeps the search to cheap fields and reads mergeability, checks, review decision and threads in a second query for the kept PRs only, with pages of 10, then 5, then 3. scripts/prn-search-timing.sh times the same queries.
+body: Sync searches only the tracked orgs (and your personal repos when that is on), keeps the search to cheap fields and reads mergeability, checks, review decision and threads in a second query for the kept PRs only (two chunks at a time), with pages of 10, then 5, then 3. scripts/prn-search-timing.sh times the same queries.
 time: 2026-10-26T12:00:00.000000Z

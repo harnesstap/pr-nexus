@@ -42,6 +42,12 @@ pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 /// Tries per page: one at each of `PAGE_SIZES` (10 → 5 → 3).
 const MAX_ATTEMPTS: u32 = 3;
 
+/// Requests one client sends at once (SPEC §6: at most 2 per host). The gate
+/// enforces it; the status pass uses it to run chunks side by side.
+const CONCURRENT_REQUESTS: usize = 2;
+
+type StatusAnswer = Result<Vec<PrStatus>, ProviderError>;
+
 /// The first wait before a retry; each later wait doubles it (1 s, 2 s).
 const FIRST_BACKOFF: Duration = Duration::from_secs(1);
 
@@ -84,7 +90,7 @@ impl GithubClient {
             api: api.into().trim_end_matches('/').to_owned(),
             token: token.into(),
             account,
-            gate: Arc::new(http::Gate::new(2)),
+            gate: Arc::new(http::Gate::new(CONCURRENT_REQUESTS)),
             budget: Mutex::new(None),
             backoff: FIRST_BACKOFF,
         })
@@ -338,15 +344,50 @@ impl VcsProvider for GithubClient {
         Ok(items)
     }
 
+    /// Chunks of `PAGE_SIZES[0]` ids, [`CONCURRENT_REQUESTS`] at a time: GitHub
+    /// spends about 0.3 s per pull request on mergeability, so two chunks in
+    /// flight halve the wall time. Each chunk shrinks on its own after a timeout.
     fn pull_request_status(
         &self,
         ids: &[pr_nexus_core::domain::ProviderRef],
     ) -> Result<Vec<PrStatus>, ProviderError> {
+        let chunks: Vec<_> = ids.chunks(PAGE_SIZES[0] as usize).collect();
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let answers: Mutex<Vec<Option<StatusAnswer>>> =
+            Mutex::new((0..chunks.len()).map(|_| None).collect());
+        std::thread::scope(|scope| {
+            for _ in 0..CONCURRENT_REQUESTS.min(chunks.len()) {
+                scope.spawn(|| {
+                    while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                        let index = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        let Some(chunk) = chunks.get(index) else {
+                            break;
+                        };
+                        let mut items = Vec::new();
+                        let answer = self
+                            .nodes_paged("status of pull requests", STATUS, chunk, |body| {
+                                items.extend(parse::parse_status(body)?);
+                                Ok(())
+                            })
+                            .map(|()| items);
+                        if answer.is_err() {
+                            stop.store(true, std::sync::atomic::Ordering::SeqCst);
+                        }
+                        answers.lock().expect("status answers")[index] = Some(answer);
+                    }
+                });
+            }
+        });
         let mut items = Vec::new();
-        self.nodes_paged("status of pull requests", STATUS, ids, |body| {
-            items.extend(parse::parse_status(body)?);
-            Ok(())
-        })?;
+        for answer in answers.into_inner().expect("status answers") {
+            match answer {
+                Some(Ok(chunk)) => items.extend(chunk),
+                Some(Err(err)) => return Err(err),
+                // Left untaken after another chunk failed; that error is returned.
+                None => {}
+            }
+        }
         Ok(items)
     }
 
