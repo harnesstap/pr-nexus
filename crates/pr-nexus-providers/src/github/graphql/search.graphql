@@ -6,6 +6,7 @@ query SearchPullRequests($query: String!, $first: Int!, $cursor: String) {
     cost
   }
   search(type: ISSUE, query: $query, first: $first, after: $cursor) {
+    issueCount
     pageInfo {
       hasNextPage
       endCursor

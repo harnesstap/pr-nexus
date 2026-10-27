@@ -13,6 +13,8 @@ pub(crate) struct SearchPage {
     pub(crate) items: Vec<SyncedPullRequest>,
     pub(crate) has_next: bool,
     pub(crate) cursor: Option<String>,
+    /// GitHub's count of every match, not just the ones it lets a search page through.
+    pub(crate) total: u64,
 }
 
 pub(crate) fn parse_search(
@@ -45,6 +47,10 @@ pub(crate) fn parse_search(
             .get("endCursor")
             .and_then(Value::as_str)
             .map(str::to_owned),
+        total: search
+            .get("issueCount")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
     })
 }
 

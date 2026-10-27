@@ -56,6 +56,8 @@ interface Props {
   loadPage: (request: PageRequest) => Promise<PageDto>;
   /** Bumped when stored rows change (sync, links, Slack); reloads in place. */
   version: number;
+  /** "Syncing… 42 so far" while a sync runs, shown after the summary. */
+  syncProgress?: string | null;
   projects: ProjectDto[];
   viewKey: string;
   view: SavedView;
@@ -102,6 +104,7 @@ const ORDERINGS: { id: Ordering; label: string }[] = [
 export function PrList({
   loadPage,
   version,
+  syncProgress = null,
   projects,
   viewKey,
   view,
@@ -392,7 +395,7 @@ export function PrList({
             </h1>
           )}
           {editing?.error && editing.where === "title" && <p className="text-xs text-rose-300">{editing.error}</p>}
-          <p className="text-sm text-slate-400">{page ? summaryText(page.summary, viewKey) : "\u00a0"}</p>
+          <p className="text-sm text-slate-400">{page ? summaryText(page.summary, viewKey, syncProgress) : (syncProgress ?? "\u00a0")}</p>
         </div>
         <div className="flex items-center gap-2">
           <label className="flex w-80 items-center gap-2 rounded-md border border-slate-700 bg-slate-900 px-3 py-1.5 text-sm focus-within:border-violet-400">

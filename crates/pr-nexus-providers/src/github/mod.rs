@@ -1,16 +1,18 @@
 //! Blocking GitHub GraphQL client.
 //!
-//! Search uses `search(type: ISSUE)` with the cheap fields only and a cap of
-//! 500 per bucket; the query strings come from sync, already scoped to the
-//! tracked orgs. The slow fields (mergeability, checks, review decision,
+//! Search uses `search(type: ISSUE)` with the cheap fields only and follows
+//! every page; past GitHub's 1000-result limit it splits the query by
+//! creation date (see [`search`]). The query strings come from sync, already
+//! scoped to the tracked orgs. The slow fields (mergeability, checks, review decision,
 //! threads) come from `nodes` in [`VcsProvider::pull_request_status`]. Every
 //! page shrinks and retries when GitHub times out (502/503/504 or a GraphQL
-//! timeout error).
+//! timeout error), and waits out a secondary rate limit before retrying.
 
 mod auth;
 mod http;
 mod ownership;
 mod parse;
+pub mod search;
 
 pub use auth::{
     DevicePoll, DeviceStart, GhProbe, github_token_from_env, oauth_client_id_from_env,
@@ -26,7 +28,7 @@ use pr_nexus_core::providers::{
     OwnershipInputs, OwnershipProbe, PrQuery, PrStatus, RateBudget, SearchBucket,
     SyncedPullRequest, TeamMembers, VcsProvider, VcsUser,
 };
-use pr_nexus_core::sync::{PAGE_SIZES, SEARCH_CAP};
+use pr_nexus_core::sync::PAGE_SIZES;
 use serde_json::{Value, json};
 
 const SEARCH: &str = include_str!("graphql/search.graphql");
@@ -51,6 +53,13 @@ type StatusAnswer = Result<Vec<PrStatus>, ProviderError>;
 /// The first wait before a retry; each later wait doubles it (1 s, 2 s).
 const FIRST_BACKOFF: Duration = Duration::from_secs(1);
 
+/// Waits on a secondary rate limit before a page gives up.
+const MAX_RATE_WAITS: u32 = 3;
+
+/// Longest single wait on a secondary rate limit. GitHub usually asks for
+/// a minute; a longer ask ends the sync, which the scheduler then pauses.
+const RATE_WAIT_CAP: Duration = Duration::from_secs(120);
+
 /// Upper bound for one page when every try times out:
 /// 3 × 15 s + 1 s + 2 s = 48 s. `paged` never waits longer than this.
 pub fn worst_case_page_time() -> Duration {
@@ -68,6 +77,7 @@ pub struct GithubClient {
     gate: Arc<http::Gate>,
     budget: Mutex<Option<RateBudget>>,
     backoff: Duration,
+    rate_wait_cap: Duration,
 }
 
 impl GithubClient {
@@ -93,6 +103,7 @@ impl GithubClient {
             gate: Arc::new(http::Gate::new(CONCURRENT_REQUESTS)),
             budget: Mutex::new(None),
             backoff: FIRST_BACKOFF,
+            rate_wait_cap: RATE_WAIT_CAP,
         })
     }
 
@@ -100,6 +111,13 @@ impl GithubClient {
     /// wait doubles it. Tests set it to zero.
     pub fn with_backoff(mut self, backoff: Duration) -> Self {
         self.backoff = backoff;
+        self
+    }
+
+    /// The longest wait on a secondary rate limit before retrying. Tests set
+    /// it to zero.
+    pub fn with_rate_wait_cap(mut self, cap: Duration) -> Self {
+        self.rate_wait_cap = cap;
         self
     }
 
@@ -155,7 +173,9 @@ impl GithubClient {
 impl GithubClient {
     /// Runs one page with `PAGE_SIZES[*level]`. When GitHub times out, waits,
     /// moves `level` to the next smaller size (it stays there for later pages),
-    /// and tries again, at most `MAX_ATTEMPTS` times.
+    /// and tries again, at most `MAX_ATTEMPTS` times. On a secondary rate
+    /// limit it waits as GitHub asks, doubling each time (SPEC §6), at most
+    /// `MAX_RATE_WAITS` times.
     fn paged<T>(
         &self,
         what: &str,
@@ -163,10 +183,23 @@ impl GithubClient {
         mut call: impl FnMut(usize) -> Result<T, ProviderError>,
     ) -> Result<T, ProviderError> {
         let mut attempt = 1;
+        let mut rate_waits = 0;
         loop {
             let size = PAGE_SIZES[*level] as usize;
             match call(size) {
                 Ok(value) => return Ok(value),
+                Err(ProviderError::RateLimited {
+                    reset_at,
+                    secondary: true,
+                }) if rate_waits < MAX_RATE_WAITS => {
+                    let asked = (reset_at - chrono::Utc::now())
+                        .to_std()
+                        .unwrap_or(Duration::ZERO)
+                        .max(Duration::from_secs(1));
+                    let wait = (asked * 2u32.pow(rate_waits)).min(self.rate_wait_cap);
+                    std::thread::sleep(wait);
+                    rate_waits += 1;
+                }
                 Err(err) if http::is_timeout(&err) => {
                     if attempt >= MAX_ATTEMPTS {
                         return Err(http::timed_out(&err, what, attempt, size));
@@ -285,6 +318,16 @@ impl VcsProvider for GithubClient {
         &self,
         query: &PrQuery,
     ) -> Result<Vec<SyncedPullRequest>, ProviderError> {
+        self.search_pull_requests_paged(query, &mut |_| {})
+    }
+
+    /// Every result, however many pages: no cap, and GitHub's 1000-result
+    /// limit is lifted by splitting the query by creation date.
+    fn search_pull_requests_paged(
+        &self,
+        query: &PrQuery,
+        on_page: &mut dyn FnMut(&[SyncedPullRequest]),
+    ) -> Result<Vec<SyncedPullRequest>, ProviderError> {
         let involvement = match query.bucket {
             SearchBucket::Mine => Involvement::AUTHOR,
             SearchBucket::ReviewRequested => Involvement::REVIEW_REQUESTED,
@@ -293,36 +336,13 @@ impl VcsProvider for GithubClient {
             SearchBucket::Mine => "search for your pull requests",
             SearchBucket::ReviewRequested => "search for review requests",
         };
+        let mut seen = std::collections::HashSet::new();
         let mut items: Vec<SyncedPullRequest> = Vec::new();
-        let mut level = 0;
-        'queries: for q in &query.queries {
-            let mut cursor = Value::Null;
-            loop {
-                let body = self.paged(what, &mut level, |size| {
-                    self.graphql(
-                        SEARCH,
-                        json!({ "query": q, "first": size, "cursor": cursor }),
-                    )
-                })?;
-                let page = parse::parse_search(&body, self.account, involvement)?;
-                for item in page.items {
-                    let id = &item.pull_request.remote.id;
-                    if !items
-                        .iter()
-                        .any(|known| &known.pull_request.remote.id == id)
-                    {
-                        items.push(item);
-                    }
-                }
-                if items.len() as u32 >= SEARCH_CAP {
-                    items.truncate(SEARCH_CAP as usize);
-                    break 'queries;
-                }
-                if !page.has_next {
-                    break;
-                }
-                cursor = page.cursor.map(Value::String).unwrap_or(Value::Null);
-            }
+        for q in &query.queries {
+            self.search_all(what, q, involvement, &mut seen, &mut |page| {
+                on_page(&page);
+                items.extend(page);
+            })?;
         }
         Ok(items)
     }

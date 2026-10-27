@@ -175,6 +175,7 @@ test("merged and closed PRs leave the open list and the header count", () => {
   const open = pageFromRows(rows, [auth], request("mine", view));
   expect(pageIds(open.sections)).toEqual([1]);
   expect(summaryText(open.summary, "mine")).toBe("1 open PR across 1 project");
+  expect(summaryText(open.summary, "mine", "Syncing… 340 so far")).toBe("1 open PR across 1 project · Syncing… 340 so far");
   expect(shownIds(rows, [auth], "to_review", view, "shipped")).toEqual([]);
   const archived = { ...view, filters: { ...view.filters, archived: true } };
   const all = pageFromRows(rows, [auth], request("mine", archived));

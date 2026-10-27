@@ -26,7 +26,34 @@ pub const REVIEW_QUERY: &str =
 pub const PAGE_SIZES: [u32; 3] = [10, 5, 3];
 /// GitHub rejects a search string longer than this.
 pub const SEARCH_QUERY_MAX: usize = 256;
-pub const SEARCH_CAP: u32 = 500;
+/// Sync reports how many pull requests it has stored at most this often.
+pub const PROGRESS_EVERY: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Lets a progress update through at most once per `every`.
+#[derive(Debug, Clone)]
+pub struct Throttle {
+    every: std::time::Duration,
+    last: Option<std::time::Instant>,
+}
+
+impl Throttle {
+    pub fn new(every: std::time::Duration) -> Self {
+        Self { every, last: None }
+    }
+
+    /// True for the first call and then once `every` has passed since the
+    /// last true.
+    pub fn ready(&mut self, now: std::time::Instant) -> bool {
+        if self
+            .last
+            .is_some_and(|last| now.duration_since(last) < self.every)
+        {
+            return false;
+        }
+        self.last = Some(now);
+        true
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyncKind {
@@ -135,6 +162,20 @@ pub fn sync_account(
     kind: SyncKind,
     now: DateTime<Utc>,
 ) -> Result<SyncReport, CoreError> {
+    sync_account_with_progress(store, provider, account_id, kind, now, &mut |_| {})
+}
+
+/// [`sync_account`], storing each search page as it arrives and calling
+/// `progress` with the number of in-scope pull requests stored so far. The
+/// caller throttles what it shows (see [`Throttle`]).
+pub fn sync_account_with_progress(
+    store: &Store,
+    provider: &dyn VcsProvider,
+    account_id: AccountId,
+    kind: SyncKind,
+    now: DateTime<Utc>,
+    progress: &mut dyn FnMut(usize),
+) -> Result<SyncReport, CoreError> {
     let account = store
         .get_account(account_id)?
         .ok_or_else(|| CoreError::Validation("github account is missing".into()))?;
@@ -172,14 +213,33 @@ pub fn sync_account(
         });
     }
 
+    // Rows as they were before this sync: their status and involvement fill
+    // in for what a search page does not carry.
+    let existing = store.list_pull_requests_for_account(account_id)?;
     let mut fetched: Vec<SyncedPullRequest> = Vec::new();
+    let mut early = EarlyRows::default();
     for bucket in [SearchBucket::Mine, SearchBucket::ReviewRequested] {
+        let mut failed: Option<CoreError> = None;
         let page = provider
-            .search_pull_requests(&PrQuery {
-                bucket,
-                queries: search_queries(bucket, &scope),
-            })
+            .search_pull_requests_paged(
+                &PrQuery {
+                    bucket,
+                    queries: search_queries(bucket, &scope),
+                },
+                &mut |rows| {
+                    if failed.is_some() {
+                        return;
+                    }
+                    match early.store(store, account_id, rows, &scope, &existing, now) {
+                        Ok(()) => progress(early.involvement.len()),
+                        Err(err) => failed = Some(err),
+                    }
+                },
+            )
             .map_err(CoreError::from)?;
+        if let Some(err) = failed {
+            return Err(err);
+        }
         merge_bucket(&mut fetched, page);
     }
 
@@ -197,7 +257,6 @@ pub fn sync_account(
     }
     settings::set_seen_orgs(store, &seen_orgs)?;
 
-    let existing = store.list_pull_requests_for_account(account_id)?;
     let ids: Vec<ProviderRef> = kept
         .iter()
         .map(|item| item.pull_request.remote.clone())
@@ -338,6 +397,50 @@ fn merge_bucket(into: &mut Vec<SyncedPullRequest>, page: Vec<SyncedPullRequest>)
     }
 }
 
+/// In-scope search rows stored while the search runs, so the list fills in
+/// page by page. The status pass and the final upsert overwrite them.
+#[derive(Default)]
+struct EarlyRows {
+    /// Involvement stored so far this sync, by node id.
+    involvement: std::collections::HashMap<String, crate::domain::Involvement>,
+}
+
+impl EarlyRows {
+    /// Stores `rows` with the status they had before this sync and their
+    /// involvement merged with what is known, so a page from one bucket
+    /// never drops the other bucket's flag.
+    fn store(
+        &mut self,
+        store: &Store,
+        account_id: AccountId,
+        rows: &[SyncedPullRequest],
+        scope: &TrackedScope,
+        existing: &[PullRequest],
+        now: DateTime<Utc>,
+    ) -> Result<(), CoreError> {
+        for item in rows {
+            if !in_scope(&item.pull_request.repo.owner, scope) {
+                continue;
+            }
+            let id = item.pull_request.remote.id.clone();
+            let mut row = item.clone();
+            let before = existing.iter().find(|pr| pr.remote.id == id);
+            if let Some(before) = before {
+                PrStatus::of(before).apply_to(&mut row.pull_request);
+                row.pull_request.involvement |= before.involvement;
+            }
+            let known = self
+                .involvement
+                .entry(id)
+                .or_insert(crate::domain::Involvement::empty());
+            *known |= row.pull_request.involvement;
+            row.pull_request.involvement = *known;
+            upsert_synced(store, account_id, &row, now)?;
+        }
+        Ok(())
+    }
+}
+
 fn upsert_synced(
     store: &Store,
     account_id: AccountId,
@@ -471,6 +574,18 @@ mod tests {
                 SearchBucket::ReviewRequested => self.review.clone(),
             })
         }
+        /// Hands rows over in pages of 10, like GitHub.
+        fn search_pull_requests_paged(
+            &self,
+            query: &PrQuery,
+            on_page: &mut dyn FnMut(&[SyncedPullRequest]),
+        ) -> Result<Vec<SyncedPullRequest>, ProviderError> {
+            let items = self.search_pull_requests(query)?;
+            for page in items.chunks(10) {
+                on_page(page);
+            }
+            Ok(items)
+        }
         fn refresh_pull_requests(
             &self,
             ids: &[ProviderRef],
@@ -548,6 +663,67 @@ mod tests {
             .unwrap();
         settings::set_tracked_orgs(&store, &["acme".into()]).unwrap();
         (dir, store, account.id)
+    }
+
+    #[test]
+    fn every_page_is_stored_as_it_arrives_with_a_running_count() {
+        let (_dir, store, account) = open_store();
+        let mine: Vec<_> = (1..=250)
+            .map(|n| pr(&format!("N{n}"), "acme", n, Involvement::AUTHOR))
+            .chain((1..=5).map(|n| pr(&format!("X{n}"), "elsewhere", n, Involvement::AUTHOR)))
+            .collect();
+        // Also review-requested: one page from each bucket must keep both flags.
+        let review = vec![pr("N7", "acme", 7, Involvement::REVIEW_REQUESTED)];
+        let fake = Fake {
+            mine,
+            review,
+            refresh: Vec::new(),
+            status: Vec::new(),
+            budget: sample_budget(5000, 4000),
+            queries: Default::default(),
+            status_asked: Default::default(),
+        };
+        let mut counts = Vec::new();
+        let report = sync_account_with_progress(
+            &store,
+            &fake,
+            account,
+            SyncKind::Manual,
+            ts(30),
+            &mut |stored| {
+                // Rows are in the store before the search (and status pass) ends.
+                let rows = store.list_pull_requests_for_account(account).unwrap();
+                assert_eq!(rows.len(), stored);
+                counts.push(stored);
+            },
+        )
+        .unwrap();
+        assert!(fake.status_asked.lock().unwrap().len() == 250);
+        assert_eq!(counts.first(), Some(&10));
+        assert_eq!(counts.last(), Some(&250));
+        assert!(counts.windows(2).all(|pair| pair[0] <= pair[1]));
+        assert!(counts.len() >= 25);
+        assert_eq!(report.stored, 250);
+        let rows = store.list_pull_requests_for_account(account).unwrap();
+        assert_eq!(rows.len(), 250);
+        let both = rows.iter().find(|row| row.number == 7).unwrap();
+        assert_eq!(
+            both.involvement,
+            Involvement::AUTHOR | Involvement::REVIEW_REQUESTED
+        );
+    }
+
+    #[test]
+    fn throttle_lets_one_update_through_per_interval() {
+        let start = std::time::Instant::now();
+        let every = std::time::Duration::from_millis(500);
+        let mut throttle = Throttle::new(every);
+        assert!(throttle.ready(start));
+        assert!(!throttle.ready(start + std::time::Duration::from_millis(10)));
+        assert!(!throttle.ready(start + std::time::Duration::from_millis(499)));
+        assert!(throttle.ready(start + every));
+        assert!(!throttle.ready(start + every + std::time::Duration::from_millis(100)));
+        assert!(throttle.ready(start + every * 2));
     }
 
     #[test]

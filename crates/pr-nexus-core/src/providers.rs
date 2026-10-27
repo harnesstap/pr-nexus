@@ -372,6 +372,18 @@ pub trait VcsProvider: Send + Sync {
         &self,
         query: &PrQuery,
     ) -> Result<Vec<SyncedPullRequest>, ProviderError>;
+    /// Every result of [`Self::search_pull_requests`], also handed to
+    /// `on_page` as each page arrives (new rows only), so sync can store
+    /// them before the search ends. The default reports one page at the end.
+    fn search_pull_requests_paged(
+        &self,
+        query: &PrQuery,
+        on_page: &mut dyn FnMut(&[SyncedPullRequest]),
+    ) -> Result<Vec<SyncedPullRequest>, ProviderError> {
+        let items = self.search_pull_requests(query)?;
+        on_page(&items);
+        Ok(items)
+    }
     fn refresh_pull_requests(
         &self,
         ids: &[ProviderRef],

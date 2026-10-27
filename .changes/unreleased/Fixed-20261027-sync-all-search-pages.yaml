@@ -1,0 +1,3 @@
+kind: Fixed
+body: 'Sync now fetches every page of GitHub search results: the 500-PR cap per search is gone, and a search with more than 1000 matches is split by creation date so none are missed. Each page is stored as it arrives, the list header shows "Syncing… N so far" until sync finishes, and a secondary rate limit is waited out instead of failing the sync.'
+time: 2026-10-27T10:00:00.000000-10:00

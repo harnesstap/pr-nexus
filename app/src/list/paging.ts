@@ -126,7 +126,12 @@ export function dayBounds(now: Date): { day_start: string; week_start: string } 
 }
 
 /** Header subtitle (§8.2) from backend counts: "5 open PRs across 2 projects · 1 unassigned". */
-export function summaryText(summary: PageSummary, viewKey: string): string {
+export function summaryText(summary: PageSummary, viewKey: string, syncProgress: string | null = null): string {
+  const text = countsText(summary, viewKey);
+  return syncProgress ? `${text} · ${syncProgress}` : text;
+}
+
+function countsText(summary: PageSummary, viewKey: string): string {
   const { open, finished, unassigned, live_projects: live } = summary;
   const extra = finished > 0 ? ` · ${finished} merged or closed` : "";
   const prs = `${open} open ${open === 1 ? "PR" : "PRs"}`;

@@ -79,6 +79,14 @@ test("demo mode shows a neutral sync label instead of an error", () => {
   );
 });
 
+test("syncing shows the running count once the first page is stored", () => {
+  const now = new Date("2026-10-26T00:00:00Z");
+  const base = { phase: "syncing", message: "Syncing…", synced_at: null, paused: false };
+  expect(syncLabel(base, now)).toBe("Syncing…");
+  expect(syncLabel({ ...base, message: "Syncing… 340 so far" }, now)).toBe("Syncing… 340 so far");
+  expect(syncLabel({ ...base, message: "Synced · 12 pull requests" }, now)).toBe("Syncing…");
+});
+
 test("slack status prefers the latest bump and threads label explains the count", () => {
   const now = new Date("2026-10-26T12:00:00Z");
   const slack = {

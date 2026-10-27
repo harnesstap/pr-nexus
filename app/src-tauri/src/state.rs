@@ -208,6 +208,11 @@ pub fn run_sync(state: &AppState, kind: SyncKind) -> Result<Option<sync::SyncRep
     sync_once(state, kind).map(Some)
 }
 
+/// The sync status while search pages are still arriving.
+pub(crate) fn progress_message(stored: usize) -> String {
+    format!("Syncing… {stored} so far")
+}
+
 fn sync_once(state: &AppState, kind: SyncKind) -> Result<sync::SyncReport, AppError> {
     if state.demo {
         *state.sync.lock().expect("sync status") = SyncStatus::demo();
@@ -231,7 +236,21 @@ fn sync_once(state: &AppState, kind: SyncKind) -> Result<sync::SyncReport, AppEr
             .ok_or_else(|| AppError::new("unauthorized", "Connect GitHub before syncing"))?;
         let token = resolve_github_token(state, Some(&account))?;
         let client = GithubClient::new(account.id, token)?;
-        let report = sync::sync_account(&state.store, &client, account.id, kind, Utc::now())?;
+        // Each search page is stored as it arrives; the header shows the
+        // running count, updated at most every `PROGRESS_EVERY`.
+        let mut throttle = sync::Throttle::new(sync::PROGRESS_EVERY);
+        let report = sync::sync_account_with_progress(
+            &state.store,
+            &client,
+            account.id,
+            kind,
+            Utc::now(),
+            &mut |stored| {
+                if throttle.ready(std::time::Instant::now()) {
+                    state.sync.lock().expect("sync status").message = progress_message(stored);
+                }
+            },
+        )?;
         // §8.1: re-evaluate auto-link rules after every sync.
         let prs = state.store.list_pull_requests_for_account(account.id)?;
         pr_nexus_core::linking::relink(&state.store, &prs)?;
