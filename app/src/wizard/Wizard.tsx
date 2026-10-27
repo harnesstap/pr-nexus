@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import type { Api, Bootstrap, OnboardingState } from "../api";
+import type { Api, Bootstrap, MappingFile, OnboardingState } from "../api";
 import { errorMessage } from "../api";
+import { MappingFileButton } from "../mapping/MappingFileButton";
 import { OrgOption } from "../orgs";
 import { DEFAULT_REDIRECT, SlackPanel, type SlackFields } from "../slack/SlackPanel";
 import { WorkspaceSelect } from "../slack/WorkspaceSelect";
@@ -48,6 +49,7 @@ export function Wizard({ api, boot, onFinished, onCancel }: Props) {
   });
   const [workspaces, setWorkspaces] = useState(boot.slack_workspaces);
   const [csv, setCsv] = useState("");
+  const [csvFile, setCsvFile] = useState<MappingFile | null>(null);
   const [pickedWorkspace, setPickedWorkspace] = useState("");
   const workspace = chosenWorkspace(workspaces, pickedWorkspace);
   const [mappingNote, setMappingNote] = useState(
@@ -469,9 +471,23 @@ export function Wizard({ api, boot, onFinished, onCancel }: Props) {
                 className="mt-1 h-36 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-xs"
                 placeholder={CSV_EXAMPLE}
                 value={csv}
-                onChange={(event) => setCsv(event.target.value)}
+                onChange={(event) => {
+                  setCsv(event.target.value);
+                  setCsvFile(null);
+                }}
               />
             </label>
+            <MappingFileButton
+              api={api}
+              file={csvFile}
+              disabled={busy}
+              onLoaded={(file) => {
+                setError(null);
+                setCsv(file.csv);
+                setCsvFile(file);
+              }}
+              onError={setError}
+            />
             <details className="text-xs text-slate-400">
               <summary className="cursor-pointer">Example (made-up data)</summary>
               <pre className="mt-2 overflow-x-auto rounded bg-slate-900 p-2 font-mono">{CSV_EXAMPLE}</pre>
@@ -480,7 +496,7 @@ export function Wizard({ api, boot, onFinished, onCancel }: Props) {
             <p className="text-sm text-slate-400">
               {csv.trim()
                 ? "Import & next imports these rows and continues."
-                : "Paste a CSV and press Import & next, or press Next / Skip to continue without one. You can map channels later in Settings."}
+                : "Choose a CSV file or paste one, then press Import & next, or press Next / Skip to continue without one. You can map channels later in Settings."}
             </p>
           </div>
         )}

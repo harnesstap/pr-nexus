@@ -1,0 +1,3 @@
+kind: Added
+body: 'Mappings: setup step 6 and Settings → Mappings get a Choose file… button that opens the native file dialog (CSV, or All files) and loads the picked mapping CSV for the usual import and validation; the file is read by the backend, so the app needs no file system scope. Pasting a CSV still works.'
+time: 2026-10-26T17:30:00.000000-10:00

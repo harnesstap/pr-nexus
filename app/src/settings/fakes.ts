@@ -26,6 +26,7 @@ type SettingsApi = Pick<
   | "appInfo"
   | "checkUpdate"
   | "slackWorkspaces"
+  | "pickMappingFile"
 >;
 
 /** In-memory Settings endpoints for tests and the browser preview. */
@@ -50,6 +51,7 @@ export function fakeSettingsApi(overrides: Partial<SettingsApi> = {}): SettingsA
       }),
     checkUpdate: () => Promise.resolve(null),
     slackWorkspaces: () => Promise.resolve([]),
+    pickMappingFile: () => Promise.resolve(null),
     ...overrides,
   };
 }

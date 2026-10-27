@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { expect, test, vi } from "vitest";
-import type { Api, Bootstrap, ReviewTarget } from "../api";
+import type { Api, Bootstrap, MappingFile, ReviewTarget } from "../api";
 import { Wizard } from "./Wizard";
 import { memoryProjectApi } from "../memoryProjects";
 import { fakeSettingsApi } from "../settings/fakes";
@@ -311,6 +311,58 @@ test("the mapping step shows a CSV example and Next imports pasted rows", async 
   fireEvent.click(screen.getByRole("button", { name: "Import & next" }));
   expect(await screen.findByRole("heading", { name: /Done/ })).toBeInTheDocument();
   expect(imported).toContain("acme,web");
+});
+
+test("the mapping step loads a CSV from the file dialog and imports it", async () => {
+  const csv = "github_org,github_team_slug,github_team_name,slack_channel_name,slack_channel_id\nacme,web,Web,#web,C0123456789";
+  let imported = "";
+  render(
+    <Wizard
+      api={api({
+        pickMappingFile: () => Promise.resolve({ path: "/home/ada/acme-teams.csv", name: "acme-teams.csv", csv }),
+        importMapping: (text) => {
+          imported = text;
+          return Promise.resolve({ rows: 1 });
+        },
+      })}
+      boot={{
+        ...boot,
+        resume_step: "chat_mapping",
+        slack_workspaces: [{ id: 4, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false }],
+      }}
+      onFinished={() => undefined}
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Choose file…" }));
+  expect(await screen.findByTitle("/home/ada/acme-teams.csv")).toHaveTextContent("Loaded acme-teams.csv");
+  expect(screen.getByRole("textbox", { name: /Mapping CSV/ })).toHaveValue(csv);
+  fireEvent.click(screen.getByRole("button", { name: "Import & next" }));
+  expect(await screen.findByRole("heading", { name: /Done/ })).toBeInTheDocument();
+  expect(imported).toBe(csv);
+});
+
+test("the mapping step shows a file read error and an import parse error like a paste", async () => {
+  let pick: () => Promise<MappingFile> = () => Promise.reject({ kind: "validation", message: "/tmp/blob.csv is not UTF-8 text" });
+  render(
+    <Wizard
+      api={api({
+        pickMappingFile: () => pick(),
+        importMapping: () => Promise.reject({ kind: "validation", message: "mapping csv: missing column slack_channel_id" }),
+      })}
+      boot={{ ...boot, resume_step: "chat_mapping", slack_workspaces: [{ id: 4, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false }] }}
+      onFinished={() => undefined}
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Choose file…" }));
+  expect(await screen.findByText("/tmp/blob.csv is not UTF-8 text")).toBeInTheDocument();
+  pick = () => Promise.resolve({ path: "/tmp/wrong.csv", name: "wrong.csv", csv: "name,channel\nweb,#web" });
+  fireEvent.click(screen.getByRole("button", { name: "Choose file…" }));
+  expect(await screen.findByText("Loaded")).toBeInTheDocument();
+  expect(screen.queryByText("/tmp/blob.csv is not UTF-8 text")).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Import & next" }));
+  expect(await screen.findByText("mapping csv: missing column slack_channel_id")).toBeInTheDocument();
+  fireEvent.change(screen.getByRole("textbox", { name: /Mapping CSV/ }), { target: { value: "edited" } });
+  expect(screen.queryByText("Loaded")).not.toBeInTheDocument();
 });
 
 test("the mapping step preselects the only connected workspace for the import", async () => {

@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 
 export type StepId =
   | "choose_vcs"
@@ -83,6 +84,14 @@ export interface MappingEntry {
 }
 
 export type ImportMode = "merge" | "replace";
+
+/** A mapping CSV picked in the native file dialog and read by the backend. */
+export interface MappingFile {
+  path: string;
+  name: string;
+  csv: string;
+}
+
 export type ExportMode = "effective" | "user" | "imported";
 
 export interface ImportPreview {
@@ -388,6 +397,8 @@ export interface Api {
   bulkPreview(request: BulkRequest): Promise<BulkPreview>;
   sendBulk(request: BulkRequest, fingerprints: string[]): Promise<BulkResult>;
   importMapping(csv: string, workspace: string): Promise<{ rows: number }>;
+  /** Native open dialog filtered to .csv (with All files); null when cancelled. */
+  pickMappingFile(): Promise<MappingFile | null>;
   finish(): Promise<SyncStatus>;
   syncNow(): Promise<SyncStatus>;
   syncStatus(): Promise<SyncStatus>;
@@ -452,6 +463,18 @@ export const tauriApi: Api = {
   bulkPreview: (request) => invoke("bulk_preview", { request }),
   sendBulk: (request, fingerprints) => invoke("send_bulk", { request, fingerprints }),
   importMapping: (csv, workspace) => invoke("import_mapping", { csv, workspace }),
+  pickMappingFile: async () => {
+    const path = await open({
+      title: "Choose a mapping CSV",
+      multiple: false,
+      directory: false,
+      filters: [
+        { name: "CSV", extensions: ["csv"] },
+        { name: "All files", extensions: ["*"] },
+      ],
+    });
+    return path ? invoke<MappingFile>("read_mapping_file", { path }) : null;
+  },
   finish: () => invoke("finish_onboarding"),
   syncNow: () => invoke("sync_now"),
   syncStatus: () => invoke("sync_status"),
