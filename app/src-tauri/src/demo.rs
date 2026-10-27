@@ -263,6 +263,12 @@ impl VcsProvider for DemoProvider {
     ) -> Result<Vec<SyncedPullRequest>, ProviderError> {
         Err(ProviderError::Unsupported("demo data".into()))
     }
+    fn pull_request_status(
+        &self,
+        _: &[ProviderRef],
+    ) -> Result<Vec<pr_nexus_core::providers::PrStatus>, ProviderError> {
+        Err(ProviderError::Unsupported("demo data".into()))
+    }
     fn ownership_probe(&self, pr: &PullRequest) -> Result<OwnershipProbe, ProviderError> {
         Ok(OwnershipProbe {
             head_sha: pr.head_sha.clone(),

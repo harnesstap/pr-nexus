@@ -6,7 +6,7 @@ use pr_nexus_core::domain::{
     PullRequest, RepoRef, ReviewDecision, Reviewer, TeamRef,
 };
 use pr_nexus_core::error::ProviderError;
-use pr_nexus_core::providers::{RateBudget, SyncedPullRequest, VcsUser};
+use pr_nexus_core::providers::{PrStatus, RateBudget, SyncedPullRequest, VcsUser};
 use serde_json::Value;
 
 pub(crate) struct SearchPage {
@@ -157,20 +157,7 @@ fn parse_pr(
         .to_owned();
     let updated_at = time_field(node, "updatedAt")?;
     let created_at = time_field(node, "createdAt")?;
-    let committed = node
-        .pointer("/commits/nodes/0/commit/committedDate")
-        .and_then(Value::as_str)
-        .and_then(parse_time);
-    let last_activity_at = match committed {
-        Some(committed) if committed > updated_at => committed,
-        _ => updated_at,
-    };
-    let checks = node
-        .pointer("/commits/nodes/0/commit/statusCheckRollup/state")
-        .and_then(Value::as_str)
-        .map(checks_state)
-        .unwrap_or(ChecksState::None);
-    let (unresolved, total) = threads(node);
+    let status = parse_status_node(node)?;
     let labels = node
         .pointer("/labels/nodes")
         .and_then(Value::as_array)
@@ -182,7 +169,7 @@ fn parse_pr(
         })
         .unwrap_or_default();
     let number = node.get("number").and_then(Value::as_u64).unwrap_or(0);
-    Ok(SyncedPullRequest {
+    let mut synced = SyncedPullRequest {
         pull_request: PullRequest {
             id: PrId(0),
             remote: ProviderRef {
@@ -216,29 +203,17 @@ fn parse_pr(
             base_ref: text(node, "baseRefName").unwrap_or_default(),
             head_sha: text(node, "headRefOid").unwrap_or_default(),
             labels,
-            review_decision: node
-                .get("reviewDecision")
-                .and_then(Value::as_str)
-                .map(review_decision)
-                .transpose()?,
-            checks,
-            mergeable: mergeable(
-                node.get("mergeable")
-                    .and_then(Value::as_str)
-                    .unwrap_or("UNKNOWN"),
-            )?,
-            merge_state: merge_state(
-                node.get("mergeStateStatus")
-                    .and_then(Value::as_str)
-                    .unwrap_or("UNKNOWN"),
-            )?,
+            review_decision: None,
+            checks: ChecksState::None,
+            mergeable: Mergeable::Unknown,
+            merge_state: MergeStateStatus::Unknown,
             requested_reviewers: reviewers(node),
-            unresolved_threads: unresolved,
-            total_threads: total,
+            unresolved_threads: 0,
+            total_threads: 0,
             involvement,
             created_at,
             updated_at,
-            last_activity_at,
+            last_activity_at: updated_at,
             synced_at: updated_at,
             hidden: false,
         },
@@ -254,6 +229,57 @@ fn parse_pr(
             .pointer("/repository/isArchived")
             .and_then(Value::as_bool)
             .unwrap_or(false),
+    };
+    status.apply_to(&mut synced.pull_request);
+    Ok(synced)
+}
+
+/// Status fields from a `nodes` answer to status.graphql. Null nodes (a pull
+/// request that is gone or no longer visible) are skipped.
+pub(crate) fn parse_status(body: &Value) -> Result<Vec<PrStatus>, ProviderError> {
+    let nodes = data(body)?
+        .get("nodes")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    nodes
+        .iter()
+        .filter(|node| node.get("id").and_then(Value::as_str).is_some())
+        .map(parse_status_node)
+        .collect()
+}
+
+/// Missing fields read as unknown, so the slim search node gives a blank status.
+fn parse_status_node(node: &Value) -> Result<PrStatus, ProviderError> {
+    let (unresolved_threads, total_threads) = threads(node);
+    Ok(PrStatus {
+        remote_id: text(node, "id")?,
+        review_decision: node
+            .get("reviewDecision")
+            .and_then(Value::as_str)
+            .map(review_decision)
+            .transpose()?,
+        checks: node
+            .pointer("/commits/nodes/0/commit/statusCheckRollup/state")
+            .and_then(Value::as_str)
+            .map(checks_state)
+            .unwrap_or(ChecksState::None),
+        mergeable: mergeable(
+            node.get("mergeable")
+                .and_then(Value::as_str)
+                .unwrap_or("UNKNOWN"),
+        )?,
+        merge_state: merge_state(
+            node.get("mergeStateStatus")
+                .and_then(Value::as_str)
+                .unwrap_or("UNKNOWN"),
+        )?,
+        unresolved_threads,
+        total_threads,
+        last_commit_at: node
+            .pointer("/commits/nodes/0/commit/committedDate")
+            .and_then(Value::as_str)
+            .and_then(parse_time),
     })
 }
 

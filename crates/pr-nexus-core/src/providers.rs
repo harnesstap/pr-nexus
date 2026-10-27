@@ -6,7 +6,10 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::domain::{AccountId, ChatKind, ProviderRef, PullRequest, TeamRef, VcsKind};
+use crate::domain::{
+    AccountId, ChatKind, ChecksState, MergeStateStatus, Mergeable, ProviderRef, PullRequest,
+    ReviewDecision, TeamRef, VcsKind,
+};
 use crate::error::ProviderError;
 use crate::review::owners::ReviewBundle;
 
@@ -190,16 +193,69 @@ mod tests {
     }
 }
 
-/// Which GitHub search bucket to run. Org filtering happens after the fetch.
+/// Which GitHub search bucket to run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchBucket {
     Mine,
     ReviewRequested,
 }
 
+/// One bucket, run as one or more search strings.
+///
+/// `queries` already carry the `org:`/`user:` qualifiers for the tracked
+/// scope (see `sync::search_queries`); the provider runs each one and merges
+/// the results. Sync still filters by org afterwards as a safety net.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrQuery {
     pub bucket: SearchBucket,
+    pub queries: Vec<String>,
+}
+
+/// The fields of a pull request that are slow for GitHub to compute.
+///
+/// Search leaves them out (they made a page of 20 cross GitHub's 10 s limit);
+/// sync reads them afterwards, by node ID, in small batches.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrStatus {
+    pub remote_id: String,
+    pub review_decision: Option<ReviewDecision>,
+    pub checks: ChecksState,
+    pub mergeable: Mergeable,
+    pub merge_state: MergeStateStatus,
+    pub unresolved_threads: u32,
+    pub total_threads: u32,
+    pub last_commit_at: Option<DateTime<Utc>>,
+}
+
+impl PrStatus {
+    /// Writes these fields onto `pr`. Last activity is the later of the last
+    /// update and the last commit.
+    pub fn apply_to(&self, pr: &mut PullRequest) {
+        pr.review_decision = self.review_decision;
+        pr.checks = self.checks;
+        pr.mergeable = self.mergeable;
+        pr.merge_state = self.merge_state;
+        pr.unresolved_threads = self.unresolved_threads;
+        pr.total_threads = self.total_threads;
+        pr.last_activity_at = match self.last_commit_at {
+            Some(committed) if committed > pr.updated_at => committed,
+            _ => pr.updated_at,
+        };
+    }
+
+    /// The same fields as already stored on `pr`.
+    pub fn of(pr: &PullRequest) -> Self {
+        Self {
+            remote_id: pr.remote.id.clone(),
+            review_decision: pr.review_decision,
+            checks: pr.checks,
+            mergeable: pr.mergeable,
+            merge_state: pr.merge_state,
+            unresolved_threads: pr.unresolved_threads,
+            total_threads: pr.total_threads,
+            last_commit_at: (pr.last_activity_at > pr.updated_at).then_some(pr.last_activity_at),
+        }
+    }
 }
 
 /// A pull request plus the repository fields the store upserts with it.
@@ -320,6 +376,9 @@ pub trait VcsProvider: Send + Sync {
         &self,
         ids: &[ProviderRef],
     ) -> Result<Vec<SyncedPullRequest>, ProviderError>;
+    /// Review decision, checks, mergeability, and thread counts for `ids`.
+    /// A pull request GitHub no longer returns is left out.
+    fn pull_request_status(&self, ids: &[ProviderRef]) -> Result<Vec<PrStatus>, ProviderError>;
     /// Head, base, CODEOWNERS blob, viewer permission, and effective reviews in one call.
     fn ownership_probe(&self, pr: &PullRequest) -> Result<OwnershipProbe, ProviderError>;
     /// Files, rules, and protection for the head and base in `probe`.
