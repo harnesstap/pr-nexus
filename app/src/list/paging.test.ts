@@ -91,6 +91,62 @@ test("search is accent-insensitive and ANDs terms across title, body, repo, numb
   expect(ids("naive missing")).toEqual([]);
 });
 
+test("search matches hyphenated repos, owner/name, partial input, punctuation and numbers", () => {
+  const ssp = row({
+    id: 7,
+    number: 123,
+    title: "fix(bids): v2.1 time-outs on /auction #9",
+    owner: "acme",
+    repo: "acme/service-ssp",
+    author_login: "Grace-H",
+    head_ref: "feat/ssp-timeouts",
+  });
+  const rows = [ssp, row({ id: 8, number: 1234, title: "Tune widgets" })];
+  const ids = (query: string) => shownIds(rows, [], "mine", defaultView(), query);
+  for (const query of [
+    "service-ssp",
+    "SERVICE-SSP",
+    "acme/service-ssp",
+    "ssp",
+    "service-s",
+    "service\u2011ssp",
+    "fix(bids):",
+    "v2.1",
+    "time-outs",
+    "/auction",
+    "#9",
+    "feat/ssp-timeouts",
+    "grace-h",
+    "ssp 123",
+  ]) {
+    expect(ids(query), query).toEqual([7]);
+  }
+  expect(ids("123")).toEqual([7, 8]);
+  expect(ids("#123")).toEqual([7, 8]);
+  expect(ids("#1234")).toEqual([8]);
+  expect(ids("other/service-ssp")).toEqual([]);
+});
+
+test("a search reports matches in other views, behind filters, and among closed rows", () => {
+  const rows = [
+    row({ id: 1, title: "Tune the floor", repo: "acme/service-ssp", involvement: 2 }),
+    row({ id: 2, title: "Drop the old floor", repo: "acme/service-ssp", state: "merged" }),
+    row({ id: 3, title: "Floor in a draft", repo: "acme/service-ssp", is_draft: true }),
+    row({ id: 4, title: "Hidden floor", repo: "acme/service-ssp", hidden: true, involvement: 3 }),
+  ];
+  const view = defaultView();
+  view.filters.statuses = ["ready"];
+  const page = pageFromRows(rows, [], request("mine", view, "service-ssp"));
+  expect(pageIds(page.sections)).toEqual([]);
+  expect(page.elsewhere).toEqual({ views: [{ view_key: "to_review", count: 1 }], filtered: 1, finished: 1 });
+  expect(pageFromRows(rows, [], request("mine", view)).elsewhere).toBeNull();
+  const withClosed = { ...view, filters: { ...view.filters, statuses: [], archived: true } };
+  const all = pageFromRows(rows, [], request("mine", withClosed, "service-ssp"));
+  expect(pageIds(all.sections)).toEqual([2, 3]);
+  expect(all.quick.draft).toBe(1);
+  expect(all.elsewhere).toEqual({ views: [{ view_key: "to_review", count: 1 }], filtered: 0, finished: 0 });
+});
+
 test("menu filters combine and reset clears only filters", () => {
   const projects = [auth, { ...billing, archived: true }];
   const rows = [

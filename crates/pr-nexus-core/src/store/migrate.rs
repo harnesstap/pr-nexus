@@ -13,6 +13,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../migrations/0001_initial.sql"),
     include_str!("../../migrations/0002_list_search.sql"),
     include_str!("../../migrations/0003_reviewer_profiles.sql"),
+    include_str!("../../migrations/0004_search_fold_v2.sql"),
 ];
 
 pub(super) fn migrate(conn: &mut Connection) -> Result<(), CoreError> {

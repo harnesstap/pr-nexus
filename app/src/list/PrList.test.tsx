@@ -75,15 +75,17 @@ function Harness({
   onOpen?: (url: string) => void;
 }) {
   const [view, setView] = useState<SavedView>(defaultView());
+  const [currentView, setCurrentView] = useState(viewKey);
   const [reference] = useState(() => (request: PageRequest) => Promise.resolve(pageFromRows(rows, projects, request)));
   return (
     <PrList
       loadPage={loadPage ?? reference}
       version={version}
       projects={projects}
-      viewKey={viewKey}
+      viewKey={currentView}
       view={view}
       onViewChange={setView}
+      onShowView={setCurrentView}
       now={now}
       onOpen={onOpen}
       onRename={onRename}
@@ -459,13 +461,59 @@ test("the empty list says why and offers the way out", async () => {
     vi.advanceTimersByTime(200);
   });
   await settle();
-  expect(screen.getByText("No pull requests match your search.")).toBeInTheDocument();
+  expect(screen.getByText("No pull requests in My PRs match your search.")).toBeInTheDocument();
+  expect(screen.queryByText(/Matches elsewhere/)).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Clear search" }));
   await act(async () => {
     vi.advanceTimersByTime(200);
   });
   await settle();
   expect(screen.getAllByRole("article")).toHaveLength(4);
+});
+
+async function search(value: string) {
+  fireEvent.change(screen.getByRole("textbox", { name: "Search" }), { target: { value } });
+  await act(async () => {
+    vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS);
+  });
+  await settle();
+}
+
+const sspRows = [
+  row({ id: 11, number: 123, title: "fix(bids): v2.1 time-outs", repo: "acme/service-ssp", url: "https://github.com/acme/service-ssp/pull/123", project_ids: [] }),
+  row({ id: 12, number: 124, title: "Tune the floor", repo: "acme/service-ssp", involvement: 2, project_ids: [] }),
+  row({ id: 13, number: 125, title: "Drop the old floor", repo: "acme/service-ssp", state: "merged", project_ids: [] }),
+  ...rows,
+];
+
+test("searching a hyphenated repository name finds its PRs and select-all follows", async () => {
+  vi.useFakeTimers();
+  await show(<Harness rows={sspRows} />);
+  for (const query of ["service-ssp", "acme/service-ssp", "ssp", "SERVICE-S", "#123", "v2.1"]) {
+    await search(query);
+    const shown = screen.getAllByRole("article");
+    expect(shown, query).toHaveLength(1);
+    expect(shown[0]).toHaveTextContent("fix(bids): v2.1 time-outs");
+  }
+  fireEvent.click(screen.getByRole("checkbox", { name: "Select all" }));
+  expect(screen.getByRole("region", { name: "Selection actions" })).toHaveTextContent("1 selected");
+});
+
+test("an empty search points to the view and the closed rows that match", async () => {
+  vi.useFakeTimers();
+  await show(<Harness rows={sspRows} />);
+  await search("floor");
+  expect(screen.getByText("No pull requests in My PRs match your search.")).toBeInTheDocument();
+  expect(screen.getByText("Matches elsewhere: 1 in To review, 1 merged, closed or archived.")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Include archived and closed (1)" }));
+  await settle();
+  expect(screen.getAllByRole("article")).toHaveLength(1);
+  expect(screen.getByText("Drop the old floor")).toBeInTheDocument();
+  await search("tune floor");
+  fireEvent.click(screen.getByRole("button", { name: "Show in To review (1)" }));
+  await settle();
+  expect(screen.getByText("Tune the floor")).toBeInTheDocument();
+  expect(screen.getByRole("textbox", { name: "Search" })).toHaveValue("tune floor");
 });
 
 test("the header and the bulk bar follow the mockup wording", async () => {

@@ -693,6 +693,89 @@ fn search_matches_folded_fields_and_linked_project_names() {
 }
 
 #[test]
+fn search_matches_hyphenated_repos_punctuation_and_numbers() {
+    let (_dir, store) = open_temp();
+    let account = store
+        .insert_account(account(
+            AccountKind::GitHub,
+            "gh-punct",
+            AuthMode::GhCli,
+            None,
+        ))
+        .unwrap();
+    let repo = store
+        .insert_repository(Repository {
+            id: 0,
+            account_id: account.id,
+            owner: "acme".to_owned(),
+            name: "service-ssp".to_owned(),
+            node_id: Some("R_ssp".to_owned()),
+            default_branch: Some("main".to_owned()),
+            archived: false,
+        })
+        .unwrap();
+    let mut pr = sample_pr(&account, "PR_ssp", PrState::Open);
+    pr.repo.name = "service-ssp".to_owned();
+    pr.number = 123;
+    pr.title = "fix(api): v1.2 time-outs on /bids #77".to_owned();
+    pr.head_ref = "feat/ssp-timeouts".to_owned();
+    pr.author_login = "Grace-H".to_owned();
+    let pr = store.upsert_pull_request(repo.id, pr).unwrap();
+    // Same owner, other repo, other number: must not match the repo terms.
+    let widgets = {
+        let other = store
+            .insert_repository(Repository {
+                id: 0,
+                account_id: account.id,
+                owner: "acme".to_owned(),
+                name: "widgets".to_owned(),
+                node_id: Some("R_widgets_punct".to_owned()),
+                default_branch: Some("main".to_owned()),
+                archived: false,
+            })
+            .unwrap();
+        let mut item = sample_pr(&account, "PR_widgets_punct", PrState::Open);
+        item.number = 1234;
+        store.upsert_pull_request(other.id, item).unwrap()
+    };
+    let find = |query: &str| {
+        let terms = crate::search::terms(query);
+        let hits = vec![Vec::new(); terms.len()];
+        let mut ids = store
+            .search_pull_request_ids(account.id, terms, hits)
+            .unwrap();
+        ids.sort_by_key(|id| id.0);
+        ids
+    };
+    for query in [
+        "service-ssp",
+        "SERVICE-SSP",
+        "acme/service-ssp",
+        "ssp",
+        "service-s",
+        "e-ss",
+        "service\u{2011}ssp",
+        "fix(api):",
+        "v1.2",
+        "time-outs",
+        "/bids",
+        "#77",
+        "feat/ssp-timeouts",
+        "grace-h",
+        "ssp 123",
+    ] {
+        assert_eq!(find(query), vec![pr.id], "{query}");
+    }
+    // A number is a substring like the rest: `123` and `#123` also find #1234.
+    assert_eq!(find("123"), vec![pr.id, widgets.id]);
+    assert_eq!(find("#123"), vec![pr.id, widgets.id]);
+    assert_eq!(find("#123 ssp"), vec![pr.id]);
+    assert_eq!(find("#1234"), vec![widgets.id]);
+    assert!(find("other/service-ssp").is_empty());
+    assert!(find("service-ssp widgets").is_empty());
+}
+
+#[test]
 fn opening_backfills_missing_search_text() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("pr-nexus.db");
@@ -711,6 +794,35 @@ fn opening_backfills_missing_search_text() {
     let store = Store::open(&path).unwrap();
     let ids = store
         .search_pull_request_ids(account_id, vec!["latch".to_owned()], vec![vec![]])
+        .unwrap();
+    assert_eq!(ids.len(), 1);
+}
+
+#[test]
+fn upgrading_from_version_3_rebuilds_search_text_with_the_new_fold() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("pr-nexus.db");
+    let account_id = {
+        let store = Store::open(&path).unwrap();
+        let (account, _repo, _pr) = seed_pr(&store, "PR_refold", PrState::Open);
+        // Text as the old fold stored it: the en dash kept as is.
+        store
+            .write(|conn| {
+                conn.execute(
+                    "UPDATE pull_requests SET search_text = 'fix the widget\u{2013}latch'",
+                    params![],
+                )
+                .map_err(db)?;
+                conn.pragma_update(None, "user_version", 3_i64)
+                    .map_err(db)?;
+                Ok(())
+            })
+            .unwrap();
+        account.id
+    };
+    let store = Store::open(&path).unwrap();
+    let ids = store
+        .search_pull_request_ids(account_id, vec!["acme/widgets".to_owned()], vec![vec![]])
         .unwrap();
     assert_eq!(ids.len(), 1);
 }

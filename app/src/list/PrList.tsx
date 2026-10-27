@@ -39,7 +39,7 @@ import {
   type Tone,
 } from "./model";
 import { setDragBadge } from "./dragBadge";
-import { pageIds, summaryText, type PageDto, type PageEntry, type PageRequest, type PageSection } from "./paging";
+import { pageIds, summaryText, type Elsewhere, type PageDto, type PageEntry, type PageRequest, type PageSection } from "./paging";
 import { usePagedList, type PageParams } from "./usePagedList";
 import { plainText } from "../textInput";
 
@@ -60,6 +60,8 @@ interface Props {
   viewKey: string;
   view: SavedView;
   onViewChange: (view: SavedView) => void;
+  /** Switch the nav view, keeping the search; for "matches in To review". */
+  onShowView?: (viewKey: string) => void;
   now: Date;
   onOpen: (url: string) => void;
   onRename: (id: number, name: string) => Promise<void>;
@@ -104,6 +106,7 @@ export function PrList({
   viewKey,
   view,
   onViewChange,
+  onShowView,
   now,
   onOpen,
   onRename,
@@ -643,8 +646,12 @@ export function PrList({
             inView={inView}
             query={query}
             filtered={filtersActive(view.filters)}
+            elsewhere={page.elsewhere}
+            viewTitle={(key) => viewTitle(key, projects)}
             onClearSearch={() => setQuery("")}
             onResetFilters={() => onViewChange(resetFilters(view))}
+            onShowView={onShowView}
+            onShowFinished={() => onViewChange({ ...view, filters: { ...view.filters, archived: true } })}
           />
         )}
       </div>
@@ -764,17 +771,26 @@ function EmptyList({
   inView,
   query,
   filtered,
+  elsewhere,
+  viewTitle,
   onClearSearch,
   onResetFilters,
+  onShowView,
+  onShowFinished,
 }: {
   title: string;
   inView: number;
   query: string;
   filtered: boolean;
+  elsewhere: Elsewhere | null;
+  viewTitle: (viewKey: string) => string;
   onClearSearch: () => void;
   onResetFilters: () => void;
+  onShowView?: (viewKey: string) => void;
+  onShowFinished: () => void;
 }) {
-  if (inView === 0 && query.trim() === "") {
+  const searching = query.trim() !== "";
+  if (inView === 0 && !searching) {
     return (
       <div className="px-2 py-10 text-center text-sm text-slate-400">
         <p className="font-medium text-slate-300">No open pull requests in {title}.</p>
@@ -782,23 +798,51 @@ function EmptyList({
       </div>
     );
   }
+  const views = onShowView ? (elsewhere?.views ?? []).filter((item) => item.count > 0) : [];
+  const finished = elsewhere?.finished ?? 0;
+  const hiddenByFilters = elsewhere?.filtered ?? 0;
+  const button = "rounded border border-slate-700 px-3 py-1 hover:bg-slate-800";
   return (
     <div className="px-2 py-10 text-center text-sm text-slate-400">
-      <p className="font-medium text-slate-300">No pull requests match {query.trim() !== "" && filtered ? "your search and filters" : query.trim() !== "" ? "your search" : "your filters"}.</p>
-      <div className="mt-3 flex justify-center gap-2">
-        {query.trim() !== "" && (
-          <button type="button" className="rounded border border-slate-700 px-3 py-1 hover:bg-slate-800" onClick={onClearSearch}>
+      <p className="font-medium text-slate-300">
+        No pull requests in {title} match {searching && filtered ? "your search and filters" : searching ? "your search" : "your filters"}.
+      </p>
+      {(views.length > 0 || finished > 0 || hiddenByFilters > 0) && (
+        <p className="mt-1 text-xs text-slate-500">{elsewhereText(views, finished, hiddenByFilters, viewTitle)}</p>
+      )}
+      <div className="mt-3 flex flex-wrap justify-center gap-2">
+        {views.map((item) => (
+          <button key={item.view_key} type="button" className={button} onClick={() => onShowView?.(item.view_key)}>
+            Show in {viewTitle(item.view_key)} ({item.count})
+          </button>
+        ))}
+        {finished > 0 && (
+          <button type="button" className={button} onClick={onShowFinished}>
+            Include archived and closed ({finished})
+          </button>
+        )}
+        {searching && (
+          <button type="button" className={button} onClick={onClearSearch}>
             Clear search
           </button>
         )}
         {filtered && (
-          <button type="button" className="rounded border border-slate-700 px-3 py-1 hover:bg-slate-800" onClick={onResetFilters}>
-            Reset filters
+          <button type="button" className={button} onClick={onResetFilters}>
+            Reset filters{hiddenByFilters > 0 ? ` (${hiddenByFilters})` : ""}
           </button>
         )}
       </div>
     </div>
   );
+}
+
+function elsewhereText(views: readonly { view_key: string; count: number }[], finished: number, filtered: number, viewTitle: (viewKey: string) => string): string {
+  const parts = [
+    ...views.map((item) => `${item.count} in ${viewTitle(item.view_key)}`),
+    ...(finished > 0 ? [`${finished} merged, closed or archived`] : []),
+    ...(filtered > 0 ? [`${filtered} hidden by filters`] : []),
+  ];
+  return `Matches elsewhere: ${parts.join(", ")}.`;
 }
 
 interface Editing {

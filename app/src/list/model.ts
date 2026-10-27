@@ -178,8 +178,16 @@ export function bulkIds(selected: ReadonlySet<number>): number[] {
   return [...selected].sort((left, right) => left - right);
 }
 
+/**
+ * Fold text for search the way `pr_nexus_core::search::fold` does: compatibility
+ * forms and accents removed, dash variants turned into `-`, lower case.
+ */
 export function normalizeSearch(value: string): string {
-  return value.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+  return value
+    .normalize("NFKD")
+    .replace(/\p{M}/gu, "")
+    .replace(/[\u2010-\u2015\u2212\uFE58\uFE63\uFF0D]/g, "-")
+    .toLowerCase();
 }
 
 export function passesMenu(row: ListRow, filters: Filters, now: Date): boolean {
