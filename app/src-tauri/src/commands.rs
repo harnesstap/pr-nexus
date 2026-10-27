@@ -167,6 +167,10 @@ pub struct ListRow {
     pub project_ids: Vec<i64>,
     pub readiness: String,
     pub readiness_notes: Vec<String>,
+    /// GitHub reports merge conflicts (dirty merge state or conflicting).
+    pub conflicts: bool,
+    /// At least one reviewer or team is requested on GitHub.
+    pub reviewers_requested: bool,
     pub slack: Option<SlackIndicator>,
 }
 
@@ -1347,6 +1351,9 @@ fn to_item(facts: &mut ListFacts, pr: &PullRequest, flag: bool) -> listing::Item
                 .collect(),
             readiness: label.into(),
             readiness_notes: notes,
+            conflicts: pr.mergeable == pr_nexus_core::domain::Mergeable::Conflicting
+                || pr.merge_state == pr_nexus_core::domain::MergeStateStatus::Dirty,
+            reviewers_requested: !pr.requested_reviewers.is_empty(),
             slack: request.map(indicator),
         },
         updated_ms: pr.updated_at.timestamp_millis(),

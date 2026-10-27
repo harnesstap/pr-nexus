@@ -322,6 +322,10 @@ export interface ListRow {
   project_ids: number[];
   readiness: "ready" | "blocked" | "unknown";
   readiness_notes: string[];
+  /** GitHub reports merge conflicts. */
+  conflicts: boolean;
+  /** At least one reviewer or team is requested on GitHub. */
+  reviewers_requested: boolean;
   slack: {
     requested_at: string;
     last_bumped_at: string | null;

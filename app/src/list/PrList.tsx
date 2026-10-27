@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ListRow, ProjectDto } from "../api";
 import { ChevronDownIcon, ChevronRightIcon, CloseIcon, CommentIcon, ExternalIcon, FolderPlusIcon, FunnelIcon, MoreIcon, SearchIcon, SlackIcon } from "../icons";
 import { Tooltip } from "../Tooltip";
+import { QuickFilters } from "./QuickFilters";
 import { AddToProjectMenu } from "./AddToProjectMenu";
 import { isPlainShortcut, isTypingTarget, wantsRowEnter } from "./keys";
 import {
@@ -411,6 +412,11 @@ export function PrList({
       <div className="flex items-center gap-2 border-y border-slate-800 px-4 py-2 text-sm text-slate-300">
         <TriCheckbox label="Select all" state={global} onToggle={() => setSelected(toggleParent(ids, selected))} />
         <span>{header}</span>
+        <QuickFilters
+          active={view.filters.quick}
+          counts={page?.quick ?? null}
+          onChange={(quick) => onViewChange({ ...view, filters: { ...view.filters, quick } })}
+        />
       </div>
       <div
         ref={listRef}

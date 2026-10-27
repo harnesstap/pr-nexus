@@ -65,6 +65,9 @@ test("saved view state round-trips", () => {
   expect(saved.filters.slack).toEqual(["bumped"]);
   expect(saved.show.threads).toBe(true);
   expect(parseViewState("not json").grouping).toBe("project");
+  expect(parseViewState(JSON.stringify({ filters: { quick: "ready" } })).filters.quick).toBe("ready");
+  expect(parseViewState(JSON.stringify({ filters: { quick: "bogus" } })).filters.quick).toBeNull();
+  expect(parseViewState(null).filters.quick).toBeNull();
 });
 
 test("demo mode shows a neutral sync label instead of an error", () => {

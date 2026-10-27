@@ -5,12 +5,15 @@ import {
   filtersActive,
   normalizeSearch,
   passesMenu,
+  quickMatches,
+  QUICK_FILTERS,
   projectIdOf,
   scopeRow,
   type Direction,
   type Filters,
   type Grouping,
   type Ordering,
+  type QuickFilter,
 } from "./model";
 
 /** Rows per `list_page` call. Bigger pages mean fewer round trips while scrolling. */
@@ -70,6 +73,8 @@ export interface PageDto {
   in_view: number;
   /** Org filter options with counts over every synced row. */
   orgs: { name: string; count: number }[];
+  /** Rows per quick filter, over the menu filters and search but ignoring the quick filter. */
+  quick: Record<QuickFilter, number>;
 }
 
 /** Row plus the fields only search needs. The backend keeps them in SQLite. */
@@ -133,7 +138,9 @@ export function pageFromRows(rows: readonly SearchRow[], projects: readonly Proj
   const nav = rowsForView(rows, request.view_key);
   const scoped = nav.filter((row) => scopeRow(row, projects, filters));
   const terms = normalizeSearch(request.query).split(/\s+/).filter((term) => term.length > 0);
-  const shown = scoped.filter((row) => passesMenu(row, filters, now) && matchesTerms(row, projects, terms));
+  const matched = scoped.filter((row) => passesMenu(row, filters, now) && matchesTerms(row, projects, terms));
+  const quick = Object.fromEntries(QUICK_FILTERS.map((key) => [key, matched.filter((row) => quickMatches(row, key)).length])) as Record<QuickFilter, number>;
+  const shown = filters.quick ? matched.filter((row) => quickMatches(row, filters.quick as QuickFilter)) : matched;
 
   const live = displayed(projects, filters);
   const liveIds = new Set(live.map((project) => project.id));
@@ -180,6 +187,7 @@ export function pageFromRows(rows: readonly SearchRow[], projects: readonly Proj
     summary,
     in_view: scoped.length,
     orgs: [...orgCounts.entries()].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)).map(([name, count]) => ({ name, count })),
+    quick,
   };
 }
 

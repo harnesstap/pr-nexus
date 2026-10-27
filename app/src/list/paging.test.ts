@@ -27,6 +27,8 @@ function row(partial: Partial<SearchRow> & Pick<SearchRow, "id" | "title">): Sea
     project_ids: [],
     readiness: "ready",
     readiness_notes: [],
+    conflicts: false,
+    reviewers_requested: false,
     slack: null,
     ...partial,
   };
@@ -175,4 +177,47 @@ test("collapsed sections keep their header and counts but skip rows", () => {
 test("link candidates put an exact number first and skip linked rows", () => {
   const rows = [row({ id: 1, number: 120, title: "Newer", project_ids: [1] }), row({ id: 2, number: 12, title: "Older", updated_at: "2026-10-01T00:00:00Z" }), row({ id: 3, number: 312, title: "Newest" })];
   expect(candidatesFromRows(rows, [auth], new Set([1]), "12", 8).map((item) => item.id)).toEqual([2, 3]);
+});
+
+function quickRows(): SearchRow[] {
+  // Same fixture as the Rust `quick_fixture`: 1 draft, 2 nobody asked, 3 failing CI,
+  // 4 conflicts, 5 declined, 6 ready, 7 asked on Slack, 8 reviewer requested on GitHub.
+  return [
+    row({ id: 1, title: "One", is_draft: true }),
+    row({ id: 2, title: "Two", owner: "acme-labs" }),
+    row({ id: 3, title: "Three", checks: "failure", reviewers_requested: true }),
+    row({ id: 4, title: "Four", conflicts: true, review_decision: "approved", owner: "acme-labs" }),
+    row({ id: 5, title: "Five", review_decision: "changes_requested" }),
+    row({ id: 6, title: "Six", review_decision: "approved" }),
+    row({
+      id: 7,
+      title: "Seven",
+      slack: { requested_at: "2026-10-26T09:00:00Z", last_bumped_at: null, bump_count: 0, workspace: "acme", channel_id: "C0ACME0001", channel_name: "team-reviews", permalink: null, root_ts: "1.0", source: "app" },
+    }),
+    row({ id: 8, title: "Eight", reviewers_requested: true }),
+  ];
+}
+
+test("quick filters match the backend definitions", () => {
+  const base = { ...defaultView(), grouping: "repository" as const };
+  const expected = { draft: [1], no_review: [2], ci_trouble: [3, 4], declined: [5], ready: [6] } as const;
+  for (const [quick, ids] of Object.entries(expected)) {
+    const view = { ...base, filters: { ...base.filters, quick: quick as keyof typeof expected } };
+    expect(shownIds(quickRows(), [], "all", view).sort((a, b) => a - b)).toEqual(ids);
+  }
+});
+
+test("quick counts follow search and menu filters but ignore the quick filter", () => {
+  const base = { ...defaultView(), grouping: "repository" as const };
+  const view = { ...base, filters: { ...base.filters, quick: "draft" as const } };
+  const page = pageFromRows(quickRows(), [], request("all", view));
+  expect(page.quick).toEqual({ draft: 1, no_review: 1, ci_trouble: 2, declined: 1, ready: 1 });
+  expect(page.summary.open).toBe(1);
+  const labs = pageFromRows(quickRows(), [], request("all", { ...view, filters: { ...view.filters, orgs: ["acme-labs"] } }));
+  expect(labs.quick).toEqual({ draft: 0, no_review: 1, ci_trouble: 1, declined: 0, ready: 0 });
+  const searched = pageFromRows(quickRows(), [], request("all", { ...view, filters: { ...view.filters, quick: "ci_trouble" } }, "four"));
+  expect(pageIds(searched.sections)).toEqual([4]);
+  expect(searched.quick.ci_trouble).toBe(1);
+  expect(filtersActive(view.filters)).toBe(true);
+  expect(resetFilters(view).filters.quick).toBeNull();
 });

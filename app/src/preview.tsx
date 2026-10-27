@@ -81,6 +81,8 @@ function row(partial: Partial<SearchRow> & Pick<SearchRow, "id" | "title" | "num
     project_ids: [1],
     readiness: "ready",
     readiness_notes: [],
+    conflicts: false,
+    reviewers_requested: false,
     slack: null,
     ...partial,
   };
