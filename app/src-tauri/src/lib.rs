@@ -4,6 +4,7 @@ mod commands;
 mod context;
 mod demo;
 mod error;
+mod listing;
 mod logging;
 mod mapping_file;
 mod preferences;
@@ -98,7 +99,10 @@ pub fn run() {
             commands::sync_now,
             commands::sync_status,
             commands::set_focus,
-            commands::list_rows,
+            commands::list_page,
+            commands::probe_gh,
+            commands::rows_by_id,
+            commands::link_candidates,
             commands::list_projects,
             commands::create_project,
             commands::rename_project,

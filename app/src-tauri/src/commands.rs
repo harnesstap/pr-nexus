@@ -1,14 +1,18 @@
+use std::collections::{HashMap, HashSet};
+
 use chrono::Utc;
 use pr_nexus_core::domain::{
     Account, AccountId, AccountKind, AuthMode, LinkSource, PrId, Project, ProjectId, ProjectRule,
-    PullRequest, RequestStatus, RuleKind, ViewState,
+    PullRequest, RuleKind, ViewState,
 };
 use pr_nexus_core::linking;
 use pr_nexus_core::mapping::{self, ImportMode};
 use pr_nexus_core::onboarding::{self, OnboardingState};
 use pr_nexus_core::ownership::{self, OwnershipReport};
 use pr_nexus_core::providers::{SetupStep, VcsProvider};
+use pr_nexus_core::search;
 use pr_nexus_core::settings::{self, DEFAULT_REDIRECT};
+use pr_nexus_core::store::ListFacts;
 use pr_nexus_core::sync::SyncKind;
 use pr_nexus_providers::github::{self, GithubClient};
 use serde::{Deserialize, Serialize};
@@ -17,6 +21,7 @@ use tauri_plugin_opener::OpenerExt;
 
 use crate::blocking;
 use crate::error::AppError;
+use crate::listing;
 use crate::slack_link;
 use crate::state::{self, AppState};
 
@@ -55,6 +60,8 @@ pub struct Bootstrap {
     pub oauth_client_configured: bool,
     pub gh_ready: bool,
     pub gh_detail: String,
+    /// False when `gh_ready`/`gh_detail` were not checked; see `probe_gh`.
+    pub gh_probed: bool,
 }
 
 #[derive(Serialize)]
@@ -83,7 +90,7 @@ pub struct ImportSummary {
     pub rows: usize,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct SlackIndicator {
     pub requested_at: String,
     pub last_bumped_at: Option<String>,
@@ -96,16 +103,16 @@ pub struct SlackIndicator {
     pub source: String,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ListRow {
     pub id: i64,
     pub number: u64,
     pub title: String,
     pub url: String,
-    pub body: String,
     pub owner: String,
     pub repo: String,
     pub author_login: String,
+    pub head_ref: String,
     pub is_draft: bool,
     pub state: String,
     pub checks: String,
@@ -122,7 +129,7 @@ pub struct ListRow {
     pub slack: Option<SlackIndicator>,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ProjectDto {
     pub id: i64,
     pub name: String,
@@ -151,6 +158,33 @@ fn sync_dto(state: &AppState) -> SyncDto {
     }
 }
 
+#[derive(Serialize)]
+pub struct GhStatus {
+    pub gh_ready: bool,
+    pub gh_detail: String,
+}
+
+fn gh_probe() -> GhStatus {
+    let (gh_ready, gh_detail) = if github::github_token_from_env().is_some() {
+        (true, "Using PR_NEXUS_GITHUB_TOKEN".to_owned())
+    } else {
+        match github::read_gh_token() {
+            github::GhProbe::Ready { .. } => (true, "gh is logged in".to_owned()),
+            github::GhProbe::Unavailable { reason } => (false, reason),
+        }
+    };
+    GhStatus {
+        gh_ready,
+        gh_detail,
+    }
+}
+
+/// Whether the gh CLI has a token, for the wizard's GitHub step.
+#[tauri::command]
+pub async fn probe_gh() -> Result<GhStatus, AppError> {
+    blocking::run(|| Ok(gh_probe())).await
+}
+
 #[tauri::command]
 pub async fn bootstrap(app: State<'_, std::sync::Arc<AppState>>) -> Result<Bootstrap, AppError> {
     let app = blocking::Handle::new(&app);
@@ -169,12 +203,16 @@ pub async fn bootstrap(app: State<'_, std::sync::Arc<AppState>>) -> Result<Boots
                 orgs.push(org);
             }
         }
-        let (gh_ready, gh_detail) = if github::github_token_from_env().is_some() {
-            (true, "Using PR_NEXUS_GITHUB_TOKEN".to_owned())
+        // Running `gh` costs a subprocess or two on every launch. The list
+        // screen never needs it, so a finished setup leaves it to the wizard
+        // (`probe_gh`) when the user re-runs setup.
+        let gh_probed = saved.finished_at.is_none();
+        let probe = if gh_probed {
+            gh_probe()
         } else {
-            match github::read_gh_token() {
-                github::GhProbe::Ready { .. } => (true, "gh is logged in".to_owned()),
-                github::GhProbe::Unavailable { reason } => (false, reason),
+            GhStatus {
+                gh_ready: false,
+                gh_detail: String::new(),
             }
         };
         let oauth = github::oauth_client_id_from_env()
@@ -216,8 +254,9 @@ pub async fn bootstrap(app: State<'_, std::sync::Arc<AppState>>) -> Result<Boots
             sync: sync_dto(state),
             env_token: github::github_token_from_env().is_some(),
             oauth_client_configured: oauth.is_some(),
-            gh_ready,
-            gh_detail,
+            gh_ready: probe.gh_ready,
+            gh_detail: probe.gh_detail,
+            gh_probed,
             onboarding: saved,
         })
     })
@@ -509,7 +548,20 @@ pub async fn finish_onboarding(
         }
         saved.finished_at = Some(Utc::now().to_rfc3339());
         onboarding::save(&state.store, &saved)?;
-        let _ = state::run_sync(state, SyncKind::Manual);
+        // The list opens on what is already stored; the first sync runs
+        // behind it and the sidebar shows its progress (§8.2).
+        if !state.demo {
+            let mut status = state.sync.lock().expect("sync status");
+            status.phase = "syncing".into();
+            status.message = "Syncing…".into();
+        }
+        let background = app.inner().clone();
+        std::thread::Builder::new()
+            .name("pr-nexus-first-sync".into())
+            .spawn(move || {
+                let _ = state::run_sync(&background, SyncKind::Manual);
+            })
+            .map_err(|err| AppError::new("internal", format!("could not start sync: {err}")))?;
         Ok(sync_dto(state))
     })
     .await
@@ -545,21 +597,145 @@ pub async fn set_focus(
     Ok(())
 }
 
+/// Every synced row of the GitHub account, built with one query per table.
+fn list_items(state: &AppState) -> Result<Vec<listing::Item>, AppError> {
+    let Some(account) = state::github_account(&state.store)? else {
+        return Ok(Vec::new());
+    };
+    let flag = settings::blocked_review_required_is_ready(&state.store)?;
+    let prs = state
+        .store
+        .list_pull_requests_for_account_slim(account.id)?;
+    let mut facts = state.store.list_facts(account.id)?;
+    Ok(prs.iter().map(|pr| to_item(&mut facts, pr, flag)).collect())
+}
+
+/// Ids matching `query` in SQLite: title, description, repo, number, author,
+/// branch, and linked project names. `None` for a blank query.
+fn search_ids(
+    state: &AppState,
+    projects: &[ProjectDto],
+    query: &str,
+) -> Result<Option<HashSet<i64>>, AppError> {
+    let terms = search::terms(query);
+    if terms.is_empty() {
+        return Ok(None);
+    }
+    let Some(account) = state::github_account(&state.store)? else {
+        return Ok(Some(HashSet::new()));
+    };
+    let folded: Vec<(i64, String)> = projects
+        .iter()
+        .map(|project| (project.id, search::fold(&project.name)))
+        .collect();
+    let hits = terms
+        .iter()
+        .map(|term| {
+            folded
+                .iter()
+                .filter(|(_, name)| name.contains(term.as_str()))
+                .map(|(id, _)| *id)
+                .collect()
+        })
+        .collect();
+    Ok(Some(
+        state
+            .store
+            .search_pull_request_ids(account.id, terms, hits)?
+            .into_iter()
+            .map(|id| id.0)
+            .collect(),
+    ))
+}
+
+fn all_projects(state: &AppState) -> Result<Vec<ProjectDto>, AppError> {
+    Ok(state
+        .store
+        .list_projects()?
+        .into_iter()
+        .map(project_dto)
+        .collect())
+}
+
+/// One slice of the list plus counts over every match (§8.2).
 #[tauri::command]
-pub async fn list_rows(app: State<'_, std::sync::Arc<AppState>>) -> Result<Vec<ListRow>, AppError> {
+pub async fn list_page(
+    app: State<'_, std::sync::Arc<AppState>>,
+    request: listing::PageRequest,
+) -> Result<listing::PageDto, AppError> {
     let app = blocking::Handle::new(&app);
     blocking::run(move || {
         let state = app.inner().as_ref();
-        let Some(account) = state::github_account(&state.store)? else {
+        let projects = all_projects(state)?;
+        let items = list_items(state)?;
+        let found = search_ids(state, &projects, &request.query)?;
+        Ok(listing::page(&items, &projects, &request, found.as_ref()))
+    })
+    .await
+}
+
+/// Rows by id, in the order asked, for dialogs that outlive the loaded pages.
+#[tauri::command]
+pub async fn rows_by_id(
+    app: State<'_, std::sync::Arc<AppState>>,
+    ids: Vec<i64>,
+) -> Result<Vec<ListRow>, AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        let mut by_id: HashMap<i64, ListRow> = list_items(state)?
+            .into_iter()
+            .map(|item| (item.row.id, item.row))
+            .collect();
+        Ok(ids.iter().filter_map(|id| by_id.remove(id)).collect())
+    })
+    .await
+}
+
+/// Open PRs the project dialog can link by hand: matching, not linked yet.
+#[tauri::command]
+pub async fn link_candidates(
+    app: State<'_, std::sync::Arc<AppState>>,
+    project_id: i64,
+    query: String,
+    limit: usize,
+) -> Result<Vec<ListRow>, AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        let projects = all_projects(state)?;
+        let Some(found) = search_ids(state, &projects, &query)? else {
             return Ok(Vec::new());
         };
-        let flag = settings::blocked_review_required_is_ready(&state.store)?;
-        let prs = state.store.list_pull_requests_for_account(account.id)?;
-        let mut rows = Vec::with_capacity(prs.len());
-        for pr in prs {
-            rows.push(to_row(state, &pr, flag)?);
-        }
-        Ok(rows)
+        let linked: HashSet<i64> = state
+            .store
+            .list_project_links(ProjectId(project_id))?
+            .into_iter()
+            .filter(|link| !matches!(link.source, LinkSource::Excluded))
+            .map(|link| link.pr.0)
+            .collect();
+        let mut items: Vec<listing::Item> = list_items(state)?
+            .into_iter()
+            .filter(|item| {
+                found.contains(&item.row.id)
+                    && !linked.contains(&item.row.id)
+                    && !item.row.hidden
+                    && item.row.state == "open"
+            })
+            .collect();
+        // `12` or `#12` puts PR number 12 first, then the newest matches.
+        let exact: Option<u64> = query.trim().trim_start_matches('#').parse().ok();
+        items.sort_by(|left, right| {
+            (Some(right.row.number) == exact)
+                .cmp(&(Some(left.row.number) == exact))
+                .then(right.updated_ms.cmp(&left.updated_ms))
+                .then(left.row.id.cmp(&right.row.id))
+        });
+        Ok(items
+            .into_iter()
+            .take(limit.min(50))
+            .map(|item| item.row)
+            .collect())
     })
     .await
 }
@@ -1065,48 +1241,58 @@ pub(crate) fn indicator(request: pr_nexus_core::domain::ReviewRequest) -> SlackI
     }
 }
 
-fn to_row(state: &AppState, pr: &PullRequest, flag: bool) -> Result<ListRow, AppError> {
-    let links = state.store.list_pr_projects(pr.id)?;
-    let requests = state.store.list_review_requests(pr.id)?;
-    let slack = requests
-        .into_iter()
-        .filter(|request| matches!(request.status, RequestStatus::Active))
-        .max_by_key(|request| request.requested_at)
-        .map(indicator);
-    let readiness = ownership::cached_readiness(&state.store, pr, flag)?;
+fn to_item(facts: &mut ListFacts, pr: &PullRequest, flag: bool) -> listing::Item {
+    let links = facts.links.remove(&pr.id).unwrap_or_default();
+    let request = facts.active_requests.remove(&pr.id);
+    let slack_requested_ms = request
+        .as_ref()
+        .map_or(0, |request| request.requested_at.timestamp_millis());
+    let slack_stamp_ms = request.as_ref().map(|request| {
+        request
+            .last_bumped_at
+            .unwrap_or(request.requested_at)
+            .timestamp_millis()
+    });
+    let readiness = ownership::cached_readiness_with(facts.ownership.get(&pr.id), pr, flag);
     let (label, notes) = match readiness {
         pr_nexus_core::domain::Readiness::Ready { notes } => ("ready", notes),
         pr_nexus_core::domain::Readiness::Blocked { reasons } => ("blocked", reasons),
         pr_nexus_core::domain::Readiness::Unknown { reasons } => ("unknown", reasons),
     };
-    Ok(ListRow {
-        id: pr.id.0,
-        number: pr.number,
-        title: pr.title.clone(),
-        url: pr.url.clone(),
-        body: pr.body.clone(),
-        owner: pr.repo.owner.clone(),
-        repo: format!("{}/{}", pr.repo.owner, pr.repo.name),
-        author_login: pr.author_login.clone(),
-        is_draft: pr.is_draft,
-        state: pr.state.as_str().to_owned(),
-        checks: pr.checks.as_str().to_owned(),
-        review_decision: pr.review_decision.map(|value| value.as_str().to_owned()),
-        unresolved_threads: pr.unresolved_threads,
-        total_threads: pr.total_threads,
-        involvement: pr.involvement.bits(),
-        updated_at: pr.updated_at.to_rfc3339(),
-        created_at: pr.created_at.to_rfc3339(),
-        hidden: pr.hidden,
-        project_ids: links
-            .into_iter()
-            .filter(|link| !matches!(link.source, pr_nexus_core::domain::LinkSource::Excluded))
-            .map(|link| link.project.0)
-            .collect(),
-        readiness: label.into(),
-        readiness_notes: notes,
-        slack,
-    })
+    listing::Item {
+        row: ListRow {
+            id: pr.id.0,
+            number: pr.number,
+            title: pr.title.clone(),
+            url: pr.url.clone(),
+            owner: pr.repo.owner.clone(),
+            repo: format!("{}/{}", pr.repo.owner, pr.repo.name),
+            author_login: pr.author_login.clone(),
+            head_ref: pr.head_ref.clone(),
+            is_draft: pr.is_draft,
+            state: pr.state.as_str().to_owned(),
+            checks: pr.checks.as_str().to_owned(),
+            review_decision: pr.review_decision.map(|value| value.as_str().to_owned()),
+            unresolved_threads: pr.unresolved_threads,
+            total_threads: pr.total_threads,
+            involvement: pr.involvement.bits(),
+            updated_at: pr.updated_at.to_rfc3339(),
+            created_at: pr.created_at.to_rfc3339(),
+            hidden: pr.hidden,
+            project_ids: links
+                .into_iter()
+                .filter(|link| !matches!(link.source, LinkSource::Excluded))
+                .map(|link| link.project.0)
+                .collect(),
+            readiness: label.into(),
+            readiness_notes: notes,
+            slack: request.map(indicator),
+        },
+        updated_ms: pr.updated_at.timestamp_millis(),
+        created_ms: pr.created_at.timestamp_millis(),
+        slack_requested_ms,
+        slack_stamp_ms,
+    }
 }
 
 fn reqwest_client() -> Result<reqwest::blocking::Client, AppError> {

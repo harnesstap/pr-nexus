@@ -1,5 +1,4 @@
-import type { ListRow, ProjectLinkDto, RuleKind } from "../api";
-import { matchesSearch } from "./model";
+import type { RuleKind } from "../api";
 
 export const PROJECT_COLORS = ["#7c5cbf", "#3f6f8f", "#2f855a", "#b7791f", "#c05621", "#c53030", "#b83280", "#4a5568"];
 
@@ -13,17 +12,4 @@ export const RULE_KINDS: { id: RuleKind; label: string; placeholder: string; hin
 
 export function ruleKindLabel(kind: RuleKind): string {
   return RULE_KINDS.find((item) => item.id === kind)?.label ?? kind;
-}
-
-/** Open PRs that can be added by hand: not already linked (excluded ones can be re-added). */
-export function linkCandidates(rows: readonly ListRow[], links: readonly ProjectLinkDto[], query: string, limit = 8): ListRow[] {
-  if (!query.trim()) {
-    return [];
-  }
-  const linked = new Set(links.filter((link) => link.source !== "excluded").map((link) => link.pr_id));
-  const needle = query.trim().replace(/^#/, "");
-  return rows
-    .filter((row) => !linked.has(row.id) && !row.hidden && row.state === "open")
-    .filter((row) => String(row.number) === needle || matchesSearch(row, [], query))
-    .slice(0, limit);
 }

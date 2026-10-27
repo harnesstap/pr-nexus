@@ -11,6 +11,7 @@ pub mod ownership;
 pub mod providers;
 pub mod redact;
 pub mod review;
+pub mod search;
 pub mod settings;
 pub mod store;
 pub mod sync;

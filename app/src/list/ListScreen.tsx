@@ -1,10 +1,14 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import type { Api, Bootstrap, ListRow, ProjectDto } from "../api";
 import { errorMessage } from "../api";
 import { ClockIcon, FolderIcon, GearIcon, HomeIcon, LogoIcon, PlusIcon, RefreshIcon } from "../icons";
 import { OrgOption } from "../orgs";
 import { DRAG_MIME, TOAST_MS, bulkToast, defaultView, parseDragIds, parseViewState, renameError, sentToast, syncLabel, type SavedView, type Toast } from "./model";
 import { PrList } from "./PrList";
+import type { PageRequest } from "./paging";
+
+/** How often sync status is polled while a background sync runs. */
+const SYNC_POLL_MS = 3_000;
 import { PrDetailDialog } from "./PrDetailDialog";
 import { ProjectDialog } from "./ProjectDialog";
 import { SlackSettings } from "../slack/SlackSettings";
@@ -24,7 +28,8 @@ interface Props {
 }
 
 export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
-  const [rows, setRows] = useState<ListRow[]>([]);
+  /** Bumped whenever stored rows may have changed; the list re-reads in place. */
+  const [version, setVersion] = useState(0);
   const [projects, setProjects] = useState<ProjectDto[]>([]);
   const [viewKey, setViewKey] = useState("mine");
   const [views, setViews] = useState<Record<string, SavedView>>({});
@@ -42,8 +47,8 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
   const [mappingHint, setMappingHint] = useState(() => showMappingHint(boot.mapping_count, boot.slack_workspaces.length));
   const [draft, setDraft] = useState<{ name: string; error: string | null } | null>(null);
   const [editingProject, setEditingProject] = useState<number | null>(null);
-  const [detailId, setDetailId] = useState<number | null>(null);
-  const [reviewId, setReviewId] = useState<number | null>(null);
+  const [detailRow, setDetailRow] = useState<ListRow | null>(null);
+  const [reviewRow, setReviewRow] = useState<ListRow | null>(null);
   const [bulkIds, setBulkIds] = useState<number[] | null>(null);
   const [notice, setNotice] = useState<Toast | null>(null);
   /** The bulk run's summary, shown as a toast once its dialog closes. */
@@ -64,12 +69,40 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
     return () => window.clearTimeout(timer);
   }, [notice]);
 
+  // Sync runs in the background (§8.2): poll its status, and re-read the list
+  // while it writes so new rows show up without blocking the first screen.
+  const syncing = sync.phase === "syncing";
+  useEffect(() => {
+    if (!syncing) {
+      return;
+    }
+    let cancel = false;
+    const timer = window.setInterval(() => {
+      void api.syncStatus().then((status) => {
+        if (cancel) {
+          return;
+        }
+        setSync(status);
+        setVersion((value) => value + 1);
+        if (status.phase !== "syncing") {
+          void api.listProjects().then((next) => !cancel && setProjects(next));
+        }
+      });
+    }, SYNC_POLL_MS);
+    return () => {
+      cancel = true;
+      window.clearInterval(timer);
+    };
+  }, [api, syncing]);
+
+  const loadPage = useCallback((request: PageRequest) => api.listPage(request), [api]);
+
   useEffect(() => {
     let cancel = false;
-    void Promise.all([api.listRows(), api.listProjects()])
-      .then(([nextRows, nextProjects]) => {
+    void api
+      .listProjects()
+      .then((nextProjects) => {
         if (!cancel) {
-          setRows(nextRows);
           setProjects(nextProjects);
           setListState({ phase: "ready" });
         }
@@ -109,7 +142,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
   }, [api, view, viewKey, loaded]);
 
   async function reload() {
-    setRows(await api.listRows());
+    setVersion((value) => value + 1);
     setProjects(await api.listProjects());
   }
 
@@ -160,8 +193,6 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
 
   const activeProjects = projects.filter((project) => !project.archived);
   const dialogProject = projects.find((project) => project.id === editingProject) ?? null;
-  const detailRow = rows.find((row) => row.id === detailId) ?? null;
-  const reviewRow = rows.find((row) => row.id === reviewId) ?? null;
   const syncTone = sync.phase === "error" || sync.paused || sync.phase === "paused" ? "bg-amber-400" : sync.phase === "syncing" ? "bg-sky-400" : "bg-emerald-400";
 
   const orgPicker = (inSettings: boolean) => (
@@ -388,7 +419,8 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
           </div>
         ) : (
           <PrList
-            rows={rows}
+            loadPage={loadPage}
+            version={version}
             projects={projects}
             viewKey={viewKey}
             view={view}
@@ -408,8 +440,8 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
             }}
             onEditProject={setEditingProject}
             onLinkPrs={(projectId, ids) => void linkPrs(projectId, ids)}
-            onDetails={(row) => setDetailId(row.id)}
-            onRequestReview={(row) => setReviewId(row.id)}
+            onDetails={setDetailRow}
+            onRequestReview={setReviewRow}
             onBulkReview={setBulkIds}
           />
         )}
@@ -432,14 +464,14 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
         {error && <p className="px-4 py-2 text-sm text-rose-300">{error}</p>}
         {detailRow && (
           <PrDetailDialog key={detailRow.id} api={api} row={detailRow} slack={{ mentions: boot.slack_mentions }} onClose={() => {
-              setDetailId(null);
+              setDetailRow(null);
               // The detail may have resolved code-owner status the list row now uses.
               void reload();
             }}
             onOpen={(url) => void api.openExternal(url)}
             onRequestReview={() => {
-              setDetailId(null);
-              setReviewId(detailRow.id);
+              setDetailRow(null);
+              setReviewRow(detailRow);
             }} />
         )}
         {reviewRow && (
@@ -447,12 +479,11 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
             key={reviewRow.id}
             api={api}
             row={reviewRow}
-            onClose={() => setReviewId(null)}
+            onClose={() => setReviewRow(null)}
             onOpen={(url) => void api.openExternal(url)}
             onSent={(slack) => {
-              const id = reviewRow.id;
-              setRows((current) => current.map((row) => (row.id === id ? { ...row, slack } : row)));
-              setReviewId(null);
+              setReviewRow(null);
+              setVersion((value) => value + 1);
               setNotice(sentToast(slack));
             }}
           />
@@ -471,13 +502,12 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
             onOpen={(url) => void api.openExternal(url)}
             onSent={(done) => {
               setBulkSummary(bulkToast(done));
-              const byId = new Map(done.indicators.map((item) => [item.pr_id, item.indicator]));
-              setRows((current) => current.map((row) => (byId.has(row.id) ? { ...row, slack: byId.get(row.id) ?? null } : row)));
+              setVersion((value) => value + 1);
             }}
           />
         )}
         {dialogProject && (
-          <ProjectDialog api={api} project={dialogProject} rows={rows} onClose={() => setEditingProject(null)} onChanged={reload} />
+          <ProjectDialog api={api} project={dialogProject} onClose={() => setEditingProject(null)} onChanged={reload} />
         )}
       </main>
     </div>

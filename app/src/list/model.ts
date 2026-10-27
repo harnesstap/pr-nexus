@@ -176,31 +176,6 @@ export function normalizeSearch(value: string): string {
   return value.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
 }
 
-export function matchesSearch(row: ListRow, projectNames: readonly string[], query: string): boolean {
-  const terms = normalizeSearch(query).split(/\s+/).filter((term) => term.length > 0);
-  if (terms.length === 0) {
-    return true;
-  }
-  const haystack = normalizeSearch(
-    [...projectNames, row.title, row.body, row.repo, row.owner, `#${row.number}`, String(row.number)].join("\n"),
-  );
-  return terms.every((term) => haystack.includes(term));
-}
-
-export function rowsForNav(rows: readonly ListRow[], viewKey: string): ListRow[] {
-  if (viewKey === "mine") {
-    return rows.filter((row) => (row.involvement & AUTHOR) !== 0);
-  }
-  if (viewKey === "to_review") {
-    return rows.filter((row) => (row.involvement & REVIEW_REQUESTED) !== 0);
-  }
-  if (viewKey.startsWith("project:")) {
-    const id = Number(viewKey.slice("project:".length));
-    return rows.filter((row) => row.project_ids.includes(id));
-  }
-  return [...rows];
-}
-
 export function passesMenu(row: ListRow, filters: Filters, now: Date): boolean {
   if (filters.orgs.length > 0 && !filters.orgs.some((org) => org.toLowerCase() === row.owner.toLowerCase())) {
     return false;
@@ -237,47 +212,6 @@ export function scopeRow(row: ListRow, projects: readonly ProjectDto[], filters:
   return !(onlyArchived && !filters.archived);
 }
 
-export function visibleRows(
-  rows: readonly ListRow[],
-  projects: readonly ProjectDto[],
-  viewKey: string,
-  view: SavedView,
-  query: string,
-  now: Date,
-): ListRow[] {
-  return rowsForNav(rows, viewKey).filter((row) => {
-    if (!scopeRow(row, projects, view.filters)) {
-      return false;
-    }
-    if (!passesMenu(row, view.filters, now)) {
-      return false;
-    }
-    const names = projects.filter((project) => row.project_ids.includes(project.id)).map((project) => project.name);
-    return matchesSearch(row, names, query);
-  });
-}
-
-/**
- * Which empty project sections stay visible in Project grouping, so they can be
- * renamed and receive dropped PRs (§8.2). Search or menu filters hide them; a
- * project view keeps only its own section.
- */
-export function keptEmptyProjects(
-  projects: readonly ProjectDto[],
-  viewKey: string,
-  filters: Filters,
-  query: string,
-): Set<number> {
-  if (query.trim() || filtersActive(filters)) {
-    return new Set();
-  }
-  const current = projectIdOf(viewKey);
-  if (current !== null) {
-    return new Set([current]);
-  }
-  return new Set(displayedProjects(projects, filters).map((project) => project.id));
-}
-
 export function projectIdOf(viewKey: string): number | null {
   if (!viewKey.startsWith("project:")) {
     return null;
@@ -288,30 +222,6 @@ export function projectIdOf(viewKey: string): number | null {
 
 export function isOpen(row: ListRow): boolean {
   return row.state === "open";
-}
-
-/**
- * Header subtitle (§8.2): "5 open PRs across 2 projects", or "… in this
- * project". Merged and closed rows shown by the Archived filter are counted apart.
- */
-export function headerSummary(
-  shown: readonly ListRow[],
-  projects: readonly ProjectDto[],
-  viewKey: string,
-  filters: Filters,
-): string {
-  const open = shown.filter(isOpen).length;
-  const finished = shown.length - open;
-  const extra = finished > 0 ? ` · ${finished} merged or closed` : "";
-  const prs = `${open} open ${open === 1 ? "PR" : "PRs"}`;
-  if (projectIdOf(viewKey) !== null) {
-    return `${prs} in this project${extra}`;
-  }
-  const live = displayedProjects(projects, filters);
-  const ids = new Set(live.map((project) => project.id));
-  const unassigned = shown.filter((row) => !row.project_ids.some((id) => ids.has(id))).length;
-  const base = `${prs} across ${live.length} ${live.length === 1 ? "project" : "projects"}${extra}`;
-  return unassigned > 0 && live.length > 0 ? `${base} · ${unassigned} unassigned` : base;
 }
 
 /** MIME type carried by dragged PR rows. */
@@ -329,47 +239,6 @@ export function parseDragIds(data: string): number[] {
   } catch {
     return [];
   }
-}
-
-export function groupRows(
-  rows: readonly ListRow[],
-  projects: readonly ProjectDto[],
-  view: SavedView,
-  now: Date,
-  keepEmpty: ReadonlySet<number> = new Set(),
-): Section[] {
-  const ordered = [...rows].sort((left, right) => compareRows(left, right, view.ordering, view.direction));
-  switch (view.grouping) {
-    case "project":
-      return groupByProject(ordered, projects, view.filters, keepEmpty);
-    case "repository":
-      return groupBy(ordered, (row) => row.repo);
-    case "org":
-      return groupBy(ordered, (row) => row.owner);
-    case "status":
-      return groupBy(ordered, (row) => statusLabel(row.readiness));
-    case "updated":
-      return ["Today", "This week", "Older"]
-        .map((title) => ({
-          key: title,
-          title,
-          projectId: null,
-          rows: ordered.filter((row) => updatedBucket(row.updated_at, now) === title),
-        }))
-        .filter((section) => section.rows.length > 0);
-    default: {
-      const unreachable: never = view.grouping;
-      return unreachable;
-    }
-  }
-}
-
-export function sectionIds(section: Section): number[] {
-  return section.rows.map((row) => row.id);
-}
-
-export function visibleIds(sections: readonly Section[]): number[] {
-  return [...new Set(sections.flatMap((section) => sectionIds(section)))];
 }
 
 export function renameError(name: string, projects: readonly ProjectDto[], id: number | null): string | null {
@@ -460,123 +329,6 @@ function displayedProjects(projects: readonly ProjectDto[], filters: Filters): P
     .filter((project) => filters.archived || !project.archived)
     .slice()
     .sort((left, right) => left.sort_order - right.sort_order || left.name.localeCompare(right.name));
-}
-
-function groupByProject(
-  rows: readonly ListRow[],
-  projects: readonly ProjectDto[],
-  filters: Filters,
-  keepEmpty: ReadonlySet<number>,
-): Section[] {
-  const shown = displayedProjects(projects, filters);
-  const ids = new Set(shown.map((project) => project.id));
-  const sections: Section[] = shown
-    .map((project) => ({
-      key: `project:${project.id}`,
-      title: project.name,
-      projectId: project.id,
-      rows: rows.filter((row) => row.project_ids.includes(project.id)),
-    }))
-    .filter((section) => section.rows.length > 0 || keepEmpty.has(section.projectId));
-  const unassigned = rows.filter((row) => !row.project_ids.some((id) => ids.has(id)));
-  if (unassigned.length > 0) {
-    sections.push({ key: "unassigned", title: "Unassigned", projectId: null, rows: unassigned });
-  }
-  return sections;
-}
-
-function groupBy(rows: readonly ListRow[], keyOf: (row: ListRow) => string): Section[] {
-  const order: string[] = [];
-  const buckets = new Map<string, ListRow[]>();
-  for (const row of rows) {
-    const key = keyOf(row);
-    const bucket = buckets.get(key);
-    if (bucket) {
-      bucket.push(row);
-    } else {
-      order.push(key);
-      buckets.set(key, [row]);
-    }
-  }
-  return order.map((key) => ({
-    key,
-    title: key,
-    projectId: null,
-    rows: buckets.get(key) ?? [],
-  }));
-}
-
-function compareRows(left: ListRow, right: ListRow, ordering: Ordering, direction: Direction): number {
-  const sign = direction === "asc" ? 1 : -1;
-  const delta = rank(left, ordering) - rank(right, ordering);
-  if (delta !== 0) {
-    return delta * sign;
-  }
-  return left.id - right.id;
-}
-
-function rank(row: ListRow, ordering: Ordering): number {
-  switch (ordering) {
-    case "updated":
-      return new Date(row.updated_at).getTime();
-    case "created":
-      return new Date(row.created_at).getTime();
-    case "slack":
-      return row.slack ? new Date(row.slack.requested_at).getTime() : 0;
-    case "readiness":
-      return readinessRank(row.readiness);
-    case "number":
-      return row.number;
-    default: {
-      const unreachable: never = ordering;
-      return unreachable;
-    }
-  }
-}
-
-function readinessRank(readiness: ListRow["readiness"]): number {
-  switch (readiness) {
-    case "ready":
-      return 0;
-    case "unknown":
-      return 1;
-    case "blocked":
-      return 2;
-    default: {
-      const unreachable: never = readiness;
-      return unreachable;
-    }
-  }
-}
-
-function statusLabel(readiness: ListRow["readiness"]): string {
-  switch (readiness) {
-    case "ready":
-      return "Ready";
-    case "unknown":
-      return "Unknown";
-    case "blocked":
-      return "Blocked";
-    default: {
-      const unreachable: never = readiness;
-      return unreachable;
-    }
-  }
-}
-
-function updatedBucket(iso: string, now: Date): "Today" | "This week" | "Older" {
-  const then = new Date(iso);
-  const start = new Date(now);
-  start.setHours(0, 0, 0, 0);
-  if (then >= start) {
-    return "Today";
-  }
-  const week = new Date(start);
-  week.setDate(week.getDate() - 6);
-  if (then >= week) {
-    return "This week";
-  }
-  return "Older";
 }
 
 function statusMatches(row: ListRow, status: StatusFilter): boolean {

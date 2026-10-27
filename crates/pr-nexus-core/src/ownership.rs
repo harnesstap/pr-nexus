@@ -330,17 +330,25 @@ pub fn cached_readiness(
     pr: &PullRequest,
     blocked_review_required_is_ready: bool,
 ) -> Result<Readiness, CoreError> {
-    let mut snapshot = snapshot_from_pr(pr);
-    if let Some(cached) = store
-        .get_ownership_cache(pr.id)?
-        .and_then(|entry| CachedOwnership::for_pr(&entry, pr))
-    {
-        cached.apply(&mut snapshot);
-    }
-    Ok(decide_readiness_with(
-        &snapshot,
+    let entry = store.get_ownership_cache(pr.id)?;
+    Ok(cached_readiness_with(
+        entry.as_ref(),
+        pr,
         blocked_review_required_is_ready,
     ))
+}
+
+/// [`cached_readiness`] with the cache entry already loaded, for bulk listing.
+pub fn cached_readiness_with(
+    entry: Option<&OwnershipCacheEntry>,
+    pr: &PullRequest,
+    blocked_review_required_is_ready: bool,
+) -> Readiness {
+    let mut snapshot = snapshot_from_pr(pr);
+    if let Some(cached) = entry.and_then(|entry| CachedOwnership::for_pr(entry, pr)) {
+        cached.apply(&mut snapshot);
+    }
+    decide_readiness_with(&snapshot, blocked_review_required_is_ready)
 }
 
 /// Resolves ownership for open pull requests whose list readiness hinges on an

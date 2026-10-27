@@ -9,7 +9,10 @@ use crate::error::CoreError;
 
 use super::db;
 
-const MIGRATIONS: &[&str] = &[include_str!("../../migrations/0001_initial.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("../../migrations/0001_initial.sql"),
+    include_str!("../../migrations/0002_list_search.sql"),
+];
 
 pub(super) fn migrate(conn: &mut Connection) -> Result<(), CoreError> {
     let current: i64 = conn

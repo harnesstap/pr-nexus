@@ -29,6 +29,7 @@ const boot: Bootstrap = {
   oauth_client_configured: false,
   gh_ready: false,
   gh_detail: "",
+  gh_probed: true,
 };
 
 function api(projects: ProjectDto[]): Api {
@@ -76,7 +77,7 @@ function api(projects: ProjectDto[]): Api {
     finish: () => Promise.resolve(boot.sync),
     syncNow: () => Promise.resolve(boot.sync),
     syncStatus: () => Promise.resolve(boot.sync),
-    listRows: () => Promise.resolve([]),
+    probeGh: () => Promise.resolve({ gh_ready: false, gh_detail: "" }),
     listProjects: () => Promise.resolve([...projects]),
     createProject: vi.fn((name: string) => {
       const project = { id: projects.length + 1, name, color: "#7c5cbf", archived: false, description: "", sort_order: projects.length };
@@ -86,7 +87,7 @@ function api(projects: ProjectDto[]): Api {
     renameProject: () => Promise.resolve(),
     archiveProject: () => Promise.resolve(),
     deleteProject: () => Promise.resolve(),
-    ...memoryProjectApi([], []),
+    ...memoryProjectApi([], projects),
     loadViewState: () => Promise.resolve(null),
     saveViewState: () => Promise.resolve(),
     openExternal: () => Promise.resolve(),
@@ -133,9 +134,10 @@ test("dropping PRs on a sidebar project links them and confirms", async () => {
 
 test("a failed first load shows the error with Try again", async () => {
   let fail = true;
+  const base = api([]);
   const fake: Api = {
-    ...api([]),
-    listRows: () => (fail ? Promise.reject(new Error("database is locked")) : Promise.resolve([])),
+    ...base,
+    listPage: (request) => (fail ? Promise.reject(new Error("database is locked")) : base.listPage(request)),
   };
   render(<ListScreen api={fake} boot={boot} onBoot={() => undefined} />);
   expect(await screen.findByRole("alert")).toHaveTextContent(/database is locked/);
