@@ -1,7 +1,10 @@
-use pr_nexus_core::domain::{AccountId, Involvement, VcsKind};
+use std::time::Duration;
+
+use pr_nexus_core::domain::{AccountId, Involvement, ProviderRef, VcsKind};
 use pr_nexus_core::error::ProviderError;
 use pr_nexus_core::providers::{PrQuery, SearchBucket, VcsProvider};
 use pr_nexus_providers::github::{DevicePoll, GithubClient, poll_device_flow, start_device_flow};
+use serde_json::json;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -220,4 +223,199 @@ fn viewer_keeps_graphql_orgs_when_rest_fails() {
     let viewer = client.viewer().unwrap();
     assert_eq!(viewer.organizations, vec!["acme"]);
     assert!(viewer.organizations_needing_sso.is_empty());
+}
+
+const GATEWAY_PAGE: &str = "<html><head><title>502 Bad Gateway</title></head></html>";
+
+fn graphql_variables(request: &wiremock::Request) -> serde_json::Value {
+    let body: serde_json::Value = serde_json::from_slice(&request.body).expect("graphql body");
+    body["variables"].clone()
+}
+
+fn sent_variables(server: &MockServer) -> Vec<serde_json::Value> {
+    let runtime = tokio::runtime::Runtime::new().expect("tokio");
+    runtime
+        .block_on(server.received_requests())
+        .expect("recorded requests")
+        .iter()
+        .map(graphql_variables)
+        .collect()
+}
+
+/// Answers the gateway page for requests `slow` picks and `ok` for the rest.
+fn mount_slow(
+    server: &MockServer,
+    slow: impl Fn(&serde_json::Value) -> bool + Send + Sync + 'static,
+    ok: ResponseTemplate,
+) {
+    let runtime = tokio::runtime::Runtime::new().expect("tokio");
+    runtime.block_on(async {
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(move |request: &wiremock::Request| slow(&graphql_variables(request)))
+            .respond_with(ResponseTemplate::new(502).set_body_string(GATEWAY_PAGE))
+            .with_priority(1)
+            .mount(server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(ok)
+            .with_priority(2)
+            .mount(server)
+            .await;
+    });
+}
+
+fn fast_client(server: &MockServer) -> GithubClient {
+    GithubClient::with_base(server.uri(), AccountId(1), "token")
+        .unwrap()
+        .with_backoff(Duration::ZERO)
+}
+
+#[test]
+fn search_retries_a_gateway_timeout_with_a_smaller_page() {
+    let server = server();
+    mount_slow(
+        &server,
+        |vars| vars["first"] == 20,
+        ResponseTemplate::new(200).set_body_string(search_body()),
+    );
+    let rows = fast_client(&server)
+        .search_pull_requests(&PrQuery {
+            bucket: SearchBucket::Mine,
+        })
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    let firsts: Vec<_> = sent_variables(&server)
+        .iter()
+        .map(|vars| vars["first"].clone())
+        .collect();
+    assert_eq!(firsts, vec![json!(20), json!(10)]);
+}
+
+#[test]
+fn search_gives_up_after_four_timeouts_and_names_the_query() {
+    let server = server();
+    mount_slow(
+        &server,
+        |_| true,
+        ResponseTemplate::new(200).set_body_string(search_body()),
+    );
+    let err = fast_client(&server)
+        .search_pull_requests(&PrQuery {
+            bucket: SearchBucket::ReviewRequested,
+        })
+        .unwrap_err();
+    match err {
+        ProviderError::Api { code, message } => {
+            assert_eq!(code, "502");
+            assert!(message.contains("timed out"), "{message}");
+            assert!(message.contains("review requests"), "{message}");
+            assert!(message.contains("4 tries"), "{message}");
+        }
+        other => panic!("{other:?}"),
+    }
+    let firsts: Vec<_> = sent_variables(&server)
+        .iter()
+        .map(|vars| vars["first"].clone())
+        .collect();
+    assert_eq!(firsts, vec![json!(20), json!(10), json!(5), json!(5)]);
+}
+
+#[test]
+fn a_graphql_timeout_error_is_retried_like_a_gateway_timeout() {
+    let server = server();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async {
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"data":null,"errors":[{"message":"Something went wrong while executing your query. This may be the result of a timeout, or it could be a GitHub bug."}]}"#,
+            ))
+            .up_to_n_times(1)
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(search_body()))
+            .with_priority(2)
+            .mount(&server)
+            .await;
+    });
+    drop(runtime);
+    let rows = fast_client(&server)
+        .search_pull_requests(&PrQuery {
+            bucket: SearchBucket::Mine,
+        })
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(sent_variables(&server).len(), 2);
+}
+
+#[test]
+fn other_server_errors_are_not_retried() {
+    let server = server();
+    mount(
+        &server,
+        ResponseTemplate::new(500).set_body_string(r#"{"message":"boom"}"#),
+    );
+    let err = fast_client(&server)
+        .search_pull_requests(&PrQuery {
+            bucket: SearchBucket::Mine,
+        })
+        .unwrap_err();
+    assert!(matches!(err, ProviderError::Api { ref code, .. } if code == "500"));
+    assert_eq!(sent_variables(&server).len(), 1);
+}
+
+#[test]
+fn refresh_shrinks_its_chunks_after_a_gateway_timeout() {
+    let fixture: serde_json::Value = serde_json::from_str(&search_body()).unwrap();
+    let node = fixture["data"]["search"]["nodes"][0].clone();
+    let server = server();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async {
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(|request: &wiremock::Request| {
+                graphql_variables(request)["ids"]
+                    .as_array()
+                    .is_some_and(|ids| ids.len() > 10)
+            })
+            .respond_with(ResponseTemplate::new(504).set_body_string(GATEWAY_PAGE))
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(move |request: &wiremock::Request| {
+                let count = graphql_variables(request)["ids"]
+                    .as_array()
+                    .map_or(0, Vec::len);
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "data": {
+                        "rateLimit": fixture["data"]["rateLimit"].clone(),
+                        "nodes": vec![node.clone(); count],
+                    }
+                }))
+            })
+            .with_priority(2)
+            .mount(&server)
+            .await;
+    });
+    drop(runtime);
+    let ids: Vec<ProviderRef> = (0..25)
+        .map(|n| ProviderRef {
+            account: AccountId(1),
+            id: format!("PR_node_{n}"),
+        })
+        .collect();
+    let rows = fast_client(&server).refresh_pull_requests(&ids).unwrap();
+    assert_eq!(rows.len(), 25);
+    let sizes: Vec<_> = sent_variables(&server)
+        .iter()
+        .map(|vars| vars["ids"].as_array().map_or(0, Vec::len))
+        .collect();
+    assert_eq!(sizes, vec![20, 10, 10, 5]);
 }

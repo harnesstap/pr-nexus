@@ -1,11 +1,11 @@
-query SearchPullRequests($query: String!, $cursor: String) {
+query SearchPullRequests($query: String!, $first: Int!, $cursor: String) {
   rateLimit {
     limit
     remaining
     resetAt
     cost
   }
-  search(type: ISSUE, query: $query, first: 50, after: $cursor) {
+  search(type: ISSUE, query: $query, first: $first, after: $cursor) {
     pageInfo {
       hasNextPage
       endCursor

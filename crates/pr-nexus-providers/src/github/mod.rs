@@ -1,7 +1,8 @@
 //! Blocking GitHub GraphQL client.
 //!
 //! Search uses `search(type: ISSUE)` with a cap of 500 per bucket. Org
-//! filtering is not done here.
+//! filtering is not done here. Search and `nodes` refresh pages shrink and
+//! retry when GitHub times out (502/503/504 or a GraphQL timeout error).
 
 mod auth;
 mod http;
@@ -14,6 +15,7 @@ pub use auth::{
 };
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use pr_nexus_core::domain::{AccountId, Involvement, PullRequest, TeamRef, VcsKind};
 use pr_nexus_core::error::ProviderError;
@@ -21,12 +23,16 @@ use pr_nexus_core::providers::{
     OwnershipInputs, OwnershipProbe, PrQuery, RateBudget, SearchBucket, SyncedPullRequest,
     TeamMembers, VcsProvider, VcsUser,
 };
-use pr_nexus_core::sync::{SEARCH_CAP, search_query};
+use pr_nexus_core::sync::{PAGE_SIZES, SEARCH_CAP, search_query};
 use serde_json::{Value, json};
 
 const SEARCH: &str = include_str!("graphql/search.graphql");
 const REFRESH: &str = include_str!("graphql/refresh.graphql");
 const VIEWER: &str = include_str!("graphql/viewer.graphql");
+
+/// Tries per page: the first at the current size, then one per smaller size,
+/// then one more at the smallest.
+const MAX_ATTEMPTS: u32 = 4;
 
 pub struct GithubClient {
     http: reqwest::blocking::Client,
@@ -35,6 +41,7 @@ pub struct GithubClient {
     account: AccountId,
     gate: Arc<http::Gate>,
     budget: Mutex<Option<RateBudget>>,
+    backoff: Duration,
 }
 
 impl GithubClient {
@@ -59,7 +66,15 @@ impl GithubClient {
             account,
             gate: Arc::new(http::Gate::new(2)),
             budget: Mutex::new(None),
+            backoff: Duration::from_secs(1),
         })
+    }
+
+    /// The first wait before retrying a page GitHub timed out on. Each later
+    /// wait doubles it. Tests set it to zero.
+    pub fn with_backoff(mut self, backoff: Duration) -> Self {
+        self.backoff = backoff;
+        self
     }
 
     pub fn http(&self) -> &reqwest::blocking::Client {
@@ -108,6 +123,35 @@ impl GithubClient {
             return Err(err);
         }
         Ok(value)
+    }
+}
+
+impl GithubClient {
+    /// Runs one page with `PAGE_SIZES[*level]`. When GitHub times out, waits,
+    /// moves `level` to the next smaller size (it stays there for later pages),
+    /// and tries again, at most `MAX_ATTEMPTS` times.
+    fn paged<T>(
+        &self,
+        what: &str,
+        level: &mut usize,
+        mut call: impl FnMut(usize) -> Result<T, ProviderError>,
+    ) -> Result<T, ProviderError> {
+        let mut attempt = 1;
+        loop {
+            let size = PAGE_SIZES[*level] as usize;
+            match call(size) {
+                Ok(value) => return Ok(value),
+                Err(err) if http::is_timeout(&err) => {
+                    if attempt >= MAX_ATTEMPTS {
+                        return Err(http::timed_out(&err, what, attempt, size));
+                    }
+                    std::thread::sleep(self.backoff * 2u32.pow(attempt - 1));
+                    *level = (*level + 1).min(PAGE_SIZES.len() - 1);
+                    attempt += 1;
+                }
+                Err(err) => return Err(err),
+            }
+        }
     }
 }
 
@@ -192,11 +236,21 @@ impl VcsProvider for GithubClient {
             SearchBucket::Mine => Involvement::AUTHOR,
             SearchBucket::ReviewRequested => Involvement::REVIEW_REQUESTED,
         };
+        let what = match query.bucket {
+            SearchBucket::Mine => "search for your pull requests",
+            SearchBucket::ReviewRequested => "search for review requests",
+        };
         let q = search_query(query.bucket);
         let mut cursor = Value::Null;
         let mut items = Vec::new();
+        let mut level = 0;
         loop {
-            let body = self.graphql(SEARCH, json!({ "query": q, "cursor": cursor }))?;
+            let body = self.paged(what, &mut level, |size| {
+                self.graphql(
+                    SEARCH,
+                    json!({ "query": q, "first": size, "cursor": cursor }),
+                )
+            })?;
             let page = parse::parse_search(&body, self.account, involvement)?;
             items.extend(page.items);
             if items.len() as u32 >= SEARCH_CAP || !page.has_next {
@@ -213,10 +267,24 @@ impl VcsProvider for GithubClient {
         ids: &[pr_nexus_core::domain::ProviderRef],
     ) -> Result<Vec<SyncedPullRequest>, ProviderError> {
         let mut items = Vec::new();
-        for chunk in ids.chunks(50) {
-            let id_list: Vec<&str> = chunk.iter().map(|id| id.id.as_str()).collect();
-            let body = self.graphql(REFRESH, json!({ "ids": id_list }))?;
+        let mut level = 0;
+        let mut start = 0;
+        while start < ids.len() {
+            let mut taken = 0;
+            let body = self.paged(
+                "refresh of pull requests that left the search",
+                &mut level,
+                |size| {
+                    taken = size.min(ids.len() - start);
+                    let id_list: Vec<&str> = ids[start..start + taken]
+                        .iter()
+                        .map(|id| id.id.as_str())
+                        .collect();
+                    self.graphql(REFRESH, json!({ "ids": id_list }))
+                },
+            )?;
             items.extend(parse::parse_nodes(&body, self.account)?);
+            start += taken;
         }
         Ok(items)
     }

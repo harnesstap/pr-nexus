@@ -57,6 +57,7 @@ export function Wizard({ api, boot, onFinished, onCancel }: Props) {
   );
   const [syncMessage, setSyncMessage] = useState(boot.sync.message);
   const [syncSettled, setSyncSettled] = useState(false);
+  const [syncFailed, setSyncFailed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -73,6 +74,8 @@ export function Wizard({ api, boot, onFinished, onCancel }: Props) {
     return () => window.clearTimeout(timer);
   }, [step, index]);
 
+  // Bumped by "Retry sync" to run the first sync again.
+  const [syncRun, setSyncRun] = useState(0);
   useEffect(() => {
     if (step !== "done") {
       return;
@@ -85,19 +88,30 @@ export function Wizard({ api, boot, onFinished, onCancel }: Props) {
           return;
         }
         setSyncMessage(status.message);
+        setSyncFailed(status.phase === "error");
         setSyncSettled(true);
       })
       .catch((err: unknown) => {
         if (!cancel) {
           setError(errorMessage(err));
           setSyncMessage("Sync failed");
+          setSyncFailed(true);
           setSyncSettled(true);
         }
       });
     return () => {
       cancel = true;
     };
-  }, [api, step]);
+  }, [api, step, syncRun]);
+
+  function retrySync() {
+    setError(null);
+    setSyncSettled(false);
+    setSyncFailed(false);
+    setSyncMessage("Syncing…");
+    setSyncRun((run) => run + 1);
+  }
+
   const model: StepModel = {
     vcs: "github",
     chat: "slack",
@@ -517,7 +531,24 @@ export function Wizard({ api, boot, onFinished, onCancel }: Props) {
               · mapping:{" "}
               {mappingSkipped ? "skipped" : mappingNote || "imported"}
             </p>
-            <p className="text-slate-300">First sync: {syncMessage}</p>
+            <p className="text-slate-300" aria-live="polite">
+              First sync: {syncMessage}
+            </p>
+            {syncFailed && (
+              <div className="space-y-2">
+                <p className="text-sm text-slate-400">
+                  You can retry now, or open PR-Nexus and use the refresh button in the sidebar later.
+                </p>
+                <button
+                  type="button"
+                  className="rounded border border-slate-600 px-3 py-1.5 text-sm disabled:opacity-40"
+                  onClick={retrySync}
+                  disabled={busy || !syncSettled}
+                >
+                  Retry sync
+                </button>
+              </div>
+            )}
           </div>
         )}
         {error && <p className="mt-4 text-sm text-rose-300">{error}</p>}
