@@ -129,7 +129,6 @@ export function SlackPanel({ api, fields, onFieldsChange, secretSaved, workspace
         <input {...plainText}
           className={input}
           type="password"
-          autoComplete="off"
           placeholder={secretSaved ? "saved in the keychain · type to replace" : "optional · keychain"}
           value={fields.clientSecret}
           disabled={connecting}

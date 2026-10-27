@@ -374,7 +374,6 @@ export function Wizard({ api, boot, onFinished, onCancel }: Props) {
                 <input {...plainText}
                   className="mt-2 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2"
                   type="password"
-                  autoComplete="off"
                   placeholder="github_pat_…"
                   value={pat}
                   onChange={(event) => setPat(event.target.value)}

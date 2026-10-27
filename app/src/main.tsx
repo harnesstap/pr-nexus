@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import App from "./App";
 import { disableNativeContextMenu } from "./contextMenu";
 import "./index.css";
+import { guardTextFields } from "./textInput";
 
 const root = document.getElementById("root");
 if (!root) {
@@ -10,6 +11,7 @@ if (!root) {
 }
 
 disableNativeContextMenu(document, import.meta.env.PROD);
+guardTextFields(document);
 
 createRoot(root).render(
   <StrictMode>
