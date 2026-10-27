@@ -26,12 +26,24 @@ export interface SyncStatus {
   paused: boolean;
 }
 
+/** The keychain state (§9). `waiting` usually means a system prompt is on screen. */
+export type KeyringState = "ready" | "waiting" | "timed_out" | "denied" | "no_backend" | "error" | "disabled";
+
+export interface KeyringStatus {
+  state: KeyringState;
+  /** Banner text; null when the keychain is ready. */
+  message: string | null;
+  /** Retry can help (timed out, denied, no keychain, error). */
+  can_retry: boolean;
+  /** Some tokens are only in memory, not in the keychain yet. */
+  unsaved: boolean;
+}
+
 export interface Bootstrap {
   onboarding: OnboardingState;
   resume_step: StepId;
   steps: StepId[];
-  keyring_warning: string | null;
-  keyring_available: boolean;
+  keyring: KeyringStatus;
   github_login: string | null;
   github_connected: boolean;
   tracked_orgs: string[];
@@ -386,6 +398,10 @@ export interface PrDetail {
 
 export interface Api {
   bootstrap(): Promise<Bootstrap>;
+  /** Never waits on the keychain; poll it while the state is `waiting` or `timed_out`. */
+  keyringStatus(): Promise<KeyringStatus>;
+  /** Ask the keychain again and save what is only in memory. Returns before the answer. */
+  keyringRetry(): Promise<KeyringStatus>;
   saveProviders(vcs: string, chat: string): Promise<void>;
   saveOnboarding(state: OnboardingState): Promise<void>;
   connectGithub(mode: "gh_cli" | "pat", pat?: string): Promise<GithubSession>;
@@ -454,6 +470,8 @@ export interface Api {
 
 export const tauriApi: Api = {
   bootstrap: () => invoke("bootstrap"),
+  keyringStatus: () => invoke("keyring_status"),
+  keyringRetry: () => invoke("keyring_retry"),
   saveProviders: (vcs, chat) => invoke("save_providers", { vcs, chat }),
   saveOnboarding: (state) => invoke("save_onboarding", { patch: state }),
   connectGithub: (mode, pat) => invoke("connect_github", { mode, pat }),

@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use oauth2::TokenResponse;
+use pr_nexus_core::error::CoreError;
 use rmcp::transport::auth::{
     AuthError, AuthorizationManager, AuthorizationRequest, AuthorizationSession, CredentialStore,
     OAuthTokenResponse, StoredCredentials,
@@ -308,14 +309,24 @@ impl KeychainCredentialStore {
     }
 }
 
+/// Runs a vault call on tokio's blocking pool: the first keychain read can
+/// wait on a system prompt, which must not stall an async worker.
+async fn off_runtime<T, F>(work: F) -> Result<T, AuthError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, CoreError> + Send + 'static,
+{
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|err| AuthError::CredentialStoreError(err.to_string()))?
+        .map_err(|err| AuthError::CredentialStoreError(err.to_string()))
+}
+
 #[async_trait]
 impl CredentialStore for KeychainCredentialStore {
     async fn load(&self) -> Result<Option<StoredCredentials>, AuthError> {
-        let Some(raw) = self
-            .vault
-            .get(&self.key)
-            .map_err(|err| AuthError::CredentialStoreError(err.to_string()))?
-        else {
+        let (vault, key) = (self.vault.clone(), self.key.clone());
+        let Some(raw) = off_runtime(move || vault.get(&key)).await? else {
             return Ok(None);
         };
         serde_json::from_str(&raw)
@@ -326,15 +337,13 @@ impl CredentialStore for KeychainCredentialStore {
     async fn save(&self, credentials: StoredCredentials) -> Result<(), AuthError> {
         let raw = serde_json::to_string(&credentials)
             .map_err(|err| AuthError::CredentialStoreError(err.to_string()))?;
-        self.vault
-            .set(&self.key, &raw)
-            .map_err(|err| AuthError::CredentialStoreError(err.to_string()))
+        let (vault, key) = (self.vault.clone(), self.key.clone());
+        off_runtime(move || vault.set(&key, &raw)).await
     }
 
     async fn clear(&self) -> Result<(), AuthError> {
-        self.vault
-            .remove(&self.key)
-            .map_err(|err| AuthError::CredentialStoreError(err.to_string()))
+        let (vault, key) = (self.vault.clone(), self.key.clone());
+        off_runtime(move || vault.remove(&key)).await
     }
 }
 

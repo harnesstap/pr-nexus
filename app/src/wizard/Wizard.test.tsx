@@ -23,8 +23,7 @@ const boot: Bootstrap = {
     "chat_mapping",
     "done",
   ],
-  keyring_warning: null,
-  keyring_available: false,
+  keyring: { state: "ready", message: null, can_retry: false, unsaved: false },
   github_login: null,
   github_connected: false,
   tracked_orgs: [],
@@ -49,6 +48,8 @@ const boot: Bootstrap = {
 function api(overrides: Partial<Api> = {}): Api {
   return {
     bootstrap: () => Promise.resolve(boot),
+    keyringStatus: () => Promise.resolve({ state: "ready", message: null, can_retry: false, unsaved: false }),
+    keyringRetry: () => Promise.resolve({ state: "ready", message: null, can_retry: false, unsaved: false }),
     saveProviders: () => Promise.resolve(),
     saveOnboarding: () => Promise.resolve(),
     connectGithub: () => Promise.resolve({ login: "ada", organizations: ["acme"], organizations_needing_sso: [] }),

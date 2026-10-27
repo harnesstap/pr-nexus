@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { tauriApi, type Api, type Bootstrap } from "./api";
+import { KeyringBanner } from "./KeyringBanner";
 import { ListScreen } from "./list/ListScreen";
 import { Wizard } from "./wizard/Wizard";
 
@@ -28,8 +29,9 @@ export default function App({ api = tauriApi }: Props) {
   }
   if (!boot) {
     return (
-      <main className="grid min-h-screen place-items-center bg-slate-950 text-slate-300">
-        <p>Loading PR Nexus…</p>
+      <main className="flex min-h-screen flex-col bg-slate-950 text-slate-300">
+        <KeyringBanner api={api} />
+        <p className="grid flex-1 place-items-center">Loading PR Nexus…</p>
       </main>
     );
   }

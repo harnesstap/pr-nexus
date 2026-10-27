@@ -86,7 +86,7 @@ pub fn workspace_accounts(store: &Store) -> Result<Vec<Account>, CoreError> {
 
 pub fn workspace_dto(state: &AppState, account: &Account) -> SlackWorkspace {
     let connected = account.keychain_key.is_some();
-    let usable = connected && token_usable(state, account);
+    let usable = connected && token_usable(state, account, false);
     SlackWorkspace {
         id: account.id.0,
         team_name: account.display_name.clone(),
@@ -99,7 +99,9 @@ pub fn workspace_dto(state: &AppState, account: &Account) -> SlackWorkspace {
 
 /// The grant is in the vault and the last check did not reject it. An
 /// in-memory vault loses grants on restart, so the row alone proves nothing.
-fn token_usable(state: &AppState, account: &Account) -> bool {
+/// `wait` waits for a pending keychain prompt; display code passes `false`
+/// so it never blocks on one.
+fn token_usable(state: &AppState, account: &Account, wait: bool) -> bool {
     if state.demo {
         return true;
     }
@@ -110,7 +112,12 @@ fn token_usable(state: &AppState, account: &Account) -> bool {
         lock(&state.slack_tokens).get(&account.id.0),
         Some(TokenState::Missing | TokenState::Rejected)
     );
-    !rejected && state.vault.get(key).ok().flatten().is_some()
+    let saved = if wait {
+        state.vault.get(key)
+    } else {
+        state.vault.peek(key)
+    };
+    !rejected && saved.ok().flatten().is_some()
 }
 
 /// Check every saved grant not checked yet with `auth.test` (startup and
@@ -475,7 +482,7 @@ pub(crate) fn signed_in_account(
     Ok(workspace_accounts(&state.store)?
         .into_iter()
         .find(|account| {
-            token_usable(state, account)
+            token_usable(state, account, true)
                 && account
                     .slack_workspace
                     .as_deref()

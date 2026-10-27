@@ -15,6 +15,7 @@ use pr_nexus_core::settings::{self, DEFAULT_REDIRECT};
 use pr_nexus_core::store::ListFacts;
 use pr_nexus_core::sync::SyncKind;
 use pr_nexus_providers::github::{self, GithubClient};
+use pr_nexus_providers::vault::KeyringStatus;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 use tauri_plugin_opener::OpenerExt;
@@ -33,13 +34,53 @@ pub struct SyncDto {
     pub paused: bool,
 }
 
+/// The keychain banner (§9): state, text, and whether Retry is offered.
+#[derive(Debug, Serialize)]
+pub struct KeyringDto {
+    /// `ready`, `waiting`, `timed_out`, `denied`, `no_backend`, `error`, or `disabled`.
+    pub state: String,
+    pub message: Option<String>,
+    pub can_retry: bool,
+    /// Some tokens are only in memory, not in the keychain yet.
+    pub unsaved: bool,
+}
+
+impl From<KeyringStatus> for KeyringDto {
+    fn from(status: KeyringStatus) -> Self {
+        Self {
+            state: status.state.as_str().to_owned(),
+            message: status.message,
+            can_retry: status.can_retry,
+            unsaved: status.unsaved,
+        }
+    }
+}
+
+/// The keychain state, polled by the UI while a prompt is pending.
+#[tauri::command]
+pub async fn keyring_status(
+    app: State<'_, std::sync::Arc<AppState>>,
+) -> Result<KeyringDto, AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || Ok(KeyringDto::from(app.vault.status()))).await
+}
+
+/// Ask the keychain again and save what is only in memory. Returns at once;
+/// poll [`keyring_status`] for the answer.
+#[tauri::command]
+pub async fn keyring_retry(
+    app: State<'_, std::sync::Arc<AppState>>,
+) -> Result<KeyringDto, AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || Ok(KeyringDto::from(app.vault.retry()))).await
+}
+
 #[derive(Serialize)]
 pub struct Bootstrap {
     pub onboarding: OnboardingState,
     pub resume_step: String,
     pub steps: Vec<String>,
-    pub keyring_warning: Option<String>,
-    pub keyring_available: bool,
+    pub keyring: KeyringDto,
     pub github_login: Option<String>,
     pub github_connected: bool,
     pub tracked_orgs: Vec<String>,
@@ -224,8 +265,7 @@ pub async fn bootstrap(app: State<'_, std::sync::Arc<AppState>>) -> Result<Boots
                 .into_iter()
                 .map(|step| step.as_str().to_owned())
                 .collect(),
-            keyring_warning: state.vault.warning(),
-            keyring_available: state.vault.available(),
+            keyring: KeyringDto::from(state.vault.status()),
             github_login: account.as_ref().map(|account| account.login.clone()),
             github_connected: account.is_some(),
             tracked_orgs: settings::tracked_orgs(&state.store)?,
@@ -239,7 +279,7 @@ pub async fn bootstrap(app: State<'_, std::sync::Arc<AppState>>) -> Result<Boots
                 !id.trim().is_empty()
                     && state
                         .vault
-                        .get(&format!("slack-client:{}", id.trim()))
+                        .peek(&format!("slack-client:{}", id.trim()))
                         .ok()
                         .flatten()
                         .is_some()
