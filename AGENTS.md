@@ -53,3 +53,4 @@ Toolchain: Rust stable (`rust-toolchain.toml`, with rustfmt and clippy) and Bun 
 - Put imports at the top of the file. No inline imports.
 - In TypeScript, switches over discriminated unions and enums need a `never` check in the default branch.
 - Rust matches on enums stay exhaustive.
+- No blocking work in sync Tauri commands. Tauri v2 runs a plain `#[tauri::command] pub fn` on the main thread, so one slow network call freezes the window. Every command is `pub async fn`; HTTP, Slack MCP, keychain, SQLite and file work goes through `crate::blocking::run` (see `app/src-tauri/src/blocking.rs`). `blocking::tests::every_command_is_async` fails on a sync command; add any new command file to its `SOURCES`.

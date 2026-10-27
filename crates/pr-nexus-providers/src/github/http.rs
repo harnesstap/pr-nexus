@@ -1,7 +1,6 @@
 //! HTTP status and header mapping for the GitHub API.
 
 use std::sync::{Condvar, Mutex};
-use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use pr_nexus_core::error::ProviderError;
@@ -171,10 +170,6 @@ pub(crate) fn sso_url(header: &str) -> Option<String> {
     } else {
         None
     }
-}
-
-pub(crate) fn timeout() -> Duration {
-    Duration::from_secs(30)
 }
 
 #[cfg(test)]

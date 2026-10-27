@@ -3,7 +3,9 @@ use std::time::Duration;
 use pr_nexus_core::domain::{AccountId, Involvement, ProviderRef, VcsKind};
 use pr_nexus_core::error::ProviderError;
 use pr_nexus_core::providers::{PrQuery, SearchBucket, VcsProvider};
-use pr_nexus_providers::github::{DevicePoll, GithubClient, poll_device_flow, start_device_flow};
+use pr_nexus_providers::github::{
+    self, DevicePoll, GithubClient, poll_device_flow, start_device_flow,
+};
 use serde_json::json;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -294,7 +296,7 @@ fn search_retries_a_gateway_timeout_with_a_smaller_page() {
 }
 
 #[test]
-fn search_gives_up_after_four_timeouts_and_names_the_query() {
+fn search_gives_up_after_three_timeouts_and_names_the_query() {
     let server = server();
     mount_slow(
         &server,
@@ -311,7 +313,7 @@ fn search_gives_up_after_four_timeouts_and_names_the_query() {
             assert_eq!(code, "502");
             assert!(message.contains("timed out"), "{message}");
             assert!(message.contains("review requests"), "{message}");
-            assert!(message.contains("4 tries"), "{message}");
+            assert!(message.contains("3 tries"), "{message}");
         }
         other => panic!("{other:?}"),
     }
@@ -319,7 +321,14 @@ fn search_gives_up_after_four_timeouts_and_names_the_query() {
         .iter()
         .map(|vars| vars["first"].clone())
         .collect();
-    assert_eq!(firsts, vec![json!(20), json!(10), json!(5), json!(5)]);
+    assert_eq!(firsts, vec![json!(20), json!(10), json!(5)]);
+}
+
+#[test]
+fn one_page_never_waits_more_than_a_minute_when_github_hangs() {
+    assert_eq!(github::REQUEST_TIMEOUT, Duration::from_secs(15));
+    assert_eq!(github::worst_case_page_time(), Duration::from_secs(48));
+    assert!(github::worst_case_page_time() <= Duration::from_secs(60));
 }
 
 #[test]

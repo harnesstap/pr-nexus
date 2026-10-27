@@ -1,0 +1,3 @@
+kind: Fixed
+body: 'The app no longer freezes ("not responding") while a sync or any other command waits on GitHub, Slack, the keychain or the disk: every command now runs off the main thread, overlapping sync requests join the one in flight, and a GitHub request times out after 15 s (at most 3 tries and 48 s per page).'
+time: 2026-10-26T19:30:00.000000-10:00

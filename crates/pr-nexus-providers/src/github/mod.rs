@@ -30,9 +30,25 @@ const SEARCH: &str = include_str!("graphql/search.graphql");
 const REFRESH: &str = include_str!("graphql/refresh.graphql");
 const VIEWER: &str = include_str!("graphql/viewer.graphql");
 
-/// Tries per page: the first at the current size, then one per smaller size,
-/// then one more at the smallest.
-const MAX_ATTEMPTS: u32 = 4;
+/// Longest one GitHub request may take. GitHub itself gives up on a GraphQL
+/// query after about 10 s, so 15 s leaves room for the 502 page to arrive
+/// and still fails fast when the network stalls.
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Tries per page: one at each of `PAGE_SIZES` (20 → 10 → 5).
+const MAX_ATTEMPTS: u32 = 3;
+
+/// The first wait before a retry; each later wait doubles it (1 s, 2 s).
+const FIRST_BACKOFF: Duration = Duration::from_secs(1);
+
+/// Upper bound for one page when every try times out:
+/// 3 × 15 s + 1 s + 2 s = 48 s. `paged` never waits longer than this.
+pub fn worst_case_page_time() -> Duration {
+    let waits: Duration = (1..MAX_ATTEMPTS)
+        .map(|attempt| FIRST_BACKOFF * 2u32.pow(attempt - 1))
+        .sum();
+    REQUEST_TIMEOUT * MAX_ATTEMPTS + waits
+}
 
 pub struct GithubClient {
     http: reqwest::blocking::Client,
@@ -56,7 +72,7 @@ impl GithubClient {
     ) -> Result<Self, ProviderError> {
         let http = reqwest::blocking::Client::builder()
             .user_agent("pr-nexus")
-            .timeout(http::timeout())
+            .timeout(REQUEST_TIMEOUT)
             .build()
             .map_err(|err| ProviderError::Network(err.to_string()))?;
         Ok(Self {
@@ -66,7 +82,7 @@ impl GithubClient {
             account,
             gate: Arc::new(http::Gate::new(2)),
             budget: Mutex::new(None),
-            backoff: Duration::from_secs(1),
+            backoff: FIRST_BACKOFF,
         })
     }
 

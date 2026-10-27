@@ -10,6 +10,7 @@ use pr_nexus_core::review::context::{self, ContextThread, MentionGroup};
 use pr_nexus_core::settings::{self, MentionsScope};
 use tauri::State;
 
+use crate::blocking;
 use crate::error::AppError;
 use crate::slack::{chat_for, load_pr, mark_rejected, signed_in_account, workspace_accounts};
 use crate::state::AppState;
@@ -100,9 +101,13 @@ fn mentions_blocking(state: &AppState, pr_id: i64) -> Result<Vec<MentionGroup>, 
 }
 
 #[tauri::command]
-pub fn save_slack_mentions(app: Shared<'_>, scope: String) -> Result<(), AppError> {
-    let scope = MentionsScope::parse(&scope)
-        .ok_or_else(|| AppError::new("validation", "Mentions must be off, public, or all"))?;
-    settings::set_slack_mentions(&app.inner().store, scope)?;
-    Ok(())
+pub async fn save_slack_mentions(app: Shared<'_>, scope: String) -> Result<(), AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let scope = MentionsScope::parse(&scope)
+            .ok_or_else(|| AppError::new("validation", "Mentions must be off, public, or all"))?;
+        settings::set_slack_mentions(&app.inner().store, scope)?;
+        Ok(())
+    })
+    .await
 }

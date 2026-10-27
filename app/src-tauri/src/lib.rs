@@ -1,3 +1,4 @@
+mod blocking;
 mod bulk;
 mod commands;
 mod context;
@@ -56,7 +57,7 @@ pub fn run() {
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Focused(focused) = event {
                 let state = window.state::<Arc<state::AppState>>();
-                commands::set_focus(state, *focused);
+                state::set_focused(&state, *focused);
             }
         })
         .invoke_handler(tauri::generate_handler![

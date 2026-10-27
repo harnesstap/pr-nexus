@@ -13,6 +13,7 @@ use pr_nexus_core::update;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
+use crate::blocking;
 use crate::error::AppError;
 use crate::state::{self, AppState};
 
@@ -25,15 +26,23 @@ pub struct AppPaths {
 }
 
 #[tauri::command]
-pub fn load_preferences(app: Shared<'_>) -> Result<Preferences, AppError> {
-    Ok(settings::preferences(&app.inner().store)?)
+pub async fn load_preferences(app: Shared<'_>) -> Result<Preferences, AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || Ok(settings::preferences(&app.inner().store)?)).await
 }
 
 #[tauri::command]
-pub fn save_preferences(app: Shared<'_>, prefs: Preferences) -> Result<Preferences, AppError> {
-    let saved = settings::save_preferences(&app.inner().store, &prefs)?;
-    tracing::info!("settings saved");
-    Ok(saved)
+pub async fn save_preferences(
+    app: Shared<'_>,
+    prefs: Preferences,
+) -> Result<Preferences, AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let saved = settings::save_preferences(&app.inner().store, &prefs)?;
+        tracing::info!("settings saved");
+        Ok(saved)
+    })
+    .await
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -82,31 +91,44 @@ pub struct MappingEntryDto {
 }
 
 #[tauri::command]
-pub fn list_mappings(app: Shared<'_>) -> Result<Vec<MappingEntryDto>, AppError> {
-    let rows = app.inner().store.list_mappings()?;
-    Ok(mapping::mapping_table(&rows)
-        .into_iter()
-        .map(|entry| MappingEntryDto {
-            row: entry.row.into(),
-            source: match entry.layer {
-                MappingLayer::User => "user",
-                MappingLayer::Imported => "imported",
-            },
-            disabled: entry.disabled,
-            has_imported: entry.has_imported,
-        })
-        .collect())
+pub async fn list_mappings(app: Shared<'_>) -> Result<Vec<MappingEntryDto>, AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let rows = app.inner().store.list_mappings()?;
+        Ok(mapping::mapping_table(&rows)
+            .into_iter()
+            .map(|entry| MappingEntryDto {
+                row: entry.row.into(),
+                source: match entry.layer {
+                    MappingLayer::User => "user",
+                    MappingLayer::Imported => "imported",
+                },
+                disabled: entry.disabled,
+                has_imported: entry.has_imported,
+            })
+            .collect())
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn save_mapping(app: Shared<'_>, row: MappingRowDto, disabled: bool) -> Result<(), AppError> {
-    mapping::save_user_mapping(&app.inner().store, row.into(), disabled, Utc::now())?;
-    Ok(())
+pub async fn save_mapping(
+    app: Shared<'_>,
+    row: MappingRowDto,
+    disabled: bool,
+) -> Result<(), AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        mapping::save_user_mapping(&app.inner().store, row.into(), disabled, Utc::now())?;
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn reset_mapping(app: Shared<'_>, org: String, slug: String) -> Result<bool, AppError> {
-    Ok(mapping::reset_to_imported(&app.inner().store, &org, &slug)?)
+pub async fn reset_mapping(app: Shared<'_>, org: String, slug: String) -> Result<bool, AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || Ok(mapping::reset_to_imported(&app.inner().store, &org, &slug)?)).await
 }
 
 #[derive(Debug, Serialize)]
@@ -144,37 +166,41 @@ fn import_mode(mode: &str) -> Result<ImportMode, AppError> {
 
 /// Dry run: what an import would add or change. Writes nothing.
 #[tauri::command]
-pub fn preview_mapping_import(
+pub async fn preview_mapping_import(
     app: Shared<'_>,
     csv: String,
     workspace: String,
     mode: String,
 ) -> Result<ImportPreviewDto, AppError> {
-    let mode = import_mode(&mode)?;
-    let incoming = mapping::parse_csv(&csv, Some(workspace.trim()))?;
-    let existing = app.inner().store.list_mappings()?;
-    let diff = mapping::plan_import(&existing, &incoming, mode);
-    Ok(ImportPreviewDto {
-        added: diff.added.into_iter().map(Into::into).collect(),
-        changed: diff
-            .changed
-            .into_iter()
-            .map(|changed| ChangedDto {
-                row: changed.row.into(),
-                changes: changed
-                    .changes
-                    .into_iter()
-                    .map(|change| FieldChangeDto {
-                        field: change.field,
-                        before: change.before,
-                        after: change.after,
-                    })
-                    .collect(),
-            })
-            .collect(),
-        unchanged: diff.unchanged.len(),
-        user_shadowed: diff.user_shadowed.into_iter().map(Into::into).collect(),
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let mode = import_mode(&mode)?;
+        let incoming = mapping::parse_csv(&csv, Some(workspace.trim()))?;
+        let existing = app.inner().store.list_mappings()?;
+        let diff = mapping::plan_import(&existing, &incoming, mode);
+        Ok(ImportPreviewDto {
+            added: diff.added.into_iter().map(Into::into).collect(),
+            changed: diff
+                .changed
+                .into_iter()
+                .map(|changed| ChangedDto {
+                    row: changed.row.into(),
+                    changes: changed
+                        .changes
+                        .into_iter()
+                        .map(|change| FieldChangeDto {
+                            field: change.field,
+                            before: change.before,
+                            after: change.after,
+                        })
+                        .collect(),
+                })
+                .collect(),
+            unchanged: diff.unchanged.len(),
+            user_shadowed: diff.user_shadowed.into_iter().map(Into::into).collect(),
+        })
     })
+    .await
 }
 
 #[derive(Debug, Serialize)]
@@ -183,36 +209,44 @@ pub struct ImportedDto {
 }
 
 #[tauri::command]
-pub fn apply_mapping_import(
+pub async fn apply_mapping_import(
     app: Shared<'_>,
     csv: String,
     workspace: String,
     mode: String,
 ) -> Result<ImportedDto, AppError> {
-    let mode = import_mode(&mode)?;
-    let incoming = mapping::parse_csv(&csv, Some(workspace.trim()))?;
-    mapping::apply_import(&app.inner().store, &incoming, mode, Utc::now())?;
-    tracing::info!(rows = incoming.len(), "mapping imported");
-    Ok(ImportedDto {
-        rows: incoming.len(),
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let mode = import_mode(&mode)?;
+        let incoming = mapping::parse_csv(&csv, Some(workspace.trim()))?;
+        mapping::apply_import(&app.inner().store, &incoming, mode, Utc::now())?;
+        tracing::info!(rows = incoming.len(), "mapping imported");
+        Ok(ImportedDto {
+            rows: incoming.len(),
+        })
     })
+    .await
 }
 
 #[tauri::command]
-pub fn export_mapping(app: Shared<'_>, mode: String) -> Result<String, AppError> {
-    let mode = match mode.as_str() {
-        "effective" => ExportMode::Effective,
-        "user" => ExportMode::User,
-        "imported" => ExportMode::Imported,
-        other => {
-            return Err(AppError::new(
-                "validation",
-                format!("unknown export mode {other}"),
-            ));
-        }
-    };
-    let rows = app.inner().store.list_mappings()?;
-    Ok(mapping::export_csv(&rows, mode)?)
+pub async fn export_mapping(app: Shared<'_>, mode: String) -> Result<String, AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let mode = match mode.as_str() {
+            "effective" => ExportMode::Effective,
+            "user" => ExportMode::User,
+            "imported" => ExportMode::Imported,
+            other => {
+                return Err(AppError::new(
+                    "validation",
+                    format!("unknown export mode {other}"),
+                ));
+            }
+        };
+        let rows = app.inner().store.list_mappings()?;
+        Ok(mapping::export_csv(&rows, mode)?)
+    })
+    .await
 }
 
 #[derive(Debug, Serialize)]
@@ -226,15 +260,15 @@ pub struct AppInfo {
 }
 
 #[tauri::command]
-pub fn app_info(app: Shared<'_>, paths: State<'_, AppPaths>) -> AppInfo {
-    AppInfo {
+pub async fn app_info(app: Shared<'_>, paths: State<'_, AppPaths>) -> Result<AppInfo, AppError> {
+    Ok(AppInfo {
         version: env!("CARGO_PKG_VERSION").to_owned(),
         repository: update::repo_slug(env!("CARGO_PKG_REPOSITORY")).unwrap_or_default(),
         db_path: paths.db.display().to_string(),
         log_dir: paths.logs.display().to_string(),
         keyring_in_memory: !app.inner().vault.available(),
         os: std::env::consts::OS.to_owned(),
-    }
+    })
 }
 
 #[derive(Debug, Serialize, Deserialize)]
