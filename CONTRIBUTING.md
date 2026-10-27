@@ -117,9 +117,10 @@ Do not create this ruleset from a script or the API in a pull request. A reposit
 v1 ships one artifact: an ad-hoc-sealed macOS Apple Silicon DMG. There is no auto-updater and no Apple Developer ID signature.
 
 1. Merge pull requests that include Changie fragments.
-2. On `main`, run **Tag release** (`workflow_dispatch`). It batches fragments (the first cut is `v0.1.0`; later cuts use `changie batch auto`), stamps `[workspace.package] version` in the root `Cargo.toml`, commits `Release vX.Y.Z` as `github-actions[bot]`, and pushes the tag. `app/package.json` stays private at `0.0.0`. `tauri.conf.json` has no version; Tauri reads `Cargo.toml`.
+2. On `main`, run **Tag release** (`workflow_dispatch`). It batches fragments (the first cut is `v0.1.0`; later cuts use `changie batch auto`), stamps `[workspace.package] version` in the root `Cargo.toml`, commits `Release vX.Y.Z` as `github-actions[bot]`, and pushes the tag. It stamps the same version into `app/package.json` (a CI test keeps the two equal). `tauri.conf.json` has no version; Tauri reads `Cargo.toml`.
 3. **Release** runs because a tag push made with `GITHUB_TOKEN` does not start workflows by itself (`workflow_run`), and also on a direct `v*` push or a manual dispatch. It opens a draft release, builds `PR-Nexus_<version>_aarch64.dmg` on `macos-latest`, reseals the app (`scripts/reseal-macos-app.sh`), uploads with `gh release upload --clobber`, checks that the DMG is attached, then clears the draft. `--latest` is set only when the tag is the highest semver.
 4. Re-running Release is safe: an existing draft is reused, uploads clobber, and an already published release is left in place when the DMG is present.
+5. The `homebrew-tap` job then runs `.github/workflows/homebrew-tap.yml` on a GitHub-hosted runner. It renders `Casks/pr-nexus.rb` from `packaging/homebrew/pr-nexus.rb.tmpl` (`scripts/render-homebrew-cask.sh`, using the release's `*_<version>_aarch64.dmg` asset, its sha256 digest, and `productName` from `tauri.conf.json`) and pushes it to [harnesstap/homebrew-tap](https://github.com/harnesstap/homebrew-tap) with a short-lived token from the tap's release GitHub App (variable `HOMEBREW_TAP_APP_CLIENT_ID`, secret `HOMEBREW_TAP_APP_PRIVATE_KEY`; the app is installed only on `homebrew-tap` with Contents read and write). Without them it logs a notice and skips. It skips drafts and prereleases and never downgrades the tap. To backfill or check the setup: `gh workflow run homebrew-tap.yml -f tag=vX.Y.Z`.
 
 `workflow_dispatch` on Tag release and Release accepts `dry_run`. Dry run batches or checks scripts and does not push a tag, build a DMG, or call the Releases API to publish. A real DMG is only produced by a tag cut on `main`.
 
@@ -129,7 +130,7 @@ v1 ships one artifact: an ad-hoc-sealed macOS Apple Silicon DMG. There is no aut
 
 The DMG is ad-hoc signed (`codesign --force --deep --sign -`), not notarized.
 
-1. Preferred: `gh release download vX.Y.Z -R harnesstap/pr-nexus -p '*.dmg'`. The repository is private, and files fetched by `gh` do not get the quarantine flag.
+1. Preferred: `brew install --cask harnesstap/tap/pr-nexus`, or `gh release download vX.Y.Z -R harnesstap/pr-nexus -p '*.dmg'` (files fetched by `gh` do not get the quarantine flag).
 2. After a browser download, macOS may say the app is damaged or from an unidentified developer. Open it once, then System Settings → Privacy & Security → Open Anyway. On macOS 15 and later, Control-click → Open does not bypass that.
 3. Or: `xattr -dr com.apple.quarantine /Applications/PR-Nexus.app`.
 

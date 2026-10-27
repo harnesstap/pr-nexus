@@ -6,6 +6,28 @@ This repository is private. The v1 technical specification is [docs/SPEC.md](doc
 
 The current build opens a window that says Hello. GitHub sync, Slack, and the project list are not in this build.
 
+## Install
+
+PR Nexus ships an ad-hoc signed macOS Apple Silicon DMG. It is not notarized by Apple yet. Linux and Windows compile in CI and are not released.
+
+With [Homebrew](https://brew.sh):
+
+```bash
+brew install --cask harnesstap/tap/pr-nexus
+```
+
+Upgrade with `brew upgrade --cask pr-nexus`.
+
+macOS blocks the first launch because the app is not notarized. Open **System Settings > Privacy & Security** and click **Open Anyway** once. The cask does not remove the quarantine flag for you.
+
+Without Homebrew, download the DMG from [Releases](https://github.com/harnesstap/pr-nexus/releases/latest), or with `gh`, which does not set the quarantine flag:
+
+```bash
+gh release download vX.Y.Z -R harnesstap/pr-nexus -p '*.dmg'
+```
+
+Each new version asks once for permission to use the keychain item `dev.pr-nexus`; choose Always Allow. Details are in CONTRIBUTING.
+
 ## Develop
 
 - Rust stable (`rust-toolchain.toml`)
@@ -18,21 +40,3 @@ bun run tauri dev
 ```
 
 Linux needs the WebKitGTK packages listed in `.github/actions/linux-tauri-deps/action.yml`.
-
-## Install a release
-
-v1 publishes an unsigned, ad-hoc-sealed macOS Apple Silicon DMG only. Linux and Windows compile in CI and are not released.
-
-Preferred, because `gh` does not set the quarantine flag:
-
-```bash
-gh release download vX.Y.Z -R harnesstap/pr-nexus -p '*.dmg'
-```
-
-A browser download can be blocked by Gatekeeper ("cannot verify the developer" or "damaged"). Open the app once, then allow it under System Settings → Privacy & Security → Open Anyway. Alternatively:
-
-```bash
-xattr -dr com.apple.quarantine /Applications/PR-Nexus.app
-```
-
-Each new build asks once for permission to use the keychain item `dev.pr-nexus`. The Hello build does not read the keychain yet. Details are in CONTRIBUTING.

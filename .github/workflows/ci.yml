@@ -25,6 +25,10 @@ permissions:
 # LINUX_RUNNER_LABELS to a JSON array (for example ["self-hosted","Linux","X64"])
 # to target other labels without editing this file. macOS and Windows jobs use
 # GitHub-hosted runners and only run for release tags and manual dispatch.
+#
+# The repository is public. Pull requests from forks run untrusted code, so
+# their Linux jobs go to GitHub-hosted ubuntu-latest and never reach the shared
+# self-hosted runners. Never switch this workflow to pull_request_target.
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -32,7 +36,7 @@ concurrency:
 
 jobs:
   changes:
-    runs-on: ${{ fromJSON(vars.LINUX_RUNNER_LABELS || '["self-hosted","Linux"]') }}
+    runs-on: ${{ fromJSON((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && '["ubuntu-latest"]' || vars.LINUX_RUNNER_LABELS || '["self-hosted","Linux"]') }}
     outputs:
       rust: ${{ steps.resolve.outputs.rust }}
       web: ${{ steps.resolve.outputs.web }}
@@ -90,7 +94,7 @@ jobs:
   rust-lint:
     needs: changes
     if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.ci == 'true'
-    runs-on: ${{ fromJSON(vars.LINUX_RUNNER_LABELS || '["self-hosted","Linux"]') }}
+    runs-on: ${{ fromJSON((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && '["ubuntu-latest"]' || vars.LINUX_RUNNER_LABELS || '["self-hosted","Linux"]') }}
     timeout-minutes: 30
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
@@ -125,7 +129,7 @@ jobs:
   rust-test:
     needs: changes
     if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.ci == 'true'
-    runs-on: ${{ fromJSON(vars.LINUX_RUNNER_LABELS || '["self-hosted","Linux"]') }}
+    runs-on: ${{ fromJSON((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && '["ubuntu-latest"]' || vars.LINUX_RUNNER_LABELS || '["self-hosted","Linux"]') }}
     timeout-minutes: 30
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
@@ -155,7 +159,7 @@ jobs:
   web:
     needs: changes
     if: needs.changes.outputs.web == 'true' || needs.changes.outputs.ci == 'true'
-    runs-on: ${{ fromJSON(vars.LINUX_RUNNER_LABELS || '["self-hosted","Linux"]') }}
+    runs-on: ${{ fromJSON((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && '["ubuntu-latest"]' || vars.LINUX_RUNNER_LABELS || '["self-hosted","Linux"]') }}
     timeout-minutes: 20
     defaults:
       run:
@@ -184,7 +188,7 @@ jobs:
       needs.changes.outputs.rust == 'true' ||
       needs.changes.outputs.web == 'true' ||
       needs.changes.outputs.ci == 'true'
-    runs-on: ${{ fromJSON(vars.LINUX_RUNNER_LABELS || '["self-hosted","Linux"]') }}
+    runs-on: ${{ fromJSON((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && '["ubuntu-latest"]' || vars.LINUX_RUNNER_LABELS || '["self-hosted","Linux"]') }}
     timeout-minutes: 45
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
@@ -271,7 +275,7 @@ jobs:
   deny:
     needs: changes
     if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.ci == 'true'
-    runs-on: ${{ fromJSON(vars.LINUX_RUNNER_LABELS || '["self-hosted","Linux"]') }}
+    runs-on: ${{ fromJSON((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && '["ubuntu-latest"]' || vars.LINUX_RUNNER_LABELS || '["self-hosted","Linux"]') }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
@@ -287,7 +291,7 @@ jobs:
         run: cargo deny --all-features check
 
   guards:
-    runs-on: ${{ fromJSON(vars.LINUX_RUNNER_LABELS || '["self-hosted","Linux"]') }}
+    runs-on: ${{ fromJSON((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && '["ubuntu-latest"]' || vars.LINUX_RUNNER_LABELS || '["self-hosted","Linux"]') }}
     timeout-minutes: 10
     steps:
       - name: Check out repository
@@ -321,7 +325,7 @@ jobs:
           exit 1
 
   validate:
-    runs-on: ${{ fromJSON(vars.LINUX_RUNNER_LABELS || '["self-hosted","Linux"]') }}
+    runs-on: ${{ fromJSON((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && '["ubuntu-latest"]' || vars.LINUX_RUNNER_LABELS || '["self-hosted","Linux"]') }}
     needs:
       - changes
       - rust-lint
