@@ -781,6 +781,27 @@ pub async fn create_project(
     .await
 }
 
+/// "Add to project → New project from selection…": the project and its manual
+/// links are created together, or not at all.
+#[tauri::command]
+pub async fn create_project_with_prs(
+    app: State<'_, std::sync::Arc<AppState>>,
+    name: String,
+    pr_ids: Vec<i64>,
+) -> Result<ProjectDto, AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        let (project, _) = state.store.create_project_with_prs(
+            name,
+            pr_ids.into_iter().map(PrId).collect(),
+            Utc::now(),
+        )?;
+        Ok(project_dto(project))
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn rename_project(
     app: State<'_, std::sync::Arc<AppState>>,

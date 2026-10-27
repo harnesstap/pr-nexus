@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Api, SlackWorkspace } from "../api";
 import { errorMessage } from "../api";
+import { plainText } from "../textInput";
 
 export const DEFAULT_REDIRECT = "http://127.0.0.1:47821/mcp/oauth/callback";
 
@@ -116,7 +117,7 @@ export function SlackPanel({ api, fields, onFieldsChange, secretSaved, workspace
       </p>
       <label className="block text-sm">
         Client ID
-        <input
+        <input {...plainText}
           className={input}
           value={fields.clientId}
           disabled={connecting}
@@ -125,10 +126,9 @@ export function SlackPanel({ api, fields, onFieldsChange, secretSaved, workspace
       </label>
       <label className="block text-sm">
         Client secret
-        <input
+        <input {...plainText}
           className={input}
           type="password"
-          autoComplete="off"
           placeholder={secretSaved ? "saved in the keychain · type to replace" : "optional · keychain"}
           value={fields.clientSecret}
           disabled={connecting}
@@ -140,7 +140,7 @@ export function SlackPanel({ api, fields, onFieldsChange, secretSaved, workspace
       </label>
       <label className="block text-sm">
         Redirect URI
-        <input
+        <input {...plainText}
           className={input}
           value={fields.redirectUri}
           disabled={connecting}

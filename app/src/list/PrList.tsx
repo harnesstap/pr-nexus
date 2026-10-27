@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ListRow, ProjectDto } from "../api";
-import { CommentIcon, ExternalIcon, FunnelIcon, SearchIcon, SlackIcon } from "../icons";
+import { ChevronDownIcon, ChevronRightIcon, CloseIcon, CommentIcon, ExternalIcon, FolderPlusIcon, FunnelIcon, MoreIcon, SearchIcon, SlackIcon } from "../icons";
+import { Tooltip } from "../Tooltip";
+import { AddToProjectMenu } from "./AddToProjectMenu";
 import { isPlainShortcut, isTypingTarget, wantsRowEnter } from "./keys";
 import {
   ago,
@@ -36,6 +38,7 @@ import {
 } from "./model";
 import { pageIds, summaryText, type PageDto, type PageEntry, type PageRequest, type PageSection } from "./paging";
 import { usePagedList, type PageParams } from "./usePagedList";
+import { plainText } from "../textInput";
 
 /** A section as drawn: its loaded rows, plus counts and ids over every match. */
 type ShownSection = Section & { count: number; ids: number[] };
@@ -61,8 +64,12 @@ interface Props {
   onDelete: (id: number) => void;
   /** Opens the project dialog (rules, linked PRs) from the section ⋯ menu. */
   onEditProject: (id: number) => void;
-  /** Manual links from dropping rows on a project section. */
+  /** Manual links from dropping rows on a project section, or "Add to project". */
   onLinkPrs: (projectId: number, prIds: number[]) => void;
+  /** "Add to project → New project from selection…"; rejects with the reason. */
+  onCreateProjectWithPrs: (name: string, prIds: number[]) => Promise<void>;
+  /** The current view's selection, for the sidebar's "Add N selected PRs". */
+  onSelectionChange?: (prIds: number[]) => void;
   /** Opens the readiness and code-owner details for one row. */
   onDetails: (row: ListRow) => void;
   /** Opens the Slack request/bump preview for one row. */
@@ -101,6 +108,8 @@ export function PrList({
   onDelete,
   onEditProject,
   onLinkPrs,
+  onCreateProjectWithPrs,
+  onSelectionChange,
   onDetails,
   onRequestReview,
   onBulkReview,
@@ -115,9 +124,21 @@ export function PrList({
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const [deleteFor, setDeleteFor] = useState<Section | null>(null);
   const [focusIndex, setFocusIndex] = useState(0);
+  /** The view whose "Add to project" menu is open, so switching views closes it. */
+  const [addMenuFor, setAddMenuFor] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const commitRename = useRef(false);
   const selected = useMemo(() => new Set(selectedByView[viewKey] ?? []), [selectedByView, viewKey]);
+
+  useEffect(() => {
+    onSelectionChange?.(bulkIds(selected));
+  }, [selected, onSelectionChange]);
+  const addMenu = addMenuFor === viewKey && selected.size > 0;
+  const setAddMenu = (open: boolean | ((open: boolean) => boolean)) =>
+    setAddMenuFor((current) => {
+      const next = typeof open === "function" ? open(current === viewKey) : open;
+      return next ? viewKey : null;
+    });
 
   useEffect(() => {
     const timer = window.setTimeout(() => setDebounced(query.trim()), SEARCH_DEBOUNCE_MS);
@@ -211,6 +232,9 @@ export function PrList({
 
   function setSelected(next: Set<number>) {
     setSelectedByView((current) => ({ ...current, [viewKey]: [...next] }));
+    if (next.size === 0) {
+      setAddMenuFor(null);
+    }
   }
 
   /** The bulk bar's action: one PR opens the single preview, several open the bulk one (§7.9). */
@@ -253,7 +277,9 @@ export function PrList({
         return;
       }
       if (event.key === "Escape") {
-        if (sectionMenu !== null) {
+        if (addMenu) {
+          setAddMenu(false);
+        } else if (sectionMenu !== null) {
           setSectionMenu(null);
         } else if (selected.size > 0) {
           setSelected(new Set());
@@ -312,6 +338,15 @@ export function PrList({
         }
       } else if (key === "f") {
         setMenu((open) => (open ? null : "root"));
+      } else if (key === "p") {
+        // With nothing selected, P acts on the focused row.
+        if (selected.size === 0 && current) {
+          setSelected(new Set([current.row.id]));
+        }
+        if (selected.size > 0 || current) {
+          event.preventDefault();
+          setAddMenu((open) => !open);
+        }
       }
     }
     window.addEventListener("keydown", onKey);
@@ -356,7 +391,7 @@ export function PrList({
         <div className="flex items-center gap-2">
           <label className="flex w-80 items-center gap-2 rounded-md border border-slate-700 bg-slate-900 px-3 py-1.5 text-sm focus-within:border-violet-400">
             <SearchIcon className="shrink-0 text-slate-500" />
-            <input
+            <input {...plainText}
               ref={searchRef}
               aria-label="Search"
               className="min-w-0 flex-1 bg-transparent outline-none placeholder:text-slate-500"
@@ -429,15 +464,17 @@ export function PrList({
               }}
             >
               <header className="flex items-center gap-2 px-2 py-1.5">
-                <button
-                  type="button"
-                  aria-expanded={open}
-                  aria-label={`${open ? "Collapse" : "Expand"} ${section.title}`}
-                  className="w-5 text-slate-400"
-                  onClick={() => setCollapsed((current) => ({ ...current, [section.key]: open }))}
-                >
-                  {open ? "▾" : "▸"}
-                </button>
+                <Tooltip label={open ? "Collapse" : "Expand"} detail={open ? "Hide this group's PRs" : "Show this group's PRs"} align="start">
+                  <button
+                    type="button"
+                    aria-expanded={open}
+                    aria-label={`${open ? "Collapse" : "Expand"} ${section.title}`}
+                    className="flex h-5 w-5 items-center justify-center rounded text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+                    onClick={() => setCollapsed((current) => ({ ...current, [section.key]: open }))}
+                  >
+                    {open ? <ChevronDownIcon /> : <ChevronRightIcon />}
+                  </button>
+                </Tooltip>
                 <TriCheckbox
                   label={`Select ${section.title}`}
                   state={state}
@@ -473,14 +510,18 @@ export function PrList({
                 <span className="flex-1" />
                 {section.projectId !== null && (
                   <div className="relative">
-                    <button
-                      type="button"
-                      aria-label={`Actions for ${section.title}`}
-                      className="rounded px-2 text-slate-400"
-                      onClick={() => setSectionMenu((current) => (current === section.key ? null : section.key))}
-                    >
-                      ⋯
-                    </button>
+                    <Tooltip label="Project actions" detail="Edit auto-link rules, archive or delete" align="end">
+                      <button
+                        type="button"
+                        aria-label={`Actions for ${section.title}`}
+                        aria-haspopup="menu"
+                        aria-expanded={sectionMenu === section.key}
+                        className="flex h-6 w-6 items-center justify-center rounded text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+                        onClick={() => setSectionMenu((current) => (current === section.key ? null : section.key))}
+                      >
+                        <MoreIcon />
+                      </button>
+                    </Tooltip>
                     {sectionMenu === section.key && (
                       <div role="menu" className="absolute right-0 z-10 w-48 rounded border border-slate-700 bg-slate-900 py-1 text-sm">
                         <button type="button" className="block w-full px-3 py-1.5 text-left" onClick={() => { onEditProject(section.projectId!); setSectionMenu(null); }}>
@@ -499,7 +540,7 @@ export function PrList({
               </header>
               {open && section.count === 0 && (
                 <p className="border-t border-slate-800 px-3 py-3 text-xs text-slate-500">
-                  No PRs here yet. Drag PRs onto this project, or add an auto-link rule from ⋯.
+                  No PRs here yet. Drag PRs onto this project, use Add to project (p), or add an auto-link rule from the actions menu.
                 </p>
               )}
               {open &&
@@ -604,25 +645,56 @@ export function PrList({
               {bulkIds(selected).length} selected{hidden > 0 ? ` (${hidden} hidden)` : ""}
             </span>
             <span aria-hidden="true" className="h-6 w-px bg-slate-700" />
-            <button
-              type="button"
-              title="Request / bump on Slack (r)"
-              className="flex items-center gap-2 rounded-md bg-violet-600 px-4 py-1.5 font-medium text-white hover:bg-violet-500 disabled:bg-violet-500/40"
-              disabled={bulkIds(selected).length === 0}
-              onClick={requestSelection}
-            >
-              <SlackIcon />
-              Request / bump on Slack
-            </button>
-            <button
-              type="button"
-              title="Clear selection (Esc)"
-              className="flex items-center gap-1.5 rounded-md border border-slate-700 px-4 py-1.5 text-slate-200 hover:bg-slate-800"
-              onClick={() => setSelected(new Set())}
-            >
-              <span aria-hidden="true">✕</span>
-              Clear
-            </button>
+            <Tooltip label="Request / bump on Slack" shortcut="r" detail="Preview the review request for each selected PR before anything is sent" side="top">
+              <button
+                type="button"
+                className="flex items-center gap-2 rounded-md bg-violet-600 px-4 py-1.5 font-medium text-white hover:bg-violet-500 disabled:bg-violet-500/40"
+                disabled={bulkIds(selected).length === 0}
+                onClick={requestSelection}
+              >
+                <SlackIcon size={16} />
+                Request / bump on Slack
+              </button>
+            </Tooltip>
+            <div className="relative">
+              <Tooltip label="Add to project" shortcut="p" detail="Link the selected PRs to a project, or start a new one with them" side="top">
+                <button
+                  type="button"
+                  aria-haspopup="menu"
+                  aria-expanded={addMenu}
+                  className="flex items-center gap-2 rounded-md border border-slate-700 px-4 py-1.5 text-slate-200 hover:bg-slate-800"
+                  onClick={() => setAddMenu((open) => !open)}
+                >
+                  <FolderPlusIcon />
+                  Add to project
+                </button>
+              </Tooltip>
+              {addMenu && (
+                <AddToProjectMenu
+                  projects={projects}
+                  count={bulkIds(selected).length}
+                  onClose={() => setAddMenu(false)}
+                  onPick={(projectId) => {
+                    setAddMenu(false);
+                    onLinkPrs(projectId, bulkIds(selected));
+                  }}
+                  onCreate={async (name) => {
+                    await onCreateProjectWithPrs(name, bulkIds(selected));
+                    setAddMenu(false);
+                  }}
+                />
+              )}
+            </div>
+            <Tooltip label="Clear selection" shortcut="Esc" detail="Unselect every PR in this view" side="top">
+              <button
+                type="button"
+                className="flex items-center gap-1.5 rounded-md border border-slate-700 px-4 py-1.5 text-slate-200 hover:bg-slate-800"
+                onClick={() => setSelected(new Set())}
+              >
+                <CloseIcon />
+                Clear
+              </button>
+            </Tooltip>
           </div>
         </div>
       )}
@@ -741,7 +813,7 @@ function RenameField({
   committing: { current: boolean };
 }) {
   return (
-    <input
+    <input {...plainText}
       aria-label={label}
       className={`rounded border border-slate-600 bg-slate-900 px-2 py-0.5 ${className}`}
       value={editing.name}
@@ -795,14 +867,16 @@ function SlackMark({
       <SlackIcon />
       {status.label}
       {link && (
-        <button
-          type="button"
-          aria-label={`Open Slack request for ${row.title}`}
-          className="rounded p-0.5 text-slate-400 hover:text-slate-100"
-          onClick={() => onOpen(link)}
-        >
-          <ExternalIcon size={12} />
-        </button>
+        <Tooltip label="Open in Slack" shortcut="s" detail="Jump to the review request thread" align="end">
+          <button
+            type="button"
+            aria-label={`Open Slack request for ${row.title}`}
+            className="rounded p-0.5 text-slate-400 hover:text-slate-100"
+            onClick={() => onOpen(link)}
+          >
+            <ExternalIcon size={12} />
+          </button>
+        </Tooltip>
       )}
     </span>
   );
@@ -912,18 +986,19 @@ function FilterMenu({
   }, [open, setMenu]);
   return (
     <div ref={ref} className="relative">
-      <button
-        type="button"
-        aria-label="Filter menu"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        title="Grouping, ordering, and filters (f)"
-        className={`relative flex h-8 w-8 items-center justify-center rounded-md border text-slate-300 hover:text-white ${open ? "border-violet-400 bg-slate-800" : "border-slate-700 bg-slate-900"}`}
-        onClick={() => setMenu(menu ? null : "root")}
-      >
-        <FunnelIcon />
-        {filtersActive(view.filters) && <span aria-label="Filters active" className="absolute -right-1 -top-1 h-2 w-2 rounded-full bg-violet-400" />}
-      </button>
+      <Tooltip label="View options" shortcut="f" detail="Grouping, ordering, visible columns and filters" align="end">
+        <button
+          type="button"
+          aria-label="Filter menu"
+          aria-haspopup="menu"
+          aria-expanded={open}
+          className={`relative flex h-8 w-8 items-center justify-center rounded-md border text-slate-300 hover:text-white ${open ? "border-violet-400 bg-slate-800" : "border-slate-700 bg-slate-900"}`}
+          onClick={() => setMenu(menu ? null : "root")}
+        >
+          <FunnelIcon />
+          {filtersActive(view.filters) && <span aria-label="Filters active" className="absolute -right-1 -top-1 h-2 w-2 rounded-full bg-violet-400" />}
+        </button>
+      </Tooltip>
       {menu && (
         <div role="menu" className="absolute right-0 z-20 mt-1 w-64 rounded border border-slate-700 bg-slate-900 p-2 text-sm">
           <MenuRow label="Grouping" value={labelOf(GROUPINGS, view.grouping)} onClick={() => setMenu(menu === "grouping" ? "root" : "grouping")} />

@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { expect, test, vi } from "vitest";
 import type { Api, Bootstrap, ProjectDto, ReviewTarget } from "../api";
+import type { SearchRow } from "./paging";
 import { ListScreen } from "./ListScreen";
 import { memoryProjectApi } from "../memoryProjects";
 import { fakeSettingsApi } from "../settings/fakes";
@@ -32,7 +33,7 @@ const boot: Bootstrap = {
   gh_probed: true,
 };
 
-function api(projects: ProjectDto[]): Api {
+function api(projects: ProjectDto[], rows: SearchRow[] = []): Api {
   return {
     bootstrap: () => Promise.resolve(boot),
     saveProviders: () => Promise.resolve(),
@@ -87,7 +88,7 @@ function api(projects: ProjectDto[]): Api {
     renameProject: () => Promise.resolve(),
     archiveProject: () => Promise.resolve(),
     deleteProject: () => Promise.resolve(),
-    ...memoryProjectApi([], projects),
+    ...memoryProjectApi(rows, projects),
     loadViewState: () => Promise.resolve(null),
     saveViewState: () => Promise.resolve(),
     openExternal: () => Promise.resolve(),
@@ -153,4 +154,67 @@ test("the skipped-mapping hint opens Settings → Mappings", async () => {
   fireEvent.click(await screen.findByRole("button", { name: "Map team channels" }));
   expect(await screen.findByRole("tab", { name: "Mappings" })).toHaveAttribute("aria-selected", "true");
   expect(await screen.findByText("No team channels mapped yet.")).toBeInTheDocument();
+});
+
+function pr(id: number, title: string): SearchRow {
+  return {
+    id,
+    number: id,
+    title,
+    url: `https://github.com/acme/widgets/pull/${id}`,
+    body: "",
+    owner: "acme",
+    repo: "acme/widgets",
+    author_login: "ada",
+    head_ref: `feature/pr-${id}`,
+    is_draft: false,
+    state: "open",
+    checks: "success",
+    review_decision: null,
+    unresolved_threads: 0,
+    total_threads: 0,
+    involvement: 1,
+    updated_at: "2026-10-26T11:00:00Z",
+    created_at: "2026-10-20T11:00:00Z",
+    hidden: false,
+    project_ids: [],
+    readiness: "ready",
+    readiness_notes: [],
+    slack: null,
+  };
+}
+
+test("the sidebar's new-project field can take the current selection", async () => {
+  const fake = api([{ id: 1, name: "Checkout", color: "#7c5cbf", archived: false, description: "", sort_order: 0 }], [pr(7, "Add passkeys"), pr(8, "Fix tax rounding")]);
+  const create = vi.spyOn(fake, "createProjectWithPrs");
+  render(<ListScreen api={fake} boot={boot} onBoot={() => undefined} />);
+  fireEvent.click(await screen.findByRole("checkbox", { name: /Select Add passkeys/ }));
+  const projects = screen.getByRole("region", { name: "Projects" });
+  fireEvent.click(within(projects).getByRole("button", { name: "New project" }));
+  const withSelection = screen.getByRole("checkbox", { name: "Add 1 selected PR" });
+  expect(withSelection).toBeChecked();
+  const input = screen.getByRole("textbox", { name: "Project name" });
+  fireEvent.change(input, { target: { value: "Launch" } });
+  fireEvent.submit(input);
+  await waitFor(() => expect(create).toHaveBeenCalledWith("Launch", [7]));
+  expect(await screen.findByRole("status")).toHaveTextContent("Created Launch with 1 PR");
+  expect(await within(projects).findByRole("button", { name: "Launch" })).toHaveAttribute("aria-current", "page");
+});
+
+test("Add to project → New project from selection creates it, confirms, and highlights it", async () => {
+  const fake = api([{ id: 1, name: "Checkout", color: "#7c5cbf", archived: false, description: "", sort_order: 0 }], [pr(7, "Add passkeys"), pr(8, "Fix tax rounding")]);
+  const create = vi.spyOn(fake, "createProjectWithPrs");
+  render(<ListScreen api={fake} boot={boot} onBoot={() => undefined} />);
+  fireEvent.click(await screen.findByRole("checkbox", { name: /Select Add passkeys/ }));
+  fireEvent.click(screen.getByRole("checkbox", { name: /Select Fix tax rounding/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Add to project" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: /New project from selection/ }));
+  const input = screen.getByRole("textbox", { name: "New project name" });
+  fireEvent.change(input, { target: { value: "Launch" } });
+  fireEvent.submit(input);
+  await waitFor(() => expect(create).toHaveBeenCalledWith("Launch", [7, 8]));
+  expect(await screen.findByRole("status")).toHaveTextContent("Created Launch with 2 PRs");
+  const entry = await within(screen.getByRole("region", { name: "Projects" })).findByRole("button", { name: "Launch" });
+  expect(entry).toHaveAttribute("data-project-id");
+  expect(entry.className).toMatch(/ring-violet-400/);
 });

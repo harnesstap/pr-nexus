@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import type { Api, Bootstrap, ListRow, ProjectDto } from "../api";
 import { errorMessage } from "../api";
-import { ClockIcon, FolderIcon, GearIcon, HomeIcon, LogoIcon, PlusIcon, RefreshIcon } from "../icons";
+import { ClockIcon, CloseIcon, FolderIcon, GearIcon, HomeIcon, LogoIcon, PlusIcon, RefreshIcon } from "../icons";
+import { Tooltip } from "../Tooltip";
 import { OrgOption } from "../orgs";
 import { DRAG_MIME, TOAST_MS, bulkToast, defaultView, parseDragIds, parseViewState, renameError, sentToast, syncLabel, type SavedView, type Toast } from "./model";
 import { PrList } from "./PrList";
@@ -18,6 +19,7 @@ import { SettingsScreen } from "../settings/SettingsScreen";
 import type { SettingsTab } from "../settings/tabs";
 import { MappingHint, UpdateBanner } from "./Banners";
 import { showMappingHint } from "./hints";
+import { plainText } from "../textInput";
 
 interface Props {
   api: Api;
@@ -45,7 +47,11 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
   const [attempt, setAttempt] = useState(0);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("accounts");
   const [mappingHint, setMappingHint] = useState(() => showMappingHint(boot.mapping_count, boot.slack_workspaces.length));
-  const [draft, setDraft] = useState<{ name: string; error: string | null } | null>(null);
+  const [draft, setDraft] = useState<{ name: string; error: string | null; withSelection: boolean } | null>(null);
+  /** The list's current selection, offered to the sidebar's new-project field. */
+  const [selection, setSelection] = useState<number[]>([]);
+  /** A sidebar project to scroll to and highlight after PRs were added to it. */
+  const [flash, setFlash] = useState<number | null>(null);
   const [editingProject, setEditingProject] = useState<number | null>(null);
   const [detailRow, setDetailRow] = useState<ListRow | null>(null);
   const [reviewRow, setReviewRow] = useState<ListRow | null>(null);
@@ -60,6 +66,15 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
     const timer = window.setInterval(() => setNow(new Date()), 30_000);
     return () => window.clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    if (flash === null) {
+      return;
+    }
+    document.querySelector(`[data-project-id="${flash}"]`)?.scrollIntoView?.({ block: "nearest" });
+    const timer = window.setTimeout(() => setFlash(null), 1_500);
+    return () => window.clearTimeout(timer);
+  }, [flash, projects]);
 
   useEffect(() => {
     if (!notice) {
@@ -168,10 +183,17 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
       setDraft({ ...draft, error: problem });
       return;
     }
+    const prIds = draft.withSelection ? selection : [];
     try {
-      const project = await api.createProject(draft.name.trim());
+      const name = draft.name.trim();
+      const project = prIds.length > 0 ? await api.createProjectWithPrs(name, prIds) : await api.createProject(name);
       setDraft(null);
-      setProjects(await api.listProjects());
+      if (prIds.length > 0) {
+        await reload();
+        setNotice({ text: `Created ${project.name} with ${prCount(prIds.length)}` });
+      } else {
+        setProjects(await api.listProjects());
+      }
       setViewKey(`project:${project.id}`);
     } catch (err) {
       setDraft({ ...draft, error: errorMessage(err) });
@@ -184,11 +206,21 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
     try {
       const changed = await api.linkPrs(projectId, prIds);
       await reload();
-      const count = `${prIds.length} ${prIds.length === 1 ? "PR" : "PRs"}`;
+      const count = prCount(prIds.length);
       setNotice({ text: changed > 0 ? `Added ${count} to ${name}` : `${count} already in ${name}` });
+      setFlash(projectId);
     } catch (err) {
       setError(errorMessage(err));
     }
+  }
+
+  /** "Add to project → New project from selection…": one transaction, then a toast. */
+  async function createProjectWithPrs(name: string, prIds: number[]) {
+    setError(null);
+    const project = await api.createProjectWithPrs(name, prIds);
+    await reload();
+    setNotice({ text: `Created ${project.name} with ${prCount(prIds.length)}` });
+    setFlash(project.id);
   }
 
   const activeProjects = projects.filter((project) => !project.archived);
@@ -261,15 +293,16 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
               <FolderIcon size={14} />
               Projects
             </h2>
-            <button
-              type="button"
-              aria-label="New project"
-              title="New project"
-              className="rounded p-0.5 text-slate-500 hover:bg-slate-800 hover:text-slate-200"
-              onClick={() => setDraft({ name: "", error: null })}
-            >
-              <PlusIcon size={14} />
-            </button>
+            <Tooltip label="New project" detail="Group related PRs, for example by feature or initiative" align="end">
+              <button
+                type="button"
+                aria-label="New project"
+                className="rounded p-0.5 text-slate-500 hover:bg-slate-800 hover:text-slate-200"
+                onClick={() => setDraft({ name: "", error: null, withSelection: selection.length > 0 })}
+              >
+                <PlusIcon />
+              </button>
+            </Tooltip>
           </div>
           <div className="flex min-h-0 flex-col gap-0.5 overflow-auto">
             {activeProjects.map((project) => (
@@ -280,6 +313,8 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
                 icon={<span aria-hidden="true" className="ml-1 mr-0.5 h-2 w-2 rounded-sm" style={{ background: project.color }} />}
                 onSelect={setViewKey}
                 onDropPrs={(ids) => void linkPrs(project.id, ids)}
+                projectId={project.id}
+                flash={flash === project.id}
               >
                 {project.name}
               </NavButton>
@@ -293,19 +328,29 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
                 void createProject();
               }}
             >
-              <input
+              <input {...plainText}
                 aria-label="Project name"
                 autoFocus
                 className="w-full rounded border border-slate-600 bg-slate-900 px-2 py-1 text-sm"
                 placeholder="Project name"
                 value={draft.name}
-                onChange={(event) => setDraft({ name: event.target.value, error: null })}
+                onChange={(event) => setDraft({ ...draft, name: event.target.value, error: null })}
                 onKeyDown={(event) => {
                   if (event.key === "Escape") {
                     setDraft(null);
                   }
                 }}
               />
+              {selection.length > 0 && (
+                <label className="mt-1 flex items-center gap-2 text-xs text-slate-300">
+                  <input
+                    type="checkbox"
+                    checked={draft.withSelection}
+                    onChange={(event) => setDraft({ ...draft, withSelection: event.target.checked })}
+                  />
+                  Add {selection.length} selected {selection.length === 1 ? "PR" : "PRs"}
+                </label>
+              )}
               {draft.error ? (
                 <p className="mt-1 text-xs text-rose-300">{draft.error}</p>
               ) : (
@@ -319,9 +364,9 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
                 <button
                   type="button"
                   className="mt-2 flex items-center gap-1 rounded bg-slate-800 px-2 py-1 text-slate-200 hover:bg-slate-700"
-                  onClick={() => setDraft({ name: "", error: null })}
+                  onClick={() => setDraft({ name: "", error: null, withSelection: selection.length > 0 })}
                 >
-                  <PlusIcon size={12} />
+                  <PlusIcon />
                   Create project
                 </button>
               </div>
@@ -336,16 +381,18 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
             <button
               type="button"
               aria-expanded={detail}
-              title="Sync details"
+              aria-label={`${syncLabel(sync, now)}, sync details`}
               className="flex items-center gap-2 text-left"
               onClick={() => setDetail((open) => !open)}
             >
               <span aria-hidden="true" className={`h-2 w-2 rounded-full ${syncTone}`} />
               {syncLabel(sync, now)}
             </button>
-            <button type="button" aria-label="Refresh" title="Sync now" className="rounded p-1 hover:bg-slate-800 hover:text-slate-200" onClick={() => void refresh()}>
-              <RefreshIcon size={14} />
-            </button>
+            <Tooltip label="Sync now" detail="Fetch the latest PRs, reviews and checks from GitHub" side="top" align="end">
+              <button type="button" aria-label="Refresh" className="rounded p-1 hover:bg-slate-800 hover:text-slate-200" onClick={() => void refresh()}>
+                <RefreshIcon />
+              </button>
+            </Tooltip>
           </div>
           {detail && <p className="px-2 pt-1 text-xs text-slate-500">{sync.message}</p>}
         </footer>
@@ -440,6 +487,8 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
             }}
             onEditProject={setEditingProject}
             onLinkPrs={(projectId, ids) => void linkPrs(projectId, ids)}
+            onCreateProjectWithPrs={createProjectWithPrs}
+            onSelectionChange={setSelection}
             onDetails={setDetailRow}
             onRequestReview={setReviewRow}
             onBulkReview={setBulkIds}
@@ -456,9 +505,11 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
                 Open ↗
               </button>
             )}
-            <button type="button" aria-label="Dismiss" className="text-slate-500 hover:text-slate-200" onClick={() => setNotice(null)}>
-              ×
-            </button>
+            <Tooltip label="Dismiss" side="top" align="end">
+              <button type="button" aria-label="Dismiss" className="rounded p-0.5 text-slate-500 hover:bg-slate-800 hover:text-slate-200" onClick={() => setNotice(null)}>
+                <CloseIcon />
+              </button>
+            </Tooltip>
           </p>
         )}
         {error && <p className="px-4 py-2 text-sm text-rose-300">{error}</p>}
@@ -520,6 +571,8 @@ function NavButton({
   icon,
   onSelect,
   onDropPrs,
+  projectId,
+  flash = false,
   children,
 }: {
   current: string;
@@ -528,15 +581,20 @@ function NavButton({
   onSelect: (id: string) => void;
   /** Makes the entry a drop target for dragged PR rows (manual project links). */
   onDropPrs?: (ids: number[]) => void;
+  /** Lets "Add to project" scroll to this entry. */
+  projectId?: number;
+  /** Briefly highlighted after PRs were added to the project. */
+  flash?: boolean;
   children: string;
 }) {
   const [over, setOver] = useState(false);
   const selected = current === id;
-  const tone = over ? "bg-violet-500/20 text-white ring-1 ring-violet-400" : selected ? "bg-slate-800 text-white" : "text-slate-300 hover:bg-slate-900";
+  const tone = over || flash ? "bg-violet-500/20 text-white ring-1 ring-violet-400" : selected ? "bg-slate-800 text-white" : "text-slate-300 hover:bg-slate-900";
   return (
     <button
       type="button"
       aria-current={selected ? "page" : undefined}
+      data-project-id={projectId}
       className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left ${tone}`}
       onClick={() => onSelect(id)}
       onDragOver={
@@ -568,3 +626,6 @@ function NavButton({
   );
 }
 
+function prCount(count: number): string {
+  return `${count} ${count === 1 ? "PR" : "PRs"}`;
+}

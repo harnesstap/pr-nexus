@@ -420,6 +420,8 @@ export interface Api {
   probeGh(): Promise<GhStatus>;
   listProjects(): Promise<ProjectDto[]>;
   createProject(name: string): Promise<ProjectDto>;
+  /** Creates a project and links the PRs by hand in one transaction. */
+  createProjectWithPrs(name: string, prIds: number[]): Promise<ProjectDto>;
   renameProject(id: number, name: string): Promise<void>;
   archiveProject(id: number, archived: boolean): Promise<void>;
   deleteProject(id: number): Promise<void>;
@@ -499,6 +501,7 @@ export const tauriApi: Api = {
   probeGh: () => invoke("probe_gh"),
   listProjects: () => invoke("list_projects"),
   createProject: (name) => invoke("create_project", { name }),
+  createProjectWithPrs: (name, prIds) => invoke("create_project_with_prs", { name, prIds }),
   renameProject: (id, name) => invoke("rename_project", { id, name }),
   archiveProject: (id, archived) => invoke("archive_project", { id, archived }),
   deleteProject: (id) => invoke("delete_project", { id }),

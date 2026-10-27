@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import { CloseButton } from "../CloseButton";
+import { GitHubIcon, SlackIcon } from "../icons";
 import type { Api, ListRow, MentionsScope, PrDetail } from "../api";
 import { errorMessage } from "../api";
 import { SlackContextPanel } from "./SlackContextPanel";
@@ -76,16 +78,16 @@ export function PrDetailDialog({ api, row, onClose, onOpen, onRequestReview, sla
           </div>
           <div className="flex shrink-0 gap-2">
             {onRequestReview && (
-              <button type="button" className="rounded px-2 py-1 text-violet-300 hover:bg-slate-800" onClick={onRequestReview}>
+              <button type="button" className="flex items-center gap-1.5 rounded px-2 py-1 text-violet-300 hover:bg-slate-800" onClick={onRequestReview}>
+                <SlackIcon size={16} />
                 {row.slack ? "Bump on Slack" : "Request on Slack"}
               </button>
             )}
-            <button type="button" className="rounded px-2 py-1 text-slate-400 hover:bg-slate-800" onClick={() => onOpen(row.url)}>
+            <button type="button" className="flex items-center gap-1.5 rounded px-2 py-1 text-slate-300 hover:bg-slate-800" onClick={() => onOpen(row.url)}>
+              <GitHubIcon />
               Open on GitHub
             </button>
-            <button ref={closeRef} type="button" className="rounded px-2 py-1 text-slate-400 hover:bg-slate-800" onClick={onClose}>
-              Close
-            </button>
+            <CloseButton ref={closeRef} onClick={onClose} />
           </div>
         </header>
 
