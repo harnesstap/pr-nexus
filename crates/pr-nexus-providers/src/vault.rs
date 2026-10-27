@@ -7,7 +7,11 @@
 //! *unavailable*: secrets saved meanwhile stay in memory and are written to
 //! the keychain as soon as it answers, even after the wait timed out.
 //! Only a real failure (no keychain, access denied, a platform error) puts
-//! the vault in its in-memory fallback, and [`Vault::retry`] asks again.
+//! the vault in its in-memory fallback. After a failure the vault never calls
+//! the keychain on its own: saving a secret keeps it in memory instead of
+//! asking again, so a Deny is not followed by another prompt. Only
+//! [`Vault::retry`] (or a restart) asks again; what was saved meanwhile is
+//! written once access is granted.
 //! The vault never writes before a successful read, so a failed read cannot
 //! overwrite the stored entry.
 
@@ -192,10 +196,17 @@ impl Shared {
         }
         loop {
             let (json, revision) = {
-                let Ok(inner) = self.lock() else {
+                let Ok(mut inner) = self.lock() else {
                     return;
                 };
                 if !inner.unsaved() {
+                    // A retry with nothing left to save still ends the wait,
+                    // so later changes are written again.
+                    if matches!(inner.phase, Phase::Waiting { .. }) {
+                        inner.phase = Phase::Ready;
+                        drop(inner);
+                        self.changed.notify_all();
+                    }
                     return;
                 }
                 match serde_json::to_string(&inner.secrets) {
@@ -268,9 +279,13 @@ impl Shared {
     }
 }
 
+/// A request to the keyring worker: run a sync pass. A test can attach a
+/// sender, answered once every request queued before it has been handled.
+type Job = Option<mpsc::Sender<()>>;
+
 pub struct Vault {
     shared: Arc<Shared>,
-    jobs: Option<mpsc::Sender<()>>,
+    jobs: Option<mpsc::Sender<Job>>,
 }
 
 impl Vault {
@@ -306,15 +321,27 @@ impl Vault {
             backend: Some(backend),
             timeout,
         });
-        let (tx, rx) = mpsc::channel::<()>();
+        let (tx, rx) = mpsc::channel::<Job>();
         let worker = Arc::clone(&shared);
         let spawned = thread::Builder::new()
             .name("pr-nexus-keyring".into())
             .spawn(move || {
-                while rx.recv().is_ok() {
+                while let Ok(first) = rx.recv() {
                     // Coalesce queued requests: one pass covers them all.
-                    while rx.try_recv().is_ok() {}
-                    worker.sync();
+                    let mut sync = false;
+                    let mut flushed = Vec::new();
+                    for job in std::iter::once(first).chain(rx.try_iter()) {
+                        match job {
+                            None => sync = true,
+                            Some(done) => flushed.push(done),
+                        }
+                    }
+                    if sync {
+                        worker.sync();
+                    }
+                    for done in flushed {
+                        let _ = done.send(());
+                    }
                 }
             });
         let vault = match spawned {
@@ -356,7 +383,20 @@ impl Vault {
 
     fn kick(&self) {
         if let Some(jobs) = &self.jobs {
-            let _ = jobs.send(());
+            let _ = jobs.send(None);
+        }
+    }
+
+    /// Waits until the worker has handled every request queued so far, so a
+    /// test can check what it did, or did not do, without sleeping.
+    #[cfg(test)]
+    fn flush(&self) {
+        let (done, finished) = mpsc::channel();
+        if let Some(jobs) = &self.jobs {
+            jobs.send(Some(done)).expect("keyring worker is gone");
+            finished
+                .recv_timeout(Duration::from_secs(5))
+                .expect("keyring worker is stuck in a keychain call");
         }
     }
 
@@ -442,9 +482,11 @@ impl Vault {
     }
 
     /// Saves `value` in memory at once, then in the keychain. When the
-    /// keychain is ready this waits for the write; otherwise the value is
-    /// written once the keychain answers. A failed write shows in
-    /// [`Vault::status`], not as an error.
+    /// keychain is ready this waits for the write. While a keychain call is
+    /// pending the value is written once it answers; after a failure (Deny,
+    /// no keychain, an error) it stays in memory until [`Vault::retry`]
+    /// succeeds, and no keychain call is made, so no prompt is shown. A
+    /// failed write shows in [`Vault::status`], not as an error.
     pub fn set(&self, key: &str, value: &str) -> Result<(), CoreError> {
         self.change(key, Some(value))
     }
@@ -454,8 +496,18 @@ impl Vault {
     }
 
     fn change(&self, key: &str, value: Option<&str>) -> Result<(), CoreError> {
-        let revision = self.shared.lock()?.change(key, value);
-        if self.jobs.is_none() {
+        let (revision, ready) = {
+            let mut inner = self.shared.lock()?;
+            let revision = inner.change(key, value);
+            (revision, matches!(inner.phase, Phase::Ready))
+        };
+        // Only a ready keychain is written on a change. While a call is
+        // pending, the pass in flight saves the change once it answers: it
+        // sets `Ready` or checks for unsaved changes under this lock, so it
+        // either sees this change or this change sees `Ready` and kicks.
+        // After a failure nothing is sent: calling the keychain again would
+        // bring back the prompt the user just refused.
+        if self.jobs.is_none() || !ready {
             return Ok(());
         }
         self.kick();
@@ -726,7 +778,8 @@ mod tests {
 
     #[test]
     fn deny_falls_back_to_memory_and_retry_saves_after_allow() {
-        let (backend, script) = fake(None);
+        let original = r#"{"slack:T0:U0":"kept"}"#;
+        let (backend, script) = fake(Some(original));
         let vault = Vault::with_backend(Box::new(backend), PROMPT_TIMEOUT);
         script
             .reads
@@ -734,24 +787,75 @@ mod tests {
                 "User canceled the operation.".into(),
             )))
             .unwrap();
-        wait_until(&vault, KeyringState::Denied);
+        vault.flush();
         let status = vault.status();
+        assert_eq!(status.state, KeyringState::Denied);
         assert!(status.can_retry);
         assert!(status.message.unwrap().contains("denied"));
 
-        // Nothing is written over an entry that could not be read.
+        // Saving after a Deny keeps tokens in memory and never calls the
+        // keychain again, so no second prompt appears.
         vault.set("github:U_1", "token").unwrap();
-        assert_eq!(vault.get("github:U_1").unwrap().as_deref(), Some("token"));
+        vault.set("slack-client:C1", "secret").unwrap();
+        vault.remove("slack-client:C1").unwrap();
+        vault.flush();
         assert_eq!(*script.calls.lock().unwrap(), vec!["read"]);
-        assert!(script.stored.lock().unwrap().is_none());
+        assert_eq!(script.stored.lock().unwrap().as_deref(), Some(original));
+        assert_eq!(vault.get("github:U_1").unwrap().as_deref(), Some("token"));
+        let status = vault.status();
+        assert_eq!(status.state, KeyringState::Denied);
+        assert!(status.unsaved);
 
-        let status = vault.retry();
-        assert_eq!(status.state, KeyringState::Waiting);
+        // Only Retry asks again. The read is held open like a prompt on
+        // screen until the test answers it.
+        assert_eq!(vault.retry().state, KeyringState::Waiting);
         script.reads.send(Ok(())).unwrap();
         script.writes.send(Ok(())).unwrap();
-        wait_until(&vault, KeyringState::Ready);
-        wait_saved(&vault);
-        assert_eq!(stored(&script)["github:U_1"], "token");
+        vault.flush();
+        assert_eq!(*script.calls.lock().unwrap(), vec!["read", "read", "write"]);
+        let status = vault.status();
+        assert_eq!(status.state, KeyringState::Ready);
+        assert!(!status.unsaved);
+        let saved = stored(&script);
+        assert_eq!(saved["github:U_1"], "token");
+        assert_eq!(saved["slack:T0:U0"], "kept");
+        assert!(!saved.contains_key("slack-client:C1"));
+    }
+
+    #[test]
+    fn a_denied_write_is_not_asked_again_until_retry() {
+        let (backend, script) = fake(None);
+        let vault = Vault::with_backend(Box::new(backend), PROMPT_TIMEOUT);
+        script.reads.send(Ok(())).unwrap();
+        vault.flush();
+        assert_eq!(vault.status().state, KeyringState::Ready);
+
+        script
+            .writes
+            .send(Err(KeyringError::Denied("denied".into())))
+            .unwrap();
+        vault.set("github:U_1", "first").unwrap();
+        vault.flush();
+        assert_eq!(vault.status().state, KeyringState::Denied);
+
+        // The next save stays in memory: no write, no prompt.
+        vault.set("slack:T0:U0", "second").unwrap();
+        vault.flush();
+        assert_eq!(*script.calls.lock().unwrap(), vec!["read", "write"]);
+        assert!(script.stored.lock().unwrap().is_none());
+        assert!(vault.status().unsaved);
+
+        script.writes.send(Ok(())).unwrap();
+        vault.retry();
+        vault.flush();
+        assert_eq!(
+            *script.calls.lock().unwrap(),
+            vec!["read", "write", "write"]
+        );
+        assert_eq!(vault.status().state, KeyringState::Ready);
+        let saved = stored(&script);
+        assert_eq!(saved["github:U_1"], "first");
+        assert_eq!(saved["slack:T0:U0"], "second");
     }
 
     #[test]
