@@ -422,3 +422,33 @@ test("orgs hidden behind SSO are listed with an authorization hint", () => {
   expect(screen.getAllByText("SSO authorization needed")).toHaveLength(1);
   expect(screen.getByText(/at least one org/)).toBeInTheDocument();
 });
+
+test("a failed first sync offers Retry sync, which runs the sync again", async () => {
+  const failed = { phase: "error", message: "Sync failed · 502: GitHub timed out", synced_at: null, paused: false };
+  const synced = { phase: "ok", message: "Synced · 3 pull requests", synced_at: "2026-10-26T10:00:00Z", paused: false };
+  const syncNow = vi.fn().mockResolvedValueOnce(failed).mockResolvedValueOnce(synced);
+  render(
+    <Wizard
+      api={api({ syncNow })}
+      boot={{ ...boot, resume_step: "done", github_connected: true, github_login: "ada" }}
+      onFinished={() => undefined}
+    />,
+  );
+  expect(await screen.findByText(/First sync: Sync failed · 502: GitHub timed out/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Retry sync" }));
+  expect(await screen.findByText(/First sync: Synced · 3 pull requests/)).toBeInTheDocument();
+  expect(syncNow).toHaveBeenCalledTimes(2);
+  expect(screen.queryByRole("button", { name: "Retry sync" })).not.toBeInTheDocument();
+});
+
+test("a successful first sync shows no Retry sync button", async () => {
+  render(
+    <Wizard
+      api={api({ syncNow: () => Promise.resolve({ phase: "ok", message: "Synced · 0 pull requests", synced_at: null, paused: false }) })}
+      boot={{ ...boot, resume_step: "done", github_connected: true, github_login: "ada" }}
+      onFinished={() => undefined}
+    />,
+  );
+  expect(await screen.findByText(/First sync: Synced · 0 pull requests/)).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Retry sync" })).not.toBeInTheDocument();
+});

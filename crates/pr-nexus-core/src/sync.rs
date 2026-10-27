@@ -16,7 +16,11 @@ use crate::store::Store;
 pub const MINE_QUERY: &str = "is:pr is:open author:@me archived:false sort:updated-desc";
 pub const REVIEW_QUERY: &str =
     "is:pr is:open review-requested:@me archived:false sort:updated-desc";
-pub const SEARCH_PAGE_SIZE: u32 = 50;
+/// Page sizes for search and `nodes` refresh, largest first. GitHub stops a
+/// GraphQL query after about 10 s and answers 502; with the full PR fragment
+/// 50 nodes already crosses that on busy repos, so sync starts at 20 and drops
+/// to the next size on a 502/503/504 or a GraphQL timeout (§6).
+pub const PAGE_SIZES: [u32; 3] = [20, 10, 5];
 pub const SEARCH_CAP: u32 = 500;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
