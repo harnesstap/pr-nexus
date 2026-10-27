@@ -35,26 +35,24 @@ impl Store {
     /// Creates an empty project named `name` (trimmed, non-empty, unique), placed last.
     pub fn create_project(&self, name: String) -> Result<Project, CoreError> {
         let name = valid_name(&name)?;
+        self.write(move |conn| create_project_in(conn, name))
+    }
+
+    /// Creates a project and links `prs` to it by hand in one transaction (§8.2 "Add to
+    /// project"): a name clash or a bad id leaves no empty project behind.
+    pub fn create_project_with_prs(
+        &self,
+        name: String,
+        prs: Vec<PrId>,
+        now: DateTime<Utc>,
+    ) -> Result<(Project, usize), CoreError> {
+        let name = valid_name(&name)?;
         self.write(move |conn| {
-            ensure_name_free(conn, &name, None)?;
-            let sort_order: i32 = conn
-                .query_row(
-                    "SELECT COALESCE(MAX(sort_order) + 1, 0) FROM projects",
-                    [],
-                    |row| row.get(0),
-                )
-                .map_err(db)?;
-            insert_project(
-                conn,
-                &Project {
-                    id: ProjectId(0),
-                    name,
-                    description: String::new(),
-                    color: DEFAULT_COLOR.to_owned(),
-                    archived: false,
-                    sort_order,
-                },
-            )
+            let tx = conn.transaction().map_err(db)?;
+            let project = create_project_in(&tx, name)?;
+            let changed = link_manual_in(&tx, project.id, &prs, now)?;
+            tx.commit().map_err(db)?;
+            Ok((project, changed))
         })
     }
 
@@ -218,19 +216,7 @@ impl Store {
     ) -> Result<usize, CoreError> {
         self.write(move |conn| {
             let tx = conn.transaction().map_err(db)?;
-            let mut changed = 0;
-            for pr in prs {
-                changed += tx
-                    .execute(
-                        "INSERT INTO pr_projects (pr_id, project_id, source, rule_id, created_at)
-                         VALUES (?1, ?2, 'manual', NULL, ?3)
-                         ON CONFLICT(pr_id, project_id) DO UPDATE SET
-                            source = 'manual', rule_id = NULL
-                         WHERE pr_projects.source <> 'manual'",
-                        params![pr.0, project.0, format_ts(now)],
-                    )
-                    .map_err(db)?;
-            }
+            let changed = link_manual_in(&tx, project, &prs, now)?;
             tx.commit().map_err(db)?;
             Ok(changed)
         })
@@ -567,4 +553,51 @@ pub(super) fn map_link(row: &rusqlite::Row<'_>) -> rusqlite::Result<PrProjectLin
         source,
         created_at: ts_col(row.get("created_at")?)?,
     })
+}
+
+fn create_project_in(conn: &Connection, name: String) -> Result<Project, CoreError> {
+    ensure_name_free(conn, &name, None)?;
+    let sort_order: i32 = conn
+        .query_row(
+            "SELECT COALESCE(MAX(sort_order) + 1, 0) FROM projects",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(db)?;
+    insert_project(
+        conn,
+        &Project {
+            id: ProjectId(0),
+            name,
+            description: String::new(),
+            color: DEFAULT_COLOR.to_owned(),
+            archived: false,
+            sort_order,
+        },
+    )
+}
+
+fn link_manual_in(
+    conn: &Connection,
+    project: ProjectId,
+    prs: &[PrId],
+    now: DateTime<Utc>,
+) -> Result<usize, CoreError> {
+    let mut stmt = conn
+        .prepare(
+            "INSERT INTO pr_projects (pr_id, project_id, source, rule_id, created_at)
+             VALUES (?1, ?2, 'manual', NULL, ?3)
+             ON CONFLICT(pr_id, project_id) DO UPDATE SET
+                source = 'manual', rule_id = NULL
+             WHERE pr_projects.source <> 'manual'",
+        )
+        .map_err(db)?;
+    let created_at = format_ts(now);
+    let mut changed = 0;
+    for pr in prs {
+        changed += stmt
+            .execute(params![pr.0, project.0, created_at])
+            .map_err(db)?;
+    }
+    Ok(changed)
 }

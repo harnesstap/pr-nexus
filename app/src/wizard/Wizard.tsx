@@ -7,6 +7,8 @@ import { DEFAULT_REDIRECT, SlackPanel, type SlackFields } from "../slack/SlackPa
 import { WorkspaceSelect } from "../slack/WorkspaceSelect";
 import { chosenWorkspace, csvHasWorkspaceColumn, rememberWorkspace } from "../slack/workspaces";
 import { backEnabled, nextEnabled, nextHint, nextLabel, showSkip, stepTitle, type StepModel } from "./logic";
+import { plainText } from "../textInput";
+import { CheckIcon, ChevronLeftIcon, ChevronRightIcon, CopyIcon, GitHubIcon, LogoIcon, RefreshIcon, SkipIcon } from "../icons";
 
 const ARM_DELAY_MS = 800;
 
@@ -313,7 +315,8 @@ export function Wizard({ api, boot, onFinished, onCancel }: Props) {
         <div className="flex items-center justify-between">
           <p className="text-sm text-slate-400">PR Nexus setup</p>
           {onCancel && (
-            <button type="button" className="rounded px-2 py-1 text-sm text-slate-300 hover:bg-slate-800" onClick={onCancel}>
+            <button type="button" className="flex items-center gap-1 rounded px-2 py-1 text-sm text-slate-300 hover:bg-slate-800" onClick={onCancel}>
+              <ChevronLeftIcon />
               Back to PR Nexus
             </button>
           )}
@@ -368,7 +371,7 @@ export function Wizard({ api, boot, onFinished, onCancel }: Props) {
               />
               <span className="flex-1">
                 Paste a personal access token
-                <input
+                <input {...plainText}
                   className="mt-2 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2"
                   type="password"
                   autoComplete="off"
@@ -400,14 +403,16 @@ export function Wizard({ api, boot, onFinished, onCancel }: Props) {
             <div className="flex gap-2">
               <button
                 type="button"
-                className="rounded bg-violet-500 px-3 py-2 text-sm font-medium text-white disabled:opacity-40"
+                className="flex items-center gap-2 rounded bg-violet-500 px-3 py-2 text-sm font-medium text-white disabled:opacity-40"
                 onClick={() => void connect()}
                 disabled={busy || (mode === "device" && !boot.oauth_client_configured)}
               >
+                {mode === "device" ? <CopyIcon /> : <GitHubIcon />}
                 {mode === "device" ? "Copy & open" : "Connect"}
               </button>
               {mode === "device" && deviceCode && (
-                <button type="button" className="rounded border border-slate-600 px-3 py-2 text-sm" onClick={() => void poll()}>
+                <button type="button" className="flex items-center gap-2 rounded border border-slate-600 px-3 py-2 text-sm" onClick={() => void poll()}>
+                  <CheckIcon />
                   I've authorized
                 </button>
               )}
@@ -420,7 +425,7 @@ export function Wizard({ api, boot, onFinished, onCancel }: Props) {
         {step === "choose_vcs_scope" && (
           <div>
             <p className="text-slate-300">Pick the GitHub orgs whose PRs PR Nexus should show.</p>
-            <input
+            <input {...plainText}
               className="mt-4 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2"
               placeholder="Filter orgs…"
               value={orgFilter}
@@ -508,7 +513,7 @@ export function Wizard({ api, boot, onFinished, onCancel }: Props) {
                 (starts with C or G; copy it from the channel's details in Slack). An optional <code>slack_workspace</code>{" "}
                 column overrides the default workspace.
               </span>
-              <textarea
+              <textarea {...plainText}
                 className="mt-1 h-36 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-xs"
                 placeholder={CSV_EXAMPLE}
                 value={csv}
@@ -568,10 +573,11 @@ export function Wizard({ api, boot, onFinished, onCancel }: Props) {
                 </p>
                 <button
                   type="button"
-                  className="rounded border border-slate-600 px-3 py-1.5 text-sm disabled:opacity-40"
+                  className="flex items-center gap-2 rounded border border-slate-600 px-3 py-1.5 text-sm disabled:opacity-40"
                   onClick={retrySync}
                   disabled={busy || !syncSettled}
                 >
+                  <RefreshIcon />
                   Retry sync
                 </button>
               </div>
@@ -588,34 +594,38 @@ export function Wizard({ api, boot, onFinished, onCancel }: Props) {
       <footer className="mt-4 flex justify-end gap-2 border-t border-slate-800 pt-4">
         <button
           type="button"
-          className="rounded px-3 py-2 text-sm disabled:opacity-40"
+          className="flex items-center gap-1 rounded px-3 py-2 text-sm disabled:opacity-40"
           onClick={() => void goBack()}
           disabled={!backEnabled(index)}
         >
+          <ChevronLeftIcon />
           Back
         </button>
         {showSkip(step) && (
-          <button type="button" className="rounded px-3 py-2 text-sm" onClick={() => void skip()}>
+          <button type="button" className="flex items-center gap-1.5 rounded px-3 py-2 text-sm" onClick={() => void skip()}>
+            <SkipIcon />
             Skip
           </button>
         )}
         {step === "done" ? (
           <button
             type="button"
-            className="rounded bg-violet-500 px-3 py-2 text-sm font-medium text-white disabled:opacity-40"
+            className="flex items-center gap-2 rounded bg-violet-500 px-3 py-2 text-sm font-medium text-white disabled:opacity-40"
             onClick={() => void openApp()}
             disabled={busy || !syncSettled || !armed}
           >
+            <LogoIcon />
             Open PR Nexus
           </button>
         ) : (
           <button
             type="button"
-            className="rounded bg-violet-500 px-3 py-2 text-sm font-medium text-white disabled:opacity-40"
+            className="flex items-center gap-1 rounded bg-violet-500 px-3 py-2 text-sm font-medium text-white disabled:opacity-40"
             onClick={() => void goNext()}
             disabled={!canNext}
           >
             {nextLabel(step, model)}
+            <ChevronRightIcon />
           </button>
         )}
       </footer>

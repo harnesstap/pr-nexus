@@ -728,3 +728,35 @@ fn slim_rows_drop_the_body_and_facts_load_in_bulk() {
     assert_eq!(facts.links.get(&pr.id).map(Vec::len), Some(1));
     assert!(facts.active_requests.is_empty());
 }
+
+#[test]
+fn create_project_with_prs_is_atomic() {
+    let (_dir, store) = open_temp();
+    let (_account, _repo, pr) = seed_pr(&store, "PR_new_project", PrState::Open);
+    let (project, changed) = store
+        .create_project_with_prs("  Launch  ".to_owned(), vec![pr.id], at())
+        .unwrap();
+    assert_eq!(project.name, "Launch");
+    assert_eq!(changed, 1);
+    let links = store.list_project_links(project.id).unwrap();
+    assert_eq!(links.len(), 1);
+
+    // A clashing name or an unknown PR id leaves no project behind.
+    let dup = store
+        .create_project_with_prs("Launch".to_owned(), vec![pr.id], at())
+        .unwrap_err()
+        .to_string();
+    assert!(dup.contains("already exists"), "{dup}");
+    assert!(
+        store
+            .create_project_with_prs("Ghost".to_owned(), vec![PrId(9_999)], at())
+            .is_err()
+    );
+    let names: Vec<String> = store
+        .list_projects()
+        .unwrap()
+        .into_iter()
+        .map(|project| project.name)
+        .collect();
+    assert_eq!(names, vec!["Launch".to_owned()]);
+}

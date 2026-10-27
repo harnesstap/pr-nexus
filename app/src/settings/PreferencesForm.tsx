@@ -2,6 +2,7 @@ import { useState, type ReactNode } from "react";
 import type { Api, Preferences } from "../api";
 import { errorMessage } from "../api";
 import { toMinutes } from "./tabs";
+import { plainText } from "../textInput";
 
 interface Props {
   api: Api;
@@ -51,14 +52,14 @@ export function PreferencesForm({ api, prefs, section, onSaved }: Props) {
       {section === "review" ? (
         <>
           <Field label="Requester" help='Added in brackets after the PR in review requests, e.g. "Ada Acme". Never on reminders. Empty adds nothing.'>
-            <input
+            <input {...plainText}
               className="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1"
               value={draft.review_requester}
               onChange={(event) => patch({ review_requester: event.target.value })}
             />
           </Field>
           <Field label="Minimum hours between bumps" help="A PR bumped more recently is skipped, with a warning in the preview.">
-            <input
+            <input {...plainText}
               className={input}
               type="number"
               min={1}
@@ -68,7 +69,7 @@ export function PreferencesForm({ api, prefs, section, onSaved }: Props) {
             />
           </Field>
           <Field label="Threads per bulk bump" help="Above this many threads in one channel, a bulk bump becomes one reminder message.">
-            <input
+            <input {...plainText}
               className={input}
               type="number"
               min={1}
@@ -90,7 +91,7 @@ export function PreferencesForm({ api, prefs, section, onSaved }: Props) {
             onChange={(on) => patch({ blocked_review_required_is_ready: on })}
           />
           <Field label="Ticket key pattern" help="Regular expression for ticket keys in branch names and titles, used by project rules. Empty restores the default.">
-            <input
+            <input {...plainText}
               className="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 font-mono text-sm"
               value={draft.ticket_key_regex}
               onChange={(event) => patch({ ticket_key_regex: event.target.value })}
@@ -100,7 +101,7 @@ export function PreferencesForm({ api, prefs, section, onSaved }: Props) {
       ) : (
         <>
           <Field label="Sync every (minutes, window focused)" help="1 to 60 minutes.">
-            <input
+            <input {...plainText}
               className={input}
               type="number"
               min={1}
@@ -110,7 +111,7 @@ export function PreferencesForm({ api, prefs, section, onSaved }: Props) {
             />
           </Field>
           <Field label="Sync every (minutes, in the background)" help="1 minute to 24 hours.">
-            <input
+            <input {...plainText}
               className={input}
               type="number"
               min={1}
@@ -120,7 +121,7 @@ export function PreferencesForm({ api, prefs, section, onSaved }: Props) {
             />
           </Field>
           <Field label="Keep closed PRs (days)" help="Merged and closed PRs leave the open list at the next sync. Filters → Archived and closed still shows them this long. 0 drops them right away.">
-            <input
+            <input {...plainText}
               className={input}
               type="number"
               min={0}

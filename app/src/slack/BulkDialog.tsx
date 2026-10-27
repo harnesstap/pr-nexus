@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { Api, BulkCard, BulkPreview, BulkRequest, BulkResult, ChannelKey, ReviewTarget, SlackWorkspace } from "../api";
 import { channelLabel, errorMessage } from "../api";
+import { plainText } from "../textInput";
 
 interface Props {
   api: Api;
@@ -190,7 +191,7 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen }: Props) {
                 </label>
                 <label className="block">
                   Channel or DM ID
-                  <input
+                  <input {...plainText}
                     className={input}
                     placeholder="C0123456789 or D0123456789"
                     value={manual.channel_id}
@@ -199,7 +200,7 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen }: Props) {
                 </label>
                 <label className="block">
                   Channel name
-                  <input className={input} placeholder="#reviews" value={manual.channel_name} onChange={(event) => setManual({ ...manual, channel_name: event.target.value })} />
+                  <input {...plainText} className={input} placeholder="#reviews" value={manual.channel_name} onChange={(event) => setManual({ ...manual, channel_name: event.target.value })} />
                 </label>
                 <button
                   type="button"

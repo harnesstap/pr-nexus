@@ -5,6 +5,7 @@ import { MappingFileButton } from "../mapping/MappingFileButton";
 import { WorkspaceSelect } from "../slack/WorkspaceSelect";
 import { chosenWorkspace, csvHasWorkspaceColumn, rememberWorkspace } from "../slack/workspaces";
 import { MAPPING_FIELDS, matchesMapping } from "./tabs";
+import { plainText } from "../textInput";
 
 interface Props {
   api: Api;
@@ -114,7 +115,7 @@ export function MappingSettings({ api, skippedInSetup, onCountChange, workspaces
           <h2 id="mapping-table" className="text-base font-semibold">
             Team channels
           </h2>
-          <input
+          <input {...plainText}
             type="search"
             aria-label="Filter mappings"
             placeholder="Filter teams or channels"
@@ -293,15 +294,15 @@ function EditRow({
       <td className="py-2 pr-2">
         {editing.isNew ? (
           <div className="flex gap-1">
-            <input aria-label="GitHub org" placeholder="org" className={`${box} w-24`} value={editing.row.github_org} onChange={(e) => set("github_org", e.target.value)} />
-            <input aria-label="Team slug" placeholder="team-slug" className={`${box} w-28`} value={editing.row.team_slug} onChange={(e) => set("team_slug", e.target.value)} />
+            <input {...plainText} aria-label="GitHub org" placeholder="org" className={`${box} w-24`} value={editing.row.github_org} onChange={(e) => set("github_org", e.target.value)} />
+            <input {...plainText} aria-label="Team slug" placeholder="team-slug" className={`${box} w-28`} value={editing.row.team_slug} onChange={(e) => set("team_slug", e.target.value)} />
           </div>
         ) : (
           <span className="font-medium">
             {editing.row.github_org}/{editing.row.team_slug}
           </span>
         )}
-        <input aria-label="Team name" placeholder="Team name (optional)" className={`${box} mt-1 w-full`} value={editing.row.team_name} onChange={(e) => set("team_name", e.target.value)} />
+        <input {...plainText} aria-label="Team name" placeholder="Team name (optional)" className={`${box} mt-1 w-full`} value={editing.row.team_name} onChange={(e) => set("team_name", e.target.value)} />
       </td>
       <td className="py-2 pr-2">
         <WorkspaceSelect
@@ -315,8 +316,8 @@ function EditRow({
         />
       </td>
       <td className="py-2 pr-2">
-        <input aria-label="Channel name" placeholder="team-reviews" className={`${box} w-36`} value={editing.row.slack_channel_name} onChange={(e) => set("slack_channel_name", e.target.value)} />
-        <input aria-label="Channel id" placeholder="C0123456789" className={`${box} mt-1 w-36 font-mono text-xs`} value={editing.row.slack_channel_id} onChange={(e) => set("slack_channel_id", e.target.value)} />
+        <input {...plainText} aria-label="Channel name" placeholder="team-reviews" className={`${box} w-36`} value={editing.row.slack_channel_name} onChange={(e) => set("slack_channel_name", e.target.value)} />
+        <input {...plainText} aria-label="Channel id" placeholder="C0123456789" className={`${box} mt-1 w-36 font-mono text-xs`} value={editing.row.slack_channel_id} onChange={(e) => set("slack_channel_id", e.target.value)} />
       </td>
       <td className="py-2 pr-2">
         <label className="flex items-center gap-1 text-xs">
@@ -423,7 +424,7 @@ function ImportPanel({
       </div>
       <label className="block text-sm">
         Mapping CSV
-        <textarea
+        <textarea {...plainText}
           className={`${box} mt-1 h-28 w-full font-mono text-xs`}
           placeholder="github_org,github_team_slug,github_team_name,slack_channel_name,slack_channel_id"
           value={csv}
@@ -555,7 +556,7 @@ function ExportPanel({ api }: { api: Api }) {
           </span>
         )}
       </div>
-      {csv !== null && <textarea aria-label="Exported CSV" readOnly className={`${box} h-28 w-full font-mono text-xs`} value={csv} />}
+      {csv !== null && <textarea {...plainText} aria-label="Exported CSV" readOnly className={`${box} h-28 w-full font-mono text-xs`} value={csv} />}
     </section>
   );
 }

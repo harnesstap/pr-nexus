@@ -105,6 +105,7 @@ pub fn run() {
             commands::link_candidates,
             commands::list_projects,
             commands::create_project,
+            commands::create_project_with_prs,
             commands::rename_project,
             commands::archive_project,
             commands::delete_project,

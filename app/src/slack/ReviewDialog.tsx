@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Api, ListRow, ReviewPreview, ReviewTarget, SlackIndicator, SlackWorkspace, TargetChoice } from "../api";
 import { channelLabel, errorMessage } from "../api";
+import { plainText } from "../textInput";
 
 interface Props {
   api: Api;
@@ -171,7 +172,7 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen }: Props) {
                 </label>
                 <label className="block">
                   Channel or DM ID
-                  <input
+                  <input {...plainText}
                     className={input}
                     placeholder="C0123456789 or D0123456789"
                     value={manual.channel_id}
@@ -180,7 +181,7 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen }: Props) {
                 </label>
                 <label className="block">
                   Channel name
-                  <input
+                  <input {...plainText}
                     className={input}
                     placeholder="#reviews"
                     value={manual.channel_name}

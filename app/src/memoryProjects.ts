@@ -10,6 +10,7 @@ type ProjectApi = Pick<
   | "previewRule"
   | "listProjectLinks"
   | "linkPrs"
+  | "createProjectWithPrs"
   | "unlinkPr"
   | "restorePr"
   | "listPage"
@@ -33,6 +34,22 @@ export function memoryProjectApi(rows: SearchRow[], projects: ProjectDto[], rule
     }
   };
   const find = (projectId: number, prId: number) => links.findIndex((link) => link.project_id === projectId && link.pr_id === prId);
+  const link = (projectId: number, prIds: number[]) => {
+    let changed = 0;
+    for (const prId of prIds) {
+      const index = find(projectId, prId);
+      if (index >= 0 && links[index].source === "manual") {
+        continue;
+      }
+      if (index >= 0) {
+        links.splice(index, 1);
+      }
+      links.push({ project_id: projectId, pr_id: prId, source: "manual", rule_id: null });
+      changed += 1;
+    }
+    sync();
+    return changed;
+  };
   const strip = ({ body: _body, ...row }: SearchRow) => (void _body, row);
   return {
     listPage: (request) => Promise.resolve(structuredClone(pageFromRows(rows, projects, request))),
@@ -81,21 +98,26 @@ export function memoryProjectApi(rows: SearchRow[], projects: ProjectDto[], rule
       Promise.resolve(
         links.filter((link) => link.project_id === projectId).map(({ pr_id, source, rule_id }) => ({ pr_id, source, rule_id })),
       ),
-    linkPrs: (projectId, prIds) => {
-      let changed = 0;
-      for (const prId of prIds) {
-        const index = find(projectId, prId);
-        if (index >= 0 && links[index].source === "manual") {
-          continue;
-        }
-        if (index >= 0) {
-          links.splice(index, 1);
-        }
-        links.push({ project_id: projectId, pr_id: prId, source: "manual", rule_id: null });
-        changed += 1;
+    linkPrs: (projectId, prIds) => Promise.resolve(link(projectId, prIds)),
+    createProjectWithPrs: (name, prIds) => {
+      const trimmed = name.trim();
+      if (!trimmed) {
+        return Promise.reject(new Error("Name cannot be empty"));
       }
-      sync();
-      return Promise.resolve(changed);
+      if (projects.some((project) => project.name === trimmed)) {
+        return Promise.reject(new Error("A project with that name already exists"));
+      }
+      const project: ProjectDto = {
+        id: Math.max(0, ...projects.map((item) => item.id)) + 1,
+        name: trimmed,
+        color: "#7c5cbf",
+        archived: false,
+        description: "",
+        sort_order: projects.length,
+      };
+      projects.push(project);
+      link(project.id, prIds);
+      return Promise.resolve({ ...project });
     },
     unlinkPr: (projectId, prId) => {
       const index = find(projectId, prId);

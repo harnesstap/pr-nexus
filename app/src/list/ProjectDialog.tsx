@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
+import { CloseButton } from "../CloseButton";
 import type { Api, ListRow, ProjectDto, ProjectLinkDto, ProjectRuleDto, RuleKind } from "../api";
 import { errorMessage } from "../api";
 import { PROJECT_COLORS, RULE_KINDS, ruleKindLabel } from "./projects";
+import { plainText } from "../textInput";
 
 /** Candidate search waits this long after the last keystroke. */
 const CANDIDATE_DEBOUNCE_MS = 200;
@@ -143,9 +145,7 @@ export function ProjectDialog({ api, project, onClose, onChanged }: Props) {
             <span aria-hidden="true" className="h-3 w-3 rounded-sm" style={{ background: project.color }} />
             {project.name}
           </h2>
-          <button ref={closeRef} type="button" className="rounded px-2 py-1 text-slate-400 hover:bg-slate-800" onClick={onClose}>
-            Close
-          </button>
+          <CloseButton ref={closeRef} onClick={onClose} />
         </header>
 
         <fieldset className="mt-4">
@@ -211,7 +211,7 @@ export function ProjectDialog({ api, project, onClose, onChanged }: Props) {
           </h3>
           <label className="mt-2 flex items-center gap-2">
             <span className="sr-only">Add pull request</span>
-            <input
+            <input {...plainText}
               aria-label="Add pull request"
               className="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1"
               placeholder="Add a pull request: search by title, repo or #number"
@@ -338,7 +338,7 @@ function RuleRow({
             </option>
           ))}
         </select>
-        <input
+        <input {...plainText}
           aria-label="Rule pattern"
           className="min-w-40 flex-1 rounded border border-slate-700 bg-slate-950 px-2 py-1 font-mono text-xs"
           placeholder={kind.placeholder}
@@ -347,7 +347,7 @@ function RuleRow({
         />
         <label className="flex items-center gap-1 text-xs text-slate-400">
           Priority
-          <input
+          <input {...plainText}
             aria-label="Rule priority"
             type="number"
             className="w-16 rounded border border-slate-700 bg-slate-950 px-1 py-1"

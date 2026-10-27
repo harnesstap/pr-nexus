@@ -49,6 +49,7 @@ function Harness({
   onRename = () => Promise.resolve(),
   viewKey = "mine",
   onLinkPrs = () => undefined,
+  onCreateProjectWithPrs = () => Promise.resolve(),
   onEditProject = () => undefined,
   onDetails = () => undefined,
   onRequestReview = () => undefined,
@@ -63,6 +64,7 @@ function Harness({
   onRename?: (id: number, name: string) => Promise<void>;
   viewKey?: string;
   onLinkPrs?: (projectId: number, ids: number[]) => void;
+  onCreateProjectWithPrs?: (name: string, ids: number[]) => Promise<void>;
   onEditProject?: (id: number) => void;
   onDetails?: (row: ListRow) => void;
   onRequestReview?: (row: ListRow) => void;
@@ -86,6 +88,7 @@ function Harness({
       onDelete={() => undefined}
       onEditProject={onEditProject}
       onLinkPrs={onLinkPrs}
+      onCreateProjectWithPrs={onCreateProjectWithPrs}
       onDetails={onDetails}
       onRequestReview={onRequestReview}
       onBulkReview={onBulkReview}
@@ -647,4 +650,58 @@ test("a sync refresh re-reads what is loaded in place, without a loading state",
   expect(refresh.cursor).toBeNull();
   expect(refresh.limit).toBeGreaterThan(PAGE_SIZE);
   expect(screen.getAllByRole("article").length).toBe(loaded);
+});
+
+test("Add to project links the selection to a picked project", async () => {
+  const onLinkPrs = vi.fn();
+  const archived: ProjectDto = { ...billing, id: 4, name: "Old work", archived: true };
+  await show(<Harness rows={rows} projects={[auth, billing, archived]} onLinkPrs={onLinkPrs} />);
+  fireEvent.click(screen.getByRole("checkbox", { name: /Select Fix tax rounding/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Add to project" }));
+  const menu = screen.getByRole("menu", { name: "Add 1 PR to project" });
+  expect(within(menu).queryByRole("menuitem", { name: /Old work/ })).not.toBeInTheDocument();
+  fireEvent.click(within(menu).getByRole("menuitem", { name: /Billing/ }));
+  expect(onLinkPrs).toHaveBeenCalledWith(2, [3]);
+  expect(screen.queryByRole("menu", { name: /to project/ })).not.toBeInTheDocument();
+});
+
+test("New project from selection creates the project with the selected PRs", async () => {
+  const onCreate = vi.fn((name: string) =>
+    name === "Auth" ? Promise.reject(new Error("A project with that name already exists")) : Promise.resolve(),
+  );
+  await show(<Harness rows={rows} onCreateProjectWithPrs={onCreate} />);
+  fireEvent.click(screen.getByRole("checkbox", { name: /Select Add passkeys/ }));
+  fireEvent.click(screen.getByRole("checkbox", { name: /Select Fix tax rounding/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Add to project" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: /New project from selection/ }));
+  const input = screen.getByRole("textbox", { name: "New project name" });
+  expect(screen.getByText(/Enter to create with 2 PRs/)).toBeInTheDocument();
+
+  fireEvent.change(input, { target: { value: "Auth" } });
+  fireEvent.submit(input);
+  expect(screen.getByText("A project with that name already exists")).toBeInTheDocument();
+  expect(onCreate).not.toHaveBeenCalled();
+
+  fireEvent.change(input, { target: { value: "Checkout" } });
+  fireEvent.submit(input);
+  await settle();
+  expect(onCreate).toHaveBeenCalledWith("Checkout", [2, 3]);
+  expect(screen.queryByRole("menu", { name: /to project/ })).not.toBeInTheDocument();
+});
+
+test("p opens Add to project for the focused row when nothing is selected", async () => {
+  const onLinkPrs = vi.fn();
+  await show(<Harness rows={rows} onLinkPrs={onLinkPrs} />);
+  fireEvent.keyDown(window, { key: "p" });
+  await settle();
+  const menu = screen.getByRole("menu", { name: "Add 1 PR to project" });
+  expect(within(menu).getAllByRole("menuitem")[0]).toHaveFocus();
+  fireEvent.keyDown(within(menu).getAllByRole("menuitem")[0], { key: "ArrowDown" });
+  expect(within(menu).getAllByRole("menuitem")[1]).toHaveFocus();
+  fireEvent.keyDown(within(menu).getAllByRole("menuitem")[1], { key: "Escape" });
+  expect(screen.queryByRole("menu", { name: /to project/ })).not.toBeInTheDocument();
+  fireEvent.keyDown(window, { key: "p" });
+  fireEvent.click(within(screen.getByRole("menu", { name: /to project/ })).getByRole("menuitem", { name: /Auth/ }));
+  expect(onLinkPrs).toHaveBeenCalledTimes(1);
+  expect(onLinkPrs.mock.calls[0][1]).toHaveLength(1);
 });

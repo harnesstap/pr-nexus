@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { Api, UpdateInfo } from "../api";
+import { CloseButton } from "../CloseButton";
 import { dismissMappingHint, dismissUpdate, updateDismissed } from "./hints";
 
 /** "Update available": asks GitHub once per launch; any failure stays silent (About has the manual check). */
@@ -43,17 +44,17 @@ export function UpdateBanner({ api }: { api: Api }) {
       >
         {copied ? "Command copied" : "Copy gh command"}
       </button>
-      <button
-        type="button"
-        aria-label="Dismiss update notice"
-        className="ml-auto text-violet-300 hover:text-white"
+      <CloseButton
+        label="Dismiss update notice"
+        detail="Hide it until the next version"
+        shortcut={null}
+        className="ml-auto"
+        tone="text-violet-300 hover:text-white"
         onClick={() => {
           dismissUpdate(update.version);
           setUpdate(null);
         }}
-      >
-        ×
-      </button>
+      />
     </div>
   );
 }
@@ -65,17 +66,16 @@ export function MappingHint({ onOpen, onDismiss }: { onOpen: () => void; onDismi
       <button type="button" className="text-violet-300 underline" onClick={onOpen}>
         Map team channels
       </button>
-      <button
-        type="button"
-        aria-label="Dismiss mapping hint"
-        className="ml-auto text-slate-500 hover:text-slate-200"
+      <CloseButton
+        label="Dismiss mapping hint"
+        detail="You can map team channels later in Settings → Mappings"
+        shortcut={null}
+        className="ml-auto"
         onClick={() => {
           dismissMappingHint();
           onDismiss();
         }}
-      >
-        ×
-      </button>
+      />
     </div>
   );
 }
