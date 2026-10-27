@@ -1091,7 +1091,14 @@ Row content, each part toggled under **Show**: number and title; `owner/repo`; C
   - Slack request: None, Requested, Bumped, Bump due (last request or bump older than `review.min_bump_interval_hours`);
   - Archived and closed: show PRs in archived projects and merged/closed PRs still within `sync.keep_closed_days`. The header counts them apart (`3 open PRs across 2 projects · 1 merged or closed`).
   **Reset** clears filters only, not grouping, ordering, or Show.
-- The funnel is an icon button immediately right of the search field. It shows a dot when any filter is active. The menu closes on `Esc` and on a click outside it. There is no other persistent filter UI.
+- The funnel is an icon button immediately right of the search field. It shows a dot when any filter is active, including a quick filter. The menu closes on `Esc` and on a click outside it. The only other persistent filter UI is the quick filter bar below.
+- **Quick filters:** a row of icon buttons at the right of the Select all bar, each with a tooltip and a count badge. Only one is on at a time; clicking it again turns it off, and Reset clears it too. Definitions (`quick_matches` in `listing.rs`, mirrored in `model.ts`):
+  - **Draft:** the PR is a draft.
+  - **No review requested:** not a draft, no reviewer or team requested on GitHub, no active Slack request, and no approval or change request yet.
+  - **CI errors or conflicts:** failing checks (`failure` or `error`) or merge conflicts (`mergeable = CONFLICTING` or merge state `DIRTY`).
+  - **Review declined:** changes requested.
+  - **Ready to merge:** not a draft, approved, checks green, and no conflicts.
+  The filter runs in `list_page` after the menu filters and search, so paging, section counts, Select all, the section checkboxes and drag all use the filtered result. `list_page` also returns `quick` counts per filter over the menu-filtered, searched rows before the quick filter, so each badge shows what clicking it would leave. The choice is saved with the view's filters (`filters.quick`).
 - **Persistence:** grouping, ordering, Show, and filters are saved **per view** in `view_state` (`mine`, `to_review`, `project:<id>`) and restored on launch.
 
 **Search bar:** always visible. Searches the whole view in the backend as you type (200 ms debounce), case- and accent-insensitive, whitespace-separated terms ANDed. A term matches the PR title, description (`bodyText`), `owner/repo`, number (`#142` or `142`), author, branch, or the name of a project the PR is linked to. Each PR stores its folded text in `pull_requests.search_text` (NFD, marks stripped, lowercase; migration 0002), and `list_page` matches it with `instr` per term. That takes under 20 ms over 5,000 PRs, so there is no FTS5 index. While a search is in flight the header shows `Searching…`; a response for an older query is dropped. Results use the same paging, counts, grouping and selection as the unfiltered list. It combines with the menu filters. `/` focuses it, and `Esc` clears it.

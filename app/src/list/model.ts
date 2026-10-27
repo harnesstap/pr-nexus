@@ -13,6 +13,9 @@ export type StatusFilter = "ready" | "unknown" | "blocked" | "draft";
 export type ReviewFilter = "approved" | "changes_requested" | "review_required" | "none";
 export type CiFilter = "passing" | "failing" | "pending" | "none";
 export type SlackFilter = "none" | "requested" | "bumped" | "bump_due";
+/** Quick status filters in the bar above the list; at most one is active. */
+export type QuickFilter = "draft" | "no_review" | "ci_trouble" | "declined" | "ready";
+export const QUICK_FILTERS: readonly QuickFilter[] = ["draft", "no_review", "ci_trouble", "declined", "ready"];
 
 export interface ShowFlags {
   numberTitle: boolean;
@@ -33,6 +36,7 @@ export interface Filters {
   ci: CiFilter[];
   slack: SlackFilter[];
   archived: boolean;
+  quick: QuickFilter | null;
 }
 
 export interface SavedView {
@@ -65,7 +69,7 @@ export function defaultShow(): ShowFlags {
 }
 
 export function defaultFilters(): Filters {
-  return { orgs: [], statuses: [], reviews: [], ci: [], slack: [], archived: false };
+  return { orgs: [], statuses: [], reviews: [], ci: [], slack: [], archived: false, quick: null };
 }
 
 export function defaultView(): SavedView {
@@ -107,6 +111,7 @@ export function parseViewState(json: string | null): SavedView {
       ci: pickList(record.filters?.ci, ["passing", "failing", "pending", "none"]),
       slack: pickList(record.filters?.slack, ["none", "requested", "bumped", "bump_due"]),
       archived: record.filters?.archived === true,
+      quick: QUICK_FILTERS.includes(record.filters?.quick as QuickFilter) ? (record.filters?.quick as QuickFilter) : null,
     },
   };
 }
@@ -118,7 +123,8 @@ export function filtersActive(filters: Filters): boolean {
     filters.reviews.length > 0 ||
     filters.ci.length > 0 ||
     filters.slack.length > 0 ||
-    filters.archived
+    filters.archived ||
+    filters.quick !== null
   );
 }
 
@@ -329,6 +335,26 @@ function displayedProjects(projects: readonly ProjectDto[], filters: Filters): P
     .filter((project) => filters.archived || !project.archived)
     .slice()
     .sort((left, right) => left.sort_order - right.sort_order || left.name.localeCompare(right.name));
+}
+
+/** Mirrors `quick_matches` in `app/src-tauri/src/listing.rs`. */
+export function quickMatches(row: ListRow, quick: QuickFilter): boolean {
+  switch (quick) {
+    case "draft":
+      return row.is_draft;
+    case "no_review":
+      return !row.is_draft && !row.reviewers_requested && !row.slack && row.review_decision !== "approved" && row.review_decision !== "changes_requested";
+    case "ci_trouble":
+      return ciBucket(row.checks) === "failing" || row.conflicts;
+    case "declined":
+      return row.review_decision === "changes_requested";
+    case "ready":
+      return !row.is_draft && row.review_decision === "approved" && row.checks === "success" && !row.conflicts;
+    default: {
+      const unreachable: never = quick;
+      return unreachable;
+    }
+  }
 }
 
 function statusMatches(row: ListRow, status: StatusFilter): boolean {

@@ -182,6 +182,8 @@ function pr(id: number, title: string): SearchRow {
     project_ids: [],
     readiness: "ready",
     readiness_notes: [],
+    conflicts: false,
+    reviewers_requested: false,
     slack: null,
   };
 }

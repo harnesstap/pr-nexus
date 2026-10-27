@@ -36,6 +36,8 @@ function row(partial: Partial<SearchRow> & Pick<SearchRow, "id" | "title">): Sea
     project_ids: [1],
     readiness: "ready",
     readiness_notes: [],
+    conflicts: false,
+    reviewers_requested: false,
     slack: null,
     ...partial,
   };
@@ -704,4 +706,37 @@ test("p opens Add to project for the focused row when nothing is selected", asyn
   fireEvent.click(within(screen.getByRole("menu", { name: /to project/ })).getByRole("menuitem", { name: /Auth/ }));
   expect(onLinkPrs).toHaveBeenCalledTimes(1);
   expect(onLinkPrs.mock.calls[0][1]).toHaveLength(1);
+});
+
+test("quick filters show counts, filter one at a time and clear on a second click", async () => {
+  const quickRows = [
+    row({ id: 1, number: 1, title: "Draft work", is_draft: true, project_ids: [1] }),
+    row({ id: 2, number: 2, title: "Ship it", review_decision: "approved", project_ids: [1] }),
+    row({ id: 3, number: 3, title: "Broken build", checks: "failure", project_ids: [2] }),
+  ];
+  await show(<Harness rows={quickRows} />);
+  const group = screen.getByRole("group", { name: "Quick filters" });
+  const ready = within(group).getByRole("button", { name: "Ready to merge (1)" });
+  expect(within(group).getByRole("button", { name: "Draft (1)" })).toHaveAttribute("aria-pressed", "false");
+  expect(within(group).getByRole("button", { name: "Review declined (0)" })).toBeInTheDocument();
+
+  fireEvent.click(ready);
+  await settle();
+  expect(ready).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByRole("checkbox", { name: "Select Ship it" })).toBeInTheDocument();
+  expect(screen.queryByRole("checkbox", { name: "Select Draft work" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("checkbox", { name: "Select Broken build" })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("checkbox", { name: "Select all" }));
+  expect(screen.getByText("1 selected")).toBeInTheDocument();
+
+  fireEvent.click(within(group).getByRole("button", { name: "CI errors or conflicts (1)" }));
+  await settle();
+  expect(ready).toHaveAttribute("aria-pressed", "false");
+  expect(screen.getByRole("checkbox", { name: "Select Broken build" })).toBeInTheDocument();
+  expect(screen.queryByRole("checkbox", { name: "Select Ship it" })).not.toBeInTheDocument();
+
+  fireEvent.click(within(group).getByRole("button", { name: "CI errors or conflicts (1)" }));
+  await settle();
+  expect(screen.getByRole("checkbox", { name: "Select Draft work" })).toBeInTheDocument();
+  expect(screen.getByRole("checkbox", { name: "Select Ship it" })).toBeInTheDocument();
 });

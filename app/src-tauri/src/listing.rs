@@ -35,6 +35,9 @@ pub struct FiltersDto {
     pub slack: Vec<String>,
     #[serde(default)]
     pub archived: bool,
+    /// One quick status filter from the bar above the list, or none.
+    #[serde(default)]
+    pub quick: Option<String>,
 }
 
 impl FiltersDto {
@@ -45,6 +48,7 @@ impl FiltersDto {
             || !self.ci.is_empty()
             || !self.slack.is_empty()
             || self.archived
+            || self.quick.is_some()
     }
 }
 
@@ -97,6 +101,17 @@ pub struct OrgCount {
     pub count: usize,
 }
 
+/// Rows per quick filter over the menu-filtered, searched result, before the
+/// quick filter itself, so every button shows what clicking it would leave.
+#[derive(Debug, Serialize, PartialEq, Eq, Default)]
+pub struct QuickCounts {
+    pub draft: usize,
+    pub no_review: usize,
+    pub ci_trouble: usize,
+    pub declined: usize,
+    pub ready: usize,
+}
+
 #[derive(Debug, Serialize)]
 pub struct PageDto {
     pub entries: Vec<PageEntry>,
@@ -105,6 +120,7 @@ pub struct PageDto {
     pub summary: PageSummary,
     pub in_view: usize,
     pub orgs: Vec<OrgCount>,
+    pub quick: QuickCounts,
 }
 
 /// A list row with the times the page logic compares, parsed once.
@@ -151,11 +167,21 @@ pub fn page(
         .filter(|item| in_view(&item.row, &request.view_key, project_view))
         .filter(|item| scope_row(&item.row, &live_ids, filters))
         .collect();
-    let mut shown: Vec<&Item> = scoped
+    let matched: Vec<&Item> = scoped
         .iter()
         .copied()
         .filter(|item| passes_menu(item, filters, now_ms))
         .filter(|item| search.is_none_or(|ids| ids.contains(&item.row.id)))
+        .collect();
+    let quick = quick_counts(&matched);
+    let mut shown: Vec<&Item> = matched
+        .into_iter()
+        .filter(|item| {
+            filters
+                .quick
+                .as_deref()
+                .is_none_or(|quick| quick_matches(&item.row, quick))
+        })
         .collect();
 
     let open = shown.iter().filter(|item| item.row.state == "open").count();
@@ -245,6 +271,55 @@ pub fn page(
                 count,
             })
             .collect(),
+        quick,
+    }
+}
+
+/// The quick status filters (§8.2). Unknown keys match nothing.
+///
+/// - `draft`: the PR is a draft.
+/// - `no_review`: not a draft, no reviewer requested on GitHub, no active
+///   Slack request, and no approval or change request yet.
+/// - `ci_trouble`: failing checks or merge conflicts.
+/// - `declined`: changes requested.
+/// - `ready`: not a draft, approved, checks green and no conflicts.
+pub fn quick_matches(row: &ListRow, quick: &str) -> bool {
+    match quick {
+        "draft" => row.is_draft,
+        "no_review" => {
+            !row.is_draft
+                && !row.reviewers_requested
+                && row.slack.is_none()
+                && !matches!(
+                    row.review_decision.as_deref(),
+                    Some("approved" | "changes_requested")
+                )
+        }
+        "ci_trouble" => ci_bucket(&row.checks) == "failing" || row.conflicts,
+        "declined" => row.review_decision.as_deref() == Some("changes_requested"),
+        "ready" => {
+            !row.is_draft
+                && row.review_decision.as_deref() == Some("approved")
+                && row.checks == "success"
+                && !row.conflicts
+        }
+        _ => false,
+    }
+}
+
+fn quick_counts(items: &[&Item]) -> QuickCounts {
+    let count = |quick: &str| {
+        items
+            .iter()
+            .filter(|item| quick_matches(&item.row, quick))
+            .count()
+    };
+    QuickCounts {
+        draft: count("draft"),
+        no_review: count("no_review"),
+        ci_trouble: count("ci_trouble"),
+        declined: count("declined"),
+        ready: count("ready"),
     }
 }
 
@@ -552,6 +627,8 @@ mod tests {
                 project_ids: projects.to_vec(),
                 readiness: "ready".into(),
                 readiness_notes: Vec::new(),
+                conflicts: false,
+                reviewers_requested: false,
                 slack: None,
             },
             updated_ms: updated.timestamp_millis(),
@@ -759,5 +836,98 @@ mod tests {
                 },
             ]
         );
+    }
+
+    fn quick_fixture() -> Vec<Item> {
+        // 1 draft, 2 nobody asked, 3 failing CI, 4 conflicts, 5 declined,
+        // 6 ready, 7 asked on Slack, 8 reviewer requested on GitHub.
+        let mut items: Vec<Item> = (1..=8).map(|id| item(id, &[], id)).collect();
+        items[0].row.is_draft = true;
+        items[2].row.checks = "failure".into();
+        items[2].row.reviewers_requested = true;
+        items[3].row.conflicts = true;
+        items[3].row.review_decision = Some("approved".into());
+        items[4].row.review_decision = Some("changes_requested".into());
+        items[5].row.review_decision = Some("approved".into());
+        items[6].row.slack = Some(crate::commands::SlackIndicator {
+            requested_at: at(3).to_rfc3339(),
+            last_bumped_at: None,
+            bump_count: 0,
+            workspace: "acme".into(),
+            channel_id: "C0ACME0001".into(),
+            channel_name: "team-reviews".into(),
+            permalink: None,
+            root_ts: "1.0".into(),
+            source: "app".into(),
+        });
+        items[7].row.reviewers_requested = true;
+        items
+    }
+
+    fn ids(page: &PageDto) -> Vec<i64> {
+        let mut ids: Vec<i64> = page.sections.iter().flat_map(|s| s.ids.clone()).collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    #[test]
+    fn quick_filters_match_their_definitions() {
+        let items = quick_fixture();
+        let mut request = request("repository");
+        for (quick, expected) in [
+            ("draft", vec![1]),
+            ("no_review", vec![2]),
+            ("ci_trouble", vec![3, 4]),
+            ("declined", vec![5]),
+            ("ready", vec![6]),
+            ("bogus", vec![]),
+        ] {
+            request.filters.quick = Some(quick.into());
+            assert_eq!(ids(&page(&items, &[], &request, None)), expected, "{quick}");
+        }
+    }
+
+    #[test]
+    fn quick_counts_ignore_the_quick_filter_but_follow_menu_and_search() {
+        let items = quick_fixture();
+        let mut request = request("repository");
+        request.filters.quick = Some("draft".into());
+        let all = page(&items, &[], &request, None);
+        assert_eq!(
+            all.quick,
+            QuickCounts {
+                draft: 1,
+                no_review: 1,
+                ci_trouble: 2,
+                declined: 1,
+                ready: 1
+            }
+        );
+        assert_eq!(all.summary.open, 1);
+
+        request.filters.orgs = vec!["acme".into()];
+        let even = page(&items, &[], &request, None);
+        assert_eq!(even.quick.ci_trouble, 1);
+        assert_eq!(even.quick.ready, 1);
+        assert_eq!(even.quick.draft, 0);
+
+        request.filters.orgs.clear();
+        request.filters.quick = Some("ci_trouble".into());
+        let search = HashSet::from([4, 5]);
+        let searched = page(&items, &[], &request, Some(&search));
+        assert_eq!(ids(&searched), vec![4]);
+        assert_eq!(searched.quick.declined, 1);
+        assert_eq!(searched.quick.ci_trouble, 1);
+    }
+
+    #[test]
+    fn a_quick_filter_drops_kept_empty_projects() {
+        let projects = vec![project(1, "Billing", false)];
+        let items = quick_fixture();
+        let mut request = request("project");
+        request.filters.quick = Some("ready".into());
+        let page = page(&items, &projects, &request, None);
+        assert_eq!(page.sections.len(), 1);
+        assert_eq!(page.sections[0].key, "unassigned");
     }
 }

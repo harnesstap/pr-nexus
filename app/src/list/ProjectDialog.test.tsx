@@ -31,6 +31,8 @@ function row(id: number, title: string, project_ids: number[]): SearchRow {
     project_ids,
     readiness: "ready",
     readiness_notes: [],
+    conflicts: false,
+    reviewers_requested: false,
     slack: null,
   };
 }
