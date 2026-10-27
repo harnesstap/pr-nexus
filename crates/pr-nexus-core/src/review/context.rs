@@ -1,6 +1,6 @@
 //! The PR detail's Slack context panel (§7.10).
 //!
-//! Only threads PR-Nexus knows are read: the roots of the PR's
+//! Only threads PR Nexus knows are read: the roots of the PR's
 //! `review_requests` (active first, then closed) and of its other
 //! `review_messages`. Each thread is read with the chat provider's
 //! `read_thread` and kept in `chat_thread_cache` for

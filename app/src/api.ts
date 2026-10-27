@@ -138,7 +138,7 @@ export interface ContextMessage {
   is_bot: boolean;
 }
 
-/** A thread PR-Nexus posted for this PR, with what Slack returned. */
+/** A thread PR Nexus posted for this PR, with what Slack returned. */
 export interface ContextThread {
   workspace: string;
   channel_id: string;

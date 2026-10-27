@@ -42,7 +42,7 @@ mod tests {
         let json = urlencoding_decode(url.split_once("manifest_json=").unwrap().1);
         assert!(json.contains("http://127.0.0.1:47821/mcp/oauth/callback"));
         assert!(!json.to_ascii_lowercase().contains("client_id"));
-        assert!(json.contains("PR-Nexus"));
+        assert!(json.contains("PR Nexus"));
     }
 
     fn urlencoding_decode(text: &str) -> String {

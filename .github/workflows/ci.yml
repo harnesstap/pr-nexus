@@ -268,7 +268,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: pr-nexus-macos-app
-          path: target/release/bundle/macos/PR-Nexus.app
+          path: target/release/bundle/macos/PR Nexus.app
           retention-days: 7
           if-no-files-found: error
 

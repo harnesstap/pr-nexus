@@ -12,7 +12,7 @@ interface Props {
 }
 
 /**
- * The PR detail's Slack panel (§7.10): threads PR-Nexus posted for this PR,
+ * The PR detail's Slack panel (§7.10): threads PR Nexus posted for this PR,
  * read through Slack's MCP server and cached for 5 minutes. Read-only.
  */
 export function SlackContextPanel({ api, prId, mentions, onOpen }: Props) {

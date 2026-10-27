@@ -355,7 +355,7 @@ pub fn read_thread_arguments(channel_id: &str, root_ts: &str, limit: u32) -> Jso
 }
 
 /// Search arguments for the Mentions button (§7.10): the exact phrase,
-/// bots included (PR-Nexus posts carry the link), newest first.
+/// bots included (PR Nexus posts carry the link), newest first.
 pub fn search_arguments(phrase: &str, limit: u32) -> JsonObject {
     let mut args = JsonObject::new();
     args.insert("keywords".into(), json!([format!("\"{phrase}\"")]));
@@ -637,7 +637,7 @@ mod tests {
     #[test]
     fn unreadable_result_is_recovered_from_the_channel() {
         let read = text(
-            r#"{"messages":"=== Message from me (U0ME) at now === \nMessage TS: 1700000000.000300\nReview <https:\/\/github.com\/acme\/web\/pull\/2|github.com\/acme\/web\/pull\/2>\n=== Message from me (U0ME) at now === \nMessage TS: 1700000000.000200\nReview <https:\/\/github.com\/acme\/web\/pull\/1|github.com\/acme\/web\/pull\/1>\n*Sent using* <@U0APP|PR-Nexus>\n=== Message from other (U0OTHER) at now === \nMessage TS: 1700000000.000400\nReview https:\/\/github.com\/acme\/web\/pull\/1"}"#,
+            r#"{"messages":"=== Message from me (U0ME) at now === \nMessage TS: 1700000000.000300\nReview <https:\/\/github.com\/acme\/web\/pull\/2|github.com\/acme\/web\/pull\/2>\n=== Message from me (U0ME) at now === \nMessage TS: 1700000000.000200\nReview <https:\/\/github.com\/acme\/web\/pull\/1|github.com\/acme\/web\/pull\/1>\n*Sent using* <@U0APP|PR Nexus>\n=== Message from other (U0OTHER) at now === \nMessage TS: 1700000000.000400\nReview https:\/\/github.com\/acme\/web\/pull\/1"}"#,
         );
         let (slack, fake) = provider_with_read(text("Message sent."), Some(read));
         let posted = slack

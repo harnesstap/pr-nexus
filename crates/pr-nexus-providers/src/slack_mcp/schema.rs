@@ -16,7 +16,7 @@ pub const READ_USER_PROFILE: &str = "slack_read_user_profile";
 pub const SEARCH_PUBLIC: &str = "slack_search_public";
 pub const SEARCH_PUBLIC_AND_PRIVATE: &str = "slack_search_public_and_private";
 
-/// Tools and input fields PR-Nexus relies on, as listed on 2026-10-25.
+/// Tools and input fields PR Nexus relies on, as listed on 2026-10-25.
 /// `slack_read_channel` is not pinned: it only backs the send-result
 /// recovery, which degrades to "sent, link unknown" without it. The read
 /// and search tools behind the Slack panel (§7.10) are not pinned either:
@@ -26,7 +26,7 @@ pub const PINNED_TOOLS: &[(&str, &[&str])] = &[(
     &["channel_id", "message", "thread_ts", "reply_broadcast"],
 )];
 
-pub const SCHEMA_CHANGED: &str = "Slack MCP changed; update PR-Nexus";
+pub const SCHEMA_CHANGED: &str = "Slack MCP changed; update PR Nexus";
 
 /// One tool's name and input-schema property names, from `tools/list`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -560,7 +560,7 @@ mod tests {
     #[test]
     fn read_channel_blocks_parse_and_match_the_sent_text() {
         let output = text(
-            r#"{"messages":"Channel: DM (D0123456789)\n\n=== Message from Ada Acme (U0ACME0001) at 2026-01-01 10:00:00 UTC === \nMessage TS: 1700000000.000100\nHello team\n<https:\/\/github.com\/acme\/web\/pull\/1|github.com\/acme\/web\/pull\/1>\n*Sent using* <@U0ACMEAPP|PR-Nexus>","pagination_info":"There are no more messages available.\n"}"#,
+            r#"{"messages":"Channel: DM (D0123456789)\n\n=== Message from Ada Acme (U0ACME0001) at 2026-01-01 10:00:00 UTC === \nMessage TS: 1700000000.000100\nHello team\n<https:\/\/github.com\/acme\/web\/pull\/1|github.com\/acme\/web\/pull\/1>\n*Sent using* <@U0ACMEAPP|PR Nexus>","pagination_info":"There are no more messages available.\n"}"#,
         );
         let messages = parse_read_channel(&output);
         assert_eq!(messages.len(), 1);

@@ -27,7 +27,7 @@ export function UpdateBanner({ api }: { api: Api }) {
   }
   return (
     <div role="status" className="flex flex-wrap items-center gap-3 border-b border-violet-500/40 bg-violet-500/10 px-4 py-2 text-sm text-violet-100">
-      <span>PR-Nexus {update.version} is available.</span>
+      <span>PR Nexus {update.version} is available.</span>
       <button type="button" className="underline" onClick={() => void api.openExternal(update.url)}>
         Download from the release page ↗
       </button>

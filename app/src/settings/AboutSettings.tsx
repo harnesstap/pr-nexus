@@ -66,7 +66,7 @@ export function AboutSettings({ api, onRerunSetup }: Props) {
     <div className="space-y-8 text-sm">
       <section aria-labelledby="about-app">
         <h2 id="about-app" className="text-base font-semibold">
-          PR-Nexus {info.version}
+          PR Nexus {info.version}
         </h2>
         <dl className="mt-3 grid grid-cols-[9rem_1fr_auto] items-center gap-x-3 gap-y-2">
           {info.repository && <PathRow label="Repository" value={`https://github.com/${info.repository}`} onCopy={copy} />}
@@ -111,7 +111,7 @@ export function AboutSettings({ api, onRerunSetup }: Props) {
           </span>
         </div>
         <p className="mt-2 text-xs text-slate-500">
-          PR-Nexus asks GitHub for the latest release with your token; it never downloads or installs anything itself.
+          PR Nexus asks GitHub for the latest release with your token; it never downloads or installs anything itself.
         </p>
         {isMac && (
           <div className="mt-3 rounded border border-slate-800 bg-slate-900/60 p-3 text-xs text-slate-300">
@@ -119,7 +119,7 @@ export function AboutSettings({ api, onRerunSetup }: Props) {
             <p className="mt-1">Download the DMG from the release page, or with the GitHub CLI:</p>
             <code className="mt-1 block font-mono">gh release download --pattern &apos;*.dmg&apos; -R {info.repository || "OWNER/REPO"}</code>
             <p className="mt-1">
-              Drag PR-Nexus to Applications. The first launch is blocked: open System Settings → Privacy &amp; Security and
+              Drag PR Nexus to Applications. The first launch is blocked: open System Settings → Privacy &amp; Security and
               click Open Anyway.
             </p>
           </div>
@@ -137,12 +137,12 @@ export function AboutSettings({ api, onRerunSetup }: Props) {
           </p>
         ) : isMac ? (
           <p className="mt-2 text-slate-300">
-            PR-Nexus keeps every token in one keychain item. Builds are not signed yet, so after each update macOS sees a new
+            PR Nexus keeps every token in one keychain item. Builds are not signed yet, so after each update macOS sees a new
             app and asks once for access to that item. Choose Always Allow; the prompt does not come back until the next
             update.
           </p>
         ) : (
-          <p className="mt-2 text-slate-300">PR-Nexus keeps every token in one entry of the system credential store.</p>
+          <p className="mt-2 text-slate-300">PR Nexus keeps every token in one entry of the system credential store.</p>
         )}
       </section>
 

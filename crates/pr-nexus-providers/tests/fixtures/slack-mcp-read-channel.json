@@ -2,7 +2,7 @@
   "content": [
     {
       "type": "text",
-      "text": "{\"messages\":\"Channel: DM (D0123456789)\\n\\n=== Message from Ada Acme (U0ACME0001) at 2026-01-01 10:00:05 UTC === \\nMessage TS: 1700000000.000100\\nHello team\\n<https:\\/\\/github.com\\/acme\\/web\\/pull\\/1|github.com\\/acme\\/web\\/pull\\/1>\\n*Sent using* <@U0ACMEAPP|PR-Nexus>\\n\\n=== Message from Bob Acme (U0ACME0002) at 2026-01-01 10:00:01 UTC === \\nMessage TS: 1699999999.000200\\nHello team\",\"pagination_info\":\"There are no more messages available.\\n\"}"
+      "text": "{\"messages\":\"Channel: DM (D0123456789)\\n\\n=== Message from Ada Acme (U0ACME0001) at 2026-01-01 10:00:05 UTC === \\nMessage TS: 1700000000.000100\\nHello team\\n<https:\\/\\/github.com\\/acme\\/web\\/pull\\/1|github.com\\/acme\\/web\\/pull\\/1>\\n*Sent using* <@U0ACMEAPP|PR Nexus>\\n\\n=== Message from Bob Acme (U0ACME0002) at 2026-01-01 10:00:01 UTC === \\nMessage TS: 1699999999.000200\\nHello team\",\"pagination_info\":\"There are no more messages available.\\n\"}"
     }
   ],
   "isError": false

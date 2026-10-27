@@ -111,7 +111,7 @@ export function SlackPanel({ api, fields, onFieldsChange, secretSaved, workspace
         Create your Slack app
       </button>
       <p className="text-sm text-slate-400">
-        The link opens Slack with the PR-Nexus manifest (name, user scopes, redirect URI, MCP on). No client id ships
+        The link opens Slack with the PR Nexus manifest (name, user scopes, redirect URI, MCP on). No client id ships
         with the app. After creating it, copy the client ID (and secret) from Basic Information.
       </p>
       <label className="block text-sm">
@@ -148,7 +148,7 @@ export function SlackPanel({ api, fields, onFieldsChange, secretSaved, workspace
           onChange={(event) => set({ redirectUri: event.target.value })}
         />
         <span className="mt-0.5 block text-xs text-slate-400">
-          Must match a redirect URL registered on the Slack app. PR-Nexus listens on this loopback address during
+          Must match a redirect URL registered on the Slack app. PR Nexus listens on this loopback address during
           sign-in.
         </span>
       </label>

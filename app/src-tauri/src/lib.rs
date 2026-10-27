@@ -36,7 +36,7 @@ pub fn run() {
             if let Err(err) = logging::init(&logs) {
                 eprintln!("pr-nexus: file logs disabled: {err}");
             }
-            tracing::info!(version = env!("CARGO_PKG_VERSION"), "PR-Nexus started");
+            tracing::info!(version = env!("CARGO_PKG_VERSION"), "PR Nexus started");
             app.manage(preferences::AppPaths {
                 db: path.clone(),
                 logs,
@@ -123,7 +123,7 @@ pub fn run() {
             commands::pr_detail,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running PR-Nexus");
+        .expect("error while running PR Nexus");
 }
 
 fn window_state_flags() -> tauri_plugin_window_state::StateFlags {

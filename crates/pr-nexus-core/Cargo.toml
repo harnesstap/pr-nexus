@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
-description = "Domain types, errors, and the provider registry for PR-Nexus"
+description = "Domain types, errors, and the provider registry for PR Nexus"
 
 [dependencies]
 bitflags = "2"

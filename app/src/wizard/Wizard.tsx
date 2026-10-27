@@ -19,7 +19,7 @@ interface Props {
   api: Api;
   boot: Bootstrap;
   onFinished: () => void;
-  /** Set when re-running setup from Settings: shows Back to PR-Nexus, and keeps setup marked finished meanwhile. */
+  /** Set when re-running setup from Settings: shows Back to PR Nexus, and keeps setup marked finished meanwhile. */
   onCancel?: () => void;
 }
 
@@ -311,10 +311,10 @@ export function Wizard({ api, boot, onFinished, onCancel }: Props) {
     <main className="mx-auto flex min-h-screen max-w-3xl flex-col px-6 py-8 text-slate-100">
       <header>
         <div className="flex items-center justify-between">
-          <p className="text-sm text-slate-400">PR-Nexus setup</p>
+          <p className="text-sm text-slate-400">PR Nexus setup</p>
           {onCancel && (
             <button type="button" className="rounded px-2 py-1 text-sm text-slate-300 hover:bg-slate-800" onClick={onCancel}>
-              Back to PR-Nexus
+              Back to PR Nexus
             </button>
           )}
         </div>
@@ -419,7 +419,7 @@ export function Wizard({ api, boot, onFinished, onCancel }: Props) {
         )}
         {step === "choose_vcs_scope" && (
           <div>
-            <p className="text-slate-300">Pick the GitHub orgs whose PRs PR-Nexus should show.</p>
+            <p className="text-slate-300">Pick the GitHub orgs whose PRs PR Nexus should show.</p>
             <input
               className="mt-4 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2"
               placeholder="Filter orgs…"
@@ -469,7 +469,7 @@ export function Wizard({ api, boot, onFinished, onCancel }: Props) {
         {step === "chat_mapping" && (
           <div className="space-y-3">
             <p className="text-slate-300">
-              Tell PR-Nexus which Slack channel each GitHub team reviews in. When a PR requests a team review, PR-Nexus
+              Tell PR Nexus which Slack channel each GitHub team reviews in. When a PR requests a team review, PR Nexus
               suggests posting the request in that team's channel. This step is optional.
             </p>
             <div className="text-sm">
@@ -543,7 +543,7 @@ export function Wizard({ api, boot, onFinished, onCancel }: Props) {
         )}
         {step === "done" && (
           <div className="space-y-3">
-            <p className="text-slate-300">You're all set. Here's what PR-Nexus will use:</p>
+            <p className="text-slate-300">You're all set. Here's what PR Nexus will use:</p>
             <p>GitHub: {login ? `@${login}` : "not connected"} · {orgs.length} orgs · personal repos {personal ? "on" : "off"}</p>
             <p>
               Slack:{" "}
@@ -564,7 +564,7 @@ export function Wizard({ api, boot, onFinished, onCancel }: Props) {
             {syncFailed && (
               <div className="space-y-2">
                 <p className="text-sm text-slate-400">
-                  You can retry now, or open PR-Nexus and use the refresh button in the sidebar later.
+                  You can retry now, or open PR Nexus and use the refresh button in the sidebar later.
                 </p>
                 <button
                   type="button"
@@ -606,7 +606,7 @@ export function Wizard({ api, boot, onFinished, onCancel }: Props) {
             onClick={() => void openApp()}
             disabled={busy || !syncSettled || !armed}
           >
-            Open PR-Nexus
+            Open PR Nexus
           </button>
         ) : (
           <button

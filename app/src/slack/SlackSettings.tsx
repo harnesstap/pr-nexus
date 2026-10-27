@@ -53,7 +53,7 @@ export function SlackSettings({ api, boot, onMentionsChange }: Props) {
         Slack
       </h2>
       <p className="mb-4 mt-1 text-sm text-slate-400">
-        PR-Nexus posts review requests as you through Slack's MCP server. Sign in to each workspace you post in.
+        PR Nexus posts review requests as you through Slack's MCP server. Sign in to each workspace you post in.
       </p>
       <SlackPanel
         api={api}

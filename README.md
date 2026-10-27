@@ -1,4 +1,4 @@
-# PR-Nexus
+# PR Nexus
 
 Desktop app (Tauri + Rust) to track your open GitHub pull requests by project and request or bump reviews from the owning teams on Slack.
 
