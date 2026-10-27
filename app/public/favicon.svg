@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="222 186 662 662">
+  <!-- PR Nexus mark without the tile (docs/assets/icon-small.svg geometry). Same drawing as LogoIcon in app/src/icons.tsx. -->
+  <style>
+    .merge { stroke: #FFFFFF; fill: #FFFFFF; }
+    @media (prefers-color-scheme: light) { .merge { stroke: #0B1533; fill: #0B1533; } }
+  </style>
+  <defs>
+    <linearGradient id="hex" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#8B5CF6"/>
+      <stop offset="1" stop-color="#A78BFA"/>
+    </linearGradient>
+    <mask id="cut" maskUnits="userSpaceOnUse" x="0" y="0" width="1024" height="1024">
+      <rect width="1024" height="1024" fill="#FFFFFF"/>
+      <path d="M700 214H820A44 44 0 0 1 864 258V320A44 44 0 0 1 820 364H752L700 410V364A44 44 0 0 1 656 320V258A44 44 0 0 1 700 214Z" fill="#000000" stroke="#000000" stroke-width="40" stroke-linejoin="round"/>
+    </mask>
+  </defs>
+  <path d="M477.4 232.0Q512.0 212.0 546.6 232.0L733.7 340.0Q768.3 360.0 768.3 400.0L768.3 616.0Q768.3 656.0 733.7 676.0L546.6 784.0Q512.0 804.0 477.4 784.0L290.3 676.0Q255.7 656.0 255.7 616.0L255.7 400.0Q255.7 360.0 290.3 340.0Z" fill="none" stroke="url(#hex)" stroke-width="58" stroke-linejoin="round" mask="url(#cut)"/>
+  <path class="merge" d="M384 396C384 474 512 466 512 548V672M640 396C640 474 512 466 512 548" fill="none" stroke-width="62" stroke-linecap="round"/>
+  <g class="merge">
+    <circle cx="384" cy="396" r="68"/>
+    <circle cx="640" cy="396" r="68"/>
+    <circle cx="512" cy="672" r="68"/>
+  </g>
+  <path d="M700 214H820A44 44 0 0 1 864 258V320A44 44 0 0 1 820 364H752L700 410V364A44 44 0 0 1 656 320V258A44 44 0 0 1 700 214Z" fill="#2DD4BF"/>
+  <g fill="#FFFFFF">
+    <circle cx="712" cy="289" r="20"/>
+    <circle cx="760" cy="289" r="20"/>
+    <circle cx="808" cy="289" r="20"/>
+  </g>
+</svg>
