@@ -1,4 +1,4 @@
-import type { SVGProps } from "react";
+import { useId, type SVGProps } from "react";
 
 type IconProps = SVGProps<SVGSVGElement> & { size?: number };
 
@@ -111,12 +111,54 @@ export function ExternalIcon(props: IconProps) {
   );
 }
 
-export function LogoIcon(props: IconProps) {
+const LOGO_BUBBLE =
+  "M700 214H820A44 44 0 0 1 864 258V320A44 44 0 0 1 820 364H752L700 410V364A44 44 0 0 1 656 320V258A44 44 0 0 1 700 214Z";
+
+/**
+ * PR Nexus mark for dark backgrounds: the app icon without its tile (same drawing as public/favicon.svg).
+ * It keeps its own colors, so `className` text colors have no effect.
+ */
+export function LogoIcon({ size = 16, ...props }: IconProps) {
+  const id = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   return (
-    <Svg {...props}>
-      <path d="M12 2 20.5 7v10L12 22 3.5 17V7z" />
-      <path d="M12 7.5 16 10v4l-4 2.5L8 14v-4z" />
-    </Svg>
+    <svg width={size} height={size} viewBox="222 186 662 662" aria-hidden="true" focusable="false" {...props}>
+      <defs>
+        <linearGradient id={`${id}-hex`} x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stopColor="#8B5CF6" />
+          <stop offset="1" stopColor="#A78BFA" />
+        </linearGradient>
+        <mask id={`${id}-cut`} maskUnits="userSpaceOnUse" x="0" y="0" width="1024" height="1024">
+          <rect width="1024" height="1024" fill="#fff" />
+          <path d={LOGO_BUBBLE} fill="#000" stroke="#000" strokeWidth={40} strokeLinejoin="round" />
+        </mask>
+      </defs>
+      <path
+        d="M477.4 232Q512 212 546.6 232L733.7 340Q768.3 360 768.3 400L768.3 616Q768.3 656 733.7 676L546.6 784Q512 804 477.4 784L290.3 676Q255.7 656 255.7 616L255.7 400Q255.7 360 290.3 340Z"
+        fill="none"
+        stroke={`url(#${id}-hex)`}
+        strokeWidth={58}
+        strokeLinejoin="round"
+        mask={`url(#${id}-cut)`}
+      />
+      <path
+        d="M384 396C384 474 512 466 512 548V672M640 396C640 474 512 466 512 548"
+        fill="none"
+        stroke="#fff"
+        strokeWidth={62}
+        strokeLinecap="round"
+      />
+      <g fill="#fff">
+        <circle cx="384" cy="396" r="68" />
+        <circle cx="640" cy="396" r="68" />
+        <circle cx="512" cy="672" r="68" />
+      </g>
+      <path d={LOGO_BUBBLE} fill="#2DD4BF" />
+      <g fill="#fff">
+        <circle cx="712" cy="289" r="20" />
+        <circle cx="760" cy="289" r="20" />
+        <circle cx="808" cy="289" r="20" />
+      </g>
+    </svg>
   );
 }
 
