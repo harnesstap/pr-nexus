@@ -111,6 +111,8 @@ export function SettingsScreen({ api, boot, onBoot, accounts, tab, onTabChange, 
           <MappingSettings
             api={api}
             skippedInSetup={boot.onboarding.mapping_skipped}
+            workspaces={boot.slack_workspaces}
+            onConnectSlack={() => onTabChange("accounts")}
             onCountChange={(count) => {
               if (count !== boot.mapping_count) {
                 onBoot({ ...boot, mapping_count: count });

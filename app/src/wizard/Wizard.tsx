@@ -3,6 +3,8 @@ import type { Api, Bootstrap, OnboardingState } from "../api";
 import { errorMessage } from "../api";
 import { OrgOption } from "../orgs";
 import { DEFAULT_REDIRECT, SlackPanel, type SlackFields } from "../slack/SlackPanel";
+import { WorkspaceSelect } from "../slack/WorkspaceSelect";
+import { chosenWorkspace, csvHasWorkspaceColumn, rememberWorkspace } from "../slack/workspaces";
 import { backEnabled, nextEnabled, nextHint, nextLabel, showSkip, stepTitle, type StepModel } from "./logic";
 
 const ARM_DELAY_MS = 800;
@@ -46,7 +48,8 @@ export function Wizard({ api, boot, onFinished, onCancel }: Props) {
   });
   const [workspaces, setWorkspaces] = useState(boot.slack_workspaces);
   const [csv, setCsv] = useState("");
-  const [workspace, setWorkspace] = useState("");
+  const [pickedWorkspace, setPickedWorkspace] = useState("");
+  const workspace = chosenWorkspace(workspaces, pickedWorkspace);
   const [mappingNote, setMappingNote] = useState(
     boot.mapping_count > 0 ? `${boot.mapping_count} mapping rows` : "",
   );
@@ -141,6 +144,7 @@ export function Wizard({ api, boot, onFinished, onCancel }: Props) {
       if (step === "chat_mapping") {
         if (csv.trim()) {
           const summary = await api.importMapping(csv, workspace);
+          rememberWorkspace(workspace);
           setMappingNote(`${summary.rows} rows imported`);
           setMappingSkipped(false);
         } else if (boot.mapping_count === 0) {
@@ -425,18 +429,35 @@ export function Wizard({ api, boot, onFinished, onCancel }: Props) {
               Tell PR-Nexus which Slack channel each GitHub team reviews in. When a PR requests a team review, PR-Nexus
               suggests posting the request in that team's channel. This step is optional.
             </p>
-            <label className="block text-sm">
-              Default Slack workspace
+            <div className="text-sm">
+              <span>Default Slack workspace</span>
               <span className="mt-0.5 block text-xs text-slate-400">
-                Used for rows without a <code>slack_workspace</code> column, e.g. <code>acme.slack.com</code>.
+                Used for rows without a <code>slack_workspace</code> column.
               </span>
-              <input
-                className="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2"
-                value={workspace}
-                onChange={(event) => setWorkspace(event.target.value)}
-                placeholder="acme.slack.com"
-              />
-            </label>
+              <div className="mt-1">
+                <WorkspaceSelect
+                  label="Default Slack workspace"
+                  className="w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 disabled:opacity-60"
+                  workspaces={workspaces}
+                  value={workspace}
+                  onChange={setPickedWorkspace}
+                  onConnect={() => {
+                    const target = steps.indexOf("connect_chat");
+                    if (target >= 0) {
+                      setError(null);
+                      setIndex(target);
+                      persist(target).catch((err: unknown) => setError(errorMessage(err)));
+                    }
+                  }}
+                  connectLabel="Back to Connect Slack"
+                />
+              </div>
+              {csv.trim() !== "" && !workspace && !csvHasWorkspaceColumn(csv) && (
+                <p className="mt-1 text-xs text-amber-200">
+                  Connect a Slack workspace, or add a <code>slack_workspace</code> column to the CSV.
+                </p>
+              )}
+            </div>
             <label className="block text-sm">
               Mapping CSV
               <span className="mt-0.5 block text-xs text-slate-400">

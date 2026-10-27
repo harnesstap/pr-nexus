@@ -56,7 +56,6 @@ function api(overrides: Partial<Api> = {}): Api {
     saveOrgs: () => Promise.resolve(),
     saveSlack: () => Promise.resolve(),
     slackManifestUrl: () => Promise.resolve("https://api.slack.com/apps?new_app=1&manifest_json=%7B%7D"),
-    slackWorkspaces: () => Promise.resolve([]),
     slackConnect: () =>
       Promise.resolve({ id: 9, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false }),
     slackCancelConnect: () => Promise.resolve(),
@@ -312,6 +311,45 @@ test("the mapping step shows a CSV example and Next imports pasted rows", async 
   fireEvent.click(screen.getByRole("button", { name: "Import & next" }));
   expect(await screen.findByRole("heading", { name: /Done/ })).toBeInTheDocument();
   expect(imported).toContain("acme,web");
+});
+
+test("the mapping step preselects the only connected workspace for the import", async () => {
+  window.localStorage.clear();
+  const imported: string[] = [];
+  render(
+    <Wizard
+      api={api({
+        importMapping: (_csv, workspace) => {
+          imported.push(workspace);
+          return Promise.resolve({ rows: 1 });
+        },
+      })}
+      boot={{
+        ...boot,
+        resume_step: "chat_mapping",
+        slack_workspaces: [{ id: 4, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: false, needs_sign_in: true }],
+      }}
+      onFinished={() => undefined}
+    />,
+  );
+  const select = screen.getByRole("combobox", { name: "Default Slack workspace" });
+  expect(select).toHaveValue("acme");
+  expect(screen.getByRole("option", { name: "Acme (acme.slack.com) · needs sign-in" })).toBeInTheDocument();
+  fireEvent.change(screen.getByRole("textbox", { name: /Mapping CSV/ }), {
+    target: { value: "github_org,github_team_slug,github_team_name,slack_channel_name,slack_channel_id\nacme,web,Web,#web,C0123456789" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Import & next" }));
+  expect(await screen.findByRole("heading", { name: /Done/ })).toBeInTheDocument();
+  expect(imported).toEqual(["acme"]);
+});
+
+test("the mapping step without a workspace disables the select and points back to Connect Slack", async () => {
+  render(<Wizard api={api()} boot={{ ...boot, resume_step: "chat_mapping" }} onFinished={() => undefined} />);
+  expect(screen.getByRole("combobox", { name: "Default Slack workspace" })).toBeDisabled();
+  fireEvent.change(screen.getByRole("textbox", { name: /Mapping CSV/ }), { target: { value: "github_org,github_team_slug\nacme,web" } });
+  expect(screen.getByText(/add a/)).toHaveTextContent("Connect a Slack workspace, or add a slack_workspace column to the CSV.");
+  fireEvent.click(screen.getByRole("button", { name: "Back to Connect Slack" }));
+  expect(await screen.findByRole("heading", { name: /Connect Slack/ })).toBeInTheDocument();
 });
 
 test("a disabled Next on Connect GitHub says why", () => {

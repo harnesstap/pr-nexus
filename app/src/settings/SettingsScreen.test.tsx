@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { expect, test } from "vitest";
-import type { Api, Bootstrap, MappingEntry, Preferences } from "../api";
+import { beforeEach, expect, test } from "vitest";
+import type { Api, Bootstrap, MappingEntry, Preferences, SlackWorkspace } from "../api";
 import { DEFAULT_PREFERENCES, fakeSettingsApi } from "./fakes";
 import { SettingsScreen } from "./SettingsScreen";
 import type { SettingsTab } from "./tabs";
@@ -19,12 +19,17 @@ function Harness({ api, start = "accounts", onBoot = () => undefined, onRerun = 
   );
 }
 
+beforeEach(() => window.localStorage.clear());
+
+const acme: SlackWorkspace = { id: 1, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false };
+const widgets: SlackWorkspace = { id: 2, team_name: "Widgets", domain: "widgets", user_name: "bob", signed_in: false, needs_sign_in: true };
+
 const entry = (partial: Partial<MappingEntry> & { slug: string }): MappingEntry => ({
   row: {
     github_org: "acme",
     team_slug: partial.slug,
     team_name: "",
-    slack_workspace: "acme.slack.com",
+    slack_workspace: "acme",
     slack_channel_name: `${partial.slug}-reviews`,
     slack_channel_id: "C0123456789",
   },
@@ -154,9 +159,11 @@ test("Import: Apply stays disabled until a preview of the same CSV, and the diff
       applied.push(`${mode} ${workspace} ${csv.length}`);
       return Promise.resolve({ rows: 4 });
     },
+    slackWorkspaces: () => Promise.resolve([acme]),
   }) as Api;
   render(<Harness api={api} start="mappings" />);
   const csv = await screen.findByRole("textbox", { name: "Mapping CSV" });
+  await screen.findByRole("option", { name: "Acme (acme.slack.com)" });
   const apply = screen.getByRole("button", { name: "Apply import" });
   expect(screen.getByRole("button", { name: "Preview changes" })).toBeDisabled();
   fireEvent.change(csv, { target: { value: "github_org,github_team_slug\nacme,web" } });
@@ -175,7 +182,77 @@ test("Import: Apply stays disabled until a preview of the same CSV, and the diff
   await waitFor(() => expect(apply).toBeEnabled());
   fireEvent.click(apply);
   expect(await screen.findByText("Imported 4 rows.")).toBeInTheDocument();
-  expect(applied).toEqual(["replace  36"]);
+  expect(applied).toEqual(["replace acme 36"]);
+  expect(window.localStorage.getItem("pr-nexus.mapping-workspace")).toBe("acme");
+});
+
+test("Import: with no workspace connected the select is disabled and links to Accounts", async () => {
+  render(<Harness api={fakeSettingsApi() as Api} start="mappings" />);
+  const select = await screen.findByRole("combobox", { name: "Default Slack workspace" });
+  expect(select).toBeDisabled();
+  expect(select).toHaveDisplayValue("No Slack workspace connected");
+  const csv = screen.getByRole("textbox", { name: "Mapping CSV" });
+  const preview = screen.getByRole("button", { name: "Preview changes" });
+  fireEvent.change(csv, { target: { value: "github_org,github_team_slug\nacme,web" } });
+  expect(preview).toBeDisabled();
+  expect(screen.getByText(/add a/)).toHaveTextContent("Connect a Slack workspace, or add a slack_workspace column to the CSV.");
+  fireEvent.change(csv, { target: { value: "github_org,github_team_slug,slack_workspace\nacme,web,acme" } });
+  expect(preview).toBeEnabled();
+  fireEvent.click(screen.getByRole("button", { name: "Connect Slack in Accounts" }));
+  expect(screen.getByRole("tab", { name: "Accounts" })).toHaveAttribute("aria-selected", "true");
+});
+
+test("Import: several workspaces preselect the last used one and list expired sign-ins", async () => {
+  window.localStorage.setItem("pr-nexus.mapping-workspace", "widgets");
+  const previewed: string[] = [];
+  const api = fakeSettingsApi({
+    slackWorkspaces: () => Promise.resolve([acme, widgets]),
+    previewMappingImport: (_csv, workspace) => {
+      previewed.push(workspace);
+      return Promise.resolve({ added: [], changed: [], unchanged: 0, user_shadowed: [] });
+    },
+  }) as Api;
+  render(<Harness api={api} start="mappings" />);
+  await screen.findByRole("option", { name: "Widgets (widgets.slack.com) · needs sign-in" });
+  const select = screen.getByRole("combobox", { name: "Default Slack workspace" });
+  expect(select).toBeEnabled();
+  expect(select).toHaveValue("widgets");
+  fireEvent.change(select, { target: { value: "acme" } });
+  fireEvent.change(screen.getByRole("textbox", { name: "Mapping CSV" }), { target: { value: "github_org,github_team_slug\nacme,web" } });
+  fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
+  await waitFor(() => expect(previewed).toEqual(["acme"]));
+});
+
+test("Import: several workspaces without a stored one preselect the first", async () => {
+  render(<Harness api={fakeSettingsApi({ slackWorkspaces: () => Promise.resolve([acme, widgets]) }) as Api} start="mappings" />);
+  await screen.findByRole("option", { name: "Acme (acme.slack.com)" });
+  expect(screen.getByRole("combobox", { name: "Default Slack workspace" })).toHaveValue("acme");
+});
+
+test("Editing a row picks the workspace from the connected list and keeps an unlisted one", async () => {
+  const saved: string[] = [];
+  const api = fakeSettingsApi({
+    listMappings: () => Promise.resolve([entry({ slug: "web" }), { ...entry({ slug: "ops" }), row: { ...entry({ slug: "ops" }).row, slack_workspace: "gone" } }]),
+    slackWorkspaces: () => Promise.resolve([acme, widgets]),
+    saveMapping: (row) => {
+      saved.push(`${row.team_slug} ${row.slack_workspace}`);
+      return Promise.resolve();
+    },
+  }) as Api;
+  render(<Harness api={api} start="mappings" />);
+  await screen.findByRole("option", { name: "Acme (acme.slack.com)" });
+  fireEvent.click(await screen.findByRole("button", { name: "Edit acme/web" }));
+  const select = screen.getByRole("combobox", { name: "Slack workspace" });
+  expect(select).toHaveValue("acme");
+  fireEvent.change(select, { target: { value: "widgets" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(saved).toEqual(["web widgets"]));
+  fireEvent.click(await screen.findByRole("button", { name: "Edit acme/ops" }));
+  expect(screen.getByRole("combobox", { name: "Slack workspace" })).toHaveValue("gone");
+  expect(screen.getByRole("option", { name: "gone · not connected" })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  fireEvent.click(screen.getByRole("button", { name: "Add mapping" }));
+  expect(screen.getByRole("combobox", { name: "Slack workspace" })).toHaveValue("acme");
 });
 
 test("About shows paths, the keychain explainer, update check and Re-run setup", async () => {

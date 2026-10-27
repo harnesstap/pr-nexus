@@ -42,7 +42,6 @@ function api(projects: ProjectDto[]): Api {
     saveOrgs: () => Promise.resolve(),
     saveSlack: () => Promise.resolve(),
     slackManifestUrl: () => Promise.resolve(""),
-    slackWorkspaces: () => Promise.resolve([]),
     slackConnect: () =>
       Promise.resolve({ id: 9, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false }),
     slackCancelConnect: () => Promise.resolve(),

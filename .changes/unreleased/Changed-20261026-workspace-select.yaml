@@ -1,0 +1,3 @@
+kind: Changed
+body: 'Mappings: the default Slack workspace for a CSV import (Settings and setup step 6) and the row editor are now a select of the connected workspaces instead of a text field; one workspace is preselected, otherwise the last one used, expired sign-ins are marked "needs sign-in", and with none connected the select links to connect Slack. A workspace host such as acme.slack.com in a CSV is stored as its domain.'
+time: 2026-10-26T15:45:00.000000-10:00

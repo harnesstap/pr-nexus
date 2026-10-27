@@ -25,6 +25,7 @@ type SettingsApi = Pick<
   | "exportMapping"
   | "appInfo"
   | "checkUpdate"
+  | "slackWorkspaces"
 >;
 
 /** In-memory Settings endpoints for tests and the browser preview. */
@@ -48,6 +49,7 @@ export function fakeSettingsApi(overrides: Partial<SettingsApi> = {}): SettingsA
         os: "macos",
       }),
     checkUpdate: () => Promise.resolve(null),
+    slackWorkspaces: () => Promise.resolve([]),
     ...overrides,
   };
 }
