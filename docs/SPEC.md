@@ -972,7 +972,7 @@ Nothing org-specific is hard-coded or shipped: GitHub orgs, Slack workspaces, te
   - Removing a plain manual link deletes it. Removing a rule link, or a manual link that a rule would re-create, writes `excluded` so the next sync does not bring it back.
   - **Restore** deletes the `excluded` row; the rules then decide again.
 - **Manual links** (the spec allows no per-row buttons and no second bulk action, D16; so the least intrusive options were chosen, D21):
-  - **Drag and drop:** drag a row onto a project in the sidebar or onto a project section header. Dragging a selected row drags the whole selection (distinct `PrId`s). The drop target highlights, and a short confirmation (`Added 2 PRs to Billing`) appears.
+  - **Drag and drop:** drag a row onto a project in the sidebar or onto a project section header. Dragging a selected row drags the whole selection (distinct `PrId`s), including PRs picked with Select all that are not loaded; the drag image is an `N PRs` badge. The drop target highlights. The links are written all or nothing in one transaction, and a short confirmation (`Added 2 PRs to Billing`) appears with **Undo**. `link_prs` returns what each changed row was before (not linked, rule link with its rule, or excluded); Undo sends that back to `undo_link_prs`, which in one transaction restores each row that is still manual (a rule deleted in the meantime leaves no link) and leaves rows changed since alone.
   - **Project dialog → Add pull request:** a search field (title, repo, `#number`) listing up to 8 open PRs not yet linked; `Enter` adds the first. This is the keyboard path.
 - **Project dialog** (section `⋯` → Edit auto-link rules):
   - Color swatches (`#rrggbb`).

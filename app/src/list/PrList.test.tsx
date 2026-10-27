@@ -277,8 +277,11 @@ function dataTransfer() {
     getData: (type: string) => store.get(type) ?? "",
     dropEffect: "none",
     effectAllowed: "all",
+    setDragImage: vi.fn((image: Element) => void badges.push(image.textContent ?? "")),
   };
 }
+
+const badges: string[] = [];
 
 test("the header counts existing projects, and a project view counts its own PRs", async () => {
   const { unmount } = await show(<Harness rows={rows} />);
@@ -336,6 +339,7 @@ test("dragging a selected row onto a project section links the whole selection",
   const transfer = dataTransfer();
   const dragged = screen.getAllByText("Fix tax rounding")[0].closest("article")!;
   fireEvent.dragStart(dragged, { dataTransfer: transfer });
+  expect(badges.at(-1)).toBe("2 PRs");
   const billingSection = screen.getByRole("region", { name: "Billing" });
   fireEvent.dragOver(billingSection, { dataTransfer: transfer });
   fireEvent.drop(billingSection, { dataTransfer: transfer });
@@ -343,6 +347,7 @@ test("dragging a selected row onto a project section links the whole selection",
 
   const single = dataTransfer();
   fireEvent.dragStart(screen.getAllByText("Migrate login")[0].closest("article")!, { dataTransfer: single });
+  expect(badges.at(-1)).toBe("1 PR");
   fireEvent.drop(billingSection, { dataTransfer: single });
   expect(onLinkPrs).toHaveBeenLastCalledWith(2, [1]);
 });

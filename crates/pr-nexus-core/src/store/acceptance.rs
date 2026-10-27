@@ -5,10 +5,10 @@ use crate::domain::{
     Account, AccountId, AccountKind, AuthMode, ChatThreadCacheEntry, ChecksState, CloseReason,
     DiscoveryOutcome, DiscoveryRun, Involvement, LinkSource, MappingLayer, MergeStateStatus,
     Mergeable, OwnershipCacheEntry, PrId, PrProjectLink, PrState, Project, ProjectId, ProjectRule,
-    ProviderRef, PullRequest, RepoRef, Repository, RequestSource, RequestStatus, ReviewDecision,
-    ReviewMessage, ReviewMessageKind, ReviewMessageOrigin, ReviewMessagePr, ReviewRequest,
-    Reviewer, RuleKind, SendAttempt, SendOutcome, SettingEntry, SlackChannel, SyncStateEntry,
-    TeamChannelMapping, TeamMembersCacheEntry, TeamRef, ViewState,
+    ProviderRef, PullRequest, ReplacedLink, RepoRef, Repository, RequestSource, RequestStatus,
+    ReviewDecision, ReviewMessage, ReviewMessageKind, ReviewMessageOrigin, ReviewMessagePr,
+    ReviewRequest, Reviewer, RuleKind, SendAttempt, SendOutcome, SettingEntry, SlackChannel,
+    SyncStateEntry, TeamChannelMapping, TeamMembersCacheEntry, TeamRef, ViewState,
 };
 
 use super::{Store, db};
@@ -759,4 +759,107 @@ fn create_project_with_prs_is_atomic() {
         .map(|project| project.name)
         .collect();
     assert_eq!(names, vec!["Launch".to_owned()]);
+}
+
+#[test]
+fn manual_links_are_all_or_nothing_and_undo_restores_what_they_replaced() {
+    let (_dir, store) = open_temp();
+    let (account, repo, fresh) = seed_pr(&store, "PR_fresh", PrState::Open);
+    let mut ruled = sample_pr(&account, "PR_ruled", PrState::Open);
+    ruled.number = 8;
+    let ruled = store.upsert_pull_request(repo.id, ruled).unwrap();
+    let mut excluded = sample_pr(&account, "PR_excluded", PrState::Open);
+    excluded.number = 9;
+    let excluded = store.upsert_pull_request(repo.id, excluded).unwrap();
+    let mut manual = sample_pr(&account, "PR_manual", PrState::Open);
+    manual.number = 10;
+    let manual = store.upsert_pull_request(repo.id, manual).unwrap();
+
+    let project = store.create_project("Launch".to_owned()).unwrap();
+    let rule = store
+        .insert_project_rule(ProjectRule {
+            id: 0,
+            project: project.id,
+            kind: RuleKind::Label,
+            pattern: "launch".to_owned(),
+            priority: 0,
+        })
+        .unwrap();
+    for (pr, source) in [
+        (ruled.id, LinkSource::Rule(rule.id)),
+        (excluded.id, LinkSource::Excluded),
+        (manual.id, LinkSource::Manual),
+    ] {
+        store
+            .upsert_pr_project(PrProjectLink {
+                pr,
+                project: project.id,
+                source,
+                created_at: at(),
+            })
+            .unwrap();
+    }
+    let before = store.list_project_links(project.id).unwrap();
+
+    // One unknown id fails the whole batch: nothing is linked.
+    assert!(
+        store
+            .link_manual(project.id, vec![fresh.id, PrId(9_999)], at())
+            .is_err()
+    );
+    assert_eq!(store.list_project_links(project.id).unwrap(), before);
+
+    let replaced = store
+        .link_manual(
+            project.id,
+            vec![fresh.id, ruled.id, excluded.id, manual.id, fresh.id],
+            at(),
+        )
+        .unwrap();
+    assert_eq!(
+        replaced,
+        vec![
+            ReplacedLink {
+                pr: fresh.id,
+                before: None
+            },
+            ReplacedLink {
+                pr: ruled.id,
+                before: Some(LinkSource::Rule(rule.id))
+            },
+            ReplacedLink {
+                pr: excluded.id,
+                before: Some(LinkSource::Excluded)
+            },
+        ]
+    );
+    assert!(
+        store
+            .list_project_links(project.id)
+            .unwrap()
+            .iter()
+            .all(|link| link.source == LinkSource::Manual)
+    );
+
+    assert_eq!(
+        store
+            .undo_manual_links(project.id, replaced.clone())
+            .unwrap(),
+        3
+    );
+    assert_eq!(store.list_project_links(project.id).unwrap(), before);
+    // A second Undo finds nothing manual left to revert.
+    assert_eq!(store.undo_manual_links(project.id, replaced).unwrap(), 0);
+
+    // A rule deleted in between leaves no link rather than a dangling one.
+    let replaced = store.link_manual(project.id, vec![ruled.id], at()).unwrap();
+    store.delete_project_rule(rule.id).unwrap();
+    assert_eq!(store.undo_manual_links(project.id, replaced).unwrap(), 1);
+    assert!(
+        store
+            .list_project_links(project.id)
+            .unwrap()
+            .iter()
+            .all(|link| link.pr != ruled.id)
+    );
 }

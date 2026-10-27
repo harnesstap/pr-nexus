@@ -1,7 +1,9 @@
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::domain::{LinkSource, PrId, PrProjectLink, Project, ProjectId, ProjectRule};
+use crate::domain::{
+    LinkSource, PrId, PrProjectLink, Project, ProjectId, ProjectRule, ReplacedLink,
+};
 use crate::error::CoreError;
 use crate::linking::RuleLink;
 
@@ -50,7 +52,7 @@ impl Store {
         self.write(move |conn| {
             let tx = conn.transaction().map_err(db)?;
             let project = create_project_in(&tx, name)?;
-            let changed = link_manual_in(&tx, project.id, &prs, now)?;
+            let changed = link_manual_in(&tx, project.id, &prs, now)?.len();
             tx.commit().map_err(db)?;
             Ok((project, changed))
         })
@@ -207,18 +209,89 @@ impl Store {
         })
     }
 
-    /// Links `prs` to `project` by hand. A manual link replaces a rule or excluded row.
+    /// Links `prs` to `project` by hand, all or nothing. A manual link replaces a
+    /// rule or excluded row. Returns what each changed row was before, for
+    /// [`Store::undo_manual_links`]; PRs that were already manual are left out.
     pub fn link_manual(
         &self,
         project: ProjectId,
         prs: Vec<PrId>,
         now: DateTime<Utc>,
-    ) -> Result<usize, CoreError> {
+    ) -> Result<Vec<ReplacedLink>, CoreError> {
         self.write(move |conn| {
             let tx = conn.transaction().map_err(db)?;
             let changed = link_manual_in(&tx, project, &prs, now)?;
             tx.commit().map_err(db)?;
             Ok(changed)
+        })
+    }
+
+    /// Undoes [`Store::link_manual`] in one transaction: each row that is still
+    /// manual goes back to what it was (no link, a rule link or an exclusion). A
+    /// rule deleted since then leaves no link; the next rule pass decides. Rows
+    /// changed since the link are left alone. Returns how many rows were reverted.
+    pub fn undo_manual_links(
+        &self,
+        project: ProjectId,
+        replaced: Vec<ReplacedLink>,
+    ) -> Result<usize, CoreError> {
+        self.write(move |conn| {
+            let tx = conn.transaction().map_err(db)?;
+            let mut reverted = 0;
+            for item in &replaced {
+                let still_manual = tx
+                    .query_row(
+                        "SELECT 1 FROM pr_projects
+                         WHERE pr_id = ?1 AND project_id = ?2 AND source = 'manual'",
+                        [item.pr.0, project.0],
+                        |_| Ok(()),
+                    )
+                    .optional()
+                    .map_err(db)?
+                    .is_some();
+                if !still_manual {
+                    continue;
+                }
+                let rule_exists = |id: i64| -> Result<bool, CoreError> {
+                    tx.query_row(
+                        "SELECT 1 FROM project_rules WHERE id = ?1",
+                        [id],
+                        |_| Ok(()),
+                    )
+                    .optional()
+                    .map_err(db)
+                    .map(|found| found.is_some())
+                };
+                match &item.before {
+                    Some(LinkSource::Manual) => continue,
+                    Some(LinkSource::Rule(id)) if rule_exists(*id)? => {
+                        tx.execute(
+                            "UPDATE pr_projects SET source = 'rule', rule_id = ?3
+                             WHERE pr_id = ?1 AND project_id = ?2",
+                            params![item.pr.0, project.0, id],
+                        )
+                        .map_err(db)?;
+                    }
+                    Some(LinkSource::Excluded) => {
+                        tx.execute(
+                            "UPDATE pr_projects SET source = 'excluded', rule_id = NULL
+                             WHERE pr_id = ?1 AND project_id = ?2",
+                            [item.pr.0, project.0],
+                        )
+                        .map_err(db)?;
+                    }
+                    None | Some(LinkSource::Rule(_)) => {
+                        tx.execute(
+                            "DELETE FROM pr_projects WHERE pr_id = ?1 AND project_id = ?2",
+                            [item.pr.0, project.0],
+                        )
+                        .map_err(db)?;
+                    }
+                }
+                reverted += 1;
+            }
+            tx.commit().map_err(db)?;
+            Ok(reverted)
         })
     }
 
@@ -582,7 +655,10 @@ fn link_manual_in(
     project: ProjectId,
     prs: &[PrId],
     now: DateTime<Utc>,
-) -> Result<usize, CoreError> {
+) -> Result<Vec<ReplacedLink>, CoreError> {
+    let mut before_stmt = conn
+        .prepare("SELECT * FROM pr_projects WHERE pr_id = ?1 AND project_id = ?2")
+        .map_err(db)?;
     let mut stmt = conn
         .prepare(
             "INSERT INTO pr_projects (pr_id, project_id, source, rule_id, created_at)
@@ -593,11 +669,20 @@ fn link_manual_in(
         )
         .map_err(db)?;
     let created_at = format_ts(now);
-    let mut changed = 0;
+    let mut replaced = Vec::new();
     for pr in prs {
-        changed += stmt
+        let before = before_stmt
+            .query_row([pr.0, project.0], map_link)
+            .optional()
+            .map_err(db)?
+            .map(|link| link.source);
+        if stmt
             .execute(params![pr.0, project.0, created_at])
-            .map_err(db)?;
+            .map_err(db)?
+            > 0
+        {
+            replaced.push(ReplacedLink { pr: *pr, before });
+        }
     }
-    Ok(changed)
+    Ok(replaced)
 }

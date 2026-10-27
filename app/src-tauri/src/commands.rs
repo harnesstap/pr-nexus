@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use chrono::Utc;
 use pr_nexus_core::domain::{
     Account, AccountId, AccountKind, AuthMode, LinkSource, PrId, Project, ProjectId, ProjectRule,
-    PullRequest, RuleKind, ViewState,
+    PullRequest, ReplacedLink, RuleKind, ViewState,
 };
 use pr_nexus_core::linking;
 use pr_nexus_core::mapping::{self, ImportMode};
@@ -1056,13 +1056,63 @@ pub async fn list_project_links(
     .await
 }
 
-/// Manual links: drag-and-drop onto a project, or "Add pull request" in the project dialog.
+/// What one manual link replaced: `before` is `null` (not linked), `"rule"`
+/// (with `rule_id`) or `"excluded"`. The list's Undo hands these back.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReplacedLinkDto {
+    pub pr_id: i64,
+    pub before: Option<String>,
+    pub rule_id: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LinkOutcomeDto {
+    /// Rows that became manual links; PRs already linked by hand are not counted.
+    pub changed: usize,
+    pub undo: Vec<ReplacedLinkDto>,
+}
+
+fn replaced_dto(item: ReplacedLink) -> ReplacedLinkDto {
+    let (before, rule_id) = match item.before {
+        None => (None, None),
+        Some(LinkSource::Manual) => (Some("manual"), None),
+        Some(LinkSource::Rule(id)) => (Some("rule"), Some(id)),
+        Some(LinkSource::Excluded) => (Some("excluded"), None),
+    };
+    ReplacedLinkDto {
+        pr_id: item.pr.0,
+        before: before.map(str::to_owned),
+        rule_id,
+    }
+}
+
+fn replaced_from_dto(dto: ReplacedLinkDto) -> Result<ReplacedLink, AppError> {
+    let before = match (dto.before.as_deref(), dto.rule_id) {
+        (None, _) => None,
+        (Some("manual"), _) => Some(LinkSource::Manual),
+        (Some("excluded"), _) => Some(LinkSource::Excluded),
+        (Some("rule"), Some(id)) => Some(LinkSource::Rule(id)),
+        (Some(other), _) => {
+            return Err(AppError::new(
+                "validation",
+                format!("Cannot undo a link that was {other}"),
+            ));
+        }
+    };
+    Ok(ReplacedLink {
+        pr: PrId(dto.pr_id),
+        before,
+    })
+}
+
+/// Manual links: drag-and-drop onto a project, "Add to project", or "Add pull
+/// request" in the project dialog. All or nothing; the outcome carries Undo.
 #[tauri::command]
 pub async fn link_prs(
     app: State<'_, std::sync::Arc<AppState>>,
     project_id: i64,
     pr_ids: Vec<i64>,
-) -> Result<usize, AppError> {
+) -> Result<LinkOutcomeDto, AppError> {
     let app = blocking::Handle::new(&app);
     blocking::run(move || {
         let state = app.inner().as_ref();
@@ -1070,9 +1120,35 @@ pub async fn link_prs(
         if state.store.get_project(project)?.is_none() {
             return Err(AppError::new("validation", "Project not found"));
         }
+        let replaced =
+            state
+                .store
+                .link_manual(project, pr_ids.into_iter().map(PrId).collect(), Utc::now())?;
+        Ok(LinkOutcomeDto {
+            changed: replaced.len(),
+            undo: replaced.into_iter().map(replaced_dto).collect(),
+        })
+    })
+    .await
+}
+
+/// Undo for [`link_prs`]: puts each still-manual row back the way it was.
+#[tauri::command]
+pub async fn undo_link_prs(
+    app: State<'_, std::sync::Arc<AppState>>,
+    project_id: i64,
+    undo: Vec<ReplacedLinkDto>,
+) -> Result<usize, AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        let replaced = undo
+            .into_iter()
+            .map(replaced_from_dto)
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(state
             .store
-            .link_manual(project, pr_ids.into_iter().map(PrId).collect(), Utc::now())?)
+            .undo_manual_links(ProjectId(project_id), replaced)?)
     })
     .await
 }

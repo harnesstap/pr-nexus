@@ -119,6 +119,7 @@ pub fn run() {
             commands::preview_rule,
             commands::list_project_links,
             commands::link_prs,
+            commands::undo_link_prs,
             commands::unlink_pr,
             commands::restore_pr,
             commands::load_view_state,

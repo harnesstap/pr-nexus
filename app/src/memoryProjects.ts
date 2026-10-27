@@ -1,4 +1,4 @@
-import type { Api, ProjectDto, ProjectLinkDto, ProjectRuleDto } from "./api";
+import type { Api, LinkOutcomeDto, ProjectDto, ProjectLinkDto, ProjectRuleDto, ReplacedLinkDto } from "./api";
 import { candidatesFromRows, pageFromRows, type SearchRow } from "./list/paging";
 
 type ProjectApi = Pick<
@@ -10,6 +10,7 @@ type ProjectApi = Pick<
   | "previewRule"
   | "listProjectLinks"
   | "linkPrs"
+  | "undoLinkPrs"
   | "createProjectWithPrs"
   | "unlinkPr"
   | "restorePr"
@@ -34,21 +35,44 @@ export function memoryProjectApi(rows: SearchRow[], projects: ProjectDto[], rule
     }
   };
   const find = (projectId: number, prId: number) => links.findIndex((link) => link.project_id === projectId && link.pr_id === prId);
-  const link = (projectId: number, prIds: number[]) => {
-    let changed = 0;
+  const link = (projectId: number, prIds: number[]): LinkOutcomeDto => {
+    if (prIds.some((prId) => !rows.some((row) => row.id === prId))) {
+      throw new Error("Pull request not found");
+    }
+    const undo: ReplacedLinkDto[] = [];
     for (const prId of prIds) {
       const index = find(projectId, prId);
       if (index >= 0 && links[index].source === "manual") {
         continue;
       }
       if (index >= 0) {
-        links.splice(index, 1);
+        const [before] = links.splice(index, 1);
+        undo.push({ pr_id: prId, before: before.source === "rule" ? "rule" : "excluded", rule_id: before.rule_id });
+      } else {
+        undo.push({ pr_id: prId, before: null, rule_id: null });
       }
       links.push({ project_id: projectId, pr_id: prId, source: "manual", rule_id: null });
-      changed += 1;
     }
     sync();
-    return changed;
+    return { changed: undo.length, undo };
+  };
+  const undoLink = (projectId: number, undo: ReplacedLinkDto[]) => {
+    let reverted = 0;
+    for (const item of undo) {
+      const index = find(projectId, item.pr_id);
+      if (index < 0 || links[index].source !== "manual") {
+        continue;
+      }
+      const ruleKept = item.before === "rule" && rules.some((rule) => rule.id === item.rule_id);
+      if (item.before === "excluded" || ruleKept) {
+        links[index] = { ...links[index], source: item.before!, rule_id: ruleKept ? item.rule_id : null };
+      } else {
+        links.splice(index, 1);
+      }
+      reverted += 1;
+    }
+    sync();
+    return reverted;
   };
   const strip = ({ body: _body, ...row }: SearchRow) => (void _body, row);
   return {
@@ -98,7 +122,14 @@ export function memoryProjectApi(rows: SearchRow[], projects: ProjectDto[], rule
       Promise.resolve(
         links.filter((link) => link.project_id === projectId).map(({ pr_id, source, rule_id }) => ({ pr_id, source, rule_id })),
       ),
-    linkPrs: (projectId, prIds) => Promise.resolve(link(projectId, prIds)),
+    linkPrs: (projectId, prIds) => {
+      try {
+        return Promise.resolve(link(projectId, prIds));
+      } catch (err) {
+        return Promise.reject(err instanceof Error ? err : new Error(String(err)));
+      }
+    },
+    undoLinkPrs: (projectId, undo) => Promise.resolve(undoLink(projectId, undo)),
     createProjectWithPrs: (name, prIds) => {
       const trimmed = name.trim();
       if (!trimmed) {

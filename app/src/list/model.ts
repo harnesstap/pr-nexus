@@ -500,6 +500,8 @@ export interface Toast {
   text: string;
   /** Opens the posted Slack message. */
   link?: string | null;
+  /** Shows an Undo button; the toast closes when it is pressed. */
+  undo?: () => void;
 }
 
 /** Success toast for a single request or bump. */
