@@ -8,6 +8,8 @@ interface Props {
   label: string;
   /** What it does or why you would use it. */
   detail?: string;
+  /** One line each under the label, e.g. everyone in an avatar stack. */
+  lines?: string[];
   /** Keyboard shortcut shown after the label. */
   shortcut?: string;
   /** Where the bubble goes relative to the control. */
@@ -27,7 +29,7 @@ const ALIGN = { center: "left-1/2 -translate-x-1/2", start: "left-0", end: "righ
  * and on keyboard focus, hides on leave, blur or Escape, and is linked to the control
  * with `aria-describedby` so screen readers read it too.
  */
-export function Tooltip({ label, detail, shortcut, side = "bottom", align = "center", className = "", children }: Props) {
+export function Tooltip({ label, detail, lines, shortcut, side = "bottom", align = "center", className = "", children }: Props) {
   const id = useId();
   const [open, setOpen] = useState(false);
   const timer = useRef<number | undefined>(undefined);
@@ -82,6 +84,11 @@ export function Tooltip({ label, detail, shortcut, side = "bottom", align = "cen
         <span className="font-medium text-slate-100">{label}</span>
         {shortcut && <kbd className="ml-2 rounded border border-slate-600 px-1 font-mono text-[10px] text-slate-300">{shortcut}</kbd>}
         {detail && <span className="mt-0.5 block text-slate-400">{detail}</span>}
+        {lines?.map((line, index) => (
+          <span key={index} className="mt-0.5 block text-slate-300">
+            {line}
+          </span>
+        ))}
       </span>
     </span>
   );

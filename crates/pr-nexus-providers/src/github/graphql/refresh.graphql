@@ -62,9 +62,13 @@ fragment PrFields on PullRequest {
       requestedReviewer {
         ... on User {
           login
+          name
+          avatarUrl(size: 64)
         }
         ... on Team {
           slug
+          name
+          avatarUrl(size: 64)
           organization {
             login
           }

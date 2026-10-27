@@ -6,9 +6,9 @@ use crate::domain::{
     DiscoveryOutcome, DiscoveryRun, Involvement, LinkSource, MappingLayer, MergeStateStatus,
     Mergeable, OwnershipCacheEntry, PrId, PrProjectLink, PrState, Project, ProjectId, ProjectRule,
     ProviderRef, PullRequest, ReplacedLink, RepoRef, Repository, RequestSource, RequestStatus,
-    ReviewDecision, ReviewMessage, ReviewMessageKind, ReviewMessageOrigin, ReviewMessagePr,
-    ReviewRequest, Reviewer, RuleKind, SendAttempt, SendOutcome, SettingEntry, SlackChannel,
-    SyncStateEntry, TeamChannelMapping, TeamMembersCacheEntry, TeamRef, ViewState,
+    RequestedReviewer, ReviewDecision, ReviewMessage, ReviewMessageKind, ReviewMessageOrigin,
+    ReviewMessagePr, ReviewRequest, Reviewer, RuleKind, SendAttempt, SendOutcome, SettingEntry,
+    SlackChannel, SyncStateEntry, TeamChannelMapping, TeamMembersCacheEntry, TeamRef, ViewState,
 };
 
 use super::{Store, db};
@@ -103,13 +103,17 @@ fn sample_pr(account: &Account, node_id: &str, state: PrState) -> PullRequest {
         mergeable: Mergeable::Mergeable,
         merge_state: MergeStateStatus::Clean,
         requested_reviewers: vec![
-            Reviewer::User {
-                login: "bob".to_owned(),
+            RequestedReviewer {
+                reviewer: Reviewer::User {
+                    login: "bob".to_owned(),
+                },
+                name: Some("Bob Example".to_owned()),
+                avatar_url: Some("https://avatars.githubusercontent.com/u/1?s=64".to_owned()),
             },
-            Reviewer::Team(TeamRef {
+            RequestedReviewer::bare(Reviewer::Team(TeamRef {
                 org: "acme".to_owned(),
                 slug: "team-a".to_owned(),
-            }),
+            })),
         ],
         unresolved_threads: 1,
         total_threads: 3,
@@ -722,6 +726,18 @@ fn slim_rows_drop_the_body_and_facts_load_in_bulk() {
     assert!(rows[0].body.is_empty());
     assert_eq!(rows[0].labels, vec!["bug".to_owned()]);
     assert_eq!(rows[0].requested_reviewers.len(), 2);
+    let bob = rows[0]
+        .requested_reviewers
+        .iter()
+        .find(|request| matches!(&request.reviewer, Reviewer::User { login } if login == "bob"))
+        .unwrap();
+    assert_eq!(bob.name.as_deref(), Some("Bob Example"));
+    assert_eq!(
+        bob.avatar_url.as_deref(),
+        Some("https://avatars.githubusercontent.com/u/1?s=64")
+    );
+    let one = store.get_pull_request(pr.id).unwrap().unwrap();
+    assert_eq!(one.requested_reviewers, pr.requested_reviewers);
     let project = store.create_project("Billing".to_owned()).unwrap();
     store.link_manual(project.id, vec![pr.id], at()).unwrap();
     let facts = store.list_facts(account.id).unwrap();

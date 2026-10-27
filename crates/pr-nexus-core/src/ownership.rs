@@ -271,7 +271,7 @@ fn decide(
         requested_teams: pr
             .requested_reviewers
             .iter()
-            .filter_map(|reviewer| match reviewer {
+            .filter_map(|request| match &request.reviewer {
                 Reviewer::Team(team) => Some(team.to_string()),
                 Reviewer::User { .. } => None,
             })

@@ -326,6 +326,8 @@ export interface ListRow {
   conflicts: boolean;
   /** At least one reviewer or team is requested on GitHub. */
   reviewers_requested: boolean;
+  /** Who still has to review: users first, then teams, each by login. */
+  pending_reviewers: PendingReviewer[];
   slack: {
     requested_at: string;
     last_bumped_at: string | null;
@@ -337,6 +339,17 @@ export interface ListRow {
     root_ts: string;
     source: string;
   } | null;
+}
+
+/** One pending review request on a list row. */
+export interface PendingReviewer {
+  kind: "user" | "team";
+  /** User login, or `org/slug` for a team. */
+  login: string;
+  /** Display name or team name, when GitHub returned one. */
+  name: string | null;
+  /** Avatar URL with an explicit size; null falls back to initials. */
+  avatar_url: string | null;
 }
 
 export interface ProjectDto {

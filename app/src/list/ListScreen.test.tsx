@@ -192,6 +192,7 @@ function pr(id: number, title: string): SearchRow {
     readiness_notes: [],
     conflicts: false,
     reviewers_requested: false,
+    pending_reviewers: [],
     slack: null,
   };
 }

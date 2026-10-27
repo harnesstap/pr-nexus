@@ -439,7 +439,8 @@ fragment PrListFields on PullRequest {
   repository { id owner { login } name isArchived defaultBranchRef { name } }
   labels(first: 20) { nodes { name } }
   reviewRequests(first: 20) { nodes { requestedReviewer {
-    ... on User { login } ... on Team { slug organization { login } } } } }
+    ... on User { login name avatarUrl(size: 64) }
+    ... on Team { slug name avatarUrl(size: 64) organization { login } } } } }
 }
 
 # status.graphql: nodes(ids: $ids) { ... on PullRequest { … } }
@@ -988,6 +989,7 @@ Nothing org-specific is hard-coded or shipped: GitHub orgs, Slack workspaces, te
 - a row checkbox on every PR;
 - a **floating bulk action bar** at the bottom center that appears only while something is selected;
 - muted text, one accent color (violet) for the primary action and the selection, status pills for review decision.
+- **pending reviewers** next to the review pill: a stack of 20 px avatars of the requested users and teams that have not reviewed yet. Users first, then teams, each by login case-insensitively, so the order does not change between syncs. More than 3 draws the first 3 overlapped plus a `+N` chip. Teams without an avatar, and any avatar that fails to load, show initials (teams in a square, users in a circle). Hovering or focusing the stack shows the shared Tooltip with everyone: `Name (@login)` for users, `Team name (org/slug)` for teams. The names and avatar URLs come from the same `reviewRequests` nodes as the search fragment (cheap scalars, no extra query) and live in `pr_requested_reviewers.name` / `avatar_url` (migration 0003, nullable, so older rows show initials until the next sync). Every sync replaces a PR's requests, so a reviewer who submits a review drops off on the next sync. URLs carry an explicit size (`s=64`); the stack is never taller than a text line, so the row height does not change.
 
 Approved mockups (AI-generated; style references, not pixel specs):
 - [`docs/ui/list-view.jpg`](ui/list-view.jpg): list, sync footer, bulk bar, per-row request indicator (Slack icon + `Requested · 2d ago` / `Bumped · 5h ago` / dimmed `Not requested`; no action buttons on rows). Known differences, where the spec wins:

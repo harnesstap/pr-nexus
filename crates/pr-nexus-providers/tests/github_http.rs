@@ -1,6 +1,8 @@
 use std::time::Duration;
 
-use pr_nexus_core::domain::{AccountId, Involvement, ProviderRef, VcsKind};
+use pr_nexus_core::domain::{
+    AccountId, Involvement, ProviderRef, RequestedReviewer, Reviewer, TeamRef, VcsKind,
+};
 use pr_nexus_core::error::ProviderError;
 use pr_nexus_core::providers::{PrQuery, SearchBucket, VcsProvider};
 use pr_nexus_providers::github::{
@@ -50,6 +52,26 @@ fn search_page_parses_a_pull_request() {
     assert_eq!(pr.remote.id, "PR_node_12");
     assert!(pr.involvement.contains(Involvement::AUTHOR));
     assert_eq!(rows[0].default_branch.as_deref(), Some("main"));
+    assert_eq!(
+        pr.requested_reviewers,
+        vec![
+            RequestedReviewer {
+                reviewer: Reviewer::User {
+                    login: "octo".to_owned()
+                },
+                name: Some("Octo Example".to_owned()),
+                avatar_url: Some("https://avatars.githubusercontent.com/u/9?s=64&v=4".to_owned()),
+            },
+            RequestedReviewer {
+                reviewer: Reviewer::Team(TeamRef {
+                    org: "acme".to_owned(),
+                    slug: "team-a".to_owned()
+                }),
+                name: Some("Team A".to_owned()),
+                avatar_url: None,
+            },
+        ]
+    );
     let budget = client.rate_limit().unwrap();
     assert_eq!(budget.remaining, 4900);
     assert_eq!(client.kind(), VcsKind::GitHub);

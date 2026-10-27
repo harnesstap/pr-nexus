@@ -29,6 +29,7 @@ function row(partial: Partial<SearchRow> & Pick<SearchRow, "id" | "title">): Sea
     readiness_notes: [],
     conflicts: false,
     reviewers_requested: false,
+    pending_reviewers: [],
     slack: null,
     ...partial,
   };

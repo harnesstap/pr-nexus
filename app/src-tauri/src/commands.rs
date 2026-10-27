@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use chrono::Utc;
 use pr_nexus_core::domain::{
     Account, AccountId, AccountKind, AuthMode, LinkSource, PrId, Project, ProjectId, ProjectRule,
-    PullRequest, ReplacedLink, RuleKind, ViewState,
+    PullRequest, ReplacedLink, RequestedReviewer, Reviewer, RuleKind, ViewState,
 };
 use pr_nexus_core::linking;
 use pr_nexus_core::mapping::{self, ImportMode};
@@ -171,7 +171,50 @@ pub struct ListRow {
     pub conflicts: bool,
     /// At least one reviewer or team is requested on GitHub.
     pub reviewers_requested: bool,
+    /// Who still has to review, in display order (see [`pending_reviewers`]).
+    pub pending_reviewers: Vec<PendingReviewerDto>,
     pub slack: Option<SlackIndicator>,
+}
+
+/// One pending review request as the list row shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PendingReviewerDto {
+    /// `user` or `team`.
+    pub kind: &'static str,
+    /// User login, or `org/slug` for a team.
+    pub login: String,
+    /// Display name or team name, when GitHub returned one.
+    pub name: Option<String>,
+    /// Avatar URL sized by the sync query; the UI falls back to initials without it.
+    pub avatar_url: Option<String>,
+}
+
+/// Pending reviewers in a fixed order whatever order GitHub returned them in:
+/// users first, then teams, each by login case-insensitively.
+pub fn pending_reviewers(requests: &[RequestedReviewer]) -> Vec<PendingReviewerDto> {
+    let mut out: Vec<PendingReviewerDto> = requests
+        .iter()
+        .map(|request| {
+            let (kind, login) = match &request.reviewer {
+                Reviewer::User { login } => ("user", login.clone()),
+                Reviewer::Team(team) => ("team", team.to_string()),
+            };
+            PendingReviewerDto {
+                kind,
+                login,
+                name: request.name.clone(),
+                avatar_url: request.avatar_url.clone(),
+            }
+        })
+        .collect();
+    out.sort_by(|a, b| {
+        (a.kind != "user", a.login.to_lowercase(), &a.login).cmp(&(
+            b.kind != "user",
+            b.login.to_lowercase(),
+            &b.login,
+        ))
+    });
+    out
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1430,6 +1473,7 @@ fn to_item(facts: &mut ListFacts, pr: &PullRequest, flag: bool) -> listing::Item
             conflicts: pr.mergeable == pr_nexus_core::domain::Mergeable::Conflicting
                 || pr.merge_state == pr_nexus_core::domain::MergeStateStatus::Dirty,
             reviewers_requested: !pr.requested_reviewers.is_empty(),
+            pending_reviewers: pending_reviewers(&pr.requested_reviewers),
             slack: request.map(indicator),
         },
         updated_ms: pr.updated_at.timestamp_millis(),

@@ -46,10 +46,18 @@
           },
           "reviewRequests": {
             "nodes": [
-              { "requestedReviewer": { "login": "octo" } },
+              {
+                "requestedReviewer": {
+                  "login": "octo",
+                  "name": "Octo Example",
+                  "avatarUrl": "https://avatars.githubusercontent.com/u/9?s=64&v=4"
+                }
+              },
               {
                 "requestedReviewer": {
                   "slug": "team-a",
+                  "name": "Team A",
+                  "avatarUrl": "",
                   "organization": { "login": "acme" }
                 }
               }

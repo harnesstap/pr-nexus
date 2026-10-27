@@ -315,6 +315,28 @@ pub enum Reviewer {
     Team(TeamRef),
 }
 
+/// A pending review request with what the list shows for it. GitHub drops the
+/// request once that reviewer submits a review, so the next sync removes it here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestedReviewer {
+    pub reviewer: Reviewer,
+    /// User display name or team name, when GitHub returns one.
+    pub name: Option<String>,
+    /// Avatar URL, already sized by the query (`avatarUrl(size: 64)`).
+    pub avatar_url: Option<String>,
+}
+
+impl RequestedReviewer {
+    /// A request with no name or avatar (tests, older rows).
+    pub fn bare(reviewer: Reviewer) -> Self {
+        Self {
+            reviewer,
+            name: None,
+            avatar_url: None,
+        }
+    }
+}
+
 /// Maximum stored pull-request body, in bytes. Search reads this text.
 pub const PR_BODY_MAX_BYTES: usize = 8 * 1024;
 
@@ -339,7 +361,7 @@ pub struct PullRequest {
     pub checks: ChecksState,
     pub mergeable: Mergeable,
     pub merge_state: MergeStateStatus,
-    pub requested_reviewers: Vec<Reviewer>,
+    pub requested_reviewers: Vec<RequestedReviewer>,
     pub unresolved_threads: u32,
     pub total_threads: u32,
     pub involvement: Involvement,
