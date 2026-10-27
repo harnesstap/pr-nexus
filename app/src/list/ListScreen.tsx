@@ -356,7 +356,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
                       GitHub{boot.github_login ? ` · signed in as ${boot.github_login}` : ""} · Slack
                     </p>
                     <p className="mt-1 text-xs text-slate-500">
-                      GitLab, Jira and Linear are planned. To change the GitHub account, use About → Re-run setup.
+                      To change the GitHub account, use About → Re-run setup.
                     </p>
                   </section>
                   {orgPicker(true)}

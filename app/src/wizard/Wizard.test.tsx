@@ -110,14 +110,24 @@ function api(overrides: Partial<Api> = {}): Api {
   };
 }
 
-test("coming soon providers cannot be selected and back is disabled on step 1", () => {
+test("step 1 shows only GitHub, preselected, and back is disabled", () => {
   render(<Wizard api={api()} boot={boot} onFinished={() => undefined} />);
   expect(screen.getByRole("button", { name: "Back" })).toBeDisabled();
   expect(screen.queryByRole("button", { name: "Skip" })).not.toBeInTheDocument();
-  const gitlab = screen.getByRole("radio", { name: /GitLab/ });
-  expect(gitlab).toBeDisabled();
-  expect(gitlab).toHaveAttribute("aria-checked", "false");
-  expect(screen.getByRole("radio", { name: /GitHub/ })).toHaveAttribute("aria-checked", "true");
+  const cards = screen.getAllByRole("radio");
+  expect(cards).toHaveLength(1);
+  expect(cards[0]).toHaveAccessibleName(/GitHub/);
+  expect(cards[0]).toHaveAttribute("aria-checked", "true");
+  expect(screen.queryByText(/coming soon/i)).not.toBeInTheDocument();
+});
+
+test("step 2 shows only Slack, preselected", () => {
+  render(<Wizard api={api()} boot={{ ...boot, resume_step: "choose_chat" }} onFinished={() => undefined} />);
+  const cards = screen.getAllByRole("radio");
+  expect(cards).toHaveLength(1);
+  expect(cards[0]).toHaveAccessibleName(/Slack/);
+  expect(cards[0]).toHaveAttribute("aria-checked", "true");
+  expect(screen.queryByText(/coming soon/i)).not.toBeInTheDocument();
 });
 
 test("the Slack step saves a custom redirect, connects in the browser, then allows Next", async () => {

@@ -318,7 +318,7 @@ pub enum ProviderError {
     #[error("network: {0}")]       Network(String),       // timeouts, DNS, TLS
     #[error("api error {code}: {message}")] Api { code: String, message: String },
     #[error("decode: {0}")]        Decode(String),
-    #[error("provider not supported: {0}")] Unsupported(String), // Coming-soon provider kinds (§5.1)
+    #[error("provider not supported: {0}")] Unsupported(String), // provider kinds without a v1 descriptor (§5.1)
 }
 #[derive(Debug, thiserror::Error)]
 pub enum CoreError {
@@ -378,8 +378,6 @@ All methods return typed errors (no `String`) and are synchronous, matching the 
 The registry is the single place that knows which providers exist and what setting each one up takes. The setup wizard (§8.3), Settings → Accounts, and the sync scheduler all read it; nothing else matches on provider names.
 
 ```rust
-pub enum Availability { Available, ComingSoon }
-
 pub enum SetupStep {                       // one wizard screen each (§8.3)
     ChooseVcs, ChooseChat,                 // always first
     ConnectVcs, ChooseVcsScope,            // from the VCS descriptor
@@ -387,9 +385,9 @@ pub enum SetupStep {                       // one wizard screen each (§8.3)
     Done,                                  // always last
 }
 
-pub struct VcsDescriptor  { pub kind: VcsKind,  pub label: &'static str, pub availability: Availability,
+pub struct VcsDescriptor  { pub kind: VcsKind,  pub label: &'static str,
                             pub setup: &'static [SetupStep] }   // GitHub: [ConnectVcs, ChooseVcsScope]
-pub struct ChatDescriptor { pub kind: ChatKind, pub label: &'static str, pub availability: Availability,
+pub struct ChatDescriptor { pub kind: ChatKind, pub label: &'static str,
                             pub setup: &'static [SetupStep],    // Slack: [ConnectChat, ChatMapping]
                             pub multi_account: bool }           // Slack: true (N workspaces)
 
@@ -398,14 +396,14 @@ impl ProviderRegistry {
     /// [ChooseVcs, ChooseChat] + vcs.setup + chat.setup + [Done]. Pure; unit-tested.
     pub fn setup_steps(&self, vcs: VcsKind, chat: ChatKind) -> Vec<SetupStep>;
 }
-// pr-nexus-providers (network code stays out of core): one factory per Available kind.
+// pr-nexus-providers (network code stays out of core): one factory per registered kind.
 pub fn build_vcs(kind: VcsKind, account: AccountId, token: SecretString) -> Result<Box<dyn VcsProvider>, ProviderError>;
 pub fn build_chat(kind: ChatKind, account: AccountId, token: SecretString) -> Result<Box<dyn ChatProvider>, ProviderError>;
 ```
 
 - The descriptors and `setup_steps` live in `pr-nexus-core` (pure data, no network). The factories live in `pr-nexus-providers`, and the app wires them together.
 
-- v1 registers GitHub and Slack as `Available`, and GitLab, Gitea, Discord, and Mattermost as `ComingSoon`. `ComingSoon` entries have no factory (the factory returns `ProviderError::Unsupported`) and an empty `setup`; they exist only so the wizard can show them disabled.
+- v1 registers only GitHub and Slack. The other `VcsKind` / `ChatKind` values stay in the domain so the store and traits remain extensible, but they have no descriptor (nothing reaches the UI, nothing is promised there) and their factories return `ProviderError::Unsupported`. Future providers are internal roadmap only (§10.2).
 - `ChatMapping` and `ConnectChat` are the skippable steps (`SetupStep::is_skippable`). Connect Slack stays skippable after M10 so PR-Nexus is usable before a workspace admin approves the Slack app (§7.13 R7); Skip records `slack_skipped` and never pretends a workspace is connected.
 - Adding a provider later means adding a descriptor, its factory, and any new `SetupStep` screens; the wizard and Settings pick it up without other changes.
 - The chosen providers are stored in `settings` (`providers.vcs`, `providers.chat`, §7.12). v1 allows exactly one of each.
@@ -1129,7 +1127,7 @@ Keyboard: `j/k` move, `x` toggle select, `Shift+x` toggle the focused row's sect
 **Projects**: list on the left; on the right, name/color, rules editor (kind, pattern, priority, and a live "matches N open PRs" preview), and linked PRs with their source badges (manual/rule/excluded).
 
 **Settings** tabs:
-- Accounts. It starts with a **Providers** row showing the chosen git and communication providers (from the registry; other providers are listed as Coming soon, so there is nothing to switch to in v1). Then: the GitHub account (re-connect with any of the three auth modes) plus the **tracked orgs picker**: checkboxes from `viewer.organizations` and orgs seen in search, and a "personal repos" toggle; Slack with the MCP client settings (the **Create your Slack app** link and its help text, client ID, client secret stored in the keychain, redirect URI; §7.11), one row per connected workspace, each with its own status, re-auth, remove, and an optional client override, and an "Add workspace" button);
+- Accounts. It starts with a **Providers** row showing the chosen git and communication providers (from the registry: GitHub and Slack only, so there is nothing to switch to in v1; no other provider is mentioned). Then: the GitHub account (re-connect with any of the three auth modes) plus the **tracked orgs picker**: checkboxes from `viewer.organizations` and orgs seen in search, and a "personal repos" toggle; Slack with the MCP client settings (the **Create your Slack app** link and its help text, client ID, client secret stored in the keychain, redirect URI; §7.11), one row per connected workspace, each with its own status, re-auth, remove, and an optional client override, and an "Add workspace" button);
 - Mappings (table, import/export, dry-run diff; this is where a mapping skipped in the wizard is done later);
 - Review (the config keys in §7.12);
 - Sync;
@@ -1143,8 +1141,8 @@ Onboarding is a **wizard of separate screens, shown one step at a time**, not a 
 
 | # | Step | Content | Next is enabled when |
 |---|---|---|---|
-| 1 | Choose git provider | Cards: **GitHub** (enabled), GitLab and Gitea (disabled, "Coming soon"). | a provider is selected (GitHub preselected) |
-| 2 | Choose communication provider | Cards: **Slack** (enabled), Discord and Mattermost (disabled, "Coming soon"). | a provider is selected (Slack preselected) |
+| 1 | Choose git provider | A single **GitHub** card, preselected. No other provider is shown. | a provider is selected (GitHub preselected) |
+| 2 | Choose communication provider | A single **Slack** card, preselected. No other provider is shown. | a provider is selected (Slack preselected) |
 | 3 | Connect GitHub | The three auth modes of §9 in order: `gh` CLI token (preselected when `gh auth status` succeeds), PAT, device flow. Validates with `viewer` and shows the login and scope check; SSO errors show the authorization link. | the account is verified |
 | 4 | Choose orgs to track | Checkboxes for every org the user belongs to (§5 `list_organizations`: GraphQL, REST `/user/orgs`, orgs seen in search; SSO-blocked orgs carry a hint), a filter box, and the **Include my personal repos** toggle. Writes `github.tracked_orgs` and `github.include_personal_repos`. | at least one org is checked or personal repos is on |
 | 5 | Connect Slack workspace(s) | The **Create your Slack app** link with its help text (§7.11), then the Slack MCP client fields: client ID (required once, empty by default: no client ID ships), client secret (optional, saved to the keychain; needed for apps created from the link; shows "saved in the keychain" once stored), and redirect URI (pre-filled with the default that the manifest registers, editable: it must match a redirect URL on the app). Below them come the list of connected workspaces (team name, `domain.slack.com`, `@user`, "signed out" when the tokens are gone, Remove), then **Sign in with Slack** for **one workspace at a time**. Sign-in saves the fields first, then opens the system browser; while waiting the button reads "Waiting for Slack…" with **Cancel**, with a countdown ("m:ss left", then "Still waiting for Slack."); the 10-minute timeout shows "Sign-in timed out, click to retry.", and denial and port-in-use errors are shown inline. Once one workspace is connected, the button becomes **Add another workspace**. | at least one workspace is signed in; otherwise Skip |
@@ -1171,11 +1169,11 @@ Onboarding is a **wizard of separate screens, shown one step at a time**, not a 
 │                                                                            │
 │ Where do your pull requests live?                                          │
 │                                                                            │
-│ ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐           │
-│ │ ◉ GitHub         │  │ ○ GitLab         │  │ ○ Gitea          │           │
-│ │   github.com     │  │   Coming soon    │  │   Coming soon    │           │
-│ └──────────────────┘  └──────────────────┘  └──────────────────┘           │
-│   selected            disabled              disabled                       │
+│ ┌──────────────────┐                                                       │
+│ │ ◉ GitHub         │                                                       │
+│ │   github.com     │                                                       │
+│ └──────────────────┘                                                       │
+│   selected                                                                 │
 ├────────────────────────────────────────────────────────────────────────────┤
 │                                                        [Back]  [Next →]    │
 └────────────────────────────────────────────────────────────────────────────┘
@@ -1189,10 +1187,10 @@ Step 2:
 │                                                                            │
 │ Where do you ask for reviews?                                              │
 │                                                                            │
-│ ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐           │
-│ │ ◉ Slack          │  │ ○ Discord        │  │ ○ Mattermost     │           │
-│ │ 1+ workspaces    │  │   Coming soon    │  │   Coming soon    │           │
-│ └──────────────────┘  └──────────────────┘  └──────────────────┘           │
+│ ┌──────────────────┐                                                       │
+│ │ ◉ Slack          │                                                       │
+│ │ 1+ workspaces    │                                                       │
+│ └──────────────────┘                                                       │
 ├────────────────────────────────────────────────────────────────────────────┤
 │                                                      [← Back]  [Next →]    │
 └────────────────────────────────────────────────────────────────────────────┘
@@ -1354,7 +1352,7 @@ Detect `X-GitHub-SSO: required; url=…` and show the authorization link.
 - **Prompt-injection safeguards.** PR titles and Slack replies are untrusted content. Tool results wrap them as data. The server never follows instructions from that content, and no tool can post free-form text (only the templates).
 
 ### 10.2 Other providers & platforms
-- These are already listed in the registry as Coming soon (§5.1); implementing one means a descriptor flip to `Available`, a factory, and its setup steps.
+- Internal roadmap only: none of these is shown or promised in the app, README, or release notes. Implementing one means adding its registry descriptor (§5.1), a factory, and its setup steps; until then the UI shows GitHub and Slack only.
 - GitLab and Gitea (`VcsProvider`): CODEOWNERS equivalents exist (GitLab `CODEOWNERS` with sections), so `decide_owners` stays as is, and new inputs go through `OwnershipInputs`.
 - Slack direct Web API transport (`SlackWebApiChatProvider`), the documented fallback in §7.11, if a workspace cannot use the Slack MCP server.
 - Discord and Mattermost (`ChatProvider`): bump maps to "reply in thread and also to channel" where supported, otherwise a quote plus link.
@@ -1476,7 +1474,7 @@ Release runbook (CONTRIBUTING.md):
 | **M3** | Message builder | 12+ golden fixtures generated from the Python script pass byte for byte. Wire-escaping unit tests. |
 | **M4** | CODEOWNERS + owner decision | The skill's `test_helpers.py` cases are ported and pass, and the Δ1–Δ4 tests pass. Readiness table (§7.1) implemented as a pure function with a test per row. `decide_owners` rules 1–9 tested with fixtures. |
 | **M5** | Mapping | Empty mapping on first run. CSV import (replace, merge, dry-run diff, target-workspace picker for rows without a workspace; the skill's 5-column CSV accepted) and export (effective/user/imported, fixed header, sorted). Layer precedence and tombstone tests on placeholder fixtures. |
-| **M6** | Wizard + GitHub sync | `ProviderRegistry` (§5.1) with `setup_steps` unit tests. Setup wizard shell (§8.3): one step per screen, progress indicator, Back/Next, `onboarding.state` persistence and resume (including re-validation of completed steps). Steps 1–4 and 7 (provider cards with Coming-soon entries; Connect GitHub with gh token, PAT, device flow; orgs picker with personal-repos toggle; Done with first sync). Tracked-orgs picker also in Settings; empty state until orgs are picked. Search buckets, client-side tracked-org filter, nodes refresh, polling scheduler, rate-limit pause. HTTP fixture tests via `wiremock`. Typed errors mapped (401, 403-SSO, 403-secondary, 404). |
+| **M6** | Wizard + GitHub sync | `ProviderRegistry` (§5.1) with `setup_steps` unit tests. Setup wizard shell (§8.3): one step per screen, progress indicator, Back/Next, `onboarding.state` persistence and resume (including re-validation of completed steps). Steps 1–4 and 7 (a single preselected provider card each, GitHub then Slack; Connect GitHub with gh token, PAT, device flow; orgs picker with personal-repos toggle; Done with first sync). Tracked-orgs picker also in Settings; empty state until orgs are picked. Search buckets, client-side tracked-org filter, nodes refresh, polling scheduler, rate-limit pause. HTTP fixture tests via `wiremock`. Typed errors mapped (401, 403-SSO, 403-secondary, 404). |
 | **M7** | List UI | Dark compact style (§8.2). Sidebar navigation with the sync-status footer and refresh button. Grouped, collapsible list with three-level tri-state selection (global, section, row) and no per-row action buttons. No header overflow button. Inline project rename by double-click. Minimal section `⋯` menu (auto-link rules, archive, delete). Floating bulk bar. Slack request indicator with link icon. Filter menu (Grouping, Ordering, Show, Filters with Reset), persisted per view in `view_state`. Search bar over project name, title, body, repo, and number. Keyboard shortcuts. vitest: tri-state derivation (none/partial/all) for section and global; parent toggle selects or deselects only visible children; a filter or search excludes hidden rows from parent toggles; checking a multi-project PR updates every section containing it; bulk count and planner input dedupe by `PrId`; hidden-selected count; inline rename (Enter saves, Esc cancels, empty or duplicate name rejected, Unassigned not editable); filter and search predicates; view-state restore. |
 | **M8** | Projects | CRUD, rules with live preview, manual/rule/excluded semantics tested. Unassigned section. Manual links by drag and drop and from the project dialog (D21). Relink after every sync and rule change. Header counts (§8.2). Empty project sections. Window state and release context menu (§8.2 Desktop shell). |
 | **M9** | Ownership inputs | Files (paginated, capped), CODEOWNERS lookup order, `rules/branches`, protection with 403→Unknown, reviews with onBehalfOf, team members cache. Detail view shows readiness, owners, and the rationale. |
@@ -1512,7 +1510,7 @@ M0–M1 come first on purpose. Every later PR is then built, linted, and releasa
   - a structure test checks that the name is `PR-Nexus`; that `scopes.user` equals the scope list of §7.11 and `user_optional ⊆ user`; that there are no bot scopes and no bot user; that `is_mcp_enabled` is `true` and `pkce_enabled` is `false`; that `redirect_urls[0]` equals the `slack.mcp.redirect_uri` default; and that it contains no client ID, team ID, or company name;
   - a link test decodes the built URL, checks the `https://api.slack.com/apps?new_app=1&manifest_json=` prefix, round-trips the JSON, and checks the configured redirect URI replaced the default;
   - `apps.manifest.validate` needs an app configuration token, so it stays a manual pre-release step, not CI.
-- **wizard**: core tests for `setup_steps` (order, only `ConnectChat` and `ChatMapping` skippable, Coming-soon providers contribute no steps) and for the resume logic (state round-trip, resume at the stored step, fall back to the first step whose re-validation fails). vitest: one step rendered at a time, Next disabled until the step's condition holds, Back disabled on step 1, Skip only on the Slack and mapping steps, disabled Coming-soon cards cannot be selected, Slack sign-in (custom redirect saved before connect, waiting state with Cancel, connected workspace name, Next enabled, cancel shows no error, errors inline, Remove), and adding a second Slack workspace.
+- **wizard**: core tests for `setup_steps` (order, only `ConnectChat` and `ChatMapping` skippable, kinds without a descriptor contribute no steps, v1 registers only GitHub and Slack) and for the resume logic (state round-trip, resume at the stored step, fall back to the first step whose re-validation fails). vitest: one step rendered at a time, Next disabled until the step's condition holds, Back disabled on step 1, Skip only on the Slack and mapping steps, steps 1 and 2 show only the GitHub and Slack card, preselected, Slack sign-in (custom redirect saved before connect, waiting state with Cancel, connected workspace name, Next enabled, cancel shows no error, errors inline, Remove), and adding a second Slack workspace.
 - **review requests**: table-driven lifecycle tests in core: sync sees merged/closed → closed; dismiss → next action Request; new commits after approval → still Bump; reopened PR → Request; discovery hit on a closed root → ignored; `/pull/4` vs `/pull/42`; oldest root wins; thread replies count as bumps.
 - **app**: command-level tests with `FakeVcs`/`FakeChat` and a temp DB. Frontend tests with vitest + Testing Library against a mocked `invoke`.
 - **Manual pre-release checklist**: open **Create your Slack app**, confirm Slack shows the prefilled manifest (name, user scopes, redirect URL, MCP on), and run `apps.manifest.validate` on it; sign in to a test workspace through the Slack MCP server; request and bump in a private test channel; verify link rendering, Markdown-active characters in a title, thread plus channel broadcast, permalink, and that the row's ↗ opens the original message in the Slack app; run the pinned-schema check against the live server.
@@ -1547,6 +1545,6 @@ M0–M1 come first on purpose. Every later PR is then built, linted, and releasa
 - **D21. Manual project links:** drag rows (or the selection) onto a sidebar project or a section header, or use the project dialog's Add pull request search. No per-row buttons and no extra bulk action (§8.1).
 - **D22. Desktop shell:** first launch maximized, then the last window geometry is restored; no native context menu in release builds (§8.2).
 - **D17. Selection:** three-level tri-state checkboxes over visible rows, keyed by `PrId` across sections, session-only (§8.2).
-- **D18. Setup wizard:** separate screens, one step at a time, driven by the provider registry; GitHub and Slack are the only available providers, the others show as Coming soon; only the Slack connect and mapping steps are skippable; progress is persisted and resumable (§5.1, §8.3).
+- **D18. Setup wizard:** separate screens, one step at a time, driven by the provider registry; GitHub and Slack are the only providers and the only ones shown (steps 1 and 2 keep a single preselected card so step numbering stays stable); no future provider appears in the UI; only the Slack connect and mapping steps are skippable; progress is persisted and resumable (§5.1, §8.3).
 - **D19. Slack transport = the official Slack MCP server** (`https://mcp.slack.com/mcp`). PR-Nexus is an `rmcp` client with OAuth 2.1 + PKCE and a loopback redirect. The client ID, client secret (keychain), and redirect URI are user configuration (global, or per workspace). Direct Web API with a per-workspace internal app is the documented fallback, not built in v1 (§7.11, §7.13).
 - **D20. No default Slack client ID ships** in the app, the repo, fixtures, or docs. The client ID field starts empty. Users create their own app with the **Create your Slack app** link (a manifest committed at `assets/slack-app-manifest.json`), or paste the client ID of an MCP-enabled app their org already approved (§7.11).

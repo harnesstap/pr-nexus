@@ -287,23 +287,15 @@ export function Wizard({ api, boot, onFinished, onCancel }: Props) {
         {step === "choose_vcs" && (
           <ProviderStep
             prompt="Where do your pull requests live?"
-            selected="GitHub"
-            cards={[
-              ["GitHub", "github.com", false],
-              ["GitLab", "Coming soon", true],
-              ["Gitea", "Coming soon", true],
-            ]}
+            name="GitHub"
+            detail="github.com"
           />
         )}
         {step === "choose_chat" && (
           <ProviderStep
             prompt="Where do you ask for reviews?"
-            selected="Slack"
-            cards={[
-              ["Slack", "One or more workspaces", false],
-              ["Discord", "Coming soon", true],
-              ["Mattermost", "Coming soon", true],
-            ]}
+            name="Slack"
+            detail="One or more workspaces"
           />
         )}
         {step === "connect_vcs" && (
@@ -536,34 +528,16 @@ export function Wizard({ api, boot, onFinished, onCancel }: Props) {
   );
 }
 
-function ProviderStep({
-  prompt,
-  selected,
-  cards,
-}: {
-  prompt: string;
-  selected: string;
-  cards: [string, string, boolean][];
-}) {
+/** v1 supports one provider per step, shown as a single preselected card. */
+function ProviderStep({ prompt, name, detail }: { prompt: string; name: string; detail: string }) {
   return (
     <div>
       <p className="mb-4 text-slate-300">{prompt}</p>
-      <div className="grid gap-3 sm:grid-cols-3">
-        {cards.map(([name, detail, disabled]) => (
-          <button
-            key={name}
-            type="button"
-            role="radio"
-            aria-checked={name === selected}
-            disabled={disabled}
-            className={`rounded-lg border px-4 py-5 text-left ${
-              name === selected ? "border-violet-400 bg-violet-500/10" : "border-slate-700"
-            } disabled:cursor-not-allowed disabled:opacity-50`}
-          >
-            <span className="block font-medium">{name}</span>
-            <span className="mt-1 block text-sm text-slate-400">{detail}</span>
-          </button>
-        ))}
+      <div role="radiogroup" aria-label={prompt} className="grid gap-3 sm:grid-cols-3">
+        <button type="button" role="radio" aria-checked="true" className="rounded-lg border border-violet-400 bg-violet-500/10 px-4 py-5 text-left">
+          <span className="block font-medium">{name}</span>
+          <span className="mt-1 block text-sm text-slate-400">{detail}</span>
+        </button>
       </div>
     </div>
   );
