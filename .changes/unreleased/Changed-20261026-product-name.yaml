@@ -1,0 +1,3 @@
+kind: Changed
+body: The app is now called PR Nexus (window title, menu, About, setup wizard, Slack app manifest and docs). The data folder, database and keychain item are unchanged, and the release DMG is still named `PR-Nexus_<version>_aarch64.dmg`.
+time: 2026-10-27T07:40:00.000000Z

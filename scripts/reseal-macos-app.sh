@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Ad-hoc reseal PR-Nexus.app after Tauri's unsigned macOS bundle.
+# Ad-hoc reseal PR Nexus.app after Tauri's unsigned macOS bundle.
 #
 # Tauri leaves a linker signature with Sealed Resources=none. Gatekeeper then
-# maps that to "PR-Nexus.app is damaged" once a browser sets quarantine.
+# maps that to "PR Nexus.app is damaged" once a browser sets quarantine.
 # `codesign --force --deep --sign -` writes CodeResources. No Developer ID.
 #
 # Usage: bash scripts/reseal-macos-app.sh [bundle-dir]
@@ -11,7 +11,7 @@
 # Env:
 #   RESEAL_REQUIRE=1   fail instead of skip when not Darwin (CI macOS jobs)
 #   RESEAL_UNAME       override `uname -s` (tests)
-#   RESEAL_APP         override path to PR-Nexus.app
+#   RESEAL_APP         override path to PR Nexus.app
 #   RESEAL_CODESIGN    codesign binary (tests)
 #   RESEAL_HDIUTIL     hdiutil binary (tests)
 set -euo pipefail
@@ -20,7 +20,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BUNDLE_DIR="${1:-$REPO_ROOT/target/release/bundle}"
 UNAME="${RESEAL_UNAME:-$(uname -s)}"
-APP_NAME="PR-Nexus"
+# Must match productName in app/src-tauri/tauri.conf.json (checked by release-scripts.test.ts).
+APP_NAME="PR Nexus"
 
 log() {
   echo "reseal-macos-app: $*"
@@ -97,10 +98,15 @@ else
 fi
 ln -s /Applications "$STAGING/src/Applications"
 
+# Tauri names the DMG after productName ("PR Nexus_<ver>_aarch64.dmg"). The
+# release asset gets a stable, space-free name ("PR-Nexus_<ver>_aarch64.dmg"):
+# GitHub would turn the space into a dot, and the Homebrew cask needs a plain URL.
 for dmg in "${dmgs[@]}"; do
-  log "recreating $(basename "$dmg") from sealed app"
+  name="$(basename "$dmg")"
+  out="$DMG_DIR/${name// /-}"
+  log "recreating $name as $(basename "$out") from sealed app"
   rm -f "$dmg"
-  "$HDIUTIL" create -volname "$APP_NAME" -srcfolder "$STAGING/src" -ov -format UDZO "$dmg"
+  "$HDIUTIL" create -volname "$APP_NAME" -srcfolder "$STAGING/src" -ov -format UDZO "$out"
 done
 
 log "done"

@@ -281,7 +281,7 @@ test("About shows paths, the keychain explainer, update check and Re-run setup",
     checkUpdate: () => Promise.resolve({ version: "0.2.0", url: "https://github.com/acme/pr-nexus/releases/tag/v0.2.0", command: "gh release download v0.2.0" }),
   }) as Api;
   render(<Harness api={api} start="about" onRerun={() => (reruns += 1)} />);
-  expect(await screen.findByRole("heading", { name: "PR-Nexus 0.1.0" })).toBeInTheDocument();
+  expect(await screen.findByRole("heading", { name: "PR Nexus 0.1.0" })).toBeInTheDocument();
   expect(screen.getByText(/one keychain item/)).toBeInTheDocument();
   expect(screen.getByText(/Always Allow/)).toBeInTheDocument();
   expect(screen.getByText(/Open Anyway/)).toBeInTheDocument();

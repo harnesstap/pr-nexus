@@ -134,7 +134,7 @@ test("Settings → About → Re-run setup opens the wizard at step 1 and Back re
   fireEvent.click(screen.getByRole("button", { name: "Next" }));
   await waitFor(() => expect(saved.length).toBeGreaterThan(0));
   expect(saved.every((value) => value === "2026-10-26T00:00:00Z")).toBe(true);
-  fireEvent.click(screen.getByRole("button", { name: "Back to PR-Nexus" }));
+  fireEvent.click(screen.getByRole("button", { name: "Back to PR Nexus" }));
   expect(await screen.findByRole("button", { name: "My PRs" })).toBeInTheDocument();
   expect(screen.queryByRole("heading", { name: /Step 1 of 7/ })).not.toBeInTheDocument();
 });

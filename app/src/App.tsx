@@ -16,7 +16,7 @@ export default function App({ api = tauriApi }: Props) {
     void api
       .bootstrap()
       .then(setBoot)
-      .catch((err: unknown) => setError(err instanceof Error ? err.message : "Could not open PR-Nexus"));
+      .catch((err: unknown) => setError(err instanceof Error ? err.message : "Could not open PR Nexus"));
   }, [api]);
 
   if (error) {
@@ -29,7 +29,7 @@ export default function App({ api = tauriApi }: Props) {
   if (!boot) {
     return (
       <main className="grid min-h-screen place-items-center bg-slate-950 text-slate-300">
-        <p>Loading PR-Nexus…</p>
+        <p>Loading PR Nexus…</p>
       </main>
     );
   }

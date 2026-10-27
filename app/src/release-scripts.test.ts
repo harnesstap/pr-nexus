@@ -48,16 +48,17 @@ test("reseal skips on non-Darwin unless required", async () => {
 test("reseal signs nested binaries and recreates the DMG", async () => {
   const root = await tempDir("reseal-ok-");
   const bundle = join(root, "bundle");
-  const macosDir = join(bundle, "macos", "PR-Nexus.app", "Contents", "MacOS");
+  const macosDir = join(bundle, "macos", "PR Nexus.app", "Contents", "MacOS");
   const dmgDir = join(bundle, "dmg");
-  const app = join(bundle, "macos", "PR-Nexus.app");
+  const app = join(bundle, "macos", "PR Nexus.app");
+  const tauriDmg = join(dmgDir, "PR Nexus_0.1.0_aarch64.dmg");
   const dmg = join(dmgDir, "PR-Nexus_0.1.0_aarch64.dmg");
   const signLog = join(root, "codesign.log");
   const hdiLog = join(root, "hdiutil.log");
   await mkdir(macosDir, { recursive: true });
   await mkdir(dmgDir, { recursive: true });
   await writeFile(join(macosDir, "pr-nexus"), "desktop-bin");
-  await writeFile(dmg, "stale-unsealed-dmg");
+  await writeFile(tauriDmg, "stale-unsealed-dmg");
 
   await writeExecutable(
     join(root, "codesign"),
@@ -94,26 +95,27 @@ exit 0
       RESEAL_HDIUTIL: join(root, "hdiutil"),
     },
   });
-  expect(result.stdout).toContain("sealed PR-Nexus.app (Sealed Resources present)");
-  expect(result.stdout).toContain("recreating PR-Nexus_0.1.0_aarch64.dmg from sealed app");
+  expect(result.stdout).toContain("sealed PR Nexus.app (Sealed Resources present)");
+  expect(result.stdout).toContain("recreating PR Nexus_0.1.0_aarch64.dmg as PR-Nexus_0.1.0_aarch64.dmg from sealed app");
 
   const signed = (await readFile(signLog, "utf8")).trim().split("\n");
   expect(signed.some((line) => line.includes("pr-nexus") && line.includes("--force"))).toBe(true);
   expect(signed.some((line) => line.includes("--deep") && line.includes(app))).toBe(true);
   const hdi = await readFile(hdiLog, "utf8");
-  expect(hdi).toContain("-volname PR-Nexus");
+  expect(hdi).toContain("-volname PR Nexus");
   expect(hdi).toContain("-format UDZO");
   expect(await readFile(dmg, "utf8")).toBe("sealed-dmg\n");
+  await expect(readFile(tauriDmg, "utf8")).rejects.toThrow();
 });
 
 test("reseal fails when the seal is still missing", async () => {
   const root = await tempDir("reseal-none-");
   const bundle = join(root, "bundle");
-  const macosDir = join(bundle, "macos", "PR-Nexus.app", "Contents", "MacOS");
+  const macosDir = join(bundle, "macos", "PR Nexus.app", "Contents", "MacOS");
   await mkdir(macosDir, { recursive: true });
   await mkdir(join(bundle, "dmg"), { recursive: true });
   await writeFile(join(macosDir, "pr-nexus"), "desktop-bin");
-  await writeFile(join(bundle, "dmg", "PR-Nexus_0.1.0_aarch64.dmg"), "stale");
+  await writeFile(join(bundle, "dmg", "PR Nexus_0.1.0_aarch64.dmg"), "stale");
   await writeExecutable(
     join(root, "codesign"),
     `#!/usr/bin/env bash

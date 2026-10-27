@@ -3,8 +3,8 @@
     "major_version": 1
   },
   "display_information": {
-    "name": "PR-Nexus",
-    "description": "Posts the code-review requests you approve in PR-Nexus, as you, through the Slack MCP server."
+    "name": "PR Nexus",
+    "description": "Posts the code-review requests you approve in PR Nexus, as you, through the Slack MCP server."
   },
   "oauth_config": {
     "redirect_urls": [

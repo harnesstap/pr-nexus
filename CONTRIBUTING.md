@@ -1,6 +1,6 @@
 # Contributing
 
-PR-Nexus is a private desktop app. Do not commit company names, organization names, Slack workspaces, tokens, or customer data. See `AGENTS.md`.
+PR Nexus is a private desktop app. Do not commit company names, organization names, Slack workspaces, tokens, or customer data. See `AGENTS.md`.
 
 ## Prerequisites
 
@@ -132,8 +132,8 @@ The DMG is ad-hoc signed (`codesign --force --deep --sign -`), not notarized.
 
 1. Preferred: `brew install --cask harnesstap/tap/pr-nexus`, or `gh release download vX.Y.Z -R harnesstap/pr-nexus -p '*.dmg'` (files fetched by `gh` do not get the quarantine flag).
 2. After a browser download, macOS may say the app is damaged or from an unidentified developer. Open it once, then System Settings → Privacy & Security → Open Anyway. On macOS 15 and later, Control-click → Open does not bypass that.
-3. Or: `xattr -dr com.apple.quarantine /Applications/PR-Nexus.app`.
+3. Or: `xattr -dr com.apple.quarantine /Applications/PR Nexus.app`.
 
 An ad-hoc signature has no stable team id, so macOS asks once per update before the app can read the keychain item `dev.pr-nexus` (one vault entry, so one prompt). Choose Always Allow. That prompt does not exist until the app stores a token; the current build does not.
 
-Smoke test on a clean user account: download the DMG with `gh`, launch PR-Nexus, and confirm the window shows Hello. Installing over an older build should still launch.
+Smoke test on a clean user account: download the DMG with `gh`, launch PR Nexus, and confirm the window shows Hello. Installing over an older build should still launch.

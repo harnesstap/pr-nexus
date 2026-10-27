@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
-description = "GitHub and Slack provider factories for PR-Nexus"
+description = "GitHub and Slack provider factories for PR Nexus"
 
 [dependencies]
 pr-nexus-core = { path = "../pr-nexus-core" }

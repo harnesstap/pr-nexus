@@ -245,7 +245,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
       <aside className="flex w-60 shrink-0 flex-col border-r border-slate-800 bg-slate-950">
         <p className="flex items-center gap-2 px-4 py-4 text-base font-semibold">
           <LogoIcon size={20} className="text-violet-400" />
-          PR-Nexus
+          PR Nexus
         </p>
         <nav aria-label="Views" className="flex flex-col gap-0.5 px-2 text-sm">
           <NavButton current={viewKey} id="mine" icon={<HomeIcon />} onSelect={setViewKey}>

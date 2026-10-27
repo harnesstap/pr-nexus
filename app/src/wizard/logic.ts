@@ -14,7 +14,7 @@ export interface StepModel {
 }
 
 /**
- * Mapping is optional. Slack can be skipped too, so PR-Nexus stays usable
+ * Mapping is optional. Slack can be skipped too, so PR Nexus stays usable
  * when a workspace has no approved Slack app yet (§7.13 R7).
  */
 export function showSkip(step: StepId): boolean {

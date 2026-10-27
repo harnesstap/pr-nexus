@@ -152,7 +152,7 @@ impl Loopback {
             respond(
                 &mut stream,
                 400,
-                "This sign-in link is stale. Start again from PR-Nexus.",
+                "This sign-in link is stale. Start again from PR Nexus.",
             )
             .await;
             return None;
@@ -173,7 +173,7 @@ impl Loopback {
         respond(
             &mut stream,
             200,
-            "Slack is connected. You can close this tab and return to PR-Nexus.",
+            "Slack is connected. You can close this tab and return to PR Nexus.",
         )
         .await;
         Some(Ok(Callback {
@@ -218,7 +218,7 @@ async fn respond(stream: &mut TcpStream, status: u16, message: &str) {
         _ => "Bad Request",
     };
     let body = format!(
-        "<!doctype html><meta charset=\"utf-8\"><title>PR-Nexus</title>\
+        "<!doctype html><meta charset=\"utf-8\"><title>PR Nexus</title>\
          <body style=\"font-family:sans-serif;padding:2rem\"><p>{message}</p></body>"
     );
     let response = format!(

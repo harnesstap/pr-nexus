@@ -18,7 +18,7 @@ test("the update banner links the release and stays dismissed for that version o
     },
   } as unknown as Api;
   const { unmount } = render(<UpdateBanner api={api} />);
-  expect(await screen.findByText("PR-Nexus 0.2.0 is available.")).toBeInTheDocument();
+  expect(await screen.findByText("PR Nexus 0.2.0 is available.")).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: /release page/ }));
   expect(opened).toEqual([update.url]);
   fireEvent.click(screen.getByRole("button", { name: "Dismiss update notice" }));
@@ -31,7 +31,7 @@ test("the update banner links the release and stays dismissed for that version o
 
   const next = { checkUpdate: () => Promise.resolve({ ...update, version: "0.3.0" }), openExternal: () => Promise.resolve() } as unknown as Api;
   render(<UpdateBanner api={next} />);
-  expect(await screen.findByText("PR-Nexus 0.3.0 is available.")).toBeInTheDocument();
+  expect(await screen.findByText("PR Nexus 0.3.0 is available.")).toBeInTheDocument();
 });
 
 test("a failed update check shows nothing", async () => {

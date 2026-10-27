@@ -1,4 +1,4 @@
-# PR-Nexus agent guide
+# PR Nexus agent guide
 
 This repository is **private**. Never commit company names, organization names, Slack workspace names, tokens, customer data, or any other company data. GitHub orgs and Slack workspaces are chosen by the user at runtime. Nothing in source, fixtures, or docs may hardcode them.
 

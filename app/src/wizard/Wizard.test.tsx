@@ -283,7 +283,7 @@ test("skipping the mapping step lands on Done before the list opens", async () =
   expect(await screen.findByRole("heading", { name: /Step 7 of 7 · Done/ })).toBeInTheDocument();
   expect(screen.getByText(/mapping: skipped/)).toBeInTheDocument();
   expect(finished).toBe(false);
-  const open = screen.getByRole("button", { name: "Open PR-Nexus" });
+  const open = screen.getByRole("button", { name: "Open PR Nexus" });
   expect(open).toBeDisabled();
   fireEvent.click(open);
   expect(finished).toBe(false);

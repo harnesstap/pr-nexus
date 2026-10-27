@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
-description = "PR-Nexus desktop shell"
+description = "PR Nexus desktop shell"
 
 [lib]
 name = "pr_nexus_lib"

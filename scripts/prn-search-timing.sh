@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# prn-search-timing.sh: time PR-Nexus's sync queries against GitHub. Read-only.
+# prn-search-timing.sh: time PR Nexus's sync queries against GitHub. Read-only.
 #
-# It sends the same GraphQL that PR-Nexus sync runs, through `gh api graphql`
+# It sends the same GraphQL that PR Nexus sync runs, through `gh api graphql`
 # with your gh login:
 #   1. the slim search page (graphql/search.graphql: $query, $first, $cursor),
 #      with the search string narrowed to your orgs like the app does;

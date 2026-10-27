@@ -184,8 +184,18 @@ jobs:
             find "${CARGO_TARGET_DIR}/release/bundle" -type f || true
             exit 1
           fi
-          gh release upload "$TAG" "${files[@]}" --clobber --repo "$GITHUB_REPOSITORY"
-          echo "Uploaded ${files[*]} to $TAG"
+          # Stable, space-free asset names: "PR Nexus_<ver>_aarch64.dmg" becomes
+          # "PR-Nexus_<ver>_aarch64.dmg" (the reseal step already does this).
+          assets=()
+          for file in "${files[@]}"; do
+            stable="$(dirname "$file")/$(basename "$file" | tr ' ' '-')"
+            if [ "$file" != "$stable" ]; then
+              mv "$file" "$stable"
+            fi
+            assets+=("$stable")
+          done
+          gh release upload "$TAG" "${assets[@]}" --clobber --repo "$GITHUB_REPOSITORY"
+          echo "Uploaded ${assets[*]} to $TAG"
 
   publish:
     needs:
