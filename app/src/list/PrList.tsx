@@ -37,6 +37,7 @@ import {
   type StatusFilter,
   type Tone,
 } from "./model";
+import { setDragBadge } from "./dragBadge";
 import { pageIds, summaryText, type PageDto, type PageEntry, type PageRequest, type PageSection } from "./paging";
 import { usePagedList, type PageParams } from "./usePagedList";
 import { plainText } from "../textInput";
@@ -561,6 +562,7 @@ export function PrList({
                         event.dataTransfer.setData(DRAG_MIME, JSON.stringify(ids));
                         event.dataTransfer.setData("text/plain", ids.length === 1 ? row.url : `${ids.length} pull requests`);
                         event.dataTransfer.effectAllowed = "link";
+                        setDragBadge(event.dataTransfer, ids.length);
                       }}
                       onDragEnd={() => setDropTarget(null)}
                       onMouseDown={() => setFocusIndex(index)}

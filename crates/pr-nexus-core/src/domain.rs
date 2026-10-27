@@ -405,6 +405,14 @@ pub enum LinkSource {
     Excluded,
 }
 
+/// What a manual link replaced for one PR, so Undo can put it back.
+/// `before: None` means the PR was not linked to the project at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplacedLink {
+    pub pr: PrId,
+    pub before: Option<LinkSource>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrProjectLink {
     pub pr: PrId,

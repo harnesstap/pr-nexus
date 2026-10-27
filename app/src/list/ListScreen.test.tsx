@@ -122,9 +122,14 @@ test("an empty Projects section offers to create one, and Settings lives in the 
   expect(within(projects).queryByText(/No projects yet/)).not.toBeInTheDocument();
 });
 
-test("dropping PRs on a sidebar project links them and confirms", async () => {
+test("dropping PRs on a sidebar project links them, confirms and offers Undo", async () => {
   const fake = api([{ id: 1, name: "Checkout", color: "#7c5cbf", archived: false, description: "", sort_order: 0 }]);
-  fake.linkPrs = vi.fn(() => Promise.resolve(2));
+  const undo = [
+    { pr_id: 4, before: null, rule_id: null },
+    { pr_id: 5, before: "excluded" as const, rule_id: null },
+  ];
+  fake.linkPrs = vi.fn(() => Promise.resolve({ changed: 2, undo }));
+  fake.undoLinkPrs = vi.fn(() => Promise.resolve(2));
   render(<ListScreen api={fake} boot={boot} onBoot={() => undefined} />);
   const target = await within(screen.getByRole("region", { name: "Projects" })).findByRole("button", { name: "Checkout" });
   const data = new Map([["application/x-pr-nexus-prs", "[4,5]"]]);
@@ -133,6 +138,9 @@ test("dropping PRs on a sidebar project links them and confirms", async () => {
   fireEvent.drop(target, { dataTransfer });
   await waitFor(() => expect(fake.linkPrs).toHaveBeenCalledWith(1, [4, 5]));
   expect(await screen.findByRole("status")).toHaveTextContent("Added 2 PRs to Checkout");
+  fireEvent.click(within(screen.getByRole("status")).getByRole("button", { name: "Undo" }));
+  await waitFor(() => expect(fake.undoLinkPrs).toHaveBeenCalledWith(1, undo));
+  expect(await screen.findByRole("status")).toHaveTextContent("Undid adding 2 PRs to Checkout");
 });
 
 test("a failed first load shows the error with Try again", async () => {

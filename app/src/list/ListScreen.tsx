@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import type { Api, Bootstrap, ListRow, ProjectDto } from "../api";
+import type { Api, Bootstrap, ListRow, ProjectDto, ReplacedLinkDto } from "../api";
 import { errorMessage } from "../api";
 import { ClockIcon, CloseIcon, FolderIcon, GearIcon, HomeIcon, LogoIcon, PlusIcon, RefreshIcon } from "../icons";
 import { Tooltip } from "../Tooltip";
@@ -205,11 +205,27 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
     setError(null);
     const name = projects.find((project) => project.id === projectId)?.name ?? "project";
     try {
-      const changed = await api.linkPrs(projectId, prIds);
+      const outcome = await api.linkPrs(projectId, prIds);
       await reload();
       const count = prCount(prIds.length);
-      setNotice({ text: changed > 0 ? `Added ${count} to ${name}` : `${count} already in ${name}` });
+      setNotice(
+        outcome.changed > 0
+          ? { text: `Added ${count} to ${name}`, undo: () => void undoLinkPrs(projectId, name, outcome.undo) }
+          : { text: `${count} already in ${name}` },
+      );
       setFlash(projectId);
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  }
+
+  async function undoLinkPrs(projectId: number, name: string, undo: ReplacedLinkDto[]) {
+    setError(null);
+    setNotice(null);
+    try {
+      const reverted = await api.undoLinkPrs(projectId, undo);
+      await reload();
+      setNotice({ text: reverted > 0 ? `Undid adding ${prCount(reverted)} to ${name}` : `Nothing to undo in ${name}` });
     } catch (err) {
       setError(errorMessage(err));
     }
@@ -502,6 +518,11 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
             {notice.link && (
               <button type="button" className="text-violet-300 underline" onClick={() => void api.openExternal(notice.link!)}>
                 Open ↗
+              </button>
+            )}
+            {notice.undo && (
+              <button type="button" className="font-medium text-violet-300 hover:text-violet-200" onClick={notice.undo}>
+                Undo
               </button>
             )}
             <Tooltip label="Dismiss" side="top" align="end">

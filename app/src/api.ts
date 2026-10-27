@@ -363,6 +363,19 @@ export interface ProjectRuleDto {
   priority: number;
 }
 
+/** What one manual link replaced, so Undo can put it back (`before: null` = not linked). */
+export interface ReplacedLinkDto {
+  pr_id: number;
+  before: "rule" | "excluded" | null;
+  rule_id: number | null;
+}
+
+export interface LinkOutcomeDto {
+  /** Rows that became manual links; PRs already linked by hand are not counted. */
+  changed: number;
+  undo: ReplacedLinkDto[];
+}
+
 export interface ProjectLinkDto {
   pr_id: number;
   source: "manual" | "rule" | "excluded";
@@ -459,7 +472,10 @@ export interface Api {
   deleteProjectRule(id: number): Promise<void>;
   previewRule(kind: RuleKind, pattern: string): Promise<number>;
   listProjectLinks(projectId: number): Promise<ProjectLinkDto[]>;
-  linkPrs(projectId: number, prIds: number[]): Promise<number>;
+  /** All or nothing; the outcome carries what Undo needs. */
+  linkPrs(projectId: number, prIds: number[]): Promise<LinkOutcomeDto>;
+  /** Reverts a `linkPrs` outcome; rows changed since then are left alone. */
+  undoLinkPrs(projectId: number, undo: ReplacedLinkDto[]): Promise<number>;
   unlinkPr(projectId: number, prId: number): Promise<void>;
   restorePr(projectId: number, prId: number): Promise<void>;
   loadViewState(viewKey: string): Promise<string | null>;
@@ -543,6 +559,7 @@ export const tauriApi: Api = {
   previewRule: (kind, pattern) => invoke("preview_rule", { kind, pattern }),
   listProjectLinks: (projectId) => invoke("list_project_links", { projectId }),
   linkPrs: (projectId, prIds) => invoke("link_prs", { projectId, prIds }),
+  undoLinkPrs: (projectId, undo) => invoke("undo_link_prs", { projectId, undo }),
   unlinkPr: (projectId, prId) => invoke("unlink_pr", { projectId, prId }),
   restorePr: (projectId, prId) => invoke("restore_pr", { projectId, prId }),
   loadViewState: (viewKey) => invoke("load_view_state", { viewKey }),
