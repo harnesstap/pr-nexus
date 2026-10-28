@@ -1,6 +1,6 @@
 name: Persistent build cache
 description: >-
-  Self-hosted runners only. Points CARGO_TARGET_DIR and the bun install cache
+  Self-hosted runners with a persistent CI_CACHE_DIR only. Points CARGO_TARGET_DIR and the bun install cache
   at a directory on the runner's local disk that survives between jobs, so
   Cargo rebuilds incrementally instead of restoring a GitHub cache.
   Layout: <root>/pr-nexus/<runner name>/{target-<rustc hash>,bun}. Each runner
@@ -10,7 +10,7 @@ description: >-
   Only directories this action created are ever removed.
 inputs:
   root:
-    description: Cache root. Empty means <runner work dir>/_ci-cache.
+    description: Cache root. It must survive between jobs (a mounted volume). Empty means <runner work dir>/_ci-cache.
     default: ""
   max-gb:
     description: Size cap for one target dir, in GB. Empty means 8.

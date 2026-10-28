@@ -1527,7 +1527,7 @@ harnesstap is a Bun/TypeScript CLI plus a Tauri v2 desktop app in `apps/desktop`
 | Job | Runner | Steps |
 |---|---|---|
 | `changes` | self-hosted Linux | `dorny/paths-filter`: outputs `rust` (`crates/**`, `app/src-tauri/**`, `Cargo.*`), `web` (`app/**` excl. src-tauri), `ci` (`.github/**`) |
-| `rust` | self-hosted Linux | webkit deps check; `cargo fmt --all --check`; `cargo update --workspace --locked`; `cargo clippy --workspace --all-targets --locked -- -D warnings`; `cargo nextest run --workspace` + doctests; `bun run tauri build --debug --no-bundle`. Target dir persists per runner (`.github/actions/persistent-cache`, capped by `CI_CACHE_MAX_GB`, default 8) |
+| `rust` | self-hosted Linux | webkit deps check; `cargo fmt --all --check`; `cargo update --workspace --locked`; `cargo clippy --workspace --all-targets --locked -- -D warnings`; `cargo nextest run --workspace` + doctests; `bun run tauri build --debug --no-bundle`. Dependencies from rust-cache; with `CI_CACHE_DIR` set, a persistent per-runner target dir (`.github/actions/persistent-cache`, capped by `CI_CACHE_MAX_GB`, default 8) |
 | `web` | self-hosted Linux | `bun install --frozen-lockfile`; `bun run lint`; `bun run typecheck`; `bun run test` |
 | `desktop` | macos-latest, windows-latest (GitHub-hosted) | **Release tags `v*` and dispatch only.** macOS runs `cargo test` and builds the `.app` (7-day artifact); Windows runs `tauri build --no-bundle` |
 | `deny` | self-hosted Linux | `cargo deny --all-features check` (prebuilt binary via `taiki-e/install-action`; no Docker needed) |
