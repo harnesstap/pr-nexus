@@ -4,6 +4,7 @@ import { errorMessage } from "../api";
 import { CloseButton } from "../CloseButton";
 import { AlertIcon, CheckIcon, ChevronDownIcon, DeclinedIcon, ExternalIcon, GitBranchIcon } from "../icons";
 import { BAR_SLOT, CAPTION, CARD, VALUE } from "./StatCards";
+import { Tooltip } from "../Tooltip";
 import { TONE_TEXT, type Tone } from "./status";
 
 /** Re-polls while GitHub is still computing mergeability, backing off each time. */
@@ -38,7 +39,14 @@ interface Local {
   attempts: number;
 }
 
-const blank = (prId: number): Local => ({ prId, status: null, updating: null, error: null, confirmingRebase: false, attempts: 0 });
+const blank = (prId: number): Local => ({
+  prId,
+  status: null,
+  updating: null,
+  error: null,
+  confirmingRebase: false,
+  attempts: 0,
+});
 
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
 
@@ -64,7 +72,11 @@ export function useBranch({
   // Everything below belongs to one PR; a different id starts from scratch.
   const [local, setLocal] = useState<Local>(() => blank(prId));
   const mine = local.prId === prId ? local : blank(prId);
-  const patch = (next: Partial<Local>) => setLocal((current) => ({ ...(current.prId === prId ? current : blank(prId)), ...next }));
+  const patch = (next: Partial<Local>) =>
+    setLocal((current) => ({
+      ...(current.prId === prId ? current : blank(prId)),
+      ...next,
+    }));
   const { status, updating, error, confirmingRebase, attempts } = mine;
   const open = overview?.state === "open";
   const stamp = overview ? `${overview.fetched_at}|${overview.head_sha ?? ""}|${overview.mergeable}|${overview.merge_state}` : "";
@@ -140,7 +152,12 @@ export function useBranch({
 /** What to show; mirrors `pr_nexus_core::branch::derive_state` until the server answers. */
 export function branchView(overview: PrOverview | null, status: BranchStatus | null): BranchView {
   const base = status?.base_ref ?? overview?.base_ref ?? "base";
-  const shared = { base, behindBy: status?.behind_by ?? null, otherAuthors: status?.other_authors ?? [], conflictsUrl: status?.conflicts_url ?? "" };
+  const shared = {
+    base,
+    behindBy: status?.behind_by ?? null,
+    otherAuthors: status?.other_authors ?? [],
+    conflictsUrl: status?.conflicts_url ?? "",
+  };
   if (!overview) {
     return { ...shared, state: "loading" };
   }
@@ -160,11 +177,19 @@ export function branchView(overview: PrOverview | null, status: BranchStatus | n
 }
 
 /** The value, the line under it, and its tone, for each state. */
-export function branchText(view: BranchView): { value: string; caption: string; tone: Tone } {
+export function branchText(view: BranchView): {
+  value: string;
+  caption: string;
+  tone: Tone;
+} {
   const behind = view.behindBy === null ? `Behind ${view.base}` : `${plural(view.behindBy, "commit")} behind ${view.base}`;
   switch (view.state) {
     case "up_to_date":
-      return { value: "Up to date", caption: `Up to date with ${view.base}`, tone: "good" };
+      return {
+        value: "Up to date",
+        caption: `Up to date with ${view.base}`,
+        tone: "good",
+      };
     case "behind":
       return { value: "Behind", caption: behind, tone: "good" };
     case "update_required":
@@ -174,12 +199,24 @@ export function branchText(view: BranchView): { value: string; caption: string; 
         tone: "warn",
       };
     case "conflicts":
-      return { value: "Conflicts", caption: `Conflicts with ${view.base}`, tone: "bad" };
+      return {
+        value: "Conflicts",
+        caption: `Conflicts with ${view.base}`,
+        tone: "bad",
+      };
     case "checking":
     case "loading":
-      return { value: "Checking…", caption: `Comparing with ${view.base}`, tone: "muted" };
+      return {
+        value: "Checking…",
+        caption: `Comparing with ${view.base}`,
+        tone: "muted",
+      };
     case "merged":
-      return { value: "Merged", caption: `Already in ${view.base}`, tone: "good" };
+      return {
+        value: "Merged",
+        caption: `Already in ${view.base}`,
+        tone: "good",
+      };
     case "closed":
       return { value: "Closed", caption: "Not merged", tone: "muted" };
     default: {
@@ -249,14 +286,16 @@ export function BranchAction({ branch, onOpen, className = "" }: { branch: Branc
   if (view.state === "conflicts" && view.conflictsUrl) {
     return (
       <div className={className}>
-        <button
-          type="button"
-          onClick={() => onOpen(view.conflictsUrl)}
-          className="inline-flex items-center gap-1 rounded-md border border-rose-500/40 px-2 py-0.5 text-xs text-rose-200 hover:bg-rose-500/10"
-        >
-          Resolve on GitHub
-          <ExternalIcon size={11} />
-        </button>
+        <Tooltip label="Resolve on GitHub" detail="Opens the conflict editor in your browser." side="top" align="start">
+          <button
+            type="button"
+            onClick={() => onOpen(view.conflictsUrl)}
+            className="inline-flex items-center gap-1 rounded-md border border-rose-500/40 px-2 py-0.5 text-xs text-rose-200 hover:bg-rose-500/10"
+          >
+            Resolve on GitHub
+            <ExternalIcon size={11} />
+          </button>
+        </Tooltip>
       </div>
     );
   }
@@ -299,20 +338,24 @@ export function UpdateBranchButton({ base, busy, onChoose }: { base: string; bus
   const face = "border border-slate-700 bg-slate-800/60 px-2 py-0.5 text-xs text-slate-100 enabled:hover:bg-slate-700 disabled:opacity-60";
   return (
     <div ref={wrap} className="relative inline-flex">
-      <button type="button" disabled={busy !== null} onClick={() => pick("merge")} className={`rounded-l-md ${face}`}>
-        {busy === "rebase" ? "Rebasing…" : busy === "merge" ? "Updating…" : "Update branch"}
-      </button>
-      <button
-        type="button"
-        aria-label="Update branch options"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        disabled={busy !== null}
-        onClick={() => setOpen((value) => !value)}
-        className={`-ml-px rounded-r-md px-1 ${face}`}
-      >
-        <ChevronDownIcon size={12} />
-      </button>
+      <Tooltip label="Update branch" detail={`Merges ${base} into this branch on GitHub.`} side="top" align="start">
+        <button type="button" disabled={busy !== null} onClick={() => pick("merge")} className={`rounded-l-md ${face}`}>
+          {busy === "rebase" ? "Rebasing…" : busy === "merge" ? "Updating…" : "Update branch"}
+        </button>
+      </Tooltip>
+      <Tooltip label="More ways to update" detail="Merge (default) or rebase." side="top" align="end">
+        <button
+          type="button"
+          aria-label="Update branch options"
+          aria-haspopup="menu"
+          aria-expanded={open}
+          disabled={busy !== null}
+          onClick={() => setOpen((value) => !value)}
+          className={`-ml-px rounded-r-md px-1 ${face}`}
+        >
+          <ChevronDownIcon size={12} />
+        </button>
+      </Tooltip>
       {open && (
         <div
           role="menu"
