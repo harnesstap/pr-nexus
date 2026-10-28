@@ -1,0 +1,3 @@
+kind: Changed
+body: 'Slack review requests and bumps show the PR title as inline code (`title`), so underscores, asterisks and other Markdown characters appear literally. Backticks inside a title become '''. The preview no longer warns that a title "has Markdown characters".'
+time: 2026-10-27T23:05:00.000000-10:00

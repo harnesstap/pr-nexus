@@ -1,4 +1,4 @@
 Hello team
-Could someone please review Réparer le loquet 🐛?
+Could someone please review `Réparer le loquet 🐛`?
 https://github.com/acme/widgets/pull/8
 Thanks!

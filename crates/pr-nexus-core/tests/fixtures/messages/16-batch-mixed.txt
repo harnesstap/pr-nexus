@@ -1,10 +1,10 @@
 Hello team
 Could someone please review these pull requests? (alice)
-- Réparer le loquet 🐛
+- `Réparer le loquet 🐛`
 https://github.com/acme/widgets/pull/8
-- Fix <a> & <b>
+- `Fix <a> & <b>`
 https://github.com/acme/widgets/pull/9
-- Fix [cache](key) & retries
+- `Fix [cache](key) & retries`
 https://github.com/acme/widgets/pull/5
 Thanks!
 

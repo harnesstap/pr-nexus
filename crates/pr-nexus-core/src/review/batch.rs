@@ -21,7 +21,7 @@ use crate::error::{CoreError, ProviderError};
 use crate::providers::{ChatProvider, OutgoingMessage, PostedMessage};
 use crate::store::Store;
 
-use super::lifecycle::{Target, active_request, has_markdown_chars, wire_text, with_link};
+use super::lifecycle::{Target, active_request, wire_text, with_link};
 use super::message::{self, MessageMode};
 
 /// Minimum gap between two posts in the same channel. Slack allows about one
@@ -182,14 +182,6 @@ fn plan_card(
     now: DateTime<Utc>,
 ) -> Result<ChannelCard, CoreError> {
     let mut warnings = Vec::new();
-    for item in &items {
-        if has_markdown_chars(&item.pr.title) {
-            warnings.push(format!(
-                "\"{}\" has Markdown characters. Slack may format them instead of showing them literally.",
-                item.pr.title
-            ));
-        }
-    }
     let (requested, fresh): (Vec<PlannedItem>, Vec<PlannedItem>) = items
         .iter()
         .cloned()

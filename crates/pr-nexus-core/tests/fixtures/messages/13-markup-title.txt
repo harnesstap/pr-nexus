@@ -1,4 +1,4 @@
 Hello team
-Could someone please review Fix <a> & <b>?
+Could someone please review `Fix <a> & <b>`?
 https://github.com/acme/widgets/pull/9
 Thanks!

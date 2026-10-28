@@ -1,4 +1,4 @@
-Hello, I'm still looking for a review on Fix the widget latch when you have a moment :pray:
+Hello, I'm still looking for a review on `Fix the widget latch` when you have a moment :pray:
 https://github.com/acme/widgets/pull/3
 Thanks!
 

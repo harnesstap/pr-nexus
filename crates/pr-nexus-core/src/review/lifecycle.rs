@@ -168,12 +168,6 @@ pub fn plan(
             )
         }
     };
-    if has_markdown_chars(&pr.title) {
-        warnings.push(
-            "The title has Markdown characters. Slack may format them instead of showing them literally."
-                .to_owned(),
-        );
-    }
     Ok(Plan {
         target,
         action,
@@ -196,27 +190,10 @@ pub fn with_note(mut plan: Plan, note: Option<&str>) -> Plan {
     plan
 }
 
-/// §7.6 decision: the M10 read-back check has not run against a live
-/// workspace, so the transform is the identity (what the skill sends) and the
-/// preview warns about Markdown-active titles instead.
+/// §7.6: the text is sent unchanged. Titles are already inline code spans
+/// (see [`message::code_span`]), so Slack shows them literally.
 pub fn wire_text(text: &str) -> String {
     text.to_owned()
-}
-
-/// True when a title would be reformatted by Slack's Markdown conversion.
-pub fn has_markdown_chars(title: &str) -> bool {
-    let title = title.trim();
-    if title
-        .chars()
-        .any(|c| matches!(c, '\\' | '*' | '_' | '`' | '~' | '[' | ']' | '<' | '>'))
-    {
-        return true;
-    }
-    if title.starts_with(['#', '+', '-']) {
-        return true;
-    }
-    let digits = title.bytes().take_while(u8::is_ascii_digit).count();
-    digits > 0 && title.as_bytes().get(digits) == Some(&b'.')
 }
 
 /// Fill in the message link from the workspace domain when Slack returned
@@ -496,7 +473,7 @@ pub(crate) mod tests {
         assert_eq!(first.action, Action::Request);
         assert_eq!(
             first.text,
-            "Hello team\nCould someone please review Fix the latch?\nhttps://github.com/acme/web/pull/7\nThanks!\n"
+            "Hello team\nCould someone please review `Fix the latch`?\nhttps://github.com/acme/web/pull/7\nThanks!\n"
         );
         assert!(first.warnings.is_empty());
         let request = send(&store, &chat, &pr, &first, "[]", at(0)).unwrap();
@@ -512,7 +489,7 @@ pub(crate) mod tests {
         assert!(matches!(soon.action, Action::Bump { .. }));
         assert!(
             soon.text
-                .starts_with("Hello, I'm still looking for a review on Fix the latch")
+                .starts_with("Hello, I'm still looking for a review on `Fix the latch`")
         );
         assert_eq!(soon.warnings.len(), 1, "bump within 24 h warns");
 
@@ -559,14 +536,16 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn markdown_titles_warn_and_wire_text_is_identity() {
-        let (_dir, store, pr, _chat) = seed("fix *_init_* [WIP]");
+    fn markdown_titles_are_code_spans_without_warnings() {
+        let (_dir, store, pr, _chat) = seed("feat: return location_ip_hash *_init_* [WIP]");
         let planned = plan(&store, &pr, target(), None, 24, at(0)).unwrap();
         assert_eq!(planned.wire_text, planned.text);
-        assert_eq!(planned.warnings.len(), 1);
-        assert!(has_markdown_chars("1. Title"));
-        assert!(has_markdown_chars("- dash"));
-        assert!(!has_markdown_chars("Plain title 2.0"));
+        assert!(planned.warnings.is_empty(), "{:?}", planned.warnings);
+        assert!(
+            planned
+                .text
+                .contains("review `feat: return location_ip_hash *_init_* [WIP]`?")
+        );
     }
 
     #[test]

@@ -1,4 +1,4 @@
 Hello team
-Could someone please review Fix the widget latch? ( )
+Could someone please review `Fix the widget latch`? ( )
 https://github.com/acme/widgets/pull/1
 Thanks!

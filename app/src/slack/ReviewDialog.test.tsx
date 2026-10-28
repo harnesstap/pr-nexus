@@ -212,3 +212,16 @@ test("withNote mirrors the backend: blank line, trimmed, blank ignored", () => {
   expect(withNote("Hello\n", "  hi  ")).toBe("Hello\n\nhi\n");
   expect(withNote("Hello\n", "   ")).toBe("Hello\n");
 });
+
+test("a title with underscores previews as inline code with no Markdown warning", async () => {
+  const text = "Hello team\nCould someone please review `feat: return location_ip_hash in geolocate response`?\nhttps://github.com/acme/widgets/pull/42\nThanks!\n";
+  const { api } = fake({
+    reviewPreview: (_id: number, target: ReviewTarget): Promise<ReviewPreview> =>
+      Promise.resolve({ target, action: "request", text, warnings: [], signed_in: true, bump_count: 0, permalink: null, broadcast: true }),
+  });
+  render(<ReviewDialog api={api} row={{ ...row, title: "feat: return location_ip_hash in geolocate response" }} onClose={() => undefined} onOpen={() => undefined} onSent={() => undefined} />);
+  const preview = await screen.findByLabelText("Message preview");
+  expect(preview).toHaveTextContent("review feat: return location_ip_hash in geolocate response?");
+  expect(preview.querySelector("code")).toHaveTextContent(/^feat: return location_ip_hash in geolocate response$/);
+  expect(screen.queryByText(/Markdown characters/)).not.toBeInTheDocument();
+});
