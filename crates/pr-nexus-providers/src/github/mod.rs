@@ -450,6 +450,14 @@ impl VcsProvider for GithubClient {
         overview::set_draft(self, pr, draft)
     }
 
+    fn merge_pull_request(
+        &self,
+        pr: &PullRequest,
+        method: pr_nexus_core::overview::MergeMethod,
+    ) -> Result<(), ProviderError> {
+        overview::merge(self, pr, method)
+    }
+
     fn rate_limit(&self) -> Result<RateBudget, ProviderError> {
         if let Some(budget) = self.budget.lock().expect("rate budget").clone() {
             return Ok(budget);

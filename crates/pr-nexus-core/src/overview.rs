@@ -210,6 +210,17 @@ pub fn set_draft(
     refresh(store, provider, &pr)
 }
 
+/// Merges the pull request now with `method`, then refreshes the overview.
+pub fn merge(
+    store: &Store,
+    provider: &dyn VcsProvider,
+    pr: &PullRequest,
+    method: MergeMethod,
+) -> Result<PrOverview, CoreError> {
+    provider.merge_pull_request(pr, method)?;
+    refresh(store, provider, pr)
+}
+
 /// Default for providers without an overview.
 pub(crate) fn unsupported() -> ProviderError {
     ProviderError::Unsupported("pull request overview".into())

@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import { mockOverview } from "./mock";
-import { approvalsSummary, autoMergeView, checksSummary, commentsSummary, mergeabilitySummary, mergeVerdict } from "./status";
+import { approvalsSummary, autoMergeView, canMergeNow, checksSummary, commentsSummary, conflictsSummary, mergeBlockers, mergeVerdict } from "./status";
 
 test("checks count skipped as passing and list failures before running ones", () => {
   const summary = checksSummary(
@@ -36,11 +36,11 @@ test("approvals show the missing count, changes requested, and an unknown requir
 });
 
 test("mergeability reads conflicts, behind and the unknown state", () => {
-  expect(mergeabilitySummary({ state: "open", mergeable: "conflicting", merge_state: "dirty" }).value).toBe("Conflicts");
-  expect(mergeabilitySummary({ state: "open", mergeable: "unknown", merge_state: "unknown" }).value).toBe("Checking");
-  expect(mergeabilitySummary({ state: "open", mergeable: "mergeable", merge_state: "behind" }).tone).toBe("warn");
-  expect(mergeabilitySummary({ state: "open", mergeable: "mergeable", merge_state: "blocked" }).value).toBe("Clean");
-  expect(mergeabilitySummary({ state: "merged", mergeable: "unknown", merge_state: "unknown" }).value).toBe("Merged");
+  expect(conflictsSummary({ state: "open", mergeable: "conflicting", merge_state: "dirty" }).value).toBe("Yes");
+  expect(conflictsSummary({ state: "open", mergeable: "unknown", merge_state: "unknown" }).value).toBe("Checking");
+  expect(conflictsSummary({ state: "open", mergeable: "mergeable", merge_state: "behind" }).tone).toBe("warn");
+  expect(conflictsSummary({ state: "open", mergeable: "mergeable", merge_state: "blocked" }).value).toBe("None");
+  expect(conflictsSummary({ state: "merged", mergeable: "unknown", merge_state: "unknown" }).value).toBe("Merged");
 });
 
 test("the merge verdict names the first thing in the way", () => {
@@ -73,4 +73,44 @@ test("auto-merge offers the allowed methods, squash first, and says why it can't
   const on = mockOverview({ auto_merge: { method: "merge", enabled_by: "kim", enabled_at: null } });
   expect(autoMergeView(on)).toMatchObject({ enabled: true, available: false });
   expect(autoMergeView({ ...on, viewer: { ...on.viewer, can_disable_auto_merge: true } })).toMatchObject({ enabled: true, available: true, reason: null });
+});
+
+test("the blockers list every reason it can't merge, not just the first", () => {
+  // The default mock: failing required check, changes requested, 1 of 2 approvals.
+  expect(mergeBlockers(mockOverview())).toEqual([
+    "1 check failing: unit tests.",
+    "A reviewer requested changes.",
+    "It needs 1 more approval.",
+  ]);
+  expect(mergeVerdict(mockOverview()).blockers).toHaveLength(3);
+  expect(mergeBlockers(mockOverview({ is_draft: true, merge_state: "draft", review_decision: null, approvals: 2 }))).toEqual(["It is still a draft.", "1 check failing: unit tests."]);
+  expect(
+    mergeBlockers(
+      mockOverview({
+        mergeable: "conflicting",
+        merge_state: "dirty",
+        review_decision: "review_required",
+        required_approvals: null,
+        checks: [
+          { name: "lint", state: "failed", url: null, required: false },
+          { name: "build", state: "pending", url: null, required: true },
+        ],
+      }),
+    ),
+  ).toEqual([
+    "It has merge conflicts with the base branch.",
+    "1 check failing (not required): lint.",
+    "1 required check still running: build.",
+    "It is waiting for a required review.",
+  ]);
+  expect(mergeBlockers(mockOverview({ state: "merged" }))).toEqual([]);
+  expect(mergeVerdict(mockOverview({ merge_state: "clean", review_decision: "approved", approvals: 2, checks: [] })).blockers).toEqual([]);
+});
+
+test("a direct merge is offered only when it can merge now and no auto-merge is set", () => {
+  const ready: Parameters<typeof mockOverview>[0] = { merge_state: "clean", review_decision: "approved", approvals: 2, checks: [] };
+  expect(canMergeNow(mockOverview(ready))).toBe(true);
+  expect(canMergeNow(mockOverview())).toBe(false);
+  expect(canMergeNow(mockOverview({ ...ready, auto_merge: { method: "squash", enabled_by: "ada", enabled_at: null } }))).toBe(false);
+  expect(canMergeNow(mockOverview({ ...ready, merge_settings: { auto_merge_allowed: true, squash: false, merge: false, rebase: false } }))).toBe(false);
 });

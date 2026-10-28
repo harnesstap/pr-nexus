@@ -27,7 +27,7 @@ export function mockOverview(overrides: Partial<PrOverview> = {}): PrOverview {
       { kind: "team", login: "acme/web", name: "Web", avatar_url: null, state: "pending" },
     ],
     author: { kind: "user", login: "ada", name: "Ada Acme", avatar_url: null },
-    assignees: [{ kind: "user", login: "ada", name: "Ada Acme", avatar_url: null }],
+    assignees: [{ kind: "user", login: "noor", name: "Noor Acme", avatar_url: null }],
     commenters: [
       { kind: "user", login: "kim", name: "Kim Lee", avatar_url: null },
       { kind: "user", login: "lee", name: "Lee Ng", avatar_url: null },

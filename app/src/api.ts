@@ -555,7 +555,8 @@ export interface Api {
   /** `#term` channels, `@term` members, a bare term both; scoped to one workspace. */
   /** Searches every enabled workspace in priority order; merged and labeled. */
   searchSlackTargets(query: string): Promise<TargetMatch[]>;
-  sendReview(prId: number, target: ReviewTarget, teams: string[]): Promise<SlackIndicator>;
+  /** `note` is appended after a blank line; see `withNote`. */
+  sendReview(prId: number, target: ReviewTarget, teams: string[], note?: string): Promise<SlackIndicator>;
   bulkPreview(request: BulkRequest): Promise<BulkPreview>;
   sendBulk(request: BulkRequest, fingerprints: string[]): Promise<BulkResult>;
   importMapping(csv: string, workspace: string): Promise<{ rows: number }>;
@@ -603,6 +604,8 @@ export interface Api {
   setAutoMerge(id: number, method: MergeMethod | null): Promise<PrOverview>;
   /** Converts to a draft (`true`) or marks ready for review (`false`); returns the fresh overview. */
   setPrDraft(id: number, draft: boolean): Promise<PrOverview>;
+  /** Merges now with `method`; irreversible, so the UI confirms first. Returns the fresh overview. */
+  mergePr(id: number, method: MergeMethod): Promise<PrOverview>;
   prSlackContext(prId: number, refresh: boolean): Promise<ContextThread[]>;
   prSlackMentions(prId: number): Promise<MentionGroup[]>;
   saveSlackMentions(scope: MentionsScope): Promise<void>;
@@ -646,7 +649,7 @@ export const tauriApi: Api = {
   reviewTargets: (prId, teams) => invoke("review_targets", { prId, teams }),
   reviewPreview: (prId, target) => invoke("review_preview", { prId, target }),
   searchSlackTargets: (query) => invoke("slack_search_targets", { query }),
-  sendReview: (prId, target, teams) => invoke("send_review", { prId, target, teams }),
+  sendReview: (prId, target, teams, note) => invoke("send_review", { prId, target, teams, note: note?.trim() ? note : null }),
   bulkPreview: (request) => invoke("bulk_preview", { request }),
   sendBulk: (request, fingerprints) => invoke("send_bulk", { request, fingerprints }),
   importMapping: (csv, workspace) => invoke("import_mapping", { csv, workspace }),
@@ -693,6 +696,7 @@ export const tauriApi: Api = {
   prOverview: (id, refresh) => invoke("pr_overview", { id, refresh }),
   setAutoMerge: (id, method) => invoke("set_auto_merge", { id, method }),
   setPrDraft: (id, draft) => invoke("set_pr_draft", { id, draft }),
+  mergePr: (id, method) => invoke("merge_pr", { id, method }),
   prSlackContext: (prId, refresh) => invoke("pr_slack_context", { prId, refresh }),
   prSlackMentions: (prId) => invoke("pr_slack_mentions", { prId }),
   saveSlackMentions: (scope) => invoke("save_slack_mentions", { scope }),

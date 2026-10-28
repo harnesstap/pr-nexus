@@ -100,6 +100,19 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
     };
   }, [api, row.id]);
 
+  // The minimum time between bumps, from settings (0 = no limit).
+  const [minBumpHours, setMinBumpHours] = useState(0);
+  useEffect(() => {
+    let live = true;
+    api
+      .loadPreferences()
+      .then((prefs) => live && setMinBumpHours(prefs.min_bump_interval_hours))
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [api]);
+
   // Esc closes the panel before the list sees it (the list clears its selection on Esc).
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
@@ -236,17 +249,22 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
                 >
                   <div tabIndex={0} className="min-w-0 flex-1 outline-none">
                     <p className={`font-medium ${TONE_TEXT[verdict.tone]}`}>{verdict.title}</p>
-                    <p className="text-xs text-slate-400">{verdict.reason}</p>
+                    {verdict.blockers.length > 1 ? (
+                      <ul aria-label="What's in the way" className="mt-0.5 list-disc space-y-0.5 pl-4 text-xs text-slate-400">
+                        {verdict.blockers.map((blocker) => (
+                          <li key={blocker}>{blocker}</li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="text-xs text-slate-400">{verdict.reason}</p>
+                    )}
                   </div>
                 </Tooltip>
-                {overview.state === "open" && overview.is_draft && (
-                  <DraftAction view={draft} busy={flipping} onClick={() => void toggleDraft()} />
-                )}
                 {overview.state === "open" && <AutoMerge api={api} prId={row.id} overview={overview} onChange={setOverview} onNotice={onNotice} />}
               </div>
             )}
             {/* The one primary action, right under "can I merge": asking for review is what unblocks it. */}
-            <SlackLine api={api} prId={row.id} onOpen={onOpen} onRequest={onRequestReview} workspaces={slack?.workspaces} />
+            <SlackLine api={api} prId={row.id} minBumpHours={minBumpHours} onOpen={onOpen} onRequest={onRequestReview} workspaces={slack?.workspaces} />
             {overviewError && <p className="text-xs text-amber-200">Showing the copy from {ago(overview.fetched_at, new Date())}; refreshing failed: {overviewError}</p>}
             <PeopleRow
               groups={peopleGroups(overview, detail ? requiredSeats(overview.reviewers, detail.mandatory_teams, detail.approved_teams) : [])}
@@ -254,7 +272,7 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
             />
           </>
         )}
-        {!overview && <SlackLine api={api} prId={row.id} onOpen={onOpen} onRequest={onRequestReview} workspaces={slack?.workspaces} />}
+        {!overview && <SlackLine api={api} prId={row.id} minBumpHours={minBumpHours} onOpen={onOpen} onRequest={onRequestReview} workspaces={slack?.workspaces} />}
         <div>
           <Expander title={`Files changed (${files})`} aside={detail?.codeowners_path ? "with code owners" : undefined}>
             <FilesBody detail={detail} error={detailError} />
@@ -298,6 +316,8 @@ function StatePill({ state, draft, busy, onToggle }: { state: string; draft: Dra
       className={`${look} inline-flex items-center gap-1 enabled:hover:ring-2 disabled:cursor-default`}
     >
       {busy ? "Saving…" : pill.label}
+      {/* While a draft, the pill says what clicking does: it is the one ready action. */}
+      {state === "draft" && !busy && draft.available && <span className="border-l border-slate-500/50 pl-1 text-amber-200">Mark ready</span>}
       <span aria-hidden="true" className="text-[9px] opacity-60">⇄</span>
     </button>
   );
@@ -313,30 +333,6 @@ function StatePill({ state, draft, busy, onToggle }: { state: string; draft: Dra
   return (
     <Tooltip label={draft.action} detail={draft.draft ? "Reviewers get notified and it can merge" : "Hides it from merging until you mark it ready again"} align="start">
       {button}
-    </Tooltip>
-  );
-}
-
-function DraftAction({ view, busy, onClick }: { view: DraftView; busy: boolean; onClick: () => void }) {
-  const button = (
-    <button
-      type="button"
-      disabled={!view.available || busy}
-      onClick={onClick}
-      className="rounded-md border border-amber-400/50 bg-amber-500/10 px-2.5 py-1 text-xs font-medium text-amber-100 enabled:hover:bg-amber-500/20 disabled:border-slate-700 disabled:bg-slate-800 disabled:text-slate-500"
-    >
-      {busy ? "Saving…" : "Mark ready for review"}
-    </button>
-  );
-  return view.available ? (
-    <Tooltip label="Mark ready for review" detail="Leaves draft so reviewers are notified and it can merge" side="top" align="end">
-      {button}
-    </Tooltip>
-  ) : (
-    <Tooltip label="Can't mark ready" detail={view.reason ?? undefined} side="top" align="end">
-      <span tabIndex={0} className="inline-flex rounded-md outline-none focus-visible:ring-2 focus-visible:ring-violet-400">
-        {button}
-      </span>
     </Tooltip>
   );
 }

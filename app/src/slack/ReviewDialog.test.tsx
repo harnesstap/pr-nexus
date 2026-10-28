@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { expect, test } from "vitest";
 import type { Api, ListRow, PrDetail, ReviewPreview, ReviewTarget, SlackIndicator, TargetChoice } from "../api";
-import { ReviewDialog } from "./ReviewDialog";
+import { ReviewDialog, withNote } from "./ReviewDialog";
 
 const row = {
   id: 7,
@@ -20,7 +20,7 @@ const mapped: TargetChoice = {
 };
 
 function fake(overrides: Partial<Api> = {}) {
-  const calls = { targets: [] as string[][], sent: [] as [ReviewTarget, string[]][] };
+  const calls = { targets: [] as string[][], sent: [] as [ReviewTarget, string[]][], notes: [] as (string | undefined)[], order: [] as string[] };
   const api = {
     prDetail: () => Promise.resolve(detail),
     slackWorkspaces: () => Promise.resolve([{ id: 3, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false, team_id: "T0ACME0001", enabled: true, priority: 0 }]),
@@ -39,8 +39,10 @@ function fake(overrides: Partial<Api> = {}) {
         permalink: null,
         broadcast: true,
       }),
-    sendReview: (_id: number, target: ReviewTarget, teams: string[]): Promise<SlackIndicator> => {
+    sendReview: (_id: number, target: ReviewTarget, teams: string[], note?: string): Promise<SlackIndicator> => {
       calls.sent.push([target, teams]);
+      calls.notes.push(note);
+      calls.order.push("send");
       return Promise.resolve({
         requested_at: "2026-10-26T12:00:00Z",
         last_bumped_at: null,
@@ -52,6 +54,10 @@ function fake(overrides: Partial<Api> = {}) {
         root_ts: "1.0",
         source: "app",
       });
+    },
+    setPrDraft: (_id: number, draft: boolean) => {
+      calls.order.push(`draft:${draft}`);
+      return Promise.resolve({});
     },
     ...overrides,
   } as unknown as Api;
@@ -141,4 +147,68 @@ test("a searched member replaces the mapped channel and the request keeps the PR
   fireEvent.click(screen.getByRole("button", { name: "Send request" }));
   await waitFor(() => expect(calls.sent).toHaveLength(1));
   expect(calls.sent[0]).toEqual([{ workspace: "acme", channel_id: "U0ACME0002", channel_name: "Grace Hopper" }, ["@acme/platform"]]);
+});
+
+const draftRow = { ...row, state: "open", is_draft: true } as ListRow;
+
+test("a draft PR warns and offers to mark it ready before requesting", async () => {
+  const { api, calls } = fake();
+  const ready: number[] = [];
+  const sent: SlackIndicator[] = [];
+  render(<ReviewDialog api={api} row={draftRow} onClose={() => undefined} onOpen={() => undefined} onReady={(id) => ready.push(id)} onSent={(item) => sent.push(item)} />);
+  await screen.findByLabelText("Message preview");
+  expect(screen.getByRole("note")).toHaveTextContent("This PR is still a draft");
+  expect(screen.getByRole("button", { name: "Request anyway" })).toBeEnabled();
+  fireEvent.click(screen.getByRole("button", { name: "Mark ready and request" }));
+  await waitFor(() => expect(sent).toHaveLength(1));
+  expect(calls.order).toEqual(["draft:false", "send"]);
+  expect(ready).toEqual([7]);
+});
+
+test("if marking ready fails, nothing is sent", async () => {
+  const { api, calls } = fake({ setPrDraft: () => Promise.reject(new Error("no access")) });
+  render(<ReviewDialog api={api} row={draftRow} onClose={() => undefined} onOpen={() => undefined} onSent={() => undefined} />);
+  await screen.findByLabelText("Message preview");
+  fireEvent.click(screen.getByRole("button", { name: "Mark ready and request" }));
+  expect(await screen.findByText(/Couldn't mark it ready, so nothing was sent: no access/)).toBeInTheDocument();
+  expect(calls.sent).toEqual([]);
+});
+
+test("the preview renders like Slack and shows the optional note, which is sent", async () => {
+  const opened: string[] = [];
+  const { api, calls } = fake({
+    reviewPreview: (_id, target) =>
+      Promise.resolve({
+        target,
+        action: "request",
+        text: "Hello team\nCould someone please review *Add passkeys*? :pray:\n<https://github.com/acme/widgets/pull/42|acme/widgets#42>\n",
+        warnings: [],
+        signed_in: true,
+        bump_count: 0,
+        permalink: null,
+        broadcast: true,
+      }),
+  });
+  render(<ReviewDialog api={api} row={row} onClose={() => undefined} onOpen={(url) => opened.push(url)} onSent={() => undefined} />);
+  const preview = await screen.findByLabelText("Message preview");
+  expect(preview.querySelector("strong")?.textContent).toBe("Add passkeys");
+  expect(preview.textContent).toContain("🙏");
+  expect(preview.textContent).not.toContain(":pray:");
+  fireEvent.click(screen.getByRole("link", { name: "acme/widgets#42" }));
+  expect(opened).toEqual(["https://github.com/acme/widgets/pull/42"]);
+
+  const note = screen.getByRole("textbox", { name: "Note" });
+  expect(note).toHaveAttribute("spellcheck", "false");
+  expect(note).toHaveAttribute("autocorrect", "off");
+  expect(note).toHaveAttribute("autocapitalize", "off");
+  fireEvent.change(note, { target: { value: "  Start with the _login_ flow  " } });
+  expect(preview.lastElementChild?.textContent).toBe("Start with the login flow");
+  expect(preview.querySelector("em")?.textContent).toBe("login");
+  fireEvent.click(screen.getByRole("button", { name: "Send request" }));
+  await waitFor(() => expect(calls.notes).toEqual(["  Start with the _login_ flow  "]));
+});
+
+test("withNote mirrors the backend: blank line, trimmed, blank ignored", () => {
+  expect(withNote("Hello\n", "  hi  ")).toBe("Hello\n\nhi\n");
+  expect(withNote("Hello\n", "   ")).toBe("Hello\n");
 });

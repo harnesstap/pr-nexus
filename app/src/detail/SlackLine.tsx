@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { Api, ContextThread, SlackWorkspace } from "../api";
 import { channelLabel, errorMessage } from "../api";
 import { SlackIcon } from "../icons";
+import { ago } from "../list/model";
 import { shortTime, slackText } from "../list/slackText";
 import { slackActionBlock } from "../list/SyncBanners";
 import { Tooltip } from "../Tooltip";
@@ -9,6 +10,8 @@ import { Tooltip } from "../Tooltip";
 interface Props {
   api: Api;
   prId: number;
+  /** Settings → minimum hours between bumps; 0 means no limit. */
+  minBumpHours?: number;
   onOpen: (url: string) => void;
   /** Opens the request or bump preview. */
   onRequest?: () => void;
@@ -26,12 +29,39 @@ export function latestThread(threads: ContextThread[]): ContextThread | null {
   );
 }
 
+export interface BumpView {
+  /** "6h ago": the last bump, or the request when never bumped. */
+  last: string | null;
+  /** Set when the minimum interval hasn't passed: why Bump is disabled. */
+  tooSoon: string | null;
+}
+
+/** When the thread was last poked, and whether the settings allow another bump yet. */
+export function bumpView(thread: Pick<ContextThread, "last_bumped_at" | "requested_at">, minHours: number, now: Date): BumpView {
+  const at = thread.last_bumped_at ?? thread.requested_at;
+  if (!at) {
+    return { last: null, tooSoon: null };
+  }
+  const elapsed = (now.getTime() - new Date(at).getTime()) / 3_600_000;
+  if (minHours <= 0 || elapsed >= minHours) {
+    return { last: ago(at, now), tooSoon: null };
+  }
+  const wait = Math.max(1, Math.ceil(minHours - elapsed));
+  return {
+    last: ago(at, now),
+    tooSoon: `Settings allow one bump every ${minHours}h. Try again in about ${wait}h.`,
+  };
+}
+
+/** Secondary card actions share one look so "Open" and "Bump" sit as a pair. */
+const SECONDARY = "flex items-center gap-1 rounded-md border border-slate-700 px-2.5 py-1 font-medium text-slate-200 hover:bg-slate-800";
+
 /**
  * The panel's Slack action (§7.10): one big "Request review on Slack" button until a
  * request exists, then the latest request with its newest replies and a Bump button.
  * Both open the preview, where another channel can still get a new request.
  */
-export function SlackLine({ api, prId, onOpen, onRequest, workspaces = [] }: Props) {
+export function SlackLine({ api, prId, minBumpHours = 0, onOpen, onRequest, workspaces = [] }: Props) {
   const [threads, setThreads] = useState<ContextThread[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -76,6 +106,19 @@ export function SlackLine({ api, prId, onOpen, onRequest, workspaces = [] }: Pro
     );
   }
   const [root, ...replies] = thread.messages;
+  const bump = bumpView(thread, minBumpHours, new Date());
+  const bumpLabel = bump.last ? `Bump · last ${bump.last}` : "Bump";
+  const bumpButton = (
+    <button
+      type="button"
+      disabled={blocked !== null || bump.tooSoon !== null}
+      onClick={onRequest}
+      className="flex items-center gap-1.5 rounded-md bg-violet-600 px-2.5 py-1 font-medium text-white enabled:hover:bg-violet-500 disabled:bg-slate-800 disabled:text-slate-500"
+    >
+      <SlackIcon size={12} />
+      {bumpLabel}
+    </button>
+  );
   const shown = replies.slice(-MAX_REPLIES);
   const more = replies.length - shown.length;
   return (
@@ -91,18 +134,27 @@ export function SlackLine({ api, prId, onOpen, onRequest, workspaces = [] }: Pro
         </span>
         <span className="ml-auto flex shrink-0 items-center gap-2">
           {thread.permalink && (
-            <button type="button" className="text-violet-300 hover:underline" onClick={() => onOpen(thread.permalink ?? "")}>
-              Open ↗
+            <button type="button" className={SECONDARY} onClick={() => onOpen(thread.permalink ?? "")}>
+              Open in Slack ↗
             </button>
           )}
-          {onRequest && (
-            <Tooltip label={blocked ?? "Bump on Slack"} shortcut="R" detail={blocked ? "Reconnect it in Settings › Accounts" : "Preview the bump first; pick another channel there to send a new request instead"} side="bottom" align="end">
-              <button type="button" onClick={onRequest} disabled={blocked !== null} className="flex items-center gap-1.5 rounded-md bg-violet-600 px-2.5 py-1 font-medium text-white hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-50">
-                <SlackIcon size={12} />
-                Bump
-              </button>
-            </Tooltip>
-          )}
+          {onRequest &&
+            (blocked !== null || bump.tooSoon !== null ? (
+              <Tooltip
+                label={blocked ?? "Too soon to bump"}
+                detail={blocked ? "Reconnect it in Settings › Accounts" : bump.tooSoon ?? undefined}
+                side="bottom"
+                align="end"
+              >
+                <span tabIndex={0} data-testid="bump-disabled" className="inline-flex rounded-md outline-none focus-visible:ring-2 focus-visible:ring-violet-400">
+                  {bumpButton}
+                </span>
+              </Tooltip>
+            ) : (
+              <Tooltip label="Bump on Slack" shortcut="R" detail="Preview the bump first; pick another channel there to send a new request instead" side="bottom" align="end">
+                {bumpButton}
+              </Tooltip>
+            ))}
         </span>
       </header>
       {thread.error && <p className="mt-1 text-amber-200">{thread.error}</p>}

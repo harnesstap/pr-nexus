@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { ReviewTarget, SlackWorkspace, TargetChoice, TargetMatch } from "../api";
-import { parseQuery, SEARCH_DEBOUNCE_MS, TargetCombobox } from "./TargetCombobox";
+import { parseQuery, rankMatches, SEARCH_DEBOUNCE_MS, TargetCombobox } from "./TargetCombobox";
 
 const acme: SlackWorkspace = { id: 1, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false, team_id: "T0ACME0001", enabled: true, priority: 0 };
 const labs: SlackWorkspace = { id: 2, team_name: "Acme Labs", domain: "acme-labs", user_name: "ada", signed_in: true, needs_sign_in: false, team_id: "T0ACME0002", enabled: true, priority: 1 };
@@ -137,11 +137,14 @@ test("one search covers every enabled workspace and labels each result", async (
   expect(screen.queryByRole("combobox", { name: "Workspace" })).not.toBeInTheDocument();
   await type(box, "#plat");
   expect(calls).toEqual(["#plat"]);
-  const options = within(screen.getByRole("listbox")).getAllByRole("option");
+  const list = screen.getByRole("listbox");
+  const options = within(list).getAllByRole("option");
   expect(options).toHaveLength(4);
-  expect(options[0]).toHaveTextContent("#platformAcme");
-  expect(options[1]).toHaveTextContent("#platformAcme Labs");
-  fireEvent.click(options[1]);
+  // Grouped under one header per workspace, never two bare "Channels" headers.
+  const headers = [...list.querySelectorAll('[role="presentation"]')].map((item) => item.textContent);
+  expect(headers).toEqual(["Channels · Acme", "Channels · Acme Labs"]);
+  expect(options.map((item) => item.textContent)).toEqual(["#platform", "#platform-alerts", "#platform", "#platform-alerts"]);
+  fireEvent.click(options[2]);
   expect(picked[0][0]).toMatchObject({ team_id: "T0ACME0002", workspace_name: "Acme Labs", channel_name: "platform" });
 });
 
@@ -181,4 +184,28 @@ test("the helper line explains the prefixes", () => {
   const { box } = setup();
   const help = document.getElementById(box.getAttribute("aria-describedby")!);
   expect(help).toHaveTextContent("Type # to search channels or @ to search people; a person gets a direct message.");
+});
+
+const match = (kind: TargetMatch["kind"], name: string, workspace = "acme"): TargetMatch => ({ kind, target: { workspace, channel_id: `${kind}-${name}-${workspace}`, channel_name: name } });
+
+test("@ ranks people first, # and bare terms rank channels first, and prefix matches lead", () => {
+  const all = [match("channel", "grace-team"), match("member", "Ada Grace"), match("channel", "eng-grace"), match("member", "Grace Hopper")];
+  const names = (query: string) => rankMatches(all, query, ["acme"]).map((item) => `${item.kind}:${item.target.channel_name}`);
+  expect(names("@grace")).toEqual(["member:Grace Hopper", "member:Ada Grace", "channel:grace-team", "channel:eng-grace"]);
+  expect(names("#grace")).toEqual(["channel:grace-team", "channel:eng-grace", "member:Grace Hopper", "member:Ada Grace"]);
+  expect(names("grace")).toEqual(["channel:grace-team", "channel:eng-grace", "member:Grace Hopper", "member:Ada Grace"]);
+});
+
+test("results follow workspace priority within each kind", () => {
+  const all = [match("channel", "web", "acme-labs"), match("channel", "web", "acme"), match("member", "Web Bot", "acme-labs")];
+  expect(rankMatches(all, "#web", ["acme", "acme-labs"]).map((item) => `${item.kind}:${item.target.workspace}`)).toEqual(["channel:acme", "channel:acme-labs", "member:acme-labs"]);
+});
+
+test("the dropdown is height-limited and people searched with @ come first across workspaces", async () => {
+  const { box } = setup({ workspaces: [acme, labs], suggestions: [] });
+  await type(box, "@gra");
+  const list = screen.getByRole("listbox");
+  expect(list.className).toContain("max-h-60");
+  const headers = [...list.querySelectorAll('[role="presentation"]')].map((item) => item.textContent);
+  expect(headers).toEqual(["People · direct message · Acme", "People · direct message · Acme Labs"]);
 });

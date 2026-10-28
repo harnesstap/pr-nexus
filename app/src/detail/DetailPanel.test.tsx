@@ -3,7 +3,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import type { Api, ContextThread, ListRow, PrOverview } from "../api";
 import { DetailPanel, WIDTH_KEY, clampWidth } from "./DetailPanel";
 import { mockDetail, mockOverview } from "./mock";
-import { latestThread } from "./SlackLine";
+import { bumpView, latestThread } from "./SlackLine";
 import { draftView } from "./draft";
 import { peopleGroups, PeopleRow, personLine, requiredSeats } from "./People";
 
@@ -53,6 +53,8 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
     prSlackContext: vi.fn(() => Promise.resolve([])),
     setAutoMerge: vi.fn(() => Promise.resolve(mockOverview())),
     setPrDraft: vi.fn((_id: number, draft: boolean) => Promise.resolve(mockOverview({ is_draft: draft }))),
+    mergePr: vi.fn(() => Promise.resolve(mockOverview({ state: "merged" }))),
+    loadPreferences: vi.fn(() => Promise.resolve({ min_bump_interval_hours: 0 })),
     ...overrides,
   } as unknown as Api;
 }
@@ -80,7 +82,13 @@ test("shows a skeleton, then the cards, verdict and people from the overview", a
   expect(screen.getByLabelText("Approvals: 1/2, Changes requested")).toBeTruthy();
   const verdict = screen.getByTestId("merge-verdict");
   expect(within(verdict).getByText("You can't merge")).toBeTruthy();
-  expect(within(verdict).getByText("A reviewer requested changes.")).toBeTruthy();
+  // Every blocker is listed, not just the first.
+  expect(within(within(verdict).getByRole("list", { name: "What's in the way" })).getAllByRole("listitem").map((item) => item.textContent)).toEqual([
+    "1 check failing: unit tests.",
+    "A reviewer requested changes.",
+    "It needs 1 more approval.",
+  ]);
+  expect(screen.getByLabelText(/^Conflicts: None/)).toBeTruthy();
   const reviewers = screen.getByRole("group", { name: "Reviewers" });
   expect(reviewers.querySelectorAll("[data-login]")).toHaveLength(3);
   expect(reviewers.querySelector('[data-state="changes_requested"]')?.getAttribute("data-login")).toBe("sam");
@@ -141,11 +149,11 @@ test("an existing request shows its summary with a Bump button in the same spot"
   const { onRequestReview } = renderPanel(api);
   const region = await screen.findByRole("region", { name: "Slack request" });
   expect(screen.queryByTestId("slack-empty")).toBeNull();
-  fireEvent.click(within(region).getByRole("button", { name: "Bump" }));
+  fireEvent.click(within(region).getByRole("button", { name: /^Bump/ }));
   expect(onRequestReview).toHaveBeenCalled();
 });
 
-test("the state pill and the draft box flip draft and ready, optimistically", async () => {
+test("the state pill is the one ready action and flips draft and ready, optimistically", async () => {
   let finish: (value: PrOverview) => void = () => undefined;
   const api = fakeApi({
     prOverview: vi.fn(() => Promise.resolve(mockOverview({ is_draft: true, merge_state: "draft" }))),
@@ -154,8 +162,12 @@ test("the state pill and the draft box flip draft and ready, optimistically", as
   const onDraftChange = vi.fn();
   const { onNotice } = renderPanel(api, { onDraftChange });
   const verdict = await screen.findByTestId("merge-verdict");
-  expect(within(verdict).getByText("It is still a draft. Mark it ready for review first.")).toBeTruthy();
-  fireEvent.click(within(verdict).getByRole("button", { name: "Mark ready for review" }));
+  expect(within(verdict).getByText("It is still a draft.")).toBeTruthy();
+  // No second "Mark ready" button: the pill says it and does it.
+  expect(within(verdict).queryByRole("button", { name: /ready/i })).toBeNull();
+  const pill = screen.getByTestId("state-pill");
+  expect(pill.textContent).toContain("Mark ready");
+  fireEvent.click(pill);
   expect(api.setPrDraft).toHaveBeenCalledWith(7, false);
   expect(onDraftChange).toHaveBeenCalledWith(7, false);
   expect(screen.getByTestId("state-pill").textContent).toContain("Saving");
@@ -351,4 +363,71 @@ test("bots keep their marker; groups past four avatars fold into +N", () => {
   render(<PeopleRow groups={[{ key: "commenters", label: "Commenters", people: [{ kind: "bot", login: "ci-bot", name: null, avatar_url: null }, ...many] }]} />);
   expect(screen.getByTestId("commenters-more").textContent).toBe("+3");
   expect(personLine({ kind: "bot", login: "ci-bot", name: null, avatar_url: null })).toBe("@ci-bot · bot");
+});
+
+const mergeable = () => mockOverview({ merge_state: "clean", review_decision: "approved", approvals: 2, checks: [] });
+
+test("when it can merge now, Merge asks to confirm, then merges with the chosen method", async () => {
+  const api = fakeApi({ prOverview: vi.fn(() => Promise.resolve(mergeable())) });
+  const { onNotice } = renderPanel(api);
+  const verdict = await screen.findByTestId("merge-verdict");
+  expect(within(verdict).getByText("You can merge")).toBeTruthy();
+  fireEvent.change(within(verdict).getByRole("combobox", { name: "Merge method" }), { target: { value: "merge" } });
+  fireEvent.click(within(verdict).getByRole("button", { name: "Merge" }));
+  // The first click only asks.
+  expect(api.mergePr).not.toHaveBeenCalled();
+  const confirm = within(verdict).getByRole("group", { name: "Confirm merge" });
+  expect(confirm.textContent).toContain("Merge commit now?");
+  fireEvent.click(within(confirm).getByRole("button", { name: "Cancel" }));
+  expect(within(verdict).queryByRole("group", { name: "Confirm merge" })).toBeNull();
+  fireEvent.click(within(verdict).getByRole("button", { name: "Merge" }));
+  fireEvent.click(within(verdict).getByRole("button", { name: "Confirm merge" }));
+  await waitFor(() => expect(api.mergePr).toHaveBeenCalledWith(7, "merge"));
+  await waitFor(() => expect(onNotice).toHaveBeenCalledWith("Merged: merge commit done."));
+  expect(within(verdict).queryByRole("button", { name: "Merge" })).toBeNull();
+});
+
+test("no Merge button while something blocks it, and merge errors become a toast", async () => {
+  renderPanel(fakeApi());
+  const verdict = await screen.findByTestId("merge-verdict");
+  expect(within(verdict).queryByRole("button", { name: "Merge" })).toBeNull();
+
+  document.body.innerHTML = "";
+  const failing = fakeApi({ prOverview: vi.fn(() => Promise.resolve(mergeable())), mergePr: vi.fn(() => Promise.reject(new Error("Base branch was modified"))) });
+  const { onNotice } = renderPanel(failing);
+  fireEvent.click(await screen.findByRole("button", { name: "Merge" }));
+  fireEvent.click(screen.getByRole("button", { name: "Confirm merge" }));
+  await waitFor(() => expect(onNotice).toHaveBeenCalledWith("Could not merge: Base branch was modified"));
+});
+
+test("Bump says when it was last poked and waits for the minimum interval from settings", async () => {
+  const recent = { ...thread, last_bumped_at: new Date(Date.now() - 2 * 3_600_000).toISOString() };
+  const api = fakeApi({
+    prSlackContext: vi.fn(() => Promise.resolve([recent])),
+    loadPreferences: vi.fn(() => Promise.resolve({ min_bump_interval_hours: 6 })),
+  } as unknown as Partial<Api>);
+  const { onRequestReview } = renderPanel(api);
+  const region = await screen.findByRole("region", { name: "Slack request" });
+  const bump = within(region).getByRole("button", { name: "Bump · last 2h ago" }) as HTMLButtonElement;
+  await waitFor(() => expect(bump.disabled).toBe(true));
+  fireEvent.click(bump);
+  expect(onRequestReview).not.toHaveBeenCalled();
+  fireEvent.focus(screen.getByTestId("bump-disabled"));
+  expect(await screen.findByText(/one bump every 6h\. Try again in about 4h/)).toBeTruthy();
+  expect(within(region).getByRole("button", { name: "Open in Slack ↗" })).toBeTruthy();
+});
+
+test("bumpView: no limit, too soon, and never requested", () => {
+  const now = new Date("2024-01-01T12:00:00Z");
+  expect(bumpView({ last_bumped_at: null, requested_at: "2024-01-01T06:00:00Z" }, 0, now)).toEqual({ last: "6h ago", tooSoon: null });
+  expect(bumpView({ last_bumped_at: "2024-01-01T11:00:00Z", requested_at: "2024-01-01T06:00:00Z" }, 24, now).tooSoon).toMatch(/about 23h/);
+  expect(bumpView({ last_bumped_at: "2024-01-01T11:00:00Z", requested_at: null }, 1, now).tooSoon).toBeNull();
+  expect(bumpView({ last_bumped_at: null, requested_at: null }, 6, now)).toEqual({ last: null, tooSoon: null });
+});
+
+test("people groups: the viewer is hidden from assignees too", () => {
+  const overview = mockOverview({ assignees: [user("ada"), user("noor")] });
+  const byKey = Object.fromEntries(peopleGroups(overview).map((group) => [group.key, group.people.map((person) => person.login)]));
+  expect(byKey.assignees).toEqual(["noor"]);
+  expect(peopleGroups(mockOverview({ assignees: [user("ADA")] })).map((group) => group.key)).not.toContain("assignees");
 });

@@ -1,4 +1,4 @@
-import type { Bootstrap, ContextThread, PendingReviewer, PrOverview, ProjectDto, SlackIndicator } from "../api";
+import type { Bootstrap, ContextThread, PendingReviewer, PrOverview, ProjectDto, ReviewTarget, SlackIndicator, TargetChoice, TargetMatch } from "../api";
 import { mockDetail, mockOverview } from "../detail/mock";
 import type { SearchRow } from "../list/paging";
 
@@ -101,7 +101,10 @@ export const boot: Bootstrap = {
   slack_client_id: "",
   slack_redirect_uri: "http://127.0.0.1:47821/mcp/oauth/callback",
   slack_secret_saved: true,
-  slack_workspaces: [{ id: 1, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false, team_id: "T0ACME0001", enabled: true, priority: 0 }],
+  slack_workspaces: [
+    { id: 1, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false, team_id: "T0ACME0001", enabled: true, priority: 0 },
+    { id: 2, team_name: "Acme Labs", domain: "acme-labs", user_name: "ada", signed_in: true, needs_sign_in: false, team_id: "T0ACME0002", enabled: true, priority: 1 },
+  ],
   slack_mentions: "off",
   bump_broadcast: true,
   mapping_count: 12,
@@ -199,3 +202,47 @@ export const slackThreads: ContextThread[] = [
     error: null,
   },
 ];
+
+/** #482 above: approved, green and clean, so it can merge now. */
+export const mergeableRowId = 1;
+
+export const mergeableOverview: PrOverview = {
+  ...overview,
+  head_ref: "feature/482",
+  merge_state: "clean",
+  review_decision: "approved",
+  approvals: 2,
+  required_approvals: 2,
+  checks: overview.checks.map((check) => ({ ...check, state: "passed" })),
+  reviewers: [
+    { ...people.kim, state: "approved" },
+    { ...people.sam, state: "approved" },
+  ],
+};
+
+const webReviews: ReviewTarget = { workspace: "acme", team_id: "T0ACME0001", workspace_name: "Acme", channel_id: "C0ACME0001", channel_name: "web-reviews" };
+
+/** The code-owner channel the review dialog suggests. */
+export const reviewChoices: TargetChoice[] = [{ target: webReviews, teams: ["@acme/web"], source: "mapping" }];
+
+/** The request text as the backend renders it (Slack mrkdwn). */
+export function reviewText(title: string, url: string): string {
+  return `Hello team\nCould someone please review *${title}*? (Ada Park) :pray:\n<${url}|${url.replace("https://github.com/", "")}>\nThanks! :rocket:`;
+}
+
+const labs = (target: ReviewTarget): ReviewTarget => ({ ...target, workspace: "acme-labs", team_id: "T0ACME0002", workspace_name: "Acme Labs", channel_id: `${target.channel_id}L` });
+const directory: TargetMatch[] = [
+  { kind: "channel", target: webReviews },
+  { kind: "channel", target: { ...webReviews, channel_id: "C0ACME0005", channel_name: "web" } },
+  { kind: "channel", target: { ...webReviews, channel_id: "C0ACME0006", channel_name: "frontend-web" } },
+  { kind: "member", target: { ...webReviews, channel_id: "U0ACME0007", channel_name: "Webster Lane" } },
+];
+
+/** Search across both workspaces, as the backend merges them. */
+export function searchTargets(query: string): TargetMatch[] {
+  const trimmed = query.trim();
+  const term = trimmed.replace(/^[#@]/, "").toLowerCase();
+  const kinds = trimmed.startsWith("#") ? ["channel"] : trimmed.startsWith("@") ? ["member"] : ["channel", "member"];
+  const hits = directory.filter((item) => kinds.includes(item.kind) && item.target.channel_name.toLowerCase().includes(term));
+  return [...hits, ...hits.map((item) => ({ ...item, target: labs(item.target) }))];
+}

@@ -466,6 +466,14 @@ pub trait VcsProvider: Send + Sync {
     fn set_draft(&self, _pr: &PullRequest, _draft: bool) -> Result<(), ProviderError> {
         Err(crate::overview::unsupported())
     }
+    /// Merges the pull request now with `method`. Irreversible.
+    fn merge_pull_request(
+        &self,
+        _pr: &PullRequest,
+        _method: crate::overview::MergeMethod,
+    ) -> Result<(), ProviderError> {
+        Err(crate::overview::unsupported())
+    }
     fn request_team_review(&self, pr: &PullRequest, teams: &[TeamRef])
     -> Result<(), ProviderError>;
     /// One page of the notifications inbox. Read-only. A token that cannot

@@ -56,7 +56,7 @@ function uniq<T extends Person>(people: T[], skip: (person: T) => boolean = () =
 /**
  * Who is on the pull request, as up to four groups in a fixed order: Author
  * (unless it's the viewer), Reviewers (with pending code-owner seats),
- * Assignees, and Commenters not already shown above nor the viewer.
+ * Assignees other than the viewer, and Commenters not already shown above nor the viewer.
  * Empty groups are left out.
  */
 export function peopleGroups(overview: Pick<PrOverview, "author" | "reviewers" | "assignees" | "commenters" | "viewer">, required: RequiredSeat[] = []): PeopleGroup[] {
@@ -68,7 +68,7 @@ export function peopleGroups(overview: Pick<PrOverview, "author" | "reviewers" |
   const groups: PeopleGroup[] = [
     { key: "author", label: "Author", people: author },
     { key: "reviewers", label: "Reviewers", people: reviewers },
-    { key: "assignees", label: "Assignees", people: uniq(overview.assignees) },
+    { key: "assignees", label: "Assignees", people: uniq(overview.assignees, (person) => viewer !== "" && same(person.login, viewer)) },
     { key: "commenters", label: "Commenters", people: commenters },
   ];
   return groups.filter((group) => group.people.length > 0);

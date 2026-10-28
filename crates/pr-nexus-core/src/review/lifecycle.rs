@@ -183,6 +183,19 @@ pub fn plan(
     })
 }
 
+/// Appends the sender's optional note after the message, separated by a
+/// blank line, to both the stored and the sent text. Blank notes change
+/// nothing. The preview shows the same text before the send.
+pub fn with_note(mut plan: Plan, note: Option<&str>) -> Plan {
+    let Some(note) = note.map(str::trim).filter(|note| !note.is_empty()) else {
+        return plan;
+    };
+    let append = |text: &str| format!("{}\n\n{note}\n", text.trim_end());
+    plan.text = append(&plan.text);
+    plan.wire_text = append(&plan.wire_text);
+    plan
+}
+
 /// §7.6 decision: the M10 read-back check has not run against a live
 /// workspace, so the transform is the identity (what the skill sends) and the
 /// preview warns about Markdown-active titles instead.
@@ -554,6 +567,21 @@ pub(crate) mod tests {
         assert!(has_markdown_chars("1. Title"));
         assert!(has_markdown_chars("- dash"));
         assert!(!has_markdown_chars("Plain title 2.0"));
+    }
+
+    #[test]
+    fn a_note_is_appended_after_a_blank_line_and_blank_notes_are_ignored() {
+        let (_dir, store, pr, _chat) = seed("Tighten the latch");
+        let planned = plan(&store, &pr, target(), None, 24, at(0)).unwrap();
+        let same = with_note(planned.clone(), Some("   "));
+        assert_eq!(same.text, planned.text);
+        let noted = with_note(planned.clone(), Some(" Small one, 5 min \n"));
+        assert!(
+            noted.text.ends_with("Thanks!\n\nSmall one, 5 min\n"),
+            "{}",
+            noted.text
+        );
+        assert_eq!(noted.wire_text, noted.text);
     }
 
     #[test]
