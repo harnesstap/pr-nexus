@@ -3,6 +3,8 @@
 // `bun run screenshot -- --detail <path>` opens #479's detail panel and saves
 // that view to <path> instead; `--draft <path>` opens draft #488, which has
 // no Slack request yet.
+// `--width <px>` sets the viewport width (default 1440); `--out <path>` saves the
+// list view somewhere other than the README asset.
 // Uses an installed Chrome; set CHROME_PATH to pick another Chromium binary.
 import { statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -22,7 +24,17 @@ const detailOut = detailFlag === -1 ? draftOut : process.argv[detailFlag + 1];
 if (detailFlag !== -1 && !detailOut) {
   throw new Error("--detail needs an output path");
 }
-const out = detailOut ? resolve(detailOut) : resolve(appDir, "../docs/assets/screenshot-list.png");
+const widthFlag = process.argv.indexOf("--width");
+const width = widthFlag === -1 ? 1440 : Number(process.argv[widthFlag + 1]);
+if (!Number.isInteger(width) || width < 320) {
+  throw new Error("--width needs a viewport width in px");
+}
+const outFlag = process.argv.indexOf("--out");
+const listOut = outFlag === -1 ? null : process.argv[outFlag + 1];
+if (outFlag !== -1 && !listOut) {
+  throw new Error("--out needs an output path");
+}
+const out = resolve(detailOut ?? listOut ?? resolve(appDir, "../docs/assets/screenshot-list.png"));
 const port = 1430;
 const url = `http://127.0.0.1:${port}/screenshot.html`;
 
@@ -32,7 +44,7 @@ await vite.listen();
 let browser;
 try {
   browser = await chromium.launch(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: "chrome" });
-  const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2, colorScheme: "dark" });
+  const page = await browser.newPage({ viewport: { width, height: 900 }, deviceScaleFactor: 2, colorScheme: "dark" });
   page.on("pageerror", (err) => console.error("page error:", err.message));
   await page.goto(url);
   await page.getByRole("group", { name: "Quick filters" }).waitFor();

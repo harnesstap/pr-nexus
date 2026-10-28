@@ -471,8 +471,8 @@ export function PrList({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <header className="flex items-start justify-between gap-4 px-4 py-3">
-        <div className="shrink-0">
+      <header className="px-4 py-3">
+        <div className="min-w-0">
           {currentProject !== null && editing?.id === currentProject && editing.where === "title" ? (
             <RenameField
               label={`Rename ${viewTitle(viewKey, projects)}`}
@@ -499,8 +499,25 @@ export function PrList({
           {editing?.error && editing.where === "title" && <p className="text-xs text-rose-300">{editing.error}</p>}
           <p className="text-sm text-slate-400">{page ? summaryText(page.summary, viewKey, syncProgress) : (syncProgress ?? "\u00a0")}</p>
         </div>
-        <div className="flex min-w-0 items-center gap-2">
-          <label className="flex w-80 min-w-32 shrink items-center gap-2 rounded-md border border-slate-700 bg-slate-900 px-3 py-1.5 text-sm focus-within:border-violet-400">
+      </header>
+      {/* One toolbar row for every list command: controls share one 32px height and never wrap. Narrow widths
+          (container queries) shrink the search, drop text labels, then the plain PR count, before anything overlaps. */}
+      <div className="@container border-y border-slate-800 px-4 py-2 text-sm text-slate-300">
+        <div role="toolbar" aria-label="List toolbar" className="flex h-8 min-w-0 flex-nowrap items-center gap-2">
+          <TriCheckbox label="Select all" state={global} onToggle={() => setSelected(toggleParent(ids, selected))} />
+          <span className={`shrink-0 whitespace-nowrap ${checkState(ids, selected) === "none" && hidden === 0 ? "hidden @4xl:inline" : ""}`}>{header}</span>
+          {filtersActive(view.filters) && (
+            <button
+              type="button"
+              aria-label="Clear filters"
+              className="flex h-8 shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-2 text-xs text-violet-300 hover:bg-slate-800 hover:text-violet-200"
+              onClick={() => onViewChange(resetFilters(view))}
+            >
+              <CloseIcon />
+              <span className="hidden @3xl:inline">Clear filters</span>
+            </button>
+          )}
+          <label className="ml-auto flex h-8 min-w-28 max-w-md flex-1 items-center gap-2 rounded-md border border-slate-700 bg-slate-900 px-2.5 text-sm focus-within:border-violet-400">
             <SearchIcon className="shrink-0 text-slate-500" />
             <input {...plainText}
               ref={searchRef}
@@ -516,29 +533,14 @@ export function PrList({
               </span>
             )}
           </label>
+          <SortPicker view={view} onViewChange={onViewChange} />
+          <QuickFilters
+            active={view.filters.quick}
+            counts={page?.quick ?? null}
+            onChange={(quick) => onViewChange({ ...view, filters: { ...view.filters, quick } })}
+          />
           <FilterMenu view={view} orgs={page?.orgs ?? []} menu={menu} setMenu={setMenu} onViewChange={onViewChange} />
         </div>
-      </header>
-      <div className="flex flex-wrap items-center gap-2 border-y border-slate-800 px-4 py-2 text-sm text-slate-300">
-        <TriCheckbox label="Select all" state={global} onToggle={() => setSelected(toggleParent(ids, selected))} />
-        <span className="whitespace-nowrap">{header}</span>
-        <span className="flex-1" />
-        {filtersActive(view.filters) && (
-          <button
-            type="button"
-            className="flex h-7 items-center gap-1 whitespace-nowrap rounded-md px-1.5 text-xs text-violet-300 hover:bg-slate-800 hover:text-violet-200"
-            onClick={() => onViewChange(resetFilters(view))}
-          >
-            <CloseIcon />
-            Clear filters
-          </button>
-        )}
-        <SortPicker view={view} onViewChange={onViewChange} />
-        <QuickFilters
-          active={view.filters.quick}
-          counts={page?.quick ?? null}
-          onChange={(quick) => onViewChange({ ...view, filters: { ...view.filters, quick } })}
-        />
       </div>
       <div
         ref={listRef}
@@ -1251,11 +1253,11 @@ const SORT_PICKS: Ordering[] = ["updated", "waiting", "bumped", "created", "slac
 /** Sort order, in the toolbar so "Waiting longest" and "Last bumped" are one click away. */
 function SortPicker({ view, onViewChange }: { view: SavedView; onViewChange: (view: SavedView) => void }) {
   return (
-    <label className="flex h-7 items-center gap-1 rounded-md border border-slate-700 bg-slate-900 pl-2 text-xs text-slate-400 focus-within:border-violet-400">
-      Sort
+    <label className="flex h-8 shrink-0 items-center gap-1 rounded-md border border-slate-700 bg-slate-900 pl-2 text-xs text-slate-400 focus-within:border-violet-400">
+      <span className="hidden @3xl:inline">Sort</span>
       <select
         aria-label="Sort by"
-        className="h-full rounded-md bg-slate-900 pr-1 text-slate-200 outline-none"
+        className="h-full max-w-28 rounded-md @3xl:max-w-40 bg-slate-900 pr-1 text-slate-200 outline-none"
         value={view.ordering}
         onChange={(event) => {
           const ordering = event.target.value as Ordering;
@@ -1349,7 +1351,7 @@ function FilterMenu({
     };
   }, [open, setMenu]);
   return (
-    <div ref={ref} className="relative">
+    <div ref={ref} className="relative shrink-0">
       <Tooltip label="View options" shortcut={hint("filters")} detail="Grouping, ordering, visible columns and filters" align="end">
         <button
           type="button"
