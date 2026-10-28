@@ -102,10 +102,8 @@ Jobs behind `validate`:
 
 | Job | What it does |
 |---|---|
-| `rust-lint` | `cargo fmt`, `cargo clippy -D warnings`, `cargo update --locked` |
-| `rust-test` | `cargo test --workspace --locked` on Linux |
+| `rust` | `cargo fmt`, `cargo update --locked`, `cargo clippy -D warnings`, `cargo nextest run` + doctests, and `tauri build --debug --no-bundle` on Linux, in one job sharing one target dir (persistent on self-hosted runners) |
 | `web` | `bun run lint`, `typecheck`, and `test` |
-| `build-check` | Tauri build (`--no-bundle`) on Linux |
 | `desktop` | Tags and dispatch only: macOS tests and `.app` (uploaded for 7 days), Windows build |
 | `deny` | `cargo deny check` |
 | `guards` | actionlint, and a Changie fragment on pull requests |
