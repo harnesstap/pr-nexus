@@ -665,11 +665,7 @@ pub async fn send_review(
     note: Option<String>,
 ) -> Result<SlackIndicator, AppError> {
     let state = app.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        send_blocking(&state, pr_id, target, &teams, note.as_deref())
-    })
-    .await
-    .map_err(|err| AppError::new("internal", err.to_string()))?
+    blocking::run(move || send_blocking(&state, pr_id, target, &teams, note.as_deref())).await
 }
 
 fn send_blocking(

@@ -38,3 +38,16 @@ test("Bump is disabled for a thread in a workspace needing sign-in, enabled once
   render(<SlackLine api={api([thread])} prId={1} onOpen={() => undefined} onRequest={() => undefined} workspaces={[{ ...acme, signed_in: true, needs_sign_in: false }]} />);
   expect(await screen.findByRole("button", { name: /Bump/ })).toBeEnabled();
 });
+
+test("When sign-in and the bump interval both block Bump, the sign-in reason wins", async () => {
+  const recent = { ...thread, requested_at: new Date(Date.now() - 3600_000).toISOString() };
+  const { unmount } = render(<SlackLine api={api([recent])} prId={1} minBumpHours={24} onOpen={() => undefined} onRequest={() => undefined} workspaces={[acme]} />);
+  expect(await screen.findByRole("button", { name: /Bump · last/ })).toBeDisabled();
+  fireEvent.focus(screen.getByTestId("bump-disabled"));
+  expect(screen.getByRole("tooltip", { hidden: true })).toHaveTextContent("Acme Slack needs sign-in");
+  unmount();
+  render(<SlackLine api={api([recent])} prId={1} minBumpHours={24} onOpen={() => undefined} onRequest={() => undefined} workspaces={[{ ...acme, signed_in: true, needs_sign_in: false }]} />);
+  expect(await screen.findByRole("button", { name: /Bump · last/ })).toBeDisabled();
+  fireEvent.focus(screen.getByTestId("bump-disabled"));
+  expect(screen.getByRole("tooltip", { hidden: true })).toHaveTextContent("Too soon to bump");
+});
