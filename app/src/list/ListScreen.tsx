@@ -4,7 +4,7 @@ import { errorMessage } from "../api";
 import { ClockIcon, CloseIcon, FolderIcon, GearIcon, HomeIcon, LogoIcon, PlusIcon, RefreshIcon } from "../icons";
 import { Tooltip } from "../Tooltip";
 import { OrgOption } from "../orgs";
-import { DRAG_MIME, TOAST_MS, bulkToast, defaultView, parseDragIds, parseViewState, renameError, sentToast, syncLabel, type SavedView, type Toast } from "./model";
+import { DRAG_MIME, TOAST_MS, bulkToast, defaultView, parseDragIds, parseViewState, renameError, sentToast, liveLabel, syncLabel, type SavedView, type Toast } from "./model";
 import { PrList } from "./PrList";
 import type { PageRequest } from "./paging";
 
@@ -451,6 +451,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
               </button>
             </Tooltip>
           </div>
+          {detail && liveLabel(sync, now) && <p className="px-2 pt-1 text-xs text-slate-500">{liveLabel(sync, now)}</p>}
           {detail && (
             <div className="flex items-center justify-between gap-2 px-2 pt-1 text-xs text-slate-500">
               <p>{sync.message}</p>

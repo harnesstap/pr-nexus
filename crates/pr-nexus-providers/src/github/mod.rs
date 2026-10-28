@@ -10,10 +10,13 @@
 
 mod auth;
 mod http;
+mod notifications;
 mod overview;
 mod ownership;
 mod parse;
 pub mod search;
+
+pub use notifications::{SCOPE_UNAVAILABLE, TOKEN_TYPE_UNAVAILABLE};
 
 pub use auth::{
     DevicePoll, DeviceStart, GhProbe, github_token_from_env, oauth_client_id_from_env,
@@ -454,6 +457,22 @@ impl VcsProvider for GithubClient {
             .clone()
             .or_else(|| parse::parse_budget(&body))
             .ok_or_else(|| ProviderError::Decode("rate limit missing".into()))
+    }
+
+    fn notifications(
+        &self,
+        request: &pr_nexus_core::providers::NotificationsRequest,
+    ) -> Result<pr_nexus_core::providers::NotificationsPage, ProviderError> {
+        notifications::fetch(self, request)
+    }
+
+    fn pull_request_by_number(
+        &self,
+        owner: &str,
+        name: &str,
+        number: u64,
+    ) -> Result<Option<SyncedPullRequest>, ProviderError> {
+        notifications::by_number(self, owner, name, number)
     }
 
     fn request_team_review(

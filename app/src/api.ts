@@ -26,6 +26,17 @@ export interface SyncStatus {
   paused: boolean;
   /** Bumps only when a sync changed stored rows; re-read the list on a change (§6). */
   revision: number;
+  /** Live updates from the notifications inbox (§6). */
+  live?: LiveStatus;
+}
+
+export interface LiveStatus {
+  /** `active`, `starting`, `off`, `unavailable`, or `demo`. */
+  state: string;
+  /** Last answered inbox poll. */
+  checked_at: string | null;
+  /** Why it is unavailable, or the last error. */
+  detail: string | null;
 }
 
 /** The keychain state (§9). `waiting` usually means a system prompt is on screen. */
@@ -86,6 +97,7 @@ export interface Preferences {
   focused_interval_s: number;
   unfocused_interval_s: number;
   keep_closed_days: number;
+  live_updates: boolean;
 }
 
 export interface MappingRow {

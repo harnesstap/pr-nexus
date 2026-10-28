@@ -34,6 +34,7 @@ pub struct SyncDto {
     pub synced_at: Option<String>,
     pub paused: bool,
     pub revision: u64,
+    pub live: crate::live::LiveDto,
 }
 
 /// The keychain banner (§9): state, text, and whether Retry is offered.
@@ -246,6 +247,7 @@ fn sync_dto(state: &AppState) -> SyncDto {
         synced_at: status.synced_at.map(|value| value.to_rfc3339()),
         paused: status.paused,
         revision: status.revision,
+        live: crate::live::live_dto(state),
     }
 }
 

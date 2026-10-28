@@ -11,6 +11,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   focused_interval_s: 180,
   unfocused_interval_s: 900,
   keep_closed_days: 7,
+  live_updates: true,
 };
 
 type SettingsApi = Pick<

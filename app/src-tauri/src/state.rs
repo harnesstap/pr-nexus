@@ -73,6 +73,8 @@ pub struct AppState {
     pub device: Mutex<Option<DeviceSession>>,
     pub focused: AtomicBool,
     pub wake: Arc<(Mutex<bool>, Condvar)>,
+    /// Live updates from the notifications inbox (§6).
+    pub live: crate::live::LiveShared,
     /// `PR_NEXUS_DEMO=1`: seeded local data only, never talk to GitHub.
     pub demo: bool,
 }
@@ -100,6 +102,7 @@ impl AppState {
             device: Mutex::new(None),
             focused: AtomicBool::new(true),
             wake: Arc::new((Mutex::new(false), Condvar::new())),
+            live: crate::live::LiveShared::default(),
             demo,
         })
     }
@@ -331,10 +334,17 @@ fn sync_once(state: &AppState, kind: SyncKind) -> Result<sync::SyncReport, AppEr
     outcome
 }
 
-/// Picks the focused or unfocused poll interval (§6). An atomic store, safe
-/// on the main thread.
+/// Picks the focused or unfocused poll interval (§6). Coming back after more
+/// than a minute away also asks for an incremental pass. Never blocks on
+/// network work: it only flips flags and wakes the background threads.
 pub fn set_focused(state: &AppState, focused: bool) {
     state.focused.store(focused, Ordering::Relaxed);
+    if state.demo {
+        return;
+    }
+    if crate::live::note_focus(state, focused, Utc::now()) {
+        crate::live::request_sync(state);
+    }
 }
 
 pub fn spawn_scheduler(state: Arc<AppState>) {
@@ -411,6 +421,7 @@ mod tests {
             device: Mutex::new(None),
             focused: AtomicBool::new(true),
             wake: Arc::new((Mutex::new(false), Condvar::new())),
+            live: crate::live::LiveShared::default(),
             demo: true,
         };
         (state, path)

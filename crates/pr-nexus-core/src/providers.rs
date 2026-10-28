@@ -373,6 +373,42 @@ pub struct Page<T> {
     pub next_cursor: Option<String>,
 }
 
+/// One poll of the notifications inbox (§6 live updates).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct NotificationsRequest {
+    /// The `Last-Modified` of the previous answer, sent as
+    /// `If-Modified-Since` on the first page so an unchanged inbox is a 304.
+    pub if_modified_since: Option<String>,
+    /// 1-based page.
+    pub page: u32,
+}
+
+/// A notification thread, read-only: nothing is ever marked as read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Notification {
+    pub id: String,
+    /// Why the user got it (`review_requested`, `author`, `team_mention`, …).
+    pub reason: String,
+    pub updated_at: DateTime<Utc>,
+    /// `PullRequest`, `Issue`, `Release`, …
+    pub subject_type: String,
+    /// API URL of the subject, e.g. `…/repos/{owner}/{repo}/pulls/{n}`.
+    pub subject_url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NotificationsPage {
+    /// 304: nothing new since `if_modified_since`.
+    NotModified { poll_interval: Option<u64> },
+    Changed {
+        last_modified: Option<String>,
+        /// `X-Poll-Interval`, in seconds.
+        poll_interval: Option<u64>,
+        items: Vec<Notification>,
+        has_next: bool,
+    },
+}
+
 pub trait VcsProvider: Send + Sync {
     fn kind(&self) -> VcsKind;
     fn viewer(&self) -> Result<VcsUser, ProviderError>;
@@ -428,6 +464,28 @@ pub trait VcsProvider: Send + Sync {
     }
     fn request_team_review(&self, pr: &PullRequest, teams: &[TeamRef])
     -> Result<(), ProviderError>;
+    /// One page of the notifications inbox. Read-only. A token that cannot
+    /// read notifications answers `Unsupported` with the reason to show.
+    fn notifications(
+        &self,
+        _request: &NotificationsRequest,
+    ) -> Result<NotificationsPage, ProviderError> {
+        Err(ProviderError::Unsupported(
+            "notifications are not available".into(),
+        ))
+    }
+    /// One pull request by repository and number, in a single request.
+    /// `None` when it does not exist or the token cannot see it.
+    fn pull_request_by_number(
+        &self,
+        _owner: &str,
+        _name: &str,
+        _number: u64,
+    ) -> Result<Option<SyncedPullRequest>, ProviderError> {
+        Err(ProviderError::Unsupported(
+            "pull request lookup is not available".into(),
+        ))
+    }
 }
 
 pub trait ChatProvider: Send + Sync {

@@ -1,0 +1,3 @@
+kind: Added
+body: "Live updates: between syncs PR Nexus watches your GitHub notifications (read-only, never marked as read) and refreshes just the pull requests they mention, usually within a minute. Unchanged polls are 304s that do not count against the rate limit. Pending checks are re-read every 90 s while focused (5 minutes in the background), and coming back after a minute away runs an incremental sync. On by default under Settings → Sync; fine-grained and GitHub App tokens fall back to the periodic sync, as the sync details panel explains."
+time: 2026-10-27T14:40:00.000000-10:00

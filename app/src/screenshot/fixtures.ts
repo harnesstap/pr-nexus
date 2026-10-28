@@ -105,7 +105,7 @@ export const boot: Bootstrap = {
   slack_mentions: "off",
   bump_broadcast: true,
   mapping_count: 12,
-  sync: { phase: "ok", message: `Synced · ${rows.length} pull requests`, synced_at: ago(0.05), paused: false, revision: 0 },
+  sync: { phase: "ok", message: `Synced · ${rows.length} pull requests`, synced_at: ago(0.05), paused: false, revision: 0, live: { state: "active", checked_at: ago(0.02), detail: null } },
   env_token: false,
   oauth_client_configured: false,
   gh_ready: true,

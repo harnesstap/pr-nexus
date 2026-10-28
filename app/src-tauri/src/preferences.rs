@@ -40,6 +40,8 @@ pub async fn save_preferences(
     let app = blocking::Handle::new(&app);
     blocking::run(move || {
         let saved = settings::save_preferences(&app.inner().store, &prefs)?;
+        // The live toggle applies now, not at the next due poll.
+        app.inner().live.nudge();
         tracing::info!("settings saved");
         Ok(saved)
     })
