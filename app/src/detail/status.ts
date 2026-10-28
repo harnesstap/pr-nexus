@@ -26,35 +26,48 @@ export function checksSummary(overview: Pick<PrOverview, "checks" | "checks_tota
   const ok = count("passed") + count("skipped");
   // GitHub caps the list; the total still counts every check.
   const total = Math.max(overview.checks_total, overview.checks.length);
-  const attention = [
-    ...overview.checks.filter((check) => check.state === "failed"),
-    ...overview.checks.filter((check) => check.state === "pending"),
-  ];
+  const attention = [...overview.checks.filter((check) => check.state === "failed"), ...overview.checks.filter((check) => check.state === "pending")];
   if (total === 0) {
-    return { tone: "muted", value: "0", caption: "No checks", ok, total, attention };
+    return {
+      tone: "muted",
+      value: "0",
+      caption: "No checks",
+      ok,
+      total,
+      attention,
+    };
   }
   const value = `${ok}/${total}`;
   if (failed > 0) {
-    return { tone: "bad", value, caption: `${failed} failing`, ok, total, attention };
+    return {
+      tone: "bad",
+      value,
+      caption: `${failed} failing`,
+      ok,
+      total,
+      attention,
+    };
   }
   if (pending > 0) {
-    return { tone: "warn", value, caption: `${pending} running`, ok, total, attention };
+    return {
+      tone: "warn",
+      value,
+      caption: `${pending} running`,
+      ok,
+      total,
+      attention,
+    };
   }
   return { tone: "good", value, caption: "All passing", ok, total, attention };
 }
 
 export function commentsSummary(overview: Pick<PrOverview, "issue_comments" | "review_comments">): Summary {
   const total = overview.issue_comments + overview.review_comments;
-  const caption =
-    total === 0
-      ? "No comments"
-      : `${overview.issue_comments} on the PR · ${overview.review_comments} in code`;
+  const caption = total === 0 ? "No comments" : `${overview.issue_comments} on the PR · ${overview.review_comments} in code`;
   return { tone: "muted", value: String(total), caption };
 }
 
-export function approvalsSummary(
-  overview: Pick<PrOverview, "approvals" | "required_approvals" | "review_decision">,
-): Summary & { requiredKnown: boolean } {
+export function approvalsSummary(overview: Pick<PrOverview, "approvals" | "required_approvals" | "review_decision">): Summary & { requiredKnown: boolean } {
   const { approvals, required_approvals: required, review_decision: decision } = overview;
   const requiredKnown = required !== null;
   const value = requiredKnown ? `${approvals}/${required}` : `${approvals}/?`;
@@ -66,12 +79,22 @@ export function approvalsSummary(
   }
   if (requiredKnown && required > approvals) {
     const missing = required - approvals;
-    return { tone: "warn", value, caption: `${missing} more needed`, requiredKnown };
+    return {
+      tone: "warn",
+      value,
+      caption: `${missing} more needed`,
+      requiredKnown,
+    };
   }
   if (decision === "review_required") {
     return { tone: "warn", value, caption: "Review required", requiredKnown };
   }
-  return { tone: approvals > 0 ? "good" : "muted", value, caption: approvals > 0 ? "Approved" : "No approvals", requiredKnown };
+  return {
+    tone: approvals > 0 ? "good" : "muted",
+    value,
+    caption: approvals > 0 ? "Approved" : "No approvals",
+    requiredKnown,
+  };
 }
 
 /**
@@ -81,7 +104,11 @@ export function approvalsSummary(
  */
 export function conflictsSummary(overview: Pick<PrOverview, "state" | "mergeable" | "merge_state">): Summary {
   if (overview.state === "merged") {
-    return { tone: "good", value: "Merged", caption: "Already in the base branch" };
+    return {
+      tone: "good",
+      value: "Merged",
+      caption: "Already in the base branch",
+    };
   }
   if (overview.state === "closed") {
     return { tone: "muted", value: "Closed", caption: "Not merged" };
@@ -90,12 +117,24 @@ export function conflictsSummary(overview: Pick<PrOverview, "state" | "mergeable
     return { tone: "bad", value: "Yes", caption: "Resolve before merging" };
   }
   if (overview.mergeable === "unknown" || overview.merge_state === "unknown") {
-    return { tone: "muted", value: "Checking", caption: "GitHub is computing it" };
+    return {
+      tone: "muted",
+      value: "Checking",
+      caption: "GitHub is computing it",
+    };
   }
   if (overview.merge_state === "behind") {
-    return { tone: "warn", value: "Behind", caption: "Update from the base branch" };
+    return {
+      tone: "warn",
+      value: "Behind",
+      caption: "Update from the base branch",
+    };
   }
-  return { tone: "good", value: "None", caption: "Merges cleanly into the base" };
+  return {
+    tone: "good",
+    value: "None",
+    caption: "Merges cleanly into the base",
+  };
 }
 
 const WRITE = new Set(["admin", "maintain", "write"]);
@@ -113,6 +152,9 @@ export interface MergeVerdict {
 
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
 
+/** The draft blocker line; the merge card puts "Mark ready for review" on it. */
+export const DRAFT_BLOCKER = "It is still a draft.";
+
 /**
  * Every reason an open pull request can't merge yet, in a fixed order: draft,
  * access, conflicts, behind, failing checks, required checks still running,
@@ -124,7 +166,7 @@ export function mergeBlockers(overview: PrOverview): string[] {
   }
   const out: string[] = [];
   if (overview.is_draft || overview.merge_state === "draft") {
-    out.push("It is still a draft.");
+    out.push(DRAFT_BLOCKER);
   }
   if (overview.viewer.permission !== null && !WRITE.has(overview.viewer.permission)) {
     out.push("You don't have write access to this repository.");
@@ -139,7 +181,9 @@ export function mergeBlockers(overview: PrOverview): string[] {
   if (failed.length > 0) {
     const required = failed.filter((check) => check.required).length;
     const names = failed.map((check) => check.name).join(", ");
-    out.push(`${plural(failed.length, "check")} failing${required > 0 && required < failed.length ? ` (${required} required)` : required > 0 ? "" : " (not required)"}: ${names}.`);
+    out.push(
+      `${plural(failed.length, "check")} failing${required > 0 && required < failed.length ? ` (${required} required)` : required > 0 ? "" : " (not required)"}: ${names}.`,
+    );
   }
   const running = overview.checks.filter((check) => check.required && check.state === "pending");
   if (running.length > 0) {
@@ -163,8 +207,20 @@ export function mergeBlockers(overview: PrOverview): string[] {
  * what the branch rules let it see; see the panel tooltip.
  */
 export function mergeVerdict(overview: PrOverview): MergeVerdict {
-  const no = (reason: string, tone: Tone = "bad"): MergeVerdict => ({ can: false, tone, title: "You can't merge", reason, blockers: mergeBlockers(overview) });
-  const yes = (reason: string, tone: Tone = "good"): MergeVerdict => ({ can: true, tone, title: "You can merge", reason, blockers: [] });
+  const no = (reason: string, tone: Tone = "bad"): MergeVerdict => ({
+    can: false,
+    tone,
+    title: "You can't merge",
+    reason,
+    blockers: mergeBlockers(overview),
+  });
+  const yes = (reason: string, tone: Tone = "good"): MergeVerdict => ({
+    can: true,
+    tone,
+    title: "You can merge",
+    reason,
+    blockers: [],
+  });
   if (overview.state === "merged") {
     return no("It is already merged.", "muted");
   }
@@ -172,7 +228,7 @@ export function mergeVerdict(overview: PrOverview): MergeVerdict {
     return no("The pull request is closed.", "muted");
   }
   if (overview.is_draft || overview.merge_state === "draft") {
-    return no("It is still a draft. Mark it ready for review first (the Draft pill above).", "warn");
+    return no(DRAFT_BLOCKER, "warn");
   }
   if (overview.viewer.permission !== null && !WRITE.has(overview.viewer.permission)) {
     return no("You don't have write access to this repository.", "muted");
@@ -245,9 +301,19 @@ export function autoMergeView(overview: PrOverview): AutoMergeView {
   if (overview.auto_merge) {
     return overview.viewer.can_disable_auto_merge
       ? { ...base, enabled: true, available: true, reason: null }
-      : { ...base, enabled: true, available: false, reason: "You can't turn off auto-merge on this pull request." };
+      : {
+          ...base,
+          enabled: true,
+          available: false,
+          reason: "You can't turn off auto-merge on this pull request.",
+        };
   }
-  const off = (reason: string): AutoMergeView => ({ ...base, enabled: false, available: false, reason });
+  const off = (reason: string): AutoMergeView => ({
+    ...base,
+    enabled: false,
+    available: false,
+    reason,
+  });
   if (overview.state !== "open") {
     return off("The pull request is not open.");
   }

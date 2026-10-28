@@ -6,14 +6,16 @@ import { AlertIcon, CheckIcon, DeclinedIcon, GitHubIcon } from "../icons";
 import { isTypingTarget } from "../list/keys";
 import { ago } from "../list/model";
 import { SlackContextPanel } from "../list/SlackContextPanel";
+import { StarButton } from "../list/StarButton";
 import { Tooltip } from "../Tooltip";
 import { AutoMerge } from "./AutoMerge";
 import { Expander } from "./Expander";
+import { NoteSection } from "./NoteSection";
 import { draftView, type DraftView } from "./draft";
 import { peopleGroups, PeopleRow, requiredSeats } from "./People";
 import { SlackLine } from "./SlackLine";
 import { StatCards, VerdictIcon } from "./StatCards";
-import { mergeVerdict, TONE_TEXT } from "./status";
+import { DRAFT_BLOCKER, mergeVerdict, TONE_TEXT } from "./status";
 
 interface Props {
   api: Api;
@@ -32,6 +34,8 @@ interface Props {
   onDraftChange?: (id: number, draft: boolean | null | "saved") => void;
   /** Adds the full Slack threads and mention search (§7.10) as an expander. */
   slack?: { mentions: MentionsScope; workspaces?: SlackWorkspace[] };
+  /** Stars or unstars this PR; the header shows the star when set. */
+  onToggleStar?: () => void;
 }
 
 /** Panel width as a share of the window, remembered across launches. */
@@ -58,7 +62,7 @@ function storedWidth(): number {
  * The PR detail slide-over (§7.2): docked on the right while the list stays usable, so a
  * click or ↑/↓ in the list switches the PR. Esc or ✕ closes it.
  */
-export function DetailPanel({ api, row, version, onClose, onOpen, onRequestReview, onNotice, onDraftChange, slack }: Props) {
+export function DetailPanel({ api, row, version, onClose, onOpen, onRequestReview, onNotice, onDraftChange, slack, onToggleStar }: Props) {
   const [overview, setOverview] = useState<PrOverview | null>(null);
   const [overviewError, setOverviewError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -157,7 +161,11 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
     const before = overview;
     const next = !view.draft;
     setFlipping(true);
-    setOverview({ ...before, is_draft: next, merge_state: next ? "draft" : before.merge_state === "draft" ? "unknown" : before.merge_state });
+    setOverview({
+      ...before,
+      is_draft: next,
+      merge_state: next ? "draft" : before.merge_state === "draft" ? "unknown" : before.merge_state,
+    });
     onDraftChange?.(row.id, next);
     try {
       const fresh = await api.setPrDraft(row.id, next);
@@ -174,7 +182,13 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
   }
 
   const draft = draftView(row, overview);
-  const state = overview ? (overview.state === "open" && overview.is_draft ? "draft" : overview.state) : row.state === "open" && row.is_draft ? "draft" : row.state;
+  const state = overview
+    ? overview.state === "open" && overview.is_draft
+      ? "draft"
+      : overview.state
+    : row.state === "open" && row.is_draft
+      ? "draft"
+      : row.state;
   const verdict = overview ? mergeVerdict(overview) : null;
   const files = detail ? `${detail.files.length}${detail.files_truncated ? "+" : ""}` : "…";
 
@@ -207,9 +221,12 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
       />
       <header className="flex items-start gap-3 border-b border-slate-800 px-5 pb-3 pt-4">
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <StatePill state={state} draft={draft} busy={flipping} onToggle={() => void toggleDraft()} />
-            <span className="truncate text-xs text-slate-500">
+          <div className="flex min-w-0 items-center gap-2">
+            <StateBadge state={state} />
+            <span
+              className="min-w-0 truncate text-xs text-slate-500"
+              title={`${row.repo} · ${overview?.base_ref ?? ""} ← ${overview?.head_ref ?? row.head_ref}`}
+            >
               {row.repo}
               {" · "}
               <span className="font-mono">{overview?.base_ref ?? "…"}</span>
@@ -222,6 +239,7 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
           </h2>
         </div>
         <div className="flex shrink-0 items-center gap-0.5">
+          {onToggleStar && <StarButton starred={row.starred} title={row.title} size={16} onToggle={onToggleStar} />}
           <IconButton label="Open on GitHub" shortcut="O" onClick={() => onOpen(row.url)}>
             <GitHubIcon size={16} />
           </IconButton>
@@ -232,7 +250,9 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
       <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 py-4">
         {!overview && !loaded && <Skeleton />}
         {!overview && loaded && (
-          <p className="rounded-lg border border-slate-800 p-3 text-slate-400">{overviewError ? `Could not load this pull request: ${overviewError}` : "This provider has no overview for this pull request."}</p>
+          <p className="rounded-lg border border-slate-800 p-3 text-slate-400">
+            {overviewError ? `Could not load this pull request: ${overviewError}` : "This provider has no overview for this pull request."}
+          </p>
         )}
         {overview && (
           <>
@@ -242,37 +262,65 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
                 <span className={TONE_TEXT[verdict.tone]}>
                   <VerdictIcon tone={verdict.tone} />
                 </span>
-                <Tooltip
-                  label="How this is worked out"
-                  detail="GitHub doesn't say exactly who may press Merge, so this comes from the merge state, your permission and the branch rules your token can read."
-                  align="start"
-                >
-                  <div tabIndex={0} className="min-w-0 flex-1 outline-none">
-                    <p className={`font-medium ${TONE_TEXT[verdict.tone]}`}>{verdict.title}</p>
-                    {verdict.blockers.length > 1 ? (
-                      <ul aria-label="What's in the way" className="mt-0.5 list-disc space-y-0.5 pl-4 text-xs text-slate-400">
-                        {verdict.blockers.map((blocker) => (
+                <div className="min-w-0 flex-1">
+                  <Tooltip
+                    label="How this is worked out"
+                    detail="GitHub doesn't say exactly who may press Merge, so this comes from the merge state, your permission and the branch rules your token can read."
+                    align="start"
+                  >
+                    <p tabIndex={0} className={`font-medium outline-none ${TONE_TEXT[verdict.tone]}`}>
+                      {verdict.title}
+                    </p>
+                  </Tooltip>
+                  {verdict.blockers.length > 1 ? (
+                    <ul aria-label="What's in the way" className="mt-0.5 list-disc space-y-0.5 pl-4 text-xs text-slate-400">
+                      {verdict.blockers.map((blocker) =>
+                        blocker === DRAFT_BLOCKER && overview.state === "open" ? (
+                          <li key={blocker}>
+                            <span className="flex flex-wrap items-center justify-between gap-2">
+                              {blocker}
+                              <DraftAction draft={draft} busy={flipping} onToggle={() => void toggleDraft()} />
+                            </span>
+                          </li>
+                        ) : (
                           <li key={blocker}>{blocker}</li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <p className="text-xs text-slate-400">{verdict.reason}</p>
-                    )}
+                        ),
+                      )}
+                    </ul>
+                  ) : draft.draft && overview.state === "open" ? (
+                    <p className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-400">
+                      {verdict.reason}
+                      <DraftAction draft={draft} busy={flipping} onToggle={() => void toggleDraft()} />
+                    </p>
+                  ) : (
+                    <p className="text-xs text-slate-400">{verdict.reason}</p>
+                  )}
+                </div>
+                {overview.state === "open" && (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <AutoMerge api={api} prId={row.id} overview={overview} onChange={setOverview} onNotice={onNotice} />
+                    {!draft.draft && <DraftAction draft={draft} busy={flipping} onToggle={() => void toggleDraft()} />}
                   </div>
-                </Tooltip>
-                {overview.state === "open" && <AutoMerge api={api} prId={row.id} overview={overview} onChange={setOverview} onNotice={onNotice} />}
+                )}
               </div>
             )}
             {/* The one primary action, right under "can I merge": asking for review is what unblocks it. */}
             <SlackLine api={api} prId={row.id} minBumpHours={minBumpHours} onOpen={onOpen} onRequest={onRequestReview} workspaces={slack?.workspaces} />
-            {overviewError && <p className="text-xs text-amber-200">Showing the copy from {ago(overview.fetched_at, new Date())}; refreshing failed: {overviewError}</p>}
+            {overviewError && (
+              <p className="text-xs text-amber-200">
+                Showing the copy from {ago(overview.fetched_at, new Date())}; refreshing failed: {overviewError}
+              </p>
+            )}
             <PeopleRow
               groups={peopleGroups(overview, detail ? requiredSeats(overview.reviewers, detail.mandatory_teams, detail.approved_teams) : [])}
               missing={overview.required_approvals === null ? 0 : Math.max(0, overview.required_approvals - overview.approvals)}
             />
           </>
         )}
-        {!overview && <SlackLine api={api} prId={row.id} minBumpHours={minBumpHours} onOpen={onOpen} onRequest={onRequestReview} workspaces={slack?.workspaces} />}
+        {!overview && (
+          <SlackLine api={api} prId={row.id} minBumpHours={minBumpHours} onOpen={onOpen} onRequest={onRequestReview} workspaces={slack?.workspaces} />
+        )}
+        <NoteSection api={api} prId={row.id} />
         <div>
           <Expander title={`Files changed (${files})`} aside={detail?.codeowners_path ? "with code owners" : undefined}>
             <FilesBody detail={detail} error={detailError} />
@@ -293,51 +341,91 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
 }
 
 const PILL: Record<string, { label: string; tone: string }> = {
-  open: { label: "Open", tone: "bg-teal-500/15 text-teal-200 ring-teal-400/30" },
-  draft: { label: "Draft", tone: "bg-slate-700/60 text-slate-300 ring-slate-500/40" },
-  merged: { label: "Merged", tone: "bg-violet-500/20 text-violet-200 ring-violet-400/30" },
-  closed: { label: "Closed", tone: "bg-rose-500/15 text-rose-200 ring-rose-400/30" },
+  open: {
+    label: "Open",
+    tone: "bg-teal-500/15 text-teal-200 ring-teal-400/30",
+  },
+  draft: {
+    label: "Draft",
+    tone: "bg-slate-700/60 text-slate-300 ring-slate-500/40",
+  },
+  merged: {
+    label: "Merged",
+    tone: "bg-violet-500/20 text-violet-200 ring-violet-400/30",
+  },
+  closed: {
+    label: "Closed",
+    tone: "bg-rose-500/15 text-rose-200 ring-rose-400/30",
+  },
 };
 
-/** The state pill doubles as the draft ↔ ready toggle while the PR is open. */
-function StatePill({ state, draft, busy, onToggle }: { state: string; draft: DraftView; busy: boolean; onToggle: () => void }) {
+/** The PR state, in normal flow next to the repo path. Never a control. */
+function StateBadge({ state }: { state: string }) {
   const pill = PILL[state] ?? PILL.open;
-  const look = `shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ${pill.tone}`;
-  if (state === "merged" || state === "closed") {
-    return <span className={look}>{pill.label}</span>;
-  }
+  return (
+    <span data-testid="state-badge" className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ${pill.tone}`}>
+      {pill.label}
+    </span>
+  );
+}
+
+/**
+ * Draft ↔ ready, in the merge card: "Mark ready for review" on the draft blocker
+ * line, or a quiet "Convert to draft" beside the merge controls.
+ */
+function DraftAction({ draft, busy, onToggle }: { draft: DraftView; busy: boolean; onToggle: () => void }) {
+  const ready = draft.draft;
+  const look = ready
+    ? "rounded-md bg-violet-500/20 px-2 py-0.5 text-xs font-medium text-violet-100 ring-1 ring-violet-400/40 enabled:hover:bg-violet-500/30"
+    : "rounded-md px-2 py-0.5 text-xs text-slate-400 enabled:hover:bg-slate-800 enabled:hover:text-slate-200";
   const button = (
     <button
       type="button"
-      data-testid="state-pill"
-      aria-label={`${pill.label}: ${draft.action.toLowerCase()}`}
+      data-testid="draft-action"
       disabled={!draft.available || busy}
       onClick={onToggle}
-      className={`${look} inline-flex items-center gap-1 enabled:hover:ring-2 disabled:cursor-default`}
+      className={`${look} shrink-0 disabled:cursor-default disabled:opacity-50`}
     >
-      {busy ? "Saving…" : pill.label}
-      {/* While a draft, the pill says what clicking does: it is the one ready action. */}
-      {state === "draft" && !busy && draft.available && <span className="border-l border-slate-500/50 pl-1 text-amber-200">Mark ready</span>}
-      <span aria-hidden="true" className="text-[9px] opacity-60">⇄</span>
+      {busy ? "Saving…" : draft.action}
     </button>
   );
   if (!draft.available) {
     return (
-      <Tooltip label={`Can't ${draft.action.toLowerCase()}`} detail={draft.reason ?? undefined} align="start">
-        <span tabIndex={0} data-testid="state-pill-disabled" className="inline-flex rounded-full outline-none focus-visible:ring-2 focus-visible:ring-violet-400">
+      <Tooltip label={`Can't ${draft.action.toLowerCase()}`} detail={draft.reason ?? undefined} align="end">
+        <span
+          tabIndex={0}
+          data-testid="draft-action-disabled"
+          className="inline-flex rounded-md outline-none focus-visible:ring-2 focus-visible:ring-violet-400"
+        >
           {button}
         </span>
       </Tooltip>
     );
   }
   return (
-    <Tooltip label={draft.action} detail={draft.draft ? "Reviewers get notified and it can merge" : "Hides it from merging until you mark it ready again"} align="start">
+    <Tooltip
+      label={draft.action}
+      detail={ready ? "Reviewers get notified and it can merge" : "Hides it from merging until you mark it ready again"}
+      align="end"
+    >
       {button}
     </Tooltip>
   );
 }
 
-function IconButton({ label, detail, shortcut, onClick, children }: { label: string; detail?: string; shortcut?: string; onClick: () => void; children: ReactNode }) {
+function IconButton({
+  label,
+  detail,
+  shortcut,
+  onClick,
+  children,
+}: {
+  label: string;
+  detail?: string;
+  shortcut?: string;
+  onClick: () => void;
+  children: ReactNode;
+}) {
   return (
     <Tooltip label={label} detail={detail} shortcut={shortcut} align="end">
       <button type="button" aria-label={label} onClick={onClick} className="rounded-md p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-100">
@@ -406,7 +494,10 @@ const TONE_ICON: Record<Explanation["tone"], { icon: ReactNode; tone: string }> 
   good: { icon: <CheckIcon size={14} />, tone: "text-teal-300" },
   warn: { icon: <AlertIcon size={14} />, tone: "text-amber-300" },
   bad: { icon: <DeclinedIcon size={14} />, tone: "text-rose-300" },
-  info: { icon: <span className="block h-1.5 w-1.5 rounded-full bg-slate-500" />, tone: "text-slate-500" },
+  info: {
+    icon: <span className="block h-1.5 w-1.5 rounded-full bg-slate-500" />,
+    tone: "text-slate-500",
+  },
 };
 
 function DetailsBody({ detail, error }: { detail: PrDetail | null; error: string | null }) {

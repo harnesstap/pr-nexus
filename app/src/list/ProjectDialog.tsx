@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { CloseButton } from "../CloseButton";
-import type { Api, ListRow, ProjectDto, ProjectLinkDto, ProjectRuleDto, RuleKind } from "../api";
+import type { Api, JiraLinkDto, ListRow, ProjectDto, ProjectLinkDto, ProjectRuleDto, RuleKind } from "../api";
 import { errorMessage } from "../api";
+import { JiraChip } from "./JiraChips";
 import { PROJECT_COLORS, RULE_KINDS, ruleKindLabel } from "./projects";
 import { plainText } from "../textInput";
 import { Tooltip } from "../Tooltip";
@@ -166,6 +167,9 @@ export function ProjectDialog({ api, project, onClose, onChanged }: Props) {
           </div>
         </fieldset>
 
+        <DescriptionField api={api} project={project} onSaved={onChanged} />
+        <JiraLinksEditor api={api} project={project} onSaved={onChanged} />
+
         <section aria-labelledby="rules-heading" className="mt-5">
           <div className="flex items-center justify-between">
             <h3 id="rules-heading" className="text-xs font-medium uppercase tracking-wide text-slate-500">
@@ -291,6 +295,166 @@ export function ProjectDialog({ api, project, onClose, onChanged }: Props) {
         {error && <p className="mt-3 text-xs text-rose-300">{error}</p>}
       </div>
     </div>
+  );
+}
+
+/** The multi-line description: saved on blur, ⌘/Ctrl+Enter or Save. */
+function DescriptionField({ api, project, onSaved }: { api: Api; project: ProjectDto; onSaved: () => Promise<void> }) {
+  const [saved, setSaved] = useState(project.description);
+  const [draft, setDraft] = useState(project.description);
+  const [error, setError] = useState<string | null>(null);
+  const dirty = draft !== saved;
+
+  async function save() {
+    if (!dirty) {
+      return;
+    }
+    try {
+      const next = await api.setProjectDescription(project.id, draft);
+      setSaved(next.description);
+      setDraft(next.description);
+      setError(null);
+      await onSaved();
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  }
+
+  return (
+    <section aria-labelledby="description-heading" className="mt-5">
+      <div className="flex items-center justify-between">
+        <h3 id="description-heading" className="text-xs font-medium uppercase tracking-wide text-slate-500">
+          Description
+        </h3>
+        <button type="button" aria-label="Save description" className="rounded bg-slate-800 px-2 py-1 text-xs hover:bg-slate-700 disabled:opacity-40" disabled={!dirty} onClick={() => void save()}>
+          Save
+        </button>
+      </div>
+      <textarea
+        {...plainText}
+        aria-label="Project description"
+        rows={3}
+        className="mt-2 w-full resize-y rounded border border-slate-700 bg-slate-950 px-2 py-1"
+        placeholder="What this project is about. Shown with the project in the list."
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={() => void save()}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+            event.preventDefault();
+            void save();
+          }
+        }}
+      />
+      {error && <p className="mt-1 text-xs text-rose-300">{error}</p>}
+    </section>
+  );
+}
+
+/** How a saved link goes back to the backend when the list is rewritten. */
+function linkText(link: JiraLinkDto): string {
+  return link.url || link.key;
+}
+
+/** JIRA references: add a key or a link, remove, and reorder with ↑/↓. */
+function JiraLinksEditor({ api, project, onSaved }: { api: Api; project: ProjectDto; onSaved: () => Promise<void> }) {
+  const [links, setLinks] = useState<JiraLinkDto[]>(project.jira_links);
+  const [input, setInput] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  async function apply(action: () => Promise<JiraLinkDto[]>) {
+    try {
+      setLinks(await action());
+      setError(null);
+      await onSaved();
+      return true;
+    } catch (err) {
+      setError(errorMessage(err));
+      return false;
+    }
+  }
+
+  async function add() {
+    const text = input.trim();
+    if (!text) {
+      return;
+    }
+    const added = await apply(async () => [...links, await api.addJiraLink(project.id, { text })]);
+    if (added) {
+      setInput("");
+    }
+  }
+
+  function move(index: number, by: number) {
+    const next = [...links];
+    const [item] = next.splice(index, 1);
+    next.splice(index + by, 0, item);
+    void apply(() => api.setJiraLinks(project.id, next.map((link) => ({ text: linkText(link) }))));
+  }
+
+  return (
+    <section aria-labelledby="jira-heading" className="mt-5">
+      <h3 id="jira-heading" className="text-xs font-medium uppercase tracking-wide text-slate-500">
+        JIRA links
+      </h3>
+      <form
+        className="mt-2 flex items-center gap-2"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void add();
+        }}
+      >
+        <input
+          {...plainText}
+          aria-label="Add JIRA key or link"
+          className="min-w-0 flex-1 rounded border border-slate-700 bg-slate-950 px-2 py-1"
+          placeholder="ACME-123 or https://acme-labs.atlassian.net/browse/ACME-123"
+          value={input}
+          onChange={(event) => {
+            setInput(event.target.value);
+            setError(null);
+          }}
+        />
+        <button type="submit" className="rounded bg-slate-800 px-2 py-1 text-xs hover:bg-slate-700 disabled:opacity-40" disabled={!input.trim()}>
+          Add
+        </button>
+      </form>
+      {error && <p className="mt-1 text-xs text-rose-300">{error}</p>}
+      {links.length === 0 ? (
+        <p className="mt-2 text-xs text-slate-500">No JIRA links. A bare key links out once a JIRA base URL is set in Settings.</p>
+      ) : (
+        <ul aria-label="JIRA links" className="mt-2 divide-y divide-slate-800 rounded border border-slate-800">
+          {links.map((link, index) => {
+            const name = link.key || link.url;
+            return (
+              <li key={link.id} className="flex items-center gap-2 px-2 py-1">
+                <JiraChip link={link} />
+                <span className="min-w-0 flex-1 truncate text-xs text-slate-500">{link.url || (link.href ? "" : "No JIRA base URL set: not a link yet")}</span>
+                <button type="button" aria-label={`Move ${name} up`} className="rounded px-1.5 text-xs hover:bg-slate-800 disabled:opacity-30" disabled={index === 0} onClick={() => move(index, -1)}>
+                  ↑
+                </button>
+                <button type="button" aria-label={`Move ${name} down`} className="rounded px-1.5 text-xs hover:bg-slate-800 disabled:opacity-30" disabled={index === links.length - 1} onClick={() => move(index, 1)}>
+                  ↓
+                </button>
+                <button
+                  type="button"
+                  aria-label={`Remove ${name}`}
+                  className="rounded px-2 py-0.5 text-xs hover:bg-slate-800"
+                  onClick={() =>
+                    void apply(async () => {
+                      await api.removeJiraLink(link.id);
+                      return links.filter((item) => item.id !== link.id);
+                    })
+                  }
+                >
+                  Remove
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
   );
 }
 

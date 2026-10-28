@@ -822,7 +822,10 @@ fn upgrading_from_version_3_rebuilds_search_text_with_the_new_fold() {
                      ALTER TABLE accounts DROP COLUMN slack_workspace;
                      ALTER TABLE accounts RENAME COLUMN slack_workspace_unique_v1 TO slack_workspace;
                      ALTER TABLE review_requests DROP COLUMN slack_team_id;
-                     ALTER TABLE team_channel_mappings DROP COLUMN slack_team_id;",
+                     ALTER TABLE team_channel_mappings DROP COLUMN slack_team_id;
+                     DROP TABLE pr_stars;
+                     DROP TABLE pr_notes;
+                     DROP TABLE project_jira_links;",
                 )
                 .map_err(db)?;
                 conn.pragma_update(None, "user_version", 3_i64)
@@ -1021,4 +1024,104 @@ fn pr_overview_cache_upserts_and_follows_its_pull_request() {
     );
     // Unparseable JSON from an older build reads as "no cache".
     assert_eq!(crate::overview::cached(&store, pr.id).unwrap(), None);
+}
+
+#[test]
+fn jira_links_keep_order_reject_duplicates_and_go_with_the_project() {
+    let (_dir, store) = open_temp();
+    let project = store.create_project("Auth".into()).unwrap();
+    let described = store
+        .set_project_description(project.id, "  Sign-in for acme.\nSecond line  ".into())
+        .unwrap();
+    assert_eq!(described.description, "Sign-in for acme.\nSecond line");
+    let parse = |text: &str| crate::jira::parse(text).unwrap();
+    let first = store
+        .add_jira_link(
+            project.id,
+            parse("https://acme-labs.atlassian.net/browse/ACME-123"),
+            at(),
+        )
+        .unwrap();
+    assert_eq!((first.key.as_str(), first.position), ("ACME-123", 0));
+    let second = store
+        .add_jira_link(project.id, parse("ACME-7"), at())
+        .unwrap();
+    assert_eq!(second.position, 1);
+    assert!(
+        store
+            .add_jira_link(project.id, parse("acme-7"), at())
+            .is_err()
+    );
+
+    let reordered = store
+        .set_jira_links(
+            project.id,
+            vec![
+                parse("ACME-7"),
+                parse("ACME-7"),
+                parse("https://acme-labs.atlassian.net/browse/ACME-123"),
+            ],
+            at(),
+        )
+        .unwrap();
+    let keys: Vec<&str> = reordered.iter().map(|link| link.key.as_str()).collect();
+    assert_eq!(keys, ["ACME-7", "ACME-123"]);
+    store.remove_jira_link(reordered[0].id).unwrap();
+    assert_eq!(store.list_jira_links(project.id).unwrap().len(), 1);
+
+    let raw = store.read(|conn| {
+        conn.execute(
+            "INSERT INTO project_jira_links (project_id, key, url, position, created_at) VALUES (?1, '', '', 9, 'x')",
+            [project.id.0],
+        )
+        .map_err(db)
+    });
+    assert!(
+        raw.is_err(),
+        "the CHECK rejects a link with neither key nor url"
+    );
+
+    store.delete_project(project.id).unwrap();
+    assert!(store.all_jira_links().unwrap().is_empty());
+}
+
+#[test]
+fn notes_and_stars_round_trip_and_stars_outlive_the_row() {
+    let (_dir, store) = open_temp();
+    let (account, repo, pr) = seed_pr(&store, "PR_star", PrState::Open);
+    assert_eq!(store.pr_note(pr.id).unwrap(), None);
+    let saved = store
+        .set_pr_note(pr.id, " check the acme flag ".into(), at())
+        .unwrap();
+    assert_eq!(
+        saved.map(|note| note.note),
+        Some("check the acme flag".into())
+    );
+    assert_eq!(
+        store.pr_note(pr.id).unwrap().unwrap().note,
+        "check the acme flag"
+    );
+    assert_eq!(store.set_pr_note(pr.id, "  ".into(), at()).unwrap(), None);
+    assert_eq!(store.pr_note(pr.id).unwrap(), None);
+
+    store.set_pr_starred(pr.id, true, at()).unwrap();
+    store.set_pr_starred(pr.id, true, at()).unwrap();
+    assert!(store.is_pr_starred(pr.id).unwrap());
+    assert!(
+        store
+            .list_facts(account.id)
+            .unwrap()
+            .starred
+            .contains(&pr.id)
+    );
+
+    // The PR leaves the list and comes back as a new row: still starred.
+    store.delete_pull_request(pr.id).unwrap();
+    let back = store
+        .upsert_pull_request(repo.id, sample_pr(&account, "PR_star", PrState::Open))
+        .unwrap();
+    assert!(store.is_pr_starred(back.id).unwrap());
+    store.set_pr_starred(back.id, false, at()).unwrap();
+    assert!(store.list_facts(account.id).unwrap().starred.is_empty());
+    assert!(store.set_pr_starred(PrId(999_999), true, at()).is_err());
 }

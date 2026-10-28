@@ -173,6 +173,8 @@ pub struct ListRow {
     pub updated_at: String,
     pub created_at: String,
     pub hidden: bool,
+    /// Starred by the user; starred rows sort first within any ordering.
+    pub starred: bool,
     pub project_ids: Vec<i64>,
     pub readiness: String,
     pub readiness_notes: Vec<String>,
@@ -234,6 +236,8 @@ pub struct ProjectDto {
     pub archived: bool,
     pub description: String,
     pub sort_order: i32,
+    /// JIRA references in display order.
+    pub jira_links: Vec<crate::services::project_info::JiraLinkDto>,
 }
 
 #[derive(Deserialize)]
@@ -1292,6 +1296,7 @@ fn to_item(
             updated_at: pr.updated_at.to_rfc3339(),
             created_at: pr.created_at.to_rfc3339(),
             hidden: pr.hidden,
+            starred: facts.starred.contains(&pr.id),
             project_ids: links
                 .into_iter()
                 .filter(|link| !matches!(link.source, LinkSource::Excluded))

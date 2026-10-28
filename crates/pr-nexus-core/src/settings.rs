@@ -45,6 +45,8 @@ pub const SLACK_WORKSPACE_ORDER: &str = "slack.workspace_order";
 pub const SLACK_DISABLED_WORKSPACES: &str = "slack.disabled_workspaces";
 /// Bumps are thread replies; with this on they are also sent to the channel.
 pub const BUMP_BROADCAST: &str = "review.bump_broadcast";
+/// Base URL bare JIRA keys link to, e.g. `https://acme-labs.atlassian.net`. Empty: no links.
+pub const JIRA_BASE_URL: &str = "jira.base_url";
 
 pub const DEFAULT_REDIRECT: &str = "http://127.0.0.1:47821/mcp/oauth/callback";
 
@@ -324,6 +326,11 @@ pub fn set_bump_broadcast(store: &Store, on: bool) -> Result<(), CoreError> {
     put_json(store, BUMP_BROADCAST, &on)
 }
 
+/// `jira.base_url`, without a trailing slash; empty when unset.
+pub fn jira_base_url(store: &Store) -> Result<String, CoreError> {
+    json_or(store, JIRA_BASE_URL, String::new())
+}
+
 /// `review.bulk_bump_max_threads`: above this many distinct roots in one
 /// channel, a bulk bump becomes one top-level remind (§7.9). At least 1.
 pub fn bulk_bump_max_threads(store: &Store) -> Result<usize, CoreError> {
@@ -345,6 +352,9 @@ pub struct Preferences {
     /// Older clients do not send it: keep live updates on.
     #[serde(default = "live_default")]
     pub live_updates: bool,
+    /// `jira.base_url`; older clients do not send it.
+    #[serde(default)]
+    pub jira_base_url: String,
 }
 
 fn live_default() -> bool {
@@ -369,6 +379,7 @@ pub fn preferences(store: &Store) -> Result<Preferences, CoreError> {
         unfocused_interval_s: unfocused_interval_s(store)?,
         keep_closed_days: keep_closed_days(store)?,
         live_updates: live_updates(store)?,
+        jira_base_url: jira_base_url(store)?,
     })
 }
 
@@ -422,6 +433,7 @@ pub fn save_preferences(store: &Store, prefs: &Preferences) -> Result<Preference
         regex
     };
     crate::linking::validate_ticket_regex(regex)?;
+    let jira_base = crate::jira::valid_base_url(&prefs.jira_base_url)?;
     put_json(store, REVIEW_REQUESTER, prefs.review_requester.trim())?;
     put_json(store, MIN_BUMP_INTERVAL, &prefs.min_bump_interval_hours)?;
     put_json(store, BULK_BUMP_MAX_THREADS, &prefs.bulk_bump_max_threads)?;
@@ -436,6 +448,7 @@ pub fn save_preferences(store: &Store, prefs: &Preferences) -> Result<Preference
     put_json(store, UNFOCUSED_INTERVAL, &prefs.unfocused_interval_s)?;
     put_json(store, KEEP_CLOSED_DAYS, &prefs.keep_closed_days)?;
     put_json(store, LIVE_ENABLED, &prefs.live_updates)?;
+    put_json(store, JIRA_BASE_URL, &jira_base)?;
     preferences(store)
 }
 
@@ -583,8 +596,10 @@ mod tests {
             unfocused_interval_s: 1800,
             keep_closed_days: 14,
             live_updates: false,
+            jira_base_url: " https://acme-labs.atlassian.net/ ".into(),
         };
         let saved = save_preferences(&store, &prefs).unwrap();
+        assert_eq!(saved.jira_base_url, "https://acme-labs.atlassian.net");
         assert_eq!(saved.review_requester, "for Ada Acme");
         assert_eq!(
             saved.ticket_key_regex,
@@ -604,6 +619,9 @@ mod tests {
         assert!(save_preferences(&store, &prefs).is_err());
         prefs.focused_interval_s = 180;
         prefs.ticket_key_regex = "([A-Z".into();
+        assert!(save_preferences(&store, &prefs).is_err());
+        prefs.ticket_key_regex = String::new();
+        prefs.jira_base_url = "acme-labs.atlassian.net".into();
         assert!(save_preferences(&store, &prefs).is_err());
         assert!(bump_broadcast(&store).unwrap());
     }

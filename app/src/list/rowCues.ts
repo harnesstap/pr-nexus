@@ -59,7 +59,7 @@ function span(ms: number): string {
   return hours < 72 ? `${hours}h` : `${Math.floor(ms / DAY_MS)}d`;
 }
 
-/** The age chip for a row, or null when it is fresh. A long review wait wins over idleness. */
+/** The age chip for a row, or null when it is fresh. A long review wait wins over idleness. Mirrors `stale_cue` in `app/src-tauri/src/listing.rs` (the `waiting`/`idle` MCP statuses). */
 export function staleCue(row: ListRow, now: Date): StaleCue | null {
   if (row.state !== "open") {
     return null;

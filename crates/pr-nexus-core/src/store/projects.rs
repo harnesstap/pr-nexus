@@ -525,7 +525,7 @@ fn insert_project(conn: &Connection, project: &Project) -> Result<Project, CoreE
         .ok_or_else(|| CoreError::Store("inserted project disappeared".to_owned()))
 }
 
-fn load_project(conn: &Connection, id: ProjectId) -> Result<Option<Project>, CoreError> {
+pub(super) fn load_project(conn: &Connection, id: ProjectId) -> Result<Option<Project>, CoreError> {
     conn.query_row("SELECT * FROM projects WHERE id = ?1", [id.0], map_project)
         .optional()
         .map_err(db)

@@ -175,7 +175,10 @@ export function pageFromRows(rows: readonly SearchRow[], projects: readonly Proj
     live_projects: live.length,
   };
 
-  const ordered = [...shown].sort((left, right) => compare(left, right, request.ordering, request.direction));
+  // Starred rows are pinned above the rest, each part in the chosen order (as `listing::page`).
+  const ordered = [...shown].sort(
+    (left, right) => Number(right.starred) - Number(left.starred) || compare(left, right, request.ordering, request.direction),
+  );
   const keepEmpty = keptEmpty(live, request.view_key, filters, terms.length > 0);
   const groups = group(ordered, live, request, keepEmpty);
   const collapsed = new Set(request.collapsed);

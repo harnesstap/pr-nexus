@@ -24,9 +24,7 @@ export const MAX_REPLIES = 2;
 
 /** The newest request, by request time, then by root message. */
 export function latestThread(threads: ContextThread[]): ContextThread | null {
-  return (
-    [...threads].sort((a, b) => (b.requested_at ?? "").localeCompare(a.requested_at ?? "") || b.root_ts.localeCompare(a.root_ts))[0] ?? null
-  );
+  return [...threads].sort((a, b) => (b.requested_at ?? "").localeCompare(a.requested_at ?? "") || b.root_ts.localeCompare(a.root_ts))[0] ?? null;
 }
 
 export interface BumpView {
@@ -85,7 +83,13 @@ export function SlackLine({ api, prId, minBumpHours = 0, onOpen, onRequest, work
     return (
       <div className="space-y-1.5" data-testid="slack-empty">
         {onRequest && (
-          <Tooltip label={blocked ?? "Request review on Slack"} shortcut="R" detail={blocked ? "Reconnect it in Settings › Accounts" : "Shows the exact message first; nothing is sent until you confirm"} side="bottom" className="w-full">
+          <Tooltip
+            label={blocked ?? "Request review on Slack"}
+            shortcut="R"
+            detail={blocked ? "Reconnect it in Settings › Accounts" : "Shows the exact message first; nothing is sent until you confirm"}
+            side="bottom"
+            className="w-full"
+          >
             <button
               type="button"
               onClick={onRequest}
@@ -123,16 +127,19 @@ export function SlackLine({ api, prId, minBumpHours = 0, onOpen, onRequest, work
   const more = replies.length - shown.length;
   return (
     <section aria-label="Slack request" className="rounded-lg border border-slate-800 bg-slate-900/50 p-3 text-xs">
-      <header className="flex items-center gap-2">
-        <SlackLogo size={13} />
-        <span className="font-medium text-slate-200">{channelLabel(thread)}</span>
-        <span className="min-w-0 truncate text-slate-500">
-          · requested {shortTime(thread.requested_at)}
-          {thread.bump_count > 0 && ` · bumped ${thread.bump_count}×`}
-          {thread.status === "closed" && " · closed"}
-          {threads && threads.length > 1 && ` · ${threads.length} threads`}
-        </span>
-        <span className="ml-auto flex shrink-0 items-center gap-2">
+      {/* Channel and timing get a full line; the buttons sit on their own row so nothing truncates. */}
+      <header className="flex flex-col gap-2">
+        <p className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5">
+          <SlackLogo size={13} />
+          <span className="break-all font-medium text-slate-200">{channelLabel(thread)}</span>
+          <span data-testid="slack-meta" className="text-slate-500">
+            · requested {shortTime(thread.requested_at)}
+            {thread.bump_count > 0 && ` · bumped ${thread.bump_count}×`}
+            {thread.status === "closed" && " · closed"}
+            {threads && threads.length > 1 && ` · ${threads.length} threads`}
+          </span>
+        </p>
+        <span className="flex flex-wrap items-center justify-end gap-2">
           {thread.permalink && (
             <button type="button" className={SECONDARY} onClick={() => onOpen(thread.permalink ?? "")}>
               Open in Slack ↗
@@ -142,16 +149,26 @@ export function SlackLine({ api, prId, minBumpHours = 0, onOpen, onRequest, work
             (blocked !== null || bump.tooSoon !== null ? (
               <Tooltip
                 label={blocked ?? "Too soon to bump"}
-                detail={blocked ? "Reconnect it in Settings › Accounts" : bump.tooSoon ?? undefined}
+                detail={blocked ? "Reconnect it in Settings › Accounts" : (bump.tooSoon ?? undefined)}
                 side="bottom"
                 align="end"
               >
-                <span tabIndex={0} data-testid="bump-disabled" className="inline-flex rounded-md outline-none focus-visible:ring-2 focus-visible:ring-violet-400">
+                <span
+                  tabIndex={0}
+                  data-testid="bump-disabled"
+                  className="inline-flex rounded-md outline-none focus-visible:ring-2 focus-visible:ring-violet-400"
+                >
                   {bumpButton}
                 </span>
               </Tooltip>
             ) : (
-              <Tooltip label="Bump on Slack" shortcut="R" detail="Preview the bump first; pick another channel there to send a new request instead" side="bottom" align="end">
+              <Tooltip
+                label="Bump on Slack"
+                shortcut="R"
+                detail="Preview the bump first; pick another channel there to send a new request instead"
+                side="bottom"
+                align="end"
+              >
                 {bumpButton}
               </Tooltip>
             ))}
@@ -161,7 +178,11 @@ export function SlackLine({ api, prId, minBumpHours = 0, onOpen, onRequest, work
       {root && <p className="mt-2 line-clamp-2 whitespace-pre-line text-slate-300">{slackText(root.text)}</p>}
       {shown.length > 0 && (
         <ol className="mt-2 space-y-1.5 border-l border-slate-700 pl-2.5">
-          {more > 0 && <li className="text-slate-500">+{more} earlier repl{more === 1 ? "y" : "ies"}</li>}
+          {more > 0 && (
+            <li className="text-slate-500">
+              +{more} earlier repl{more === 1 ? "y" : "ies"}
+            </li>
+          )}
           {shown.map((message) => (
             <li key={message.ts}>
               <span className="text-slate-200">{message.author}</span>

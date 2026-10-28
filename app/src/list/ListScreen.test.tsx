@@ -87,13 +87,20 @@ function api(projects: ProjectDto[], rows: SearchRow[] = []): Api {
     probeGh: () => Promise.resolve({ gh_ready: false, gh_detail: "" }),
     listProjects: () => Promise.resolve([...projects]),
     createProject: vi.fn((name: string) => {
-      const project = { id: projects.length + 1, name, color: "#7c5cbf", archived: false, description: "", sort_order: projects.length };
+      const project = { id: projects.length + 1, name, color: "#7c5cbf", archived: false, description: "", sort_order: projects.length , jira_links: [] };
       projects.push(project);
       return Promise.resolve(project);
     }),
     renameProject: () => Promise.resolve(),
     archiveProject: () => Promise.resolve(),
     deleteProject: () => Promise.resolve(),
+    setProjectDescription: (id: number, description: string) => Promise.resolve({ id, name: "Project", color: "#7c3aed", archived: false, description, sort_order: 0, jira_links: [] }),
+    addJiraLink: (_id: number, link: { text?: string }) => Promise.resolve({ id: 1, key: link.text ?? "", url: "", href: null }),
+    removeJiraLink: () => Promise.resolve(),
+    setJiraLinks: () => Promise.resolve([]),
+    prNote: (prId: number) => Promise.resolve({ pr_id: prId, note: "", updated_at: null }),
+    setPrNote: (prId: number, note: string) => Promise.resolve({ pr_id: prId, note, updated_at: null }),
+    setPrStarred: (_id: number, starred: boolean) => Promise.resolve(starred),
     ...memoryProjectApi(rows, projects),
     loadViewState: () => Promise.resolve(null),
     saveViewState: () => Promise.resolve(),
@@ -131,7 +138,7 @@ test("an empty Projects section offers to create one, and Settings lives in the 
 });
 
 test("dropping PRs on a sidebar project links them, confirms and offers Undo", async () => {
-  const fake = api([{ id: 1, name: "Checkout", color: "#7c5cbf", archived: false, description: "", sort_order: 0 }]);
+  const fake = api([{ id: 1, name: "Checkout", color: "#7c5cbf", archived: false, description: "", sort_order: 0 , jira_links: [] }]);
   const undo = [
     { pr_id: 4, before: null, rule_id: null },
     { pr_id: 5, before: "excluded" as const, rule_id: null },
@@ -202,11 +209,12 @@ function pr(id: number, title: string): SearchRow {
     reviewers_requested: false,
     pending_reviewers: [],
     slack: null,
+    starred: false,
   };
 }
 
 test("the sidebar's new-project field can take the current selection", async () => {
-  const fake = api([{ id: 1, name: "Checkout", color: "#7c5cbf", archived: false, description: "", sort_order: 0 }], [pr(7, "Add passkeys"), pr(8, "Fix tax rounding")]);
+  const fake = api([{ id: 1, name: "Checkout", color: "#7c5cbf", archived: false, description: "", sort_order: 0 , jira_links: [] }], [pr(7, "Add passkeys"), pr(8, "Fix tax rounding")]);
   const create = vi.spyOn(fake, "createProjectWithPrs");
   render(<ListScreen api={fake} boot={boot} onBoot={() => undefined} />);
   fireEvent.click(await screen.findByRole("checkbox", { name: /Select Add passkeys/ }));
@@ -223,7 +231,7 @@ test("the sidebar's new-project field can take the current selection", async () 
 });
 
 test("Add to project → New project from selection creates it, confirms, and highlights it", async () => {
-  const fake = api([{ id: 1, name: "Checkout", color: "#7c5cbf", archived: false, description: "", sort_order: 0 }], [pr(7, "Add passkeys"), pr(8, "Fix tax rounding")]);
+  const fake = api([{ id: 1, name: "Checkout", color: "#7c5cbf", archived: false, description: "", sort_order: 0 , jira_links: [] }], [pr(7, "Add passkeys"), pr(8, "Fix tax rounding")]);
   const create = vi.spyOn(fake, "createProjectWithPrs");
   render(<ListScreen api={fake} boot={boot} onBoot={() => undefined} />);
   fireEvent.click(await screen.findByRole("checkbox", { name: /Select Add passkeys/ }));
@@ -268,6 +276,7 @@ function listRow(id: number, title: string): SearchRow {
     reviewers_requested: false,
     pending_reviewers: [],
     slack: null,
+    starred: false,
   };
 }
 
@@ -276,11 +285,11 @@ test("details open beside the list, follow the clicked row, and close on Esc", a
   fake.prDetail = (id: number) => Promise.resolve(mockDetail(id));
   fake.prOverview = vi.fn(() => Promise.resolve(mockOverview()));
   render(<ListScreen api={fake} boot={boot} onBoot={() => undefined} />);
-  fireEvent.click(await screen.findByRole("button", { name: /Migrate login/ }));
+  fireEvent.click(await screen.findByRole("button", { name: /^(?!Star )[^]*Migrate login/ }));
   const panel = await screen.findByTestId("detail-panel");
   expect(within(panel).getByRole("heading", { name: /Migrate login/ })).toBeInTheDocument();
   // The list stays usable: another row switches the panel instead of being blocked by it.
-  fireEvent.click(screen.getByRole("button", { name: /Add passkeys/ }));
+  fireEvent.click(screen.getByRole("button", { name: /^(?!Star )[^]*Add passkeys/ }));
   expect(await within(screen.getByTestId("detail-panel")).findByRole("heading", { name: /Add passkeys/ })).toBeInTheDocument();
   fireEvent.keyDown(document, { key: "Escape" });
   await waitFor(() => expect(screen.queryByTestId("detail-panel")).not.toBeInTheDocument());

@@ -59,8 +59,8 @@ const boot: Bootstrap = {
 };
 
 const projects: ProjectDto[] = [
-  { id: 1, name: "Auth", color: "#7c5cbf", archived: false, description: "", sort_order: 0 },
-  { id: 2, name: "Billing", color: "#3f6f8f", archived: false, description: "", sort_order: 1 },
+  { id: 1, name: "Auth", color: "#7c5cbf", archived: false, description: "", sort_order: 0 , jira_links: [] },
+  { id: 2, name: "Billing", color: "#3f6f8f", archived: false, description: "", sort_order: 1 , jira_links: [] },
 ];
 
 function row(partial: Partial<SearchRow> & Pick<SearchRow, "id" | "title" | "number">): SearchRow {
@@ -88,6 +88,7 @@ function row(partial: Partial<SearchRow> & Pick<SearchRow, "id" | "title" | "num
     reviewers_requested: false,
     pending_reviewers: [],
     slack: null,
+    starred: false,
     ...partial,
   };
 }
@@ -248,10 +249,17 @@ const api: Api = {
   fullResync: () => Promise.resolve(boot.sync),
   probeGh: () => Promise.resolve({ gh_ready: true, gh_detail: "gh is logged in" }),
   listProjects: () => Promise.resolve(projects.map((item) => ({ ...item }))),
-  createProject: (name) => Promise.resolve({ id: 99, name, color: "#7c5cbf", archived: false, description: "", sort_order: 99 }),
+  createProject: (name) => Promise.resolve({ id: 99, name, color: "#7c5cbf", archived: false, description: "", sort_order: 99 , jira_links: [] }),
   renameProject: () => Promise.resolve(),
   archiveProject: () => Promise.resolve(),
   deleteProject: () => Promise.resolve(),
+  setProjectDescription: (id: number, description: string) => Promise.resolve({ id, name: "Project", color: "#7c3aed", archived: false, description, sort_order: 0, jira_links: [] }),
+  addJiraLink: (_id: number, link: { text?: string }) => Promise.resolve({ id: 1, key: link.text ?? "", url: "", href: null }),
+  removeJiraLink: () => Promise.resolve(),
+  setJiraLinks: () => Promise.resolve([]),
+  prNote: (prId: number) => Promise.resolve({ pr_id: prId, note: "", updated_at: null }),
+  setPrNote: (prId: number, note: string) => Promise.resolve({ pr_id: prId, note, updated_at: null }),
+  setPrStarred: (_id: number, starred: boolean) => Promise.resolve(starred),
   ...memoryProjectApi(rows, projects, [{ id: 1, project_id: 1, kind: "ticket_key_in_branch", pattern: "AUTH-*", priority: 10 }]),
   loadViewState: () => Promise.resolve(JSON.stringify({ show: { notRequested: true } })),
   saveViewState: () => Promise.resolve(),

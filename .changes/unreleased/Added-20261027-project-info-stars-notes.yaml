@@ -1,0 +1,3 @@
+kind: Added
+body: "Projects get a description and JIRA links (keys or URLs; bare keys link once Settings › Review › JIRA base URL is set), shown as chips wherever a project appears. Pull requests get a private note in the detail panel (saved on blur, ⌘↵ or Save) and a star: starred PRs pin to the top, filter with Starred only, and toggle with Shift+S. Mark ready for review / Convert to draft moved from the header into the merge card, the four summary cards share one size, and the Slack card no longer truncates its channel line. Statuses gain Waiting and Idle."
+time: 2026-10-28T08:30:00.000000Z

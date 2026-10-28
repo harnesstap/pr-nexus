@@ -2,6 +2,7 @@
 //! commands and future non-Tauri front ends (an MCP server).
 
 pub mod bulk;
+pub mod project_info;
 pub mod projects;
 pub mod prs;
 pub mod review;

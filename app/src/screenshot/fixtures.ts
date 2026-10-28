@@ -8,9 +8,28 @@ const HOUR = 60 * 60 * 1000;
 const ago = (hours: number) => new Date(Date.now() - hours * HOUR).toISOString();
 
 export const projects: ProjectDto[] = [
-  { id: 1, name: "Checkout redesign", color: "#7c5cbf", archived: false, description: "", sort_order: 0 },
-  { id: 2, name: "Passkeys", color: "#3f8f7a", archived: false, description: "", sort_order: 1 },
-  { id: 3, name: "Mobile release 4.2", color: "#b0743c", archived: false, description: "", sort_order: 2 },
+  {
+    id: 1,
+    name: "Checkout redesign",
+    color: "#7c5cbf",
+    archived: false,
+    description: "One-page checkout with saved cards and address autocomplete.\nTarget: end of quarter.",
+    sort_order: 0,
+    jira_links: [
+      { id: 1, key: "ACME-123", url: "https://acme-labs.atlassian.net/browse/ACME-123", href: "https://acme-labs.atlassian.net/browse/ACME-123" },
+      { id: 2, key: "ACME-140", url: "", href: "https://acme-labs.atlassian.net/browse/ACME-140" },
+    ],
+  },
+  {
+    id: 2,
+    name: "Passkeys",
+    color: "#3f8f7a",
+    archived: false,
+    description: "Passwordless sign-in for web and mobile.",
+    sort_order: 1,
+    jira_links: [{ id: 3, key: "AUTH-42", url: "", href: "https://acme-labs.atlassian.net/browse/AUTH-42" }],
+  },
+  { id: 3, name: "Mobile release 4.2", color: "#b0743c", archived: false, description: "", sort_order: 2, jira_links: [] },
 ];
 
 function slack(requestedHoursAgo: number, bumpedHoursAgo: number | null, channel = "web-reviews"): SlackIndicator {
@@ -67,6 +86,7 @@ function row(partial: Partial<SearchRow> & Pick<SearchRow, "id" | "number" | "ti
     conflicts: false,
     pending_reviewers: [],
     slack: null,
+    starred: false,
     ...partial,
     reviewers_requested: (partial.pending_reviewers?.length ?? 0) > 0,
   };
@@ -74,17 +94,17 @@ function row(partial: Partial<SearchRow> & Pick<SearchRow, "id" | "number" | "ti
 
 export const rows: SearchRow[] = [
   row({ id: 1, number: 482, title: "feat(checkout): split the payment step into its own route and lazy-load the card form", repo: "acme/storefront", project_ids: [1], review_decision: "approved", readiness: "ready", total_threads: 4, slack: slack(30, 6) }),
-  row({ id: 2, pending_reviewers: asked("kim", "sam", "web"), number: 479, title: "Add address autocomplete to checkout", repo: "acme/storefront", project_ids: [1], unresolved_threads: 2, total_threads: 5, slack: slack(20, null) }),
+  row({ id: 2, pending_reviewers: asked("kim", "sam", "web"), number: 479, title: "Add address autocomplete to checkout", repo: "acme/storefront", project_ids: [1], unresolved_threads: 2, total_threads: 5, slack: slack(20, null), starred: true }),
   row({ id: 3, pending_reviewers: asked("noor"), number: 131, title: "fix: expose order totals in the cart API so the mobile client stops recomputing tax", repo: "acme/orders-api", project_ids: [1], checks: "failure", readiness: "blocked", slack: slack(52, 26, "orders-team") }),
   row({ id: 4, number: 488, title: "Show saved cards first", repo: "acme/storefront", project_ids: [1], is_draft: true, review_decision: null }),
   row({ id: 5, number: 77, title: "Register passkeys from account settings", repo: "acme/auth-service", project_ids: [2], review_decision: "approved", readiness: "ready", total_threads: 2, slack: slack(70, 22, "identity") }),
   row({ id: 6, pending_reviewers: asked("kim", "theo", "identity"), number: 79, title: "WebAuthn challenge store in Redis", repo: "acme/auth-service", project_ids: [2], review_decision: "changes_requested", readiness: "blocked", unresolved_threads: 3, total_threads: 3, slack: slack(40, null, "identity") }),
   row({ id: 7, number: 502, title: "feat: stop bypassing the auth gate from the admin proxy", repo: "acme-labs/identity-gateway-service", project_ids: [2], review_decision: null }),
   row({ id: 8, pending_reviewers: asked("sam", "kim", "noor", "theo", "mobile"), number: 1204, title: "Bump the minimum OS version", repo: "acme/mobile", project_ids: [3], conflicts: true, readiness: "blocked", slack: slack(90, 40, "mobile") }),
-  row({ id: 9, number: 1199, title: "Offline cart sync", repo: "acme/mobile", project_ids: [3], review_decision: "approved", readiness: "ready", total_threads: 6, slack: slack(26, null, "mobile") }),
+  row({ id: 9, number: 1199, title: "Offline cart sync", repo: "acme/mobile", project_ids: [3], review_decision: "approved", readiness: "ready", total_threads: 6, slack: slack(26, null, "mobile"), starred: true }),
   row({ id: 10, pending_reviewers: asked("theo"), number: 1210, title: "Crash on empty wishlist", repo: "acme/mobile", project_ids: [3], review_decision: "approved", checks: "pending", slack: slack(8, null, "mobile") }),
   row({ id: 11, pending_reviewers: asked("noor", "sam"), number: 61, title: "chore(infra): rotate the staging database credentials and move them to the secrets manager", repo: "acme/infra", project_ids: [], author_login: "grace", slack: slack(14, null, "platform") }),
-  row({ id: 12, number: 58, title: "Pin the base image for CI runners", repo: "acme/infra", project_ids: [], checks: "pending", review_decision: null }),
+  row({ id: 12, number: 58, title: "Pin the base image for CI runners", repo: "acme/infra", project_ids: [], checks: "pending", review_decision: null, starred: true }),
 ];
 
 export const boot: Bootstrap = {
@@ -246,3 +266,10 @@ export function searchTargets(query: string): TargetMatch[] {
   const hits = directory.filter((item) => kinds.includes(item.kind) && item.target.channel_name.toLowerCase().includes(term));
   return [...hits, ...hits.map((item) => ({ ...item, target: labs(item.target) }))];
 }
+
+/** The private notes the detail panel shows, by PR id. */
+export const notes: Record<number, string> = {
+  [detailRowId]: "Waiting on Sam's debounce comments. Ship behind the checkout flag; QA sign-off in ACME-140.",
+};
+
+export const jiraBaseUrl = "https://acme-labs.atlassian.net";

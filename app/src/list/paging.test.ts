@@ -31,12 +31,13 @@ function row(partial: Partial<SearchRow> & Pick<SearchRow, "id" | "title">): Sea
     reviewers_requested: false,
     pending_reviewers: [],
     slack: null,
+    starred: false,
     ...partial,
   };
 }
 
-const auth: ProjectDto = { id: 1, name: "Auth", color: "#7c5cbf", archived: false, description: "", sort_order: 0 };
-const billing: ProjectDto = { id: 2, name: "Billing", color: "#3f6f8f", archived: false, description: "", sort_order: 1 };
+const auth: ProjectDto = { id: 1, name: "Auth", color: "#7c5cbf", archived: false, description: "", sort_order: 0 , jira_links: [] };
+const billing: ProjectDto = { id: 2, name: "Billing", color: "#3f6f8f", archived: false, description: "", sort_order: 1 , jira_links: [] };
 
 function request(viewKey: string, view: SavedView, query = "", extra: Partial<PageRequest> = {}): PageRequest {
   return {
@@ -191,7 +192,7 @@ test("nav views pick authored, review-requested, or project rows", () => {
 });
 
 test("empty project sections stay only without search or filters", () => {
-  const projects: ProjectDto[] = [auth, { ...billing, name: "Empty" }, { id: 3, name: "Old", color: "#3f6f8f", archived: true, description: "", sort_order: 2 }];
+  const projects: ProjectDto[] = [auth, { ...billing, name: "Empty" }, { id: 3, name: "Old", color: "#3f6f8f", archived: true, description: "", sort_order: 2 , jira_links: [] }];
   const rows = [row({ id: 1, title: "A", project_ids: [1] })];
   const page = pageFromRows(rows, projects, request("mine", defaultView()));
   expect(page.sections.map((section) => [section.title, section.count])).toEqual([
@@ -297,4 +298,15 @@ test("waiting longest puts the oldest review wait first and unrequested rows las
   ];
   const view = { ...defaultView(), grouping: "org" as const, ordering: "waiting" as const, direction: "desc" as const };
   expect(shownIds(rows, [], "mine", view)).toEqual([2, 1, 3]);
+});
+
+test("starred rows pin to the top within the current sort, and the Starred filter keeps only them", () => {
+  const rows = [row({ id: 1, title: "One" }), row({ id: 2, title: "Two", starred: true }), row({ id: 3, title: "Three" }), row({ id: 4, title: "Four", starred: true })];
+  const view = defaultView();
+  const all = shownIds(rows, [], "mine", view);
+  expect(all.slice(0, 2).sort()).toEqual([2, 4]);
+  const unstarredOrder = shownIds(rows.map((item) => ({ ...item, starred: false })), [], "mine", view).filter((id) => id !== 2 && id !== 4);
+  expect(all.slice(2)).toEqual(unstarredOrder);
+  const starredOnly = { ...view, filters: { ...view.filters, starred: true } };
+  expect(shownIds(rows, [], "mine", starredOnly).sort()).toEqual([2, 4]);
 });

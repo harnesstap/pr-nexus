@@ -5,6 +5,8 @@ import {
   bulkToast,
   sentToast,
   checkState,
+  defaultFilters,
+  filtersActive,
   slackStatus,
   threadsLabel,
   dragIds,
@@ -17,15 +19,14 @@ import {
   toggleParent,
 } from "./model";
 
-const auth: ProjectDto = { id: 1, name: "Auth", color: "#7c5cbf", archived: false, description: "", sort_order: 0 };
+const auth: ProjectDto = { id: 1, name: "Auth", color: "#7c5cbf", archived: false, description: "", sort_order: 0 , jira_links: [] };
 const billing: ProjectDto = {
   id: 2,
   name: "Billing",
   color: "#3f6f8f",
   archived: false,
   description: "",
-  sort_order: 1,
-};
+  sort_order: 1, jira_links: [] };
 
 test("section and global checkboxes derive none, partial, and all", () => {
   const ids = [1, 2, 3];
@@ -154,4 +155,10 @@ test("the live line says active with its last check, off, or why it is unavailab
   expect(liveLabel({ ...base, live: { state: "off", checked_at: null, detail: null } }, now)).toBe("Live updates off");
   const reason = "Live updates unavailable with this token type: falls back to periodic sync";
   expect(liveLabel({ ...base, live: { state: "unavailable", checked_at: null, detail: reason } }, now)).toBe(reason);
+});
+
+test("the Starred filter counts as active and passes only starred rows", () => {
+  const filters = { ...defaultFilters(), starred: true };
+  expect(filtersActive(defaultFilters())).toBe(false);
+  expect(filtersActive(filters)).toBe(true);
 });

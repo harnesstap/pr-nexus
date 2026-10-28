@@ -12,6 +12,7 @@ test("every binding resolves to its registry entry", () => {
   expect(press("X", { shiftKey: true })).toBe("toggleSection");
   expect(press("r")).toBe("request");
   expect(press("s")).toBe("slack");
+  expect(press("S", { shiftKey: true })).toBe("star");
   expect(press("o")).toBe("github");
   expect(press("f")).toBe("filters");
   expect(press("p")).toBe("project");

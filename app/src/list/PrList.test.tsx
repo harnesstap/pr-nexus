@@ -10,8 +10,8 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-const auth: ProjectDto = { id: 1, name: "Auth", color: "#7c5cbf", archived: false, description: "", sort_order: 0 };
-const billing: ProjectDto = { id: 2, name: "Billing", color: "#3f6f8f", archived: false, description: "", sort_order: 1 };
+const auth: ProjectDto = { id: 1, name: "Auth", color: "#7c5cbf", archived: false, description: "", sort_order: 0 , jira_links: [] };
+const billing: ProjectDto = { id: 2, name: "Billing", color: "#3f6f8f", archived: false, description: "", sort_order: 1 , jira_links: [] };
 const now = new Date("2026-10-26T12:00:00Z");
 
 function row(partial: Partial<SearchRow> & Pick<SearchRow, "id" | "title">): SearchRow {
@@ -40,6 +40,7 @@ function row(partial: Partial<SearchRow> & Pick<SearchRow, "id" | "title">): Sea
     reviewers_requested: false,
     pending_reviewers: [],
     slack: null,
+    starred: false,
     ...partial,
   };
 }
@@ -313,7 +314,7 @@ test("the header counts existing projects, and a project view counts its own PRs
 });
 
 test("an empty project keeps its section, renames on double-click, and opens its dialog", async () => {
-  const empty: ProjectDto = { id: 3, name: "Search", color: "#2f855a", archived: false, description: "", sort_order: 2 };
+  const empty: ProjectDto = { id: 3, name: "Search", color: "#2f855a", archived: false, description: "", sort_order: 2 , jira_links: [] };
   const onRename = vi.fn(() => Promise.resolve());
   const onEditProject = vi.fn();
   await show(<Harness rows={rows} projects={[auth, billing, empty]} onRename={onRename} onEditProject={onEditProject} />);
@@ -375,7 +376,7 @@ test("dragging a selected row onto a project section links the whole selection",
 test("the title button and Enter open a row's details", async () => {
   const onDetails = vi.fn();
   await show(<Harness rows={rows} onDetails={onDetails} />);
-  fireEvent.click(screen.getByRole("button", { name: /Fix tax rounding/ }));
+  fireEvent.click(screen.getByRole("button", { name: /^(?!Star )[^]*Fix tax rounding/ }));
   expect(onDetails).toHaveBeenLastCalledWith(expect.objectContaining({ id: 3 }));
   fireEvent.keyDown(window, { key: "Enter" });
   expect(onDetails).toHaveBeenCalledTimes(2);
@@ -595,7 +596,7 @@ function many(count = 130): SearchRow[] {
 }
 
 // Billing first, so its empty section header is in the first page and can take a drop.
-const billingFirst = { ...billing, sort_order: -1 };
+const billingFirst = { ...billing, sort_order: -1 , jira_links: [] };
 
 test("header counts, select-all and drag cover the full result, not just the loaded page", async () => {
   const onLinkPrs = vi.fn();

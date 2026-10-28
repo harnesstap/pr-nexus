@@ -12,6 +12,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   unfocused_interval_s: 900,
   keep_closed_days: 7,
   live_updates: true,
+  jira_base_url: "",
 };
 
 type SettingsApi = Pick<

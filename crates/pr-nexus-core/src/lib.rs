@@ -4,6 +4,7 @@
 
 pub mod domain;
 pub mod error;
+pub mod jira;
 pub mod linking;
 pub mod live;
 pub mod mapping;

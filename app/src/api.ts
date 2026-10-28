@@ -98,6 +98,8 @@ export interface Preferences {
   unfocused_interval_s: number;
   keep_closed_days: number;
   live_updates: boolean;
+  /** JIRA site, e.g. `https://acme-labs.atlassian.net`; turns bare keys into links. Empty: none. */
+  jira_base_url: string;
 }
 
 export interface MappingRow {
@@ -346,6 +348,8 @@ export interface ListRow {
   updated_at: string;
   created_at: string;
   hidden: boolean;
+  /** Starred by the user; pinned above the rest within the sort. */
+  starred: boolean;
   project_ids: number[];
   readiness: "ready" | "blocked" | "unknown";
   readiness_notes: string[];
@@ -392,6 +396,31 @@ export interface ProjectDto {
   archived: boolean;
   description: string;
   sort_order: number;
+  /** JIRA references in display order. */
+  jira_links: JiraLinkDto[];
+}
+
+/** One JIRA reference on a project. */
+export interface JiraLinkDto {
+  id: number;
+  /** `ACME-123`, or empty for a link without a key. */
+  key: string;
+  /** The link as entered, or empty for a bare key. */
+  url: string;
+  /** Where the chip opens; null for a bare key while no JIRA base URL is set. */
+  href: string | null;
+}
+
+/** A link as the editor sends it: text to parse (a key or a URL). */
+export interface JiraLinkInput {
+  text: string;
+}
+
+export interface PrNoteDto {
+  pr_id: number;
+  /** Empty when there is no note. */
+  note: string;
+  updated_at: string | null;
 }
 
 export type RuleKind =
@@ -583,6 +612,17 @@ export interface Api {
   archiveProject(id: number, archived: boolean): Promise<void>;
   deleteProject(id: number): Promise<void>;
   setProjectColor(id: number, color: string): Promise<ProjectDto>;
+  /** Multi-line description; blank clears it. */
+  setProjectDescription(projectId: number, description: string): Promise<ProjectDto>;
+  addJiraLink(projectId: number, link: JiraLinkInput): Promise<JiraLinkDto>;
+  removeJiraLink(linkId: number): Promise<void>;
+  /** Replaces every link in order: adds, removes and reorders at once. */
+  setJiraLinks(projectId: number, links: JiraLinkInput[]): Promise<JiraLinkDto[]>;
+  prNote(prId: number): Promise<PrNoteDto>;
+  /** Saves the note; blank deletes it. */
+  setPrNote(prId: number, note: string): Promise<PrNoteDto>;
+  /** Idempotent; resolves to the new state. */
+  setPrStarred(prId: number, starred: boolean): Promise<boolean>;
   listProjectRules(projectId: number): Promise<ProjectRuleDto[]>;
   saveProjectRule(rule: ProjectRuleDto): Promise<ProjectRuleDto>;
   deleteProjectRule(id: number): Promise<void>;
@@ -680,6 +720,13 @@ export const tauriApi: Api = {
   archiveProject: (id, archived) => invoke("archive_project", { id, archived }),
   deleteProject: (id) => invoke("delete_project", { id }),
   setProjectColor: (id, color) => invoke("set_project_color", { id, color }),
+  setProjectDescription: (projectId, description) => invoke("set_project_description", { projectId, description }),
+  addJiraLink: (projectId, link) => invoke("add_jira_link", { projectId, link }),
+  removeJiraLink: (linkId) => invoke("remove_jira_link", { linkId }),
+  setJiraLinks: (projectId, links) => invoke("set_jira_links", { projectId, links }),
+  prNote: (prId) => invoke("pr_note", { prId }),
+  setPrNote: (prId, note) => invoke("set_pr_note", { prId, note }),
+  setPrStarred: (prId, starred) => invoke("set_pr_starred", { prId, starred }),
   listProjectRules: (projectId) => invoke("list_project_rules", { projectId }),
   saveProjectRule: (rule) => invoke("save_project_rule", { rule }),
   deleteProjectRule: (id) => invoke("delete_project_rule", { id }),
