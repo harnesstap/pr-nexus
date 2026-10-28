@@ -88,10 +88,13 @@ export function GlobalCommands({ api, projects, actions, listShown, onView, onDe
   const commands = useMemo<PaletteCommand[]>(() => {
     const list = actions.current;
     const target = listShown && list !== null && (list.selectedCount > 0 || list.focused() !== null);
-    const focusedUrl = listShown ? list?.focused()?.url : undefined;
-    const run = (id: "request" | "github" | "slack") => () => actions.current?.run(id);
+    const focusedRow = listShown ? (list?.focused() ?? null) : null;
+    const focusedUrl = focusedRow?.url;
+    const focusedStarred = focusedRow?.starred ?? false;
+    const run = (id: "request" | "github" | "slack" | "star") => () => actions.current?.run(id);
     return [
       { id: "request", label: "Request review / bump on Slack", hint: hint("request"), keywords: "bump slack reviewers", disabled: !target, run: run("request") },
+      { id: "star", label: focusedStarred ? "Unstar PR" : "Star PR", hint: hint("star"), keywords: "star pin favorite unstar", disabled: !focusedRow, run: run("star") },
       { id: "github", label: "Open in GitHub", hint: hint("github"), keywords: "browser pull request", disabled: !focusedUrl, run: run("github") },
       { id: "mine", label: "Go to My PRs", keywords: "view mine", run: () => onView("mine") },
       { id: "to_review", label: "Go to To review", keywords: "view review queue", run: () => onView("to_review") },

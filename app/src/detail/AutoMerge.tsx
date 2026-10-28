@@ -111,7 +111,14 @@ export function AutoMerge({ api, prId, overview, onChange, onNotice }: Props) {
     <div className="flex flex-wrap items-center gap-2">
       {select}
       {mergeNow && chosen && (
-        <MergeNow method={chosen} confirming={confirming} merging={merging} onAsk={() => setConfirming(true)} onCancel={() => setConfirming(false)} onConfirm={() => merge(chosen)} />
+        <MergeNow
+          method={chosen}
+          confirming={confirming}
+          merging={merging}
+          onAsk={() => setConfirming(true)}
+          onCancel={() => setConfirming(false)}
+          onConfirm={() => merge(chosen)}
+        />
       )}
       <div aria-label="Auto-merge" className={view.available ? "" : "opacity-60"}>
         {view.available ? enable : <Disabled reason={view.reason}>{enable}</Disabled>}
@@ -121,7 +128,21 @@ export function AutoMerge({ api, prId, overview, onChange, onNotice }: Props) {
 }
 
 /** Merging can't be undone, so the first click only asks; the second merges. */
-function MergeNow({ method, confirming, merging, onAsk, onCancel, onConfirm }: { method: MergeMethod; confirming: boolean; merging: boolean; onAsk: () => void; onCancel: () => void; onConfirm: () => void }) {
+function MergeNow({
+  method,
+  confirming,
+  merging,
+  onAsk,
+  onCancel,
+  onConfirm,
+}: {
+  method: MergeMethod;
+  confirming: boolean;
+  merging: boolean;
+  onAsk: () => void;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
   if (!confirming) {
     return (
       <Tooltip label={METHOD_LABEL[method]} detail="Merges on GitHub now. You'll confirm first." side="top" align="end">
@@ -134,7 +155,12 @@ function MergeNow({ method, confirming, merging, onAsk, onCancel, onConfirm }: {
   return (
     <span role="group" aria-label="Confirm merge" className="flex items-center gap-1.5 rounded-md border border-teal-500/50 bg-teal-500/10 px-2 py-0.5 text-xs">
       <span className="text-teal-100">{METHOD_LABEL[method]} now? This can't be undone.</span>
-      <button type="button" disabled={merging} onClick={onConfirm} className="rounded bg-teal-600 px-2 py-0.5 font-semibold text-white enabled:hover:bg-teal-500 disabled:opacity-60">
+      <button
+        type="button"
+        disabled={merging}
+        onClick={onConfirm}
+        className="rounded bg-teal-600 px-2 py-0.5 font-semibold text-white enabled:hover:bg-teal-500 disabled:opacity-60"
+      >
         {merging ? "Merging…" : "Confirm merge"}
       </button>
       <button type="button" disabled={merging} onClick={onCancel} className="rounded px-1.5 py-0.5 text-slate-300 hover:bg-slate-800">

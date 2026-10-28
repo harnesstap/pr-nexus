@@ -81,7 +81,7 @@ test("Mod+K opens the palette; commands reuse the list's actions and navigation"
   const onSync = vi.fn();
   const onDetails = vi.fn();
   const run = vi.fn(() => true);
-  const project: ProjectDto = { id: 3, name: "Checkout", color: "#000000", archived: false, description: "", sort_order: 0 };
+  const project: ProjectDto = { id: 3, name: "Checkout", color: "#000000", archived: false, description: "", sort_order: 0 , jira_links: [] };
   const listPage = vi.fn(async (request: { view_key: string }) => page(request.view_key === "to_review" ? [pr(9, "Review me")] : []));
   render(
     <GlobalCommands

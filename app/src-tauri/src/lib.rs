@@ -10,6 +10,7 @@ mod live;
 mod logging;
 mod mapping_file;
 mod preferences;
+mod project_info;
 pub mod services;
 mod slack;
 mod slack_link;
@@ -88,6 +89,13 @@ pub fn run() {
             slack::send_review,
             bulk::bulk_preview,
             bulk::send_bulk,
+            project_info::set_project_description,
+            project_info::add_jira_link,
+            project_info::remove_jira_link,
+            project_info::set_jira_links,
+            project_info::pr_note,
+            project_info::set_pr_note,
+            project_info::set_pr_starred,
             context::pr_slack_context,
             context::pr_slack_mentions,
             context::save_slack_mentions,

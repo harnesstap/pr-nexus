@@ -235,6 +235,18 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
     setDetailRow((current) => (current && current.id === id ? { ...current, is_draft: draft } : current));
   }
 
+  /** Stars or unstars a PR, then reloads so it moves to (or out of) the pinned top. */
+  async function toggleStar(row: ListRow) {
+    const starred = !row.starred;
+    try {
+      await api.setPrStarred(row.id, starred);
+      setDetailRow((current) => (current && current.id === row.id ? { ...current, starred } : current));
+      setVersion((value) => value + 1);
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  }
+
   async function reload() {
     setVersion((value) => value + 1);
     setProjects(await api.listProjects());
@@ -605,6 +617,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
               detailId={detailRow?.id ?? null}
               onDetails={setDetailRow}
               onRequestReview={setReviewRow}
+              onToggleStar={(row) => void toggleStar(row)}
               onBulkReview={setBulkIds}
               draftPatches={shownDraftPatches}
               actionsRef={listActions}
@@ -622,6 +635,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
                 onNotice={(text) => setNotice({ text })}
                 onDraftChange={changeDraft}
                 slack={{ mentions: boot.slack_mentions, workspaces: boot.slack_workspaces }}
+                onToggleStar={() => void toggleStar(detailRow)}
               />
             )}
           </div>

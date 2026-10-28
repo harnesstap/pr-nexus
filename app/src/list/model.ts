@@ -38,6 +38,8 @@ export interface Filters {
   ci: CiFilter[];
   slack: SlackFilter[];
   archived: boolean;
+  /** Only starred PRs; combines with every other filter. */
+  starred: boolean;
   quick: QuickFilter | null;
 }
 
@@ -71,7 +73,7 @@ export function defaultShow(): ShowFlags {
 }
 
 export function defaultFilters(): Filters {
-  return { orgs: [], statuses: [], reviews: [], ci: [], slack: [], archived: false, quick: null };
+  return { orgs: [], statuses: [], reviews: [], ci: [], slack: [], archived: false, starred: false, quick: null };
 }
 
 export function defaultView(): SavedView {
@@ -113,6 +115,7 @@ export function parseViewState(json: string | null): SavedView {
       ci: pickList(record.filters?.ci, ["passing", "failing", "pending", "none"]),
       slack: pickList(record.filters?.slack, ["none", "requested", "bumped", "bump_due"]),
       archived: record.filters?.archived === true,
+      starred: record.filters?.starred === true,
       quick: QUICK_FILTERS.includes(record.filters?.quick as QuickFilter) ? (record.filters?.quick as QuickFilter) : null,
     },
   };
@@ -126,6 +129,7 @@ export function filtersActive(filters: Filters): boolean {
     filters.ci.length > 0 ||
     filters.slack.length > 0 ||
     filters.archived ||
+    filters.starred ||
     filters.quick !== null
   );
 }
@@ -193,6 +197,9 @@ export function normalizeSearch(value: string): string {
 }
 
 export function passesMenu(row: ListRow, filters: Filters, now: Date): boolean {
+  if (filters.starred && !row.starred) {
+    return false;
+  }
   if (filters.orgs.length > 0 && !filters.orgs.some((org) => org.toLowerCase() === row.owner.toLowerCase())) {
     return false;
   }

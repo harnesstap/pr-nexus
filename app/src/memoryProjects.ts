@@ -144,8 +144,7 @@ export function memoryProjectApi(rows: SearchRow[], projects: ProjectDto[], rule
         color: "#7c5cbf",
         archived: false,
         description: "",
-        sort_order: projects.length,
-      };
+        sort_order: projects.length, jira_links: [] };
       projects.push(project);
       link(project.id, prIds);
       return Promise.resolve({ ...project });

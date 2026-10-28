@@ -35,6 +35,9 @@ pub struct FiltersDto {
     pub slack: Vec<String>,
     #[serde(default)]
     pub archived: bool,
+    /// Only starred pull requests.
+    #[serde(default)]
+    pub starred: bool,
     /// One quick status filter from the bar above the list, or none.
     #[serde(default)]
     pub quick: Option<String>,
@@ -48,6 +51,7 @@ impl FiltersDto {
             || !self.ci.is_empty()
             || !self.slack.is_empty()
             || self.archived
+            || self.starred
             || self.quick.is_some()
     }
 }
@@ -232,7 +236,13 @@ pub fn page(
     shown.sort_by(|left, right| {
         let delta = rank(left, &request.ordering).cmp(&rank(right, &request.ordering));
         let delta = if ascending { delta } else { delta.reverse() };
-        delta.then(left.row.id.cmp(&right.row.id))
+        // Starred rows are pinned above the rest, each part in the chosen order.
+        right
+            .row
+            .starred
+            .cmp(&left.row.starred)
+            .then(delta)
+            .then(left.row.id.cmp(&right.row.id))
     });
 
     let keep_empty: HashSet<i64> = if search.is_some() || filters.active() {
@@ -475,6 +485,9 @@ fn scope_row(row: &ListRow, live: &HashSet<i64>, filters: &FiltersDto) -> bool {
 
 fn passes_menu(item: &Item, filters: &FiltersDto, now_ms: i64) -> bool {
     let row = &item.row;
+    if filters.starred && !row.starred {
+        return false;
+    }
     if !filters.orgs.is_empty()
         && !filters
             .orgs
@@ -579,7 +592,7 @@ fn rank(item: &Item, ordering: &str) -> i64 {
 
 /// When an open PR started waiting on review: its Slack request, else its
 /// creation. `None` when nobody is asked to review it, or it is a draft or
-/// approved. Mirrors `waitingSince` in `app/src/list/stale.ts`.
+/// approved. Mirrors `waitingSince` in `app/src/list/rowCues.ts`.
 fn waiting_since(item: &Item) -> Option<i64> {
     let row = &item.row;
     let asked = row.reviewers_requested || row.slack.is_some();
@@ -595,6 +608,34 @@ fn waiting_since(item: &Item) -> Option<i64> {
     } else {
         item.created_ms
     })
+}
+
+/// The age chip a row shows (§8.2). Mirrors `staleCue` in
+/// `app/src/list/rowCues.ts`, with the same thresholds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StaleCue {
+    /// Waiting on review longer than [`STALE_REVIEW_HOURS`].
+    Waiting,
+    /// No update and no Slack bump for longer than [`IDLE_DAYS`].
+    Idle,
+}
+
+/// `STALE_REVIEW_HOURS` in `rowCues.ts`.
+pub const STALE_REVIEW_HOURS: i64 = 48;
+/// `IDLE_DAYS` in `rowCues.ts`.
+pub const IDLE_DAYS: i64 = 7;
+const HOUR_MS: i64 = 60 * 60 * 1000;
+
+/// Closed and merged rows carry no cue; a long review wait wins over idleness.
+pub fn stale_cue(item: &Item, now_ms: i64) -> Option<StaleCue> {
+    if item.row.state != "open" {
+        return None;
+    }
+    if waiting_since(item).is_some_and(|since| now_ms - since > STALE_REVIEW_HOURS * HOUR_MS) {
+        return Some(StaleCue::Waiting);
+    }
+    let last = item.updated_ms.max(item.slack_stamp_ms.unwrap_or(0));
+    (now_ms - last > IDLE_DAYS * 24 * HOUR_MS).then_some(StaleCue::Idle)
 }
 
 fn status_title(readiness: &str) -> &'static str {
@@ -740,6 +781,7 @@ mod tests {
                 updated_at: updated.to_rfc3339(),
                 created_at: updated.to_rfc3339(),
                 hidden: false,
+                starred: false,
                 project_ids: projects.to_vec(),
                 readiness: "ready".into(),
                 readiness_notes: Vec::new(),
@@ -763,6 +805,7 @@ mod tests {
             archived,
             description: String::new(),
             sort_order: i32::try_from(id).unwrap(),
+            jira_links: Vec::new(),
         }
     }
 
@@ -788,6 +831,48 @@ mod tests {
             .iter()
             .map(|entry| entry.row.as_ref().map(|row| row.id))
             .collect()
+    }
+
+    #[test]
+    fn starred_rows_pin_first_and_filter_alone() {
+        let mut items: Vec<Item> = (1..=5).map(|id| item(id, &[], id)).collect();
+        items[3].row.starred = true;
+        let ids: Vec<i64> = row_ids(&page(&items, &[], &request("repository"), None))
+            .into_iter()
+            .flatten()
+            .collect();
+        assert_eq!(ids, [4, 1, 2, 3, 5]);
+        let mut only = request("repository");
+        only.filters.starred = true;
+        assert!(only.filters.active());
+        let ids: Vec<i64> = row_ids(&page(&items, &[], &only, None))
+            .into_iter()
+            .flatten()
+            .collect();
+        assert_eq!(ids, [4]);
+    }
+
+    #[test]
+    fn stale_cue_matches_the_row_chip() {
+        let now_ms = now().timestamp_millis();
+        let fresh = item(1, &[], 1);
+        assert_eq!(stale_cue(&fresh, now_ms), None);
+        let idle = item(2, &[], IDLE_DAYS * 24 + 1);
+        assert_eq!(stale_cue(&idle, now_ms), Some(StaleCue::Idle));
+        let mut waiting = item(3, &[], IDLE_DAYS * 24 + 1);
+        waiting.row.readiness = "ready".into();
+        waiting.row.reviewers_requested = true;
+        waiting.row.review_decision = Some("REVIEW_REQUIRED".into());
+        assert_eq!(stale_cue(&waiting, now_ms), Some(StaleCue::Waiting));
+        let mut closed = idle.clone();
+        closed.row.state = "merged".into();
+        assert_eq!(stale_cue(&closed, now_ms), None);
+        let mut bumped = item(4, &[], IDLE_DAYS * 24 + 1);
+        bumped.slack_stamp_ms = Some(at(1).timestamp_millis());
+        assert_eq!(stale_cue(&bumped, now_ms), None);
+        let mut young = item(5, &[], STALE_REVIEW_HOURS - 1);
+        young.row.reviewers_requested = true;
+        assert_eq!(stale_cue(&young, now_ms), None);
     }
 
     #[test]

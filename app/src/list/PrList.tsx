@@ -3,10 +3,12 @@ import type { ListRow, ProjectDto } from "../api";
 import { AlertIcon, ChevronDownIcon, ChevronRightIcon, ClockIcon, CloseIcon, CommentIcon, DraftIcon, FolderPlusIcon, FunnelIcon, MoreIcon, SearchIcon, SlackLogo } from "../icons";
 import { Tooltip } from "../Tooltip";
 import { ReviewerAvatars } from "./ReviewerAvatars";
-import { QuickFilters } from "./QuickFilters";
+import { QuickFilters, StarredChip } from "./QuickFilters";
 import { AddToProjectMenu } from "./AddToProjectMenu";
+import { GitHubRowButton, StarButton } from "./StarButton";
+import { ProjectInfo } from "./JiraChips";
 import { isTypingTarget, wantsRowEnter } from "./keys";
-import { hint, matchShortcut, type ShortcutId } from "./shortcuts";
+import { displayKey, hint, matchShortcut, shortcut, type ShortcutId } from "./shortcuts";
 import {
   ago,
   bulkIds,
@@ -84,6 +86,8 @@ interface Props {
   detailId?: number | null;
   /** Opens the Slack request/bump preview for one row. */
   onRequestReview: (row: ListRow) => void;
+  /** Stars or unstars a PR (the row's star button and Shift+S). */
+  onToggleStar?: (row: ListRow) => void;
   /** Two or more PRs from the bottom bar (§7.9). */
   onBulkReview: (ids: number[]) => void;
   /** Draft flags changed in the app ahead of the reload, by PR id. */
@@ -156,6 +160,7 @@ export function PrList({
   onDetails,
   detailId = null,
   onRequestReview,
+  onToggleStar,
   onBulkReview,
   draftPatches,
   actionsRef,
@@ -411,6 +416,11 @@ export function PrList({
           setAddMenu((open) => !open);
         }
         return true;
+      case "star":
+        if (current && onToggleStar) {
+          onToggleStar(current.row);
+        }
+        return true;
       case "palette":
       case "help":
         // Handled by the list screen.
@@ -468,6 +478,9 @@ export function PrList({
       ? `${ids.length} open ${ids.length === 1 ? "PR" : "PRs"}`
       : `${selectedCount(ids, selected)} of ${ids.length} selected`;
 
+  const titleProject = currentProject !== null ? projects.find((project) => project.id === currentProject) : undefined;
+  const sectionProject = (id: number | null) => (id === null ? undefined : projects.find((project) => project.id === id));
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <header className="px-4 py-3">
@@ -497,6 +510,7 @@ export function PrList({
             </Tooltip>
           )}
           {editing?.error && editing.where === "title" && <p className="text-xs text-rose-300">{editing.error}</p>}
+          {titleProject && <ProjectInfo project={titleProject} onOpen={onOpen} className="mt-0.5 max-w-md" />}
           <p className="text-sm text-slate-400">{page ? summaryText(page.summary, viewKey, syncProgress) : (syncProgress ?? "\u00a0")}</p>
         </div>
       </header>
@@ -538,6 +552,11 @@ export function PrList({
             active={view.filters.quick}
             counts={page?.quick ?? null}
             onChange={(quick) => onViewChange({ ...view, filters: { ...view.filters, quick } })}
+          />
+          <StarredChip
+            on={view.filters.starred}
+            count={page ? new Set(list.entries.flatMap((entry) => (entry.row?.starred ? [entry.row.id] : []))).size : null}
+            onChange={(starred) => onViewChange({ ...view, filters: { ...view.filters, starred } })}
           />
           <FilterMenu view={view} orgs={page?.orgs ?? []} menu={menu} setMenu={setMenu} onViewChange={onViewChange} />
         </div>
@@ -635,6 +654,7 @@ export function PrList({
                   </Tooltip>
                 )}
                 <span className="text-xs text-slate-500">({section.count})</span>
+                {sectionProject(section.projectId) && <ProjectInfo project={sectionProject(section.projectId)!} onOpen={onOpen} className="max-w-lg" />}
                 {editing?.error && editing.where === "section" && editing.id === section.projectId && (
                   <span className="text-xs text-rose-300">{editing.error}</span>
                 )}
@@ -701,13 +721,15 @@ export function PrList({
                       aria-label={`#${row.number} ${row.title}`}
                       aria-current={index === focus ? "true" : undefined}
                       data-focused={index === focus ? "true" : undefined}
-                      className={`flex ${compact ? "items-start gap-2 py-1" : "items-center gap-3 py-1.5"} cursor-pointer border-t border-l-2 border-t-slate-800 px-2 ${index === focus ? "border-l-violet-400 bg-slate-900" : "border-l-transparent hover:bg-slate-900/60"}`}
+                      className={`group flex ${compact ? "items-start gap-2 py-1" : "items-center gap-3 py-1.5"} cursor-pointer border-t border-l-2 border-t-slate-800 px-2 ${index === focus ? "border-l-violet-400 bg-slate-900" : "border-l-transparent hover:bg-slate-900/60"}`}
                     >
                       <TriCheckbox
                         label={`Select ${row.title}`}
                         state={selected.has(row.id) ? "all" : "none"}
                         onToggle={() => toggleRow(row.id)}
                       />
+                      {onToggleStar && <StarButton starred={row.starred} title={row.title} onToggle={() => onToggleStar(row)} />}
+                      <GitHubRowButton title={row.title} onOpen={() => onOpen(row.url)} />
                       {compact ? (
                         <CompactRow row={row} view={view} now={now} onDetails={onDetails} onOpen={onOpen} />
                       ) : (
@@ -763,6 +785,7 @@ export function PrList({
             inView={inView}
             query={query}
             filtered={filtersActive(view.filters)}
+            starredOnly={view.filters.starred}
             elsewhere={page.elsewhere}
             viewTitle={(key) => viewTitle(key, projects)}
             onClearSearch={() => setQuery("")}
@@ -888,6 +911,7 @@ function EmptyList({
   inView,
   query,
   filtered,
+  starredOnly,
   elsewhere,
   viewTitle,
   onClearSearch,
@@ -899,6 +923,7 @@ function EmptyList({
   inView: number;
   query: string;
   filtered: boolean;
+  starredOnly: boolean;
   elsewhere: Elsewhere | null;
   viewTitle: (viewKey: string) => string;
   onClearSearch: () => void;
@@ -912,6 +937,21 @@ function EmptyList({
       <div className="px-2 py-10 text-center text-sm text-slate-400">
         <p className="font-medium text-slate-300">No open pull requests in {title}.</p>
         <p className="mt-1 text-xs text-slate-500">New ones appear after the next sync. Refresh from the sidebar to sync now.</p>
+      </div>
+    );
+  }
+  if (starredOnly && !searching) {
+    return (
+      <div className="px-2 py-10 text-center text-sm text-slate-400">
+        <p className="font-medium text-slate-300">No starred pull requests in {title}{filtered ? " match your filters" : ""}.</p>
+        <p className="mt-1 text-xs text-slate-500">
+          Star a PR with the ☆ on its row or {displayKey(shortcut("star").keys[0])}; starred PRs stay at the top of the list.
+        </p>
+        <div className="mt-3 flex justify-center">
+          <button type="button" className="rounded border border-slate-700 px-3 py-1 hover:bg-slate-800" onClick={onResetFilters}>
+            Reset filters
+          </button>
+        </div>
       </div>
     );
   }
@@ -1509,6 +1549,14 @@ function FilterChoices({
           onToggle={(id) => onViewChange({ ...view, filters: { ...view.filters, slack: toggleValue(view.filters.slack, id) } })}
         />
       )}
+      <label className="mt-1 flex items-center gap-2 px-1">
+        <input
+          type="checkbox"
+          checked={view.filters.starred}
+          onChange={() => onViewChange({ ...view, filters: { ...view.filters, starred: !view.filters.starred } })}
+        />
+        Starred only
+      </label>
       <label className="mt-1 flex items-center gap-2 px-1">
         <input
           type="checkbox"

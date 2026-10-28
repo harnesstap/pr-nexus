@@ -12,6 +12,7 @@ use pr_nexus_core::providers::{
 };
 
 use super::bulk::{self, BulkRequest};
+use super::project_info::{self, JiraLinkInput};
 use super::projects;
 use super::prs::{self, PrFilter, PrStateFilter, PrStatus};
 use super::review::{self, ChatSource};
@@ -178,7 +179,9 @@ fn list_prs_filters_and_pages() {
     let all = prs::list_prs(state, &PrFilter::default()).unwrap();
     assert!(all.total >= 3);
     for item in &all.items {
-        assert_eq!(item.statuses, PrStatus::of(&item.row));
+        let both =
+            item.statuses.contains(&PrStatus::Waiting) && item.statuses.contains(&PrStatus::Idle);
+        assert!(!both, "waiting and idle are exclusive, as on the row");
     }
     let drafts = prs::list_prs(
         state,
@@ -227,16 +230,90 @@ fn list_prs_filters_and_pages() {
     )
     .unwrap();
     assert_eq!(repo.total, all.total);
-    assert!(
-        prs::list_prs(
-            state,
-            &PrFilter {
-                starred: Some(true),
-                ..PrFilter::default()
-            }
-        )
-        .is_err()
+    let starred = PrFilter {
+        starred: Some(true),
+        ..PrFilter::default()
+    };
+    assert_eq!(prs::list_prs(state, &starred).unwrap().total, 0);
+    let last = all.items.last().unwrap().row.id;
+    project_info::set_pr_starred(state, last, true).unwrap();
+    let only = prs::list_prs(state, &starred).unwrap();
+    assert_eq!(only.total, 1);
+    assert_eq!(only.items[0].row.id, last);
+    assert!(only.items[0].row.starred);
+    let pinned = prs::list_prs(state, &PrFilter::default()).unwrap();
+    assert_eq!(pinned.items[0].row.id, last, "starred pins to the top");
+    let unstarred = PrFilter {
+        starred: Some(false),
+        ..PrFilter::default()
+    };
+    assert_eq!(
+        prs::list_prs(state, &unstarred).unwrap().total,
+        all.total - 1
     );
+}
+
+#[test]
+fn project_info_services_round_trip() {
+    let fx = fixture("project-info");
+    let state = &fx.state;
+    let project = projects::create_project(state, "Acme info".into()).unwrap();
+    let described =
+        project_info::set_project_description(state, project.id, "Line one\nLine two".into())
+            .unwrap();
+    assert_eq!(described.description, "Line one\nLine two");
+
+    let text = |text: &str| JiraLinkInput {
+        text: Some(text.into()),
+        ..JiraLinkInput::default()
+    };
+    let bare = project_info::add_jira_link(state, project.id, text("acme-7")).unwrap();
+    assert_eq!(bare.key, "ACME-7");
+    assert_eq!(bare.href, None, "a bare key needs jira.base_url");
+    let url = "https://acme-labs.atlassian.net/browse/ACME-123";
+    let linked = project_info::add_jira_link(state, project.id, text(url)).unwrap();
+    assert_eq!(linked.key, "ACME-123");
+    assert_eq!(linked.href.as_deref(), Some(url));
+    assert!(project_info::add_jira_link(state, project.id, text("not a key")).is_err());
+
+    let mut prefs = pr_nexus_core::settings::preferences(&state.store).unwrap();
+    prefs.jira_base_url = "https://acme-labs.atlassian.net/".into();
+    pr_nexus_core::settings::save_preferences(&state.store, &prefs).unwrap();
+    let listed = projects::list_projects(state).unwrap();
+    let shown = listed.iter().find(|p| p.id == project.id).unwrap();
+    assert_eq!(shown.jira_links.len(), 2);
+    assert_eq!(
+        shown.jira_links[0].href.as_deref(),
+        Some("https://acme-labs.atlassian.net/browse/ACME-7")
+    );
+
+    let reordered =
+        project_info::set_jira_links(state, project.id, vec![text(url), text("ACME-7")]).unwrap();
+    assert_eq!(reordered[0].key, "ACME-123");
+    project_info::remove_jira_link(state, reordered[1].id).unwrap();
+    assert_eq!(
+        project_info::list_jira_links(state, project.id)
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let pr = pr_id(state, 1);
+    assert_eq!(project_info::pr_note(state, pr).unwrap().note, "");
+    let saved = project_info::set_pr_note(state, pr, "Check the rollout".into()).unwrap();
+    assert!(saved.updated_at.is_some());
+    assert_eq!(
+        project_info::pr_note(state, pr).unwrap().note,
+        "Check the rollout"
+    );
+    project_info::set_pr_note(state, pr, "  ".into()).unwrap();
+    assert_eq!(project_info::pr_note(state, pr).unwrap().updated_at, None);
+
+    assert!(project_info::set_pr_starred(state, pr, true).unwrap());
+    assert!(project_info::set_pr_starred(state, pr, true).unwrap());
+    assert!(project_info::is_pr_starred(state, pr).unwrap());
+    assert!(!project_info::set_pr_starred(state, pr, false).unwrap());
+    assert!(!project_info::is_pr_starred(state, pr).unwrap());
 }
 
 #[test]
@@ -255,7 +332,9 @@ fn status_names_are_stable() {
             "\"no_review\"",
             "\"ci_trouble\"",
             "\"declined\"",
-            "\"merge_ready\""
+            "\"merge_ready\"",
+            "\"waiting\"",
+            "\"idle\""
         ]
     );
     let filter: PrFilter =

@@ -1,12 +1,13 @@
 //! Bulk reads for the pull request list: one query per table for a whole
 //! account instead of a few queries per pull request.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::domain::{AccountId, OwnershipCacheEntry, PrId, PrProjectLink, ReviewRequest};
 use crate::error::CoreError;
 
 use super::cache::map_ownership;
+use super::project_info::starred_in;
 use super::projects::map_link;
 use super::reviews::{map_request, slack_account};
 use super::{Store, db};
@@ -19,6 +20,8 @@ pub struct ListFacts {
     /// The newest active review request per pull request.
     pub active_requests: HashMap<PrId, ReviewRequest>,
     pub ownership: HashMap<PrId, OwnershipCacheEntry>,
+    /// Starred pull requests (stars are kept by GitHub node id).
+    pub starred: HashSet<PrId>,
 }
 
 impl Store {
@@ -73,6 +76,7 @@ impl Store {
                 let entry = entry.map_err(db)?;
                 facts.ownership.insert(entry.pr_id, entry);
             }
+            facts.starred = starred_in(conn, account_id)?;
             Ok(facts)
         })
     }

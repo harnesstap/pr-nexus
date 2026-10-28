@@ -58,6 +58,7 @@ mod tests {
         ("context.rs", include_str!("context.rs")),
         ("mapping_file.rs", include_str!("mapping_file.rs")),
         ("preferences.rs", include_str!("preferences.rs")),
+        ("project_info.rs", include_str!("project_info.rs")),
         ("slack.rs", include_str!("slack.rs")),
     ];
 

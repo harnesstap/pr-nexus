@@ -83,6 +83,16 @@ export function PreferencesForm({ api, prefs, section, onSaved }: Props) {
               onChange={(event) => patch({ ticket_key_regex: event.target.value })}
             />
           </Field>
+          <Field label="JIRA base URL" help="Your JIRA site, like https://acme-labs.atlassian.net. With it set, a bare key such as ACME-123 on a project links to its ticket. Empty turns bare keys into plain text.">
+            <input {...plainText}
+              aria-label="JIRA base URL"
+              type="url"
+              className="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 font-mono text-sm"
+              placeholder="https://acme-labs.atlassian.net"
+              value={draft.jira_base_url}
+              onChange={(event) => patch({ jira_base_url: event.target.value })}
+            />
+          </Field>
         </>
       ) : (
         <>

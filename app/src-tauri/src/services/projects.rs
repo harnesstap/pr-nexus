@@ -15,15 +15,17 @@ use serde::{Deserialize, Serialize};
 use crate::commands::{ListRow, ProjectDto, list_items, search_ids};
 use crate::error::AppError;
 use crate::listing;
+use crate::services::project_info;
 use crate::state::{self, AppState};
 
 pub fn all_projects(state: &AppState) -> Result<Vec<ProjectDto>, AppError> {
-    Ok(state
+    let projects = state
         .store
         .list_projects()?
         .into_iter()
         .map(project_dto)
-        .collect())
+        .collect();
+    project_info::with_jira_links(state, projects)
 }
 
 /// One slice of the list plus counts over every match (§8.2).
@@ -88,7 +90,7 @@ pub fn link_candidates(
         .collect())
 }
 
-fn project_dto(project: Project) -> ProjectDto {
+pub(crate) fn project_dto(project: Project) -> ProjectDto {
     ProjectDto {
         id: project.id.0,
         name: project.name,
@@ -96,16 +98,12 @@ fn project_dto(project: Project) -> ProjectDto {
         archived: project.archived,
         description: project.description,
         sort_order: project.sort_order,
+        jira_links: Vec::new(),
     }
 }
 
 pub fn list_projects(state: &AppState) -> Result<Vec<ProjectDto>, AppError> {
-    Ok(state
-        .store
-        .list_projects()?
-        .into_iter()
-        .map(project_dto)
-        .collect())
+    all_projects(state)
 }
 
 pub fn create_project(state: &AppState, name: String) -> Result<ProjectDto, AppError> {
@@ -186,9 +184,7 @@ fn relink_all(state: &AppState) -> Result<(), AppError> {
 }
 
 pub fn set_project_color(state: &AppState, id: i64, color: String) -> Result<ProjectDto, AppError> {
-    Ok(project_dto(
-        state.store.set_project_color(ProjectId(id), color)?,
-    ))
+    project_info::one(state, state.store.set_project_color(ProjectId(id), color)?)
 }
 
 pub fn list_project_rules(state: &AppState, project_id: i64) -> Result<Vec<RuleDto>, AppError> {

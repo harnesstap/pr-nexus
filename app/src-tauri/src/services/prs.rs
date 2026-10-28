@@ -53,10 +53,19 @@ pub enum PrStatus {
     Declined,
     /// Not a draft, approved, checks green and no conflicts.
     MergeReady,
+    /// The list's "Waiting" chip: open, asked for review (GitHub or Slack),
+    /// not approved, and waiting longer than
+    /// [`listing::STALE_REVIEW_HOURS`] (48h) since the Slack request, else
+    /// since creation.
+    Waiting,
+    /// The list's "Idle" chip: open, no GitHub update and no Slack request
+    /// or bump for more than [`listing::IDLE_DAYS`] (7 days). A PR that is
+    /// `waiting` is not also `idle`, as on the row.
+    Idle,
 }
 
 impl PrStatus {
-    pub const ALL: [PrStatus; 8] = [
+    pub const ALL: [PrStatus; 10] = [
         PrStatus::Draft,
         PrStatus::Ready,
         PrStatus::Blocked,
@@ -65,9 +74,14 @@ impl PrStatus {
         PrStatus::CiTrouble,
         PrStatus::Declined,
         PrStatus::MergeReady,
+        PrStatus::Waiting,
+        PrStatus::Idle,
     ];
 
-    pub fn matches(self, row: &ListRow) -> bool {
+    /// Whether `item` is in this status at `now_ms` (only the stale cues
+    /// depend on the time).
+    pub fn matches(self, item: &listing::Item, now_ms: i64) -> bool {
+        let row = &item.row;
         match self {
             PrStatus::Draft => listing::status_matches(row, "draft"),
             PrStatus::Ready => listing::status_matches(row, "ready"),
@@ -77,14 +91,18 @@ impl PrStatus {
             PrStatus::CiTrouble => listing::quick_matches(row, "ci_trouble"),
             PrStatus::Declined => listing::quick_matches(row, "declined"),
             PrStatus::MergeReady => listing::quick_matches(row, "ready"),
+            PrStatus::Waiting => {
+                listing::stale_cue(item, now_ms) == Some(listing::StaleCue::Waiting)
+            }
+            PrStatus::Idle => listing::stale_cue(item, now_ms) == Some(listing::StaleCue::Idle),
         }
     }
 
     /// Every status `row` is in.
-    pub fn of(row: &ListRow) -> Vec<PrStatus> {
+    pub fn of(item: &listing::Item, now_ms: i64) -> Vec<PrStatus> {
         Self::ALL
             .into_iter()
-            .filter(|status| status.matches(row))
+            .filter(|status| status.matches(item, now_ms))
             .collect()
     }
 }
@@ -114,7 +132,7 @@ pub struct PrFilter {
     /// Any of these statuses.
     pub statuses: Vec<PrStatus>,
     pub project_id: Option<i64>,
-    /// Hook for starred PRs. Not stored yet: `Some(_)` is rejected.
+    /// `Some(true)`: starred only; `Some(false)`: not starred.
     pub starred: Option<bool>,
     /// `owner/name`, or just `name`, case-insensitive.
     pub repo: Option<String>,
@@ -143,14 +161,10 @@ pub struct PrListPage {
     pub next_cursor: Option<String>,
 }
 
-/// Synced, not hidden PRs matching `filter`, newest update first.
+/// Synced, not hidden PRs matching `filter`: starred first, then newest
+/// update first, as the list pins them.
 pub fn list_prs(state: &AppState, filter: &PrFilter) -> Result<PrListPage, AppError> {
-    if filter.starred.is_some() {
-        return Err(AppError::new(
-            "validation",
-            "The starred filter is not available yet",
-        ));
-    }
+    let now_ms = Utc::now().timestamp_millis();
     let offset = match filter.cursor.as_deref() {
         None | Some("") => 0,
         Some(value) => value
@@ -164,13 +178,15 @@ pub fn list_prs(state: &AppState, filter: &PrFilter) -> Result<PrListPage, AppEr
     };
     let mut items: Vec<listing::Item> = list_items(state)?
         .into_iter()
-        .filter(|item| matches_filter(&item.row, filter))
+        .filter(|item| matches_filter(item, filter, now_ms))
         .filter(|item| found.as_ref().is_none_or(|ids| ids.contains(&item.row.id)))
         .collect();
     items.sort_by(|left, right| {
         right
-            .updated_ms
-            .cmp(&left.updated_ms)
+            .row
+            .starred
+            .cmp(&left.row.starred)
+            .then(right.updated_ms.cmp(&left.updated_ms))
             .then(left.row.id.cmp(&right.row.id))
     });
     let total = items.len();
@@ -179,7 +195,7 @@ pub fn list_prs(state: &AppState, filter: &PrFilter) -> Result<PrListPage, AppEr
         .skip(offset)
         .take(limit)
         .map(|item| PrListItem {
-            statuses: PrStatus::of(&item.row),
+            statuses: PrStatus::of(&item, now_ms),
             row: item.row,
         })
         .collect();
@@ -192,11 +208,20 @@ pub fn list_prs(state: &AppState, filter: &PrFilter) -> Result<PrListPage, AppEr
 }
 
 /// Everything in [`PrFilter`] that only looks at one row.
-pub fn matches_filter(row: &ListRow, filter: &PrFilter) -> bool {
+pub fn matches_filter(item: &listing::Item, filter: &PrFilter, now_ms: i64) -> bool {
+    let row = &item.row;
     if row.hidden {
         return false;
     }
-    if !filter.statuses.is_empty() && !filter.statuses.iter().any(|status| status.matches(row)) {
+    if filter.starred.is_some_and(|starred| starred != row.starred) {
+        return false;
+    }
+    if !filter.statuses.is_empty()
+        && !filter
+            .statuses
+            .iter()
+            .any(|status| status.matches(item, now_ms))
+    {
         return false;
     }
     if filter

@@ -232,6 +232,15 @@ export function ChevronLeftIcon(props: IconProps) {
   );
 }
 
+/** A star outline, filled when `filled`. */
+export function StarIcon({ filled = false, ...props }: IconProps & { filled?: boolean }) {
+  return (
+    <Svg {...props} fill={filled ? "currentColor" : "none"}>
+      <path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2L12 17.3 6.4 20.2l1.1-6.2L3 9.6l6.2-.9Z" />
+    </Svg>
+  );
+}
+
 export function CheckIcon(props: IconProps) {
   return (
     <Svg {...props}>

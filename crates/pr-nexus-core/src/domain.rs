@@ -675,3 +675,24 @@ mod tests {
         assert_eq!(CloseReason::ChannelArchived.as_str(), "channel_archived");
     }
 }
+
+/// One JIRA reference on a project, in display order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JiraLink {
+    pub id: i64,
+    pub project: ProjectId,
+    /// Issue key such as `ACME-123`, or empty for a link without one.
+    pub key: String,
+    /// The link as entered, or empty for a bare key.
+    pub url: String,
+    pub position: i32,
+    pub created_at: DateTime<Utc>,
+}
+
+/// The user's free-text note on a pull request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrNote {
+    pub pr: PrId,
+    pub note: String,
+    pub updated_at: DateTime<Utc>,
+}

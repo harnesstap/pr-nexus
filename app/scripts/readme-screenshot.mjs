@@ -6,8 +6,10 @@
 // `--width <px>` sets the viewport width (default 1440); `--out <path>` saves the
 // list view somewhere other than the README asset. `--tooltips <dir>` hovers a
 // few controls and saves tooltip-*.png crops showing the app tooltip open.
+// `--scenes <dir>` saves the project-info and star views (project dialog, JIRA
+// chips, note and star, starred pinned, Starred filter, compact rows, Settings).
 // Uses an installed Chrome; set CHROME_PATH to pick another Chromium binary.
-import { statSync } from "node:fs";
+import { mkdirSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -38,10 +40,21 @@ if (outFlag !== -1 && !listOut) {
   throw new Error("--out needs an output path");
 }
 const out = resolve(detailOut ?? listOut ?? resolve(appDir, "../docs/assets/screenshot-list.png"));
+const scenesFlag = process.argv.indexOf("--scenes");
+const scenesDir = scenesFlag === -1 ? null : process.argv[scenesFlag + 1];
+if (scenesFlag !== -1 && !scenesDir) {
+  throw new Error("--scenes needs an output directory");
+}
+/** A row's own button, not its star (both carry the title). */
+const rowButton = (title) => new RegExp(`^(?!Star |Unstar |Open ).*${title}`);
 const port = Number(process.env.SCREENSHOT_PORT ?? 1430);
 const url = `http://127.0.0.1:${port}/screenshot.html`;
 
-const vite = await createServer({ root: appDir, server: { port, strictPort: true, host: "127.0.0.1" }, logLevel: "warn" });
+const vite = await createServer({
+  root: appDir,
+  server: { port, strictPort: true, host: "127.0.0.1" },
+  logLevel: "warn",
+});
 await vite.listen();
 
 let browser;
@@ -53,16 +66,29 @@ try {
   await page.getByRole("group", { name: "Quick filters" }).waitFor();
   if (tooltipsDir) {
     await shootTooltips(page, tooltipsDir);
+  } else if (scenesDir) {
+    await scenes(page, resolve(scenesDir));
   } else if (detailOut) {
-    await page.getByRole("button", { name: draftOut ? /Show saved cards first/ : /Add address autocomplete to checkout/ }).first().click();
-    await page.getByTestId("detail-panel").getByRole("button", { name: /^Checks:/ }).waitFor();
+    await page
+      .getByRole("button", {
+        name: rowButton(draftOut ? "Show saved cards first" : "Add address autocomplete to checkout"),
+      })
+      .first()
+      .click();
+    await page
+      .getByTestId("detail-panel")
+      .getByRole("button", { name: /^Checks:/ })
+      .waitFor();
     if (draftOut) {
       await page.getByTestId("detail-panel").getByRole("button", { name: "Request review on Slack" }).waitFor();
     } else {
-      await page.getByTestId("detail-panel").getByRole("button", { name: /^Checks:/ }).click();
+      await page
+        .getByTestId("detail-panel")
+        .getByRole("button", { name: /^Checks:/ })
+        .click();
     }
   }
-  if (!tooltipsDir) {
+  if (!tooltipsDir && !scenesDir) {
     await page.waitForTimeout(500);
     await page.screenshot({ path: out });
     console.log(`wrote ${out} (${Math.round(statSync(out).size / 1024)} KB)`);
@@ -82,8 +108,14 @@ async function shootTooltips(page, dir) {
     [
       "detail-icon-button",
       async () => {
-        await page.getByRole("button", { name: /Add address autocomplete to checkout/ }).first().click();
-        await page.getByTestId("detail-panel").getByRole("button", { name: /^Checks:/ }).waitFor();
+        await page
+          .getByRole("button", { name: rowButton("Add address autocomplete to checkout") })
+          .first()
+          .click();
+        await page
+          .getByTestId("detail-panel")
+          .getByRole("button", { name: /^Checks:/ })
+          .waitFor();
         return page.getByTestId("detail-panel").getByRole("button", { name: "Close details" });
       },
     ],
@@ -107,4 +139,132 @@ async function shootTooltips(page, dir) {
     await page.screenshot({ path: file, clip });
     console.log(`wrote ${file}`);
   }
+}
+
+async function shot(page, path) {
+  await page.waitForTimeout(500);
+  await page.screenshot({ path });
+  console.log(`wrote ${path} (${Math.round(statSync(path).size / 1024)} KB)`);
+}
+
+async function scenes(page, dir) {
+  mkdirSync(dir, { recursive: true });
+  await shot(page, resolve(dir, "list-starred-pinned.png"));
+
+  await detailScenes(page, dir);
+
+  await page.getByRole("button", { name: "Filter menu" }).click();
+  const menu = page.getByRole("menu");
+  await menu.getByRole("button", { name: /^Grouping/ }).click();
+  await menu.getByRole("button", { name: /^(✓ )?Project$/ }).click();
+  await page.getByRole("button", { name: "Filter menu" }).click();
+  await page.getByText("ACME-123").first().waitFor();
+  await shot(page, resolve(dir, "project-jira-chips.png"));
+
+  await page.getByRole("button", { name: "Actions for Checkout redesign" }).click();
+  await page.getByRole("button", { name: "Edit auto-link rules" }).click();
+  await page.getByRole("textbox", { name: "Project description" }).waitFor();
+  await shot(page, resolve(dir, "project-dialog-description-jira.png"));
+  await page.keyboard.press("Escape");
+
+  await page
+    .getByRole("button", {
+      name: rowButton("Add address autocomplete to checkout"),
+    })
+    .first()
+    .click();
+  await page.getByTestId("detail-panel").getByRole("textbox", { name: "Note for this pull request" }).waitFor();
+  await page
+    .getByTestId("detail-panel")
+    .getByText("Waiting on Sam")
+    .waitFor()
+    .catch(() => undefined);
+  await shot(page, resolve(dir, "detail-note-star-compact-rows.png"));
+  await page.keyboard.press("Escape");
+
+  await page.getByRole("button", { name: "Filter menu" }).click();
+  await page.getByRole("menu").getByText("Starred only").click();
+  await page.getByRole("button", { name: "Filter menu" }).click();
+  await shot(page, resolve(dir, "starred-filter.png"));
+
+  await page
+    .getByRole("button", { name: /Settings/ })
+    .first()
+    .click();
+  await page.getByRole("tab", { name: "Review" }).click();
+  await page.getByRole("textbox", { name: "JIRA base URL" }).scrollIntoViewIfNeeded();
+  await shot(page, resolve(dir, "settings-jira-base-url.png"));
+}
+
+/** The merge card's draft action for a draft and a ready PR, and the stat cards at two widths. */
+async function detailScenes(page, dir) {
+  const panel = page.getByTestId("detail-panel");
+  await page
+    .getByRole("button", { name: rowButton("Show saved cards first") })
+    .first()
+    .click();
+  await panel.getByRole("button", { name: "Mark ready for review" }).waitFor();
+  await shot(page, resolve(dir, "detail-draft-draft.png"));
+  await panel.getByTestId("merge-verdict").screenshot({ path: resolve(dir, "detail-merge-draft-default.png") });
+  await page.setViewportSize({ width: 760, height: 900 });
+  await page.waitForTimeout(400);
+  await shot(page, resolve(dir, "detail-draft-draft-narrow.png"));
+  await panel.getByTestId("merge-verdict").screenshot({ path: resolve(dir, "detail-merge-draft-narrow.png") });
+  console.log(`merge card draft narrow: ${Math.round((await panel.getByTestId("merge-verdict").boundingBox()).width)}px`);
+  await page.setViewportSize({ width, height: 900 });
+  await page.waitForTimeout(400);
+  await page.keyboard.press("Escape");
+
+  await page
+    .getByRole("button", {
+      name: rowButton("Add address autocomplete to checkout"),
+    })
+    .first()
+    .click();
+  await panel.getByRole("button", { name: "Convert to draft" }).waitFor();
+  await shot(page, resolve(dir, "detail-draft-ready.png"));
+  await panel.getByTestId("merge-verdict").screenshot({ path: resolve(dir, "detail-merge-ready-default.png") });
+  await page.setViewportSize({ width: 760, height: 900 });
+  await page.waitForTimeout(400);
+  await shot(page, resolve(dir, "detail-draft-ready-narrow.png"));
+  await panel.getByTestId("merge-verdict").screenshot({ path: resolve(dir, "detail-merge-ready-narrow.png") });
+  console.log(`merge card ready narrow: ${Math.round((await panel.getByTestId("merge-verdict").boundingBox()).width)}px`);
+  await page.setViewportSize({ width, height: 900 });
+  await page.waitForTimeout(400);
+  await panel.getByTestId("stat-cards").screenshot({ path: resolve(dir, "detail-cards-default.png") });
+  console.log("wrote detail-cards-default.png");
+
+  const slack = panel.getByRole("region", { name: "Slack request" });
+  await slack.screenshot({ path: resolve(dir, "detail-slack-default.png") });
+  await page.setViewportSize({ width: 900, height: 900 });
+  await page.waitForTimeout(500);
+  await shot(page, resolve(dir, "detail-cards-narrow.png"));
+  await slack.screenshot({ path: resolve(dir, "detail-slack-narrow.png") });
+  await page.setViewportSize({ width, height: 900 });
+  await page.keyboard.press("Escape");
+
+  // Each Slack card state at the default and a narrow (~360px card) width.
+  for (const variant of ["requested", "bumpable", "replies", "long-channel"]) {
+    await page.evaluate((name) => {
+      globalThis.__slackVariant = name;
+    }, variant);
+    for (const [label, size] of [
+      ["default", width],
+      ["narrow", 760],
+    ]) {
+      await page.setViewportSize({ width: size, height: 900 });
+      await page
+        .getByRole("button", { name: rowButton("Add address autocomplete to checkout") })
+        .first()
+        .click();
+      const card = page.getByRole("region", { name: "Slack request" });
+      await card.waitFor();
+      await page.waitForTimeout(300);
+      await card.screenshot({ path: resolve(dir, `slack-card-${variant}-${label}.png`) });
+      console.log(`wrote slack-card-${variant}-${label}.png (${Math.round((await card.boundingBox()).width)}px)`);
+      await page.keyboard.press("Escape");
+    }
+  }
+  await page.setViewportSize({ width, height: 900 });
+  await page.keyboard.press("Escape");
 }

@@ -5,7 +5,7 @@ import type { SearchRow } from "./paging";
 import { memoryProjectApi } from "../memoryProjects";
 import { ProjectDialog } from "./ProjectDialog";
 
-const project: ProjectDto = { id: 1, name: "Auth", color: "#7c5cbf", archived: false, description: "", sort_order: 0 };
+const project: ProjectDto = { id: 1, name: "Auth", color: "#7c5cbf", archived: false, description: "", sort_order: 0 , jira_links: [] };
 
 function row(id: number, title: string, project_ids: number[]): SearchRow {
   return {
@@ -35,6 +35,7 @@ function row(id: number, title: string, project_ids: number[]): SearchRow {
     reviewers_requested: false,
     pending_reviewers: [],
     slack: null,
+    starred: false,
   };
 }
 
@@ -108,4 +109,40 @@ test("a rule-linked PR that is removed becomes excluded and can be restored", as
   fireEvent.click(await screen.findByRole("button", { name: "Restore Migrate login" }));
   expect(await screen.findByText("Rule")).toBeInTheDocument();
   expect(api.restorePr).toHaveBeenCalledWith(1, 1);
+});
+
+test("the description saves on blur and JIRA links add, reorder and remove", async () => {
+  const links = [
+    { id: 1, key: "ACME-1", url: "", href: "https://acme-labs.atlassian.net/browse/ACME-1" },
+    { id: 2, key: "ACME-2", url: "https://acme-labs.atlassian.net/browse/ACME-2", href: "https://acme-labs.atlassian.net/browse/ACME-2" },
+  ];
+  const memory = memoryProjectApi([], [project]);
+  const api = {
+    ...memory,
+    setProjectDescription: vi.fn((id: number, description: string) => Promise.resolve({ ...project, id, description })),
+    addJiraLink: vi.fn(() => Promise.resolve({ id: 3, key: "ACME-3", url: "", href: null })),
+    setJiraLinks: vi.fn((_id: number, input: { text?: string }[]) => Promise.resolve(input.map((item) => links.find((link) => (link.url || link.key) === item.text)!))),
+    removeJiraLink: vi.fn(() => Promise.resolve()),
+  } as unknown as Api & Record<"setProjectDescription" | "addJiraLink" | "setJiraLinks" | "removeJiraLink", ReturnType<typeof vi.fn>>;
+  const onChanged = vi.fn(() => Promise.resolve());
+  render(<ProjectDialog api={api} project={{ ...project, jira_links: links }} onClose={() => undefined} onChanged={onChanged} />);
+  const dialog = screen.getByRole("dialog", { name: "Auth" });
+
+  const description = within(dialog).getByRole("textbox", { name: "Project description" });
+  fireEvent.change(description, { target: { value: "Login revamp\nPhase two" } });
+  fireEvent.blur(description);
+  await waitFor(() => expect(api.setProjectDescription).toHaveBeenCalledWith(1, "Login revamp\nPhase two"));
+
+  fireEvent.click(within(dialog).getByRole("button", { name: "Move ACME-1 down" }));
+  await waitFor(() => expect(api.setJiraLinks).toHaveBeenCalledWith(1, [{ text: "https://acme-labs.atlassian.net/browse/ACME-2" }, { text: "ACME-1" }]));
+  expect(within(dialog).getByRole("button", { name: "Move ACME-2 up" })).toBeDisabled();
+
+  fireEvent.change(within(dialog).getByRole("textbox", { name: "Add JIRA key or link" }), { target: { value: "ACME-3" } });
+  fireEvent.click(within(dialog).getByRole("button", { name: "Add" }));
+  await waitFor(() => expect(api.addJiraLink).toHaveBeenCalledWith(1, { text: "ACME-3" }));
+  expect(await within(dialog).findByText(/No JIRA base URL set/)).toBeInTheDocument();
+
+  fireEvent.click(within(dialog).getByRole("button", { name: "Remove ACME-3" }));
+  await waitFor(() => expect(api.removeJiraLink).toHaveBeenCalledWith(3));
+  expect(within(dialog).queryByText("ACME-3")).toBeNull();
 });

@@ -23,7 +23,8 @@ export type ShortcutId =
   | "slack"
   | "github"
   | "filters"
-  | "project";
+  | "project"
+  | "star";
 
 type KeyEvent = Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey">;
 
@@ -53,7 +54,8 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { id: "selectAll", group: "Selection", keys: ["Mod+A"], label: "Select all", match: ["a"], mod: true },
   { id: "clear", group: "Selection", keys: ["Esc"], label: "Clear selection / close", match: ["Escape"] },
   { id: "request", group: "Actions", keys: ["r"], label: "Request review / bump on Slack", match: ["r"] },
-  { id: "slack", group: "Actions", keys: ["s"], label: "Open Slack request", match: ["s"] },
+  { id: "slack", group: "Actions", keys: ["s"], label: "Open Slack request", match: ["s"], shift: false },
+  { id: "star", group: "Actions", keys: ["Shift+s"], label: "Star / unstar PR", match: ["s"], shift: true },
   { id: "github", group: "Actions", keys: ["o"], label: "Open in GitHub", match: ["o"] },
   { id: "filters", group: "Actions", keys: ["f"], label: "View options and filters", match: ["f"] },
   { id: "project", group: "Actions", keys: ["p"], label: "Add to project", match: ["p"] },
