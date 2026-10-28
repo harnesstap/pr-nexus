@@ -5,7 +5,8 @@ import { Tooltip } from "../Tooltip";
 import { ReviewerAvatars } from "./ReviewerAvatars";
 import { QuickFilters } from "./QuickFilters";
 import { AddToProjectMenu } from "./AddToProjectMenu";
-import { isPlainShortcut, isTypingTarget, wantsRowEnter } from "./keys";
+import { isTypingTarget, wantsRowEnter } from "./keys";
+import { hint, matchShortcut, type ShortcutId } from "./shortcuts";
 import {
   ago,
   bulkIds,
@@ -87,6 +88,15 @@ interface Props {
   onBulkReview: (ids: number[]) => void;
   /** Draft flags changed in the app ahead of the reload, by PR id. */
   draftPatches?: Record<number, boolean>;
+  /** Filled with the list's actions so the command palette reuses them. */
+  actionsRef?: { current: ListActions | null };
+}
+
+/** What the command palette can ask of the list. */
+export interface ListActions {
+  run: (id: ShortcutId) => boolean;
+  focused: () => ListRow | null;
+  selectedCount: number;
 }
 
 const GROUPINGS: { id: Grouping; label: string }[] = [
@@ -128,6 +138,7 @@ export function PrList({
   onRequestReview,
   onBulkReview,
   draftPatches,
+  actionsRef,
 }: Props) {
   const [query, setQuery] = useState("");
   const [debounced, setDebounced] = useState("");
@@ -280,26 +291,32 @@ export function PrList({
     setSelected(next);
   }
 
-  useEffect(() => {
-    function onKey(event: KeyboardEvent) {
-      const target = event.target instanceof HTMLElement ? event.target : null;
-      const typing = isTypingTarget(target);
-      if (document.querySelector('[role="dialog"][aria-modal="true"]')) {
-        return;
+  /** Runs one registry action on the focused row or the selection; keys and the command palette share it. */
+  function runAction(id: ShortcutId, event?: KeyboardEvent): boolean {
+    const current = focus >= 0 ? flat[focus] : undefined;
+    switch (id) {
+      case "next":
+      case "prev": {
+        event?.preventDefault();
+        if (flat.length === 0) {
+          return true;
+        }
+        const next = Math.min(flat.length - 1, Math.max(0, focus + (id === "next" ? 1 : -1)));
+        setFocusIndex(next);
+        if (detailId !== null && flat[next].row.id !== detailId) {
+          onDetails(flat[next].row);
+        }
+        return true;
       }
-      if (event.key === "/" && !typing) {
-        event.preventDefault();
+      case "search":
+        event?.preventDefault();
         searchRef.current?.focus();
-        return;
-      }
-      if (event.key === "Escape" && target === searchRef.current) {
-        setQuery("");
-        return;
-      }
-      if (typing) {
-        return;
-      }
-      if (event.key === "Escape") {
+        return true;
+      case "selectAll":
+        event?.preventDefault();
+        setSelected(toggleParent(ids, selected));
+        return true;
+      case "clear":
         if (addMenu) {
           setAddMenu(false);
         } else if (sectionMenu !== null) {
@@ -307,75 +324,104 @@ export function PrList({
         } else if (selected.size > 0) {
           setSelected(new Set());
         }
-        return;
-      }
-      if (event.key === "a" && (event.metaKey || event.ctrlKey) && !event.altKey) {
-        event.preventDefault();
-        setSelected(toggleParent(ids, selected));
-        return;
-      }
-      // Cmd+R, Ctrl+F and the like belong to the system, not to the list.
-      if (!isPlainShortcut(event)) {
-        return;
-      }
-      const current = focus >= 0 ? flat[focus] : undefined;
-      // Shift+x reports "X" in a browser.
-      const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
-      // ↑/↓ also move while the detail panel is open, so it can step through PRs.
-      // Inside the panel the arrows still scroll it.
-      const arrow = detailId !== null && (key === "ArrowDown" || key === "ArrowUp") && !target?.closest("[data-detail-panel]");
-      if (((key === "j" || key === "k") && !event.shiftKey) || arrow) {
-        event.preventDefault();
-        if (flat.length === 0) {
-          return;
-        }
-        const delta = key === "j" || key === "ArrowDown" ? 1 : -1;
-        const next = Math.min(flat.length - 1, Math.max(0, focus + delta));
-        setFocusIndex(next);
-        if (detailId !== null && flat[next].row.id !== detailId) {
-          onDetails(flat[next].row);
-        }
-      } else if (key === "x" && event.shiftKey) {
+        return true;
+      case "toggleSection":
         if (current) {
           setSelected(toggleParent(current.section.ids, selected));
         }
-      } else if (key === "x") {
+        return true;
+      case "toggleRow":
         if (current) {
           toggleRow(current.row.id);
         }
-      } else if (key === "r") {
+        return true;
+      case "request":
         if (selected.size > 0) {
           requestSelection();
         } else if (current) {
           onRequestReview(current.row);
         }
-      } else if (key === "s") {
+        return true;
+      case "slack": {
         const link = current?.row.slack?.permalink;
         if (link) {
           onOpen(link);
         }
-      } else if (event.key === "Enter" && wantsRowEnter(target)) {
+        return true;
+      }
+      case "details":
         if (current) {
-          event.preventDefault();
+          event?.preventDefault();
           onDetails(current.row);
         }
-      } else if (key === "o") {
+        return true;
+      case "github": {
         const url = current?.row.url;
         if (url) {
           onOpen(url);
         }
-      } else if (key === "f") {
+        return true;
+      }
+      case "filters":
         setMenu((open) => (open ? null : "root"));
-      } else if (key === "p") {
+        return true;
+      case "project":
         // With nothing selected, P acts on the focused row.
         if (selected.size === 0 && current) {
           setSelected(new Set([current.row.id]));
         }
         if (selected.size > 0 || current) {
-          event.preventDefault();
+          event?.preventDefault();
           setAddMenu((open) => !open);
         }
+        return true;
+      case "palette":
+      case "help":
+        // Handled by the list screen.
+        return false;
+      default: {
+        const never: never = id;
+        return never;
       }
+    }
+  }
+
+  useEffect(() => {
+    if (actionsRef) {
+      actionsRef.current = { run: (id) => runAction(id), focused: () => (focus >= 0 ? (flat[focus]?.row ?? null) : null), selectedCount: selected.size };
+    }
+  });
+
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      const target = event.target instanceof HTMLElement ? event.target : null;
+      const typing = isTypingTarget(target);
+      if (document.querySelector('[role="dialog"][aria-modal="true"]')) {
+        return;
+      }
+      const id = matchShortcut(event);
+      if (id === "search" && !typing) {
+        runAction(id, event);
+        return;
+      }
+      if (event.key === "Escape" && target === searchRef.current) {
+        setQuery("");
+        return;
+      }
+      if (typing || id === null) {
+        return;
+      }
+      if ((id === "next" || id === "prev") && event.key.startsWith("Arrow")) {
+        // ↑/↓ also move while the detail panel is open, so it can step through PRs.
+        // Inside the panel the arrows still scroll it.
+        if (detailId === null || target?.closest("[data-detail-panel]")) {
+          return;
+        }
+      }
+      if (id === "details" && !wantsRowEnter(target)) {
+        return;
+      }
+      runAction(id, event);
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -694,7 +740,7 @@ export function PrList({
               {bulkIds(selected).length} selected{hidden > 0 ? ` (${hidden} hidden)` : ""}
             </span>
             <span aria-hidden="true" className="h-6 w-px bg-slate-700" />
-            <Tooltip label="Request / bump on Slack" shortcut="r" detail="Preview the review request for each selected PR before anything is sent" side="top">
+            <Tooltip label="Request / bump on Slack" shortcut={hint("request")} detail="Preview the review request for each selected PR before anything is sent" side="top">
               <button
                 type="button"
                 className="flex items-center gap-2 rounded-md bg-violet-600 px-4 py-1.5 font-medium text-white hover:bg-violet-500 disabled:bg-violet-500/40"
@@ -706,7 +752,7 @@ export function PrList({
               </button>
             </Tooltip>
             <div className="relative">
-              <Tooltip label="Add to project" shortcut="p" detail="Link the selected PRs to a project, or start a new one with them" side="top">
+              <Tooltip label="Add to project" shortcut={hint("project")} detail="Link the selected PRs to a project, or start a new one with them" side="top">
                 <button
                   type="button"
                   aria-haspopup="menu"
@@ -734,7 +780,7 @@ export function PrList({
                 />
               )}
             </div>
-            <Tooltip label="Clear selection" shortcut="Esc" detail="Unselect every PR in this view" side="top">
+            <Tooltip label="Clear selection" shortcut={hint("clear")} detail="Unselect every PR in this view" side="top">
               <button
                 type="button"
                 className="flex items-center gap-1.5 rounded-md border border-slate-700 px-4 py-1.5 text-slate-200 hover:bg-slate-800"
@@ -955,7 +1001,7 @@ function SlackMark({
       {row.slack?.workspace_name && <span className="text-slate-500">· {row.slack.workspace_name}</span>}
       {status.disabled && <span className="text-slate-500">· workspace disabled</span>}
       {link && (
-        <Tooltip label="Open in Slack" shortcut="s" detail="Jump to the review request thread" align="end">
+        <Tooltip label="Open in Slack" shortcut={hint("slack")} detail="Jump to the review request thread" align="end">
           <button
             type="button"
             aria-label={`Open Slack request for ${row.title}`}
@@ -1074,7 +1120,7 @@ function FilterMenu({
   }, [open, setMenu]);
   return (
     <div ref={ref} className="relative">
-      <Tooltip label="View options" shortcut="f" detail="Grouping, ordering, visible columns and filters" align="end">
+      <Tooltip label="View options" shortcut={hint("filters")} detail="Grouping, ordering, visible columns and filters" align="end">
         <button
           type="button"
           aria-label="Filter menu"
