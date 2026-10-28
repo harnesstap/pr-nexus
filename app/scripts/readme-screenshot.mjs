@@ -230,7 +230,7 @@ async function detailScenes(page, dir) {
   // Each Slack card state at the default and a narrow (~360px card) width.
   for (const variant of ["requested", "bumpable", "replies", "long-channel"]) {
     await page.evaluate((name) => {
-      window.__slackVariant = name;
+      globalThis.__slackVariant = name;
     }, variant);
     for (const [label, size] of [
       ["default", width],
