@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import type { SlackWorkspace, SyncStatus } from "../api";
 import { ago, liveLabel, syncLabel } from "./model";
+import { Tooltip } from "../Tooltip";
 
 /** What the sync error banner says, or null when sync is fine (§6). */
 export interface SyncProblem {
@@ -159,15 +160,16 @@ export function SyncPopover({ sync, now, prCount, onSync, onFullResync, onClose 
         <button type="button" disabled={syncing} className="flex-1 rounded bg-violet-500 px-2 py-1.5 font-medium text-white hover:bg-violet-400 disabled:opacity-50" onClick={onSync}>
           {syncing ? "Syncing…" : "Sync now"}
         </button>
-        <button
-          type="button"
-          disabled={syncing}
-          title="Re-read every open PR from GitHub, not only what changed. Runs on its own at start and every 6 hours."
-          className="flex-1 rounded border border-slate-600 px-2 py-1.5 text-slate-200 hover:bg-slate-800 disabled:opacity-50"
-          onClick={onFullResync}
-        >
-          Full resync
-        </button>
+        <Tooltip label="Full resync" detail="Re-read every open PR from GitHub, not only what changed. Runs on its own at start and every 6 hours." className="flex-1" side="top">
+          <button
+            type="button"
+            disabled={syncing}
+            className="w-full rounded border border-slate-600 px-2 py-1.5 text-slate-200 hover:bg-slate-800 disabled:opacity-50"
+            onClick={onFullResync}
+          >
+            Full resync
+          </button>
+        </Tooltip>
       </div>
     </div>
   );

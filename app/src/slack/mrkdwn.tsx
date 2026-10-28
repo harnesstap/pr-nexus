@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { Tooltip } from "../Tooltip";
 
 /** Common shortcodes; unknown ones stay as `:name:`, like Slack without the emoji. */
 export const EMOJI: Record<string, string> = {
@@ -183,9 +184,11 @@ function renderSpans(spans: Span[], onOpen: (url: string) => void): ReactNode[] 
         );
       case "emoji":
         return (
-          <span key={index} role="img" aria-label={span.name} title={`:${span.name}:`}>
-            {span.text}
-          </span>
+          <Tooltip key={index} label={`:${span.name}:`}>
+            <span role="img" aria-label={span.name}>
+              {span.text}
+            </span>
+          </Tooltip>
         );
       default: {
         const never: never = span;

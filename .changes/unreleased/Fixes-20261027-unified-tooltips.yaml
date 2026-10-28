@@ -1,0 +1,3 @@
+kind: Fixes
+body: Every tooltip now uses the app's dark styled tooltip instead of the grey OS one from HTML `title` attributes (list row Slack cell, status pills, repo names, project badges and more). Tooltips render above scroll containers, flip near window edges, and a lint rule blocks new `title` tooltips.
+time: 2026-10-28T08:30:00.000000Z

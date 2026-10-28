@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { Api, MappingFile } from "../api";
 import { errorMessage } from "../api";
+import { Tooltip } from "../Tooltip";
 
 interface Props {
   api: Pick<Api, "pickMappingFile">;
@@ -41,9 +42,11 @@ export function MappingFileButton({ api, onLoaded, onError, file, disabled }: Pr
         Choose file…
       </button>
       {file ? (
-        <span className="truncate" title={file.path}>
-          Loaded <span className="font-mono text-slate-300">{file.name}</span>
-        </span>
+        <Tooltip label={file.path} align="start" className="min-w-0">
+          <span className="truncate">
+            Loaded <span className="font-mono text-slate-300">{file.name}</span>
+          </span>
+        </Tooltip>
       ) : (
         <span>or paste the CSV above.</span>
       )}

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Api, AppInfo, UpdateInfo } from "../api";
 import { errorMessage } from "../api";
+import { Tooltip } from "../Tooltip";
 
 interface Props {
   api: Api;
@@ -166,8 +167,10 @@ function PathRow({ label, value, onCopy }: { label: string; value: string; onCop
   return (
     <>
       <dt className="text-slate-400">{label}</dt>
-      <dd className="truncate font-mono text-xs" title={value}>
-        {value}
+      <dd className="min-w-0">
+        <Tooltip label={value} align="start" className="max-w-full">
+          <span className="truncate font-mono text-xs">{value}</span>
+        </Tooltip>
       </dd>
       <dd>
         <button type="button" aria-label={`Copy ${label.toLowerCase()}`} className="rounded px-2 py-0.5 text-xs hover:bg-slate-800" onClick={() => onCopy(label.toLowerCase(), value)}>

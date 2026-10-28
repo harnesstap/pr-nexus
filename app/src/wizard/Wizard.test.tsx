@@ -369,7 +369,7 @@ test("the mapping step loads a CSV from the file dialog and imports it", async (
     />,
   );
   fireEvent.click(screen.getByRole("button", { name: "Choose file…" }));
-  expect(await screen.findByTitle("/home/ada/acme-teams.csv")).toHaveTextContent("Loaded acme-teams.csv");
+  expect(await screen.findByText((_, element) => element?.className === "truncate" && element.textContent === "Loaded acme-teams.csv")).toHaveAccessibleDescription("/home/ada/acme-teams.csv");
   expect(screen.getByRole("textbox", { name: /Mapping CSV/ })).toHaveValue(csv);
   fireEvent.click(screen.getByRole("button", { name: "Import & next" }));
   expect(await screen.findByRole("heading", { name: /Done/ })).toBeInTheDocument();

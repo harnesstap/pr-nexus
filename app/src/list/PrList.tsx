@@ -483,17 +483,18 @@ export function PrList({
               committing={commitRename}
             />
           ) : (
-            <h1
-              className="text-lg font-semibold"
-              title={currentProject !== null ? "Double-click to rename" : undefined}
-              onDoubleClick={() => {
-                if (currentProject !== null && projects.some((project) => project.id === currentProject)) {
-                  setEditing({ id: currentProject, where: "title", name: viewTitle(viewKey, projects), error: null });
-                }
-              }}
-            >
-              {viewTitle(viewKey, projects)}
-            </h1>
+            <Tooltip label={currentProject !== null ? "Double-click to rename" : null} align="start">
+              <h1
+                className="text-lg font-semibold"
+                onDoubleClick={() => {
+                  if (currentProject !== null && projects.some((project) => project.id === currentProject)) {
+                    setEditing({ id: currentProject, where: "title", name: viewTitle(viewKey, projects), error: null });
+                  }
+                }}
+              >
+                {viewTitle(viewKey, projects)}
+              </h1>
+            </Tooltip>
           )}
           {editing?.error && editing.where === "title" && <p className="text-xs text-rose-300">{editing.error}</p>}
           <p className="text-sm text-slate-400">{page ? summaryText(page.summary, viewKey, syncProgress) : (syncProgress ?? "\u00a0")}</p>
@@ -620,17 +621,18 @@ export function PrList({
                     committing={commitRename}
                   />
                 ) : (
-                  <span
-                    className="text-sm font-medium"
-                    title={section.projectId !== null ? "Double-click to rename" : undefined}
-                    onDoubleClick={() => {
-                      if (section.projectId !== null) {
-                        setEditing({ id: section.projectId, where: "section", name: section.title, error: null });
-                      }
-                    }}
-                  >
-                    {section.title}
-                  </span>
+                  <Tooltip label={section.projectId !== null ? "Double-click to rename" : null} align="start">
+                    <span
+                      className="text-sm font-medium"
+                      onDoubleClick={() => {
+                        if (section.projectId !== null) {
+                          setEditing({ id: section.projectId, where: "section", name: section.title, error: null });
+                        }
+                      }}
+                    >
+                      {section.title}
+                    </span>
+                  </Tooltip>
                 )}
                 <span className="text-xs text-slate-500">({section.count})</span>
                 {editing?.error && editing.where === "section" && editing.id === section.projectId && (
@@ -1031,24 +1033,27 @@ function SlackCell({ row, now, showMissing, onOpen }: { row: ListRow; now: Date;
   const look = "flex items-center gap-1 whitespace-nowrap text-xs tabular-nums";
   if (slack.sent && permalink) {
     return (
-      <button
-        type="button"
-        aria-label={`Open Slack request for ${row.title}: ${slack.title}`}
-        title={slack.title}
-        className={`${look} rounded text-slate-300 hover:text-slate-100`}
-        onClick={(event) => {
-          event.stopPropagation();
-          onOpen(permalink);
-        }}
-      >
-        {content}
-      </button>
+      <Tooltip label={slack.title} align="end">
+        <button
+          type="button"
+          aria-label={`Open Slack request for ${row.title}: ${slack.title}`}
+          className={`${look} rounded text-slate-300 hover:text-slate-100`}
+          onClick={(event) => {
+            event.stopPropagation();
+            onOpen(permalink);
+          }}
+        >
+          {content}
+        </button>
+      </Tooltip>
     );
   }
   return (
-    <span title={slack.title} aria-label={slack.title} role="img" className={`${look} ${slack.sent ? "text-slate-300" : "text-slate-600"}`}>
-      {content}
-    </span>
+    <Tooltip label={slack.title} align="end">
+      <span aria-label={slack.title} role="img" className={`${look} ${slack.sent ? "text-slate-300" : "text-slate-600"}`}>
+        {content}
+      </span>
+    </Tooltip>
   );
 }
 
@@ -1092,14 +1097,15 @@ function Threads({ row }: { row: ListRow }) {
   }
   const { title } = threadsLabel(row.unresolved_threads, row.total_threads);
   return (
-    <span
-      className={`flex shrink-0 items-center gap-1 text-xs tabular-nums ${row.unresolved_threads > 0 ? "text-slate-300" : "text-slate-500"}`}
-      title={title}
-      aria-label={title}
-    >
-      <CommentIcon size={14} />
-      {text}
-    </span>
+    <Tooltip label={title} className="shrink-0">
+      <span
+        className={`flex shrink-0 items-center gap-1 text-xs tabular-nums ${row.unresolved_threads > 0 ? "text-slate-300" : "text-slate-500"}`}
+        aria-label={title}
+      >
+        <CommentIcon size={14} />
+        {text}
+      </span>
+    </Tooltip>
   );
 }
 
@@ -1111,22 +1117,25 @@ const PILL_SPECS: Record<RowPill, { label: string; title: string; className: str
 function RowPillTag({ pill }: { pill: RowPill }) {
   const spec = PILL_SPECS[pill];
   return (
-    <span title={spec.title} className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-1.5 text-[11px] leading-4 ${spec.className}`}>
-      {spec.icon}
-      {spec.label}
-    </span>
+    <Tooltip label={spec.title} className="shrink-0">
+      <span className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-1.5 text-[11px] leading-4 ${spec.className}`}>
+        {spec.icon}
+        {spec.label}
+      </span>
+    </Tooltip>
   );
 }
 
 function StaleChip({ cue }: { cue: StaleCue }) {
   return (
-    <span
-      title={cue.title}
-      className={`inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 text-[11px] leading-4 ${cue.kind === "waiting" ? "bg-amber-500/15 text-amber-300" : "bg-slate-800 text-slate-400"}`}
-    >
-      <ClockIcon size={12} />
-      {cue.label}
-    </span>
+    <Tooltip label={cue.title} className="shrink-0">
+      <span
+        className={`inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 text-[11px] leading-4 ${cue.kind === "waiting" ? "bg-amber-500/15 text-amber-300" : "bg-slate-800 text-slate-400"}`}
+      >
+        <ClockIcon size={12} />
+        {cue.label}
+      </span>
+    </Tooltip>
   );
 }
 
@@ -1147,21 +1156,20 @@ function TitleLine({ row, view, now, onDetails }: { row: ListRow; view: SavedVie
   return (
     <div className="flex min-w-0 items-center gap-2 text-sm">
       {view.show.numberTitle && (
-        <button type="button" className="min-w-0 truncate text-left hover:underline" title="Readiness and code owners (Enter)" onClick={() => onDetails(row)}>
-          <span className="text-slate-500">#{row.number}</span> {row.title}
-        </button>
+        <Tooltip label="Readiness and code owners" shortcut="Enter" align="start" className="min-w-0">
+          <button type="button" className="min-w-0 truncate text-left hover:underline" onClick={() => onDetails(row)}>
+            <span className="text-slate-500">#{row.number}</span> {row.title}
+          </button>
+        </Tooltip>
       )}
       {row.state !== "open" && (
         <span className="shrink-0 rounded bg-slate-800 px-1 text-xs text-slate-300">{row.state === "merged" ? "Merged" : "Closed"}</span>
       )}
       <RowCues row={row} now={now} />
       {view.show.badges && row.project_ids.length > 1 && (
-        <span
-          className="shrink-0 rounded bg-slate-800 px-1 text-xs text-slate-400"
-          title={`Also in ${row.project_ids.length - 1} other project${row.project_ids.length > 2 ? "s" : ""}`}
-        >
-          +{row.project_ids.length - 1}
-        </span>
+        <Tooltip label={`Also in ${row.project_ids.length - 1} other project${row.project_ids.length > 2 ? "s" : ""}`} className="shrink-0">
+          <span className="shrink-0 rounded bg-slate-800 px-1 text-xs text-slate-400">+{row.project_ids.length - 1}</span>
+        </Tooltip>
       )}
     </div>
   );
@@ -1193,9 +1201,11 @@ function CompactRow({ row, view, now, onDetails, onOpen }: { row: ListRow; view:
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-start gap-1.5 text-sm leading-snug">
           {view.show.numberTitle && (
-            <button type="button" className="line-clamp-2 min-w-0 text-left break-words hover:underline" title={fullTitle} onClick={() => onDetails(row)}>
-              <span className="text-slate-500">#{row.number}</span> {row.title}
-            </button>
+            <Tooltip label={fullTitle} align="start" className="min-w-0">
+              <button type="button" className="line-clamp-2 min-w-0 text-left break-words hover:underline" onClick={() => onDetails(row)}>
+                <span className="text-slate-500">#{row.number}</span> {row.title}
+              </button>
+            </Tooltip>
           )}
           {row.state !== "open" && (
             <span className="shrink-0 rounded bg-slate-800 px-1 text-xs text-slate-300">{row.state === "merged" ? "Merged" : "Closed"}</span>
@@ -1203,9 +1213,9 @@ function CompactRow({ row, view, now, onDetails, onOpen }: { row: ListRow; view:
         </div>
         <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-slate-500">
           {view.show.repo && (
-            <span className="max-w-[16rem] truncate" title={row.repo}>
-              {row.repo}
-            </span>
+            <Tooltip label={row.repo} align="start" className="min-w-0 max-w-[16rem]">
+              <span className="truncate">{row.repo}</span>
+            </Tooltip>
           )}
           {view.show.ci && (
             <>
@@ -1218,9 +1228,11 @@ function CompactRow({ row, view, now, onDetails, onOpen }: { row: ListRow; view:
       </div>
       <div className="flex shrink-0 items-center gap-1.5 pt-0.5 text-xs text-slate-400">
         {review && (
-          <span className="flex h-4 w-3 items-center justify-center" title={review} aria-label={review} role="img">
-            <Dot tone={reviewTone(row.review_decision)} />
-          </span>
+          <Tooltip label={review} align="end">
+            <span className="flex h-4 w-3 items-center justify-center" aria-label={review} role="img">
+              <Dot tone={reviewTone(row.review_decision)} />
+            </span>
+          </Tooltip>
         )}
         {view.show.threads && <Threads row={row} />}
         <SlackCell row={row} now={now} showMissing={view.show.notRequested} onOpen={onOpen} />
