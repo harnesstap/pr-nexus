@@ -285,6 +285,24 @@ export function ago(iso: string, now: Date): string {
   return `${Math.round(days / 7)}w ago`;
 }
 
+/** The live-updates line in the sync details panel (§6), or null to hide it. */
+export function liveLabel(sync: SyncStatus, now: Date): string | null {
+  const live = sync.live;
+  if (!live || live.state === "demo") {
+    return null;
+  }
+  switch (live.state) {
+    case "off":
+      return "Live updates off";
+    case "unavailable":
+      return live.detail ?? "Live updates unavailable: falls back to periodic sync";
+    case "active":
+      return live.checked_at ? `Live updates on · checked ${ago(live.checked_at, now)}` : "Live updates on";
+    default:
+      return "Live updates starting…";
+  }
+}
+
 export function syncLabel(sync: SyncStatus, now: Date): string {
   if (sync.phase === "demo") {
     return "Demo data · sync off";

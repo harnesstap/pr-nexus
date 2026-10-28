@@ -6,6 +6,7 @@ mod demo;
 mod error;
 mod explain;
 mod listing;
+mod live;
 mod logging;
 mod mapping_file;
 mod preferences;
@@ -44,6 +45,7 @@ pub fn run() {
             });
             let shared = Arc::new(state::AppState::open(path)?);
             state::spawn_scheduler(Arc::clone(&shared));
+            live::spawn(Arc::clone(&shared));
             let tokens = Arc::clone(&shared);
             tauri::async_runtime::spawn(async move { slack::validate_tokens(&tokens).await });
             app.manage(shared);

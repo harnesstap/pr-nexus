@@ -5,6 +5,7 @@
 pub mod domain;
 pub mod error;
 pub mod linking;
+pub mod live;
 pub mod mapping;
 pub mod onboarding;
 pub mod overview;

@@ -3,6 +3,7 @@ import type { Api, Preferences } from "../api";
 import { errorMessage } from "../api";
 import { toMinutes } from "./tabs";
 import { plainText } from "../textInput";
+import { Tooltip } from "../Tooltip";
 
 interface Props {
   api: Api;
@@ -100,6 +101,21 @@ export function PreferencesForm({ api, prefs, section, onSaved }: Props) {
         </>
       ) : (
         <>
+          <div>
+            <Tooltip
+              label="Live updates"
+              detail="Watch your GitHub notifications and refresh only the PRs they mention, about once a minute. Unchanged checks cost nothing against the rate limit. Notifications are never marked as read."
+              align="start"
+            >
+              <label className="flex w-fit items-center gap-2 text-sm">
+                <input type="checkbox" checked={draft.live_updates} onChange={(event) => patch({ live_updates: event.target.checked })} />
+                Live updates
+              </label>
+            </Tooltip>
+            <p className="mt-1 text-xs text-slate-500">
+              Near-real-time refresh between syncs. Needs a classic token or the GitHub CLI; other tokens fall back to the periodic sync.
+            </p>
+          </div>
           <Field label="Sync every (minutes, window focused)" help="1 to 60 minutes.">
             <input {...plainText}
               className={input}

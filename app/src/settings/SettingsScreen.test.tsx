@@ -318,3 +318,20 @@ test("Sync blocks out-of-range values before they reach the backend", async () =
   await Promise.resolve();
   expect(saved).toEqual([]);
 });
+
+test("Sync has a Live updates toggle, on by default, that saves off", async () => {
+  const saved: Preferences[] = [];
+  const api = fakeSettingsApi({
+    savePreferences: (prefs) => {
+      saved.push(prefs);
+      return Promise.resolve(prefs);
+    },
+  }) as Api;
+  render(<Harness api={api} start="sync" />);
+  const toggle = await screen.findByRole("checkbox", { name: "Live updates" });
+  expect(toggle).toBeChecked();
+  fireEvent.click(toggle);
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  expect(await screen.findByText("Saved.")).toBeInTheDocument();
+  expect(saved).toEqual([{ ...DEFAULT_PREFERENCES, live_updates: false }]);
+});

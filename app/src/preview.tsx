@@ -49,6 +49,7 @@ const boot: Bootstrap = {
     synced_at: new Date(Date.now() - 2 * 60 * 1000).toISOString(),
     paused: false,
     revision: 0,
+    live: { state: "demo", checked_at: null, detail: null },
   },
   env_token: false,
   oauth_client_configured: false,

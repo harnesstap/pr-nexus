@@ -1,0 +1,13 @@
+query PullRequestByNumber($owner: String!, $name: String!, $number: Int!) {
+  rateLimit {
+    limit
+    remaining
+    resetAt
+    cost
+  }
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      ...PrFields
+    }
+  }
+}

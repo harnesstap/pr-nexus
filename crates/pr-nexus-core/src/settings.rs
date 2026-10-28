@@ -25,6 +25,10 @@ pub const UNFOCUSED_INTERVAL: &str = "sync.unfocused_interval_s";
 pub const RATE_BUDGET: &str = "github.rate_budget";
 /// Incremental sync's high-water mark (§6), see [`SyncMark`].
 pub const SYNC_MARK: &str = "sync.mark";
+/// Live updates from the notifications inbox (§6), on by default.
+pub const LIVE_ENABLED: &str = "live.enabled";
+/// Where the notifications poll stopped, see [`LiveMark`].
+pub const LIVE_MARK: &str = "live.mark";
 pub const SLACK_CLIENT_ID: &str = "slack.mcp.client_id";
 pub const SLACK_REDIRECT: &str = "slack.mcp.redirect_uri";
 pub const BLOCKED_IS_READY: &str = "review.blocked_review_required_is_ready";
@@ -135,6 +139,52 @@ pub fn set_sync_mark(store: &Store, mark: &SyncMark) -> Result<(), CoreError> {
             rollup_at: mark.rollup_at.to_rfc3339(),
         },
     )
+}
+
+/// The notifications poll's position: the inbox `Last-Modified` (sent back
+/// as `If-Modified-Since`) and the newest thread `updated_at` handled.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveMark {
+    pub last_modified: Option<String>,
+    pub watermark: DateTime<Utc>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct StoredLiveMark {
+    last_modified: Option<String>,
+    watermark: String,
+}
+
+pub fn live_mark(store: &Store) -> Result<Option<LiveMark>, CoreError> {
+    let Ok(Some(stored)) = get_json::<StoredLiveMark>(store, LIVE_MARK) else {
+        return Ok(None);
+    };
+    let Ok(watermark) = parse_time(&stored.watermark) else {
+        return Ok(None);
+    };
+    Ok(Some(LiveMark {
+        last_modified: stored.last_modified,
+        watermark,
+    }))
+}
+
+pub fn set_live_mark(store: &Store, mark: &LiveMark) -> Result<(), CoreError> {
+    put_json(
+        store,
+        LIVE_MARK,
+        &StoredLiveMark {
+            last_modified: mark.last_modified.clone(),
+            watermark: mark.watermark.to_rfc3339(),
+        },
+    )
+}
+
+pub fn live_updates(store: &Store) -> Result<bool, CoreError> {
+    json_or(store, LIVE_ENABLED, true)
+}
+
+pub fn set_live_updates(store: &Store, on: bool) -> Result<(), CoreError> {
+    put_json(store, LIVE_ENABLED, &on)
 }
 
 pub fn keep_closed_days(store: &Store) -> Result<i64, CoreError> {
@@ -263,6 +313,13 @@ pub struct Preferences {
     pub focused_interval_s: u64,
     pub unfocused_interval_s: u64,
     pub keep_closed_days: i64,
+    /// Older clients do not send it: keep live updates on.
+    #[serde(default = "live_default")]
+    pub live_updates: bool,
+}
+
+fn live_default() -> bool {
+    true
 }
 
 pub const MIN_BUMP_HOURS: std::ops::RangeInclusive<i64> = 1..=168;
@@ -282,6 +339,7 @@ pub fn preferences(store: &Store) -> Result<Preferences, CoreError> {
         focused_interval_s: focused_interval_s(store)?,
         unfocused_interval_s: unfocused_interval_s(store)?,
         keep_closed_days: keep_closed_days(store)?,
+        live_updates: live_updates(store)?,
     })
 }
 
@@ -348,6 +406,7 @@ pub fn save_preferences(store: &Store, prefs: &Preferences) -> Result<Preference
     put_json(store, FOCUSED_INTERVAL, &prefs.focused_interval_s)?;
     put_json(store, UNFOCUSED_INTERVAL, &prefs.unfocused_interval_s)?;
     put_json(store, KEEP_CLOSED_DAYS, &prefs.keep_closed_days)?;
+    put_json(store, LIVE_ENABLED, &prefs.live_updates)?;
     preferences(store)
 }
 
@@ -494,6 +553,7 @@ mod tests {
             focused_interval_s: 120,
             unfocused_interval_s: 1800,
             keep_closed_days: 14,
+            live_updates: false,
         };
         let saved = save_preferences(&store, &prefs).unwrap();
         assert_eq!(saved.review_requester, "for Ada Acme");

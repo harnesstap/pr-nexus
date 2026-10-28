@@ -10,6 +10,7 @@ import {
   dragIds,
   parseDragIds,
   hiddenSelectedCount,
+  liveLabel,
   parseViewState,
   renameError,
   syncLabel,
@@ -131,4 +132,17 @@ test("bulk toast counts outcomes and drops zero counts", () => {
   expect(bulkToast(done("sent", "sent", "failed"))).toBe("Slack: 2 sent · 1 failed");
   expect(bulkToast(done("skipped"))).toBe("Slack: 1 skipped");
   expect(bulkToast(done())).toBe("Slack: nothing sent");
+});
+
+test("the live line says active with its last check, off, or why it is unavailable", () => {
+  const now = new Date("2026-10-26T00:05:00Z");
+  const base = { phase: "ok", message: "Synced", synced_at: null, paused: false, revision: 0 };
+  expect(liveLabel(base, now)).toBeNull();
+  expect(liveLabel({ ...base, live: { state: "demo", checked_at: null, detail: null } }, now)).toBeNull();
+  expect(liveLabel({ ...base, live: { state: "active", checked_at: "2026-10-26T00:02:00Z", detail: null } }, now)).toBe(
+    "Live updates on · checked 3m ago",
+  );
+  expect(liveLabel({ ...base, live: { state: "off", checked_at: null, detail: null } }, now)).toBe("Live updates off");
+  const reason = "Live updates unavailable with this token type: falls back to periodic sync";
+  expect(liveLabel({ ...base, live: { state: "unavailable", checked_at: null, detail: reason } }, now)).toBe(reason);
 });

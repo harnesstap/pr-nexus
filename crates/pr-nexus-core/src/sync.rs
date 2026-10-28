@@ -663,7 +663,7 @@ impl EarlyRows {
 /// Writes a pull request or its repository only when what would be stored
 /// differs from what is stored, so an unchanged row costs no transaction
 /// and no list refresh.
-struct Writer<'a> {
+pub(crate) struct Writer<'a> {
     store: &'a Store,
     account_id: AccountId,
     now: DateTime<Utc>,
@@ -676,7 +676,7 @@ struct Writer<'a> {
 }
 
 impl<'a> Writer<'a> {
-    fn new(
+    pub(crate) fn new(
         store: &'a Store,
         account_id: AccountId,
         now: DateTime<Utc>,
@@ -701,16 +701,16 @@ impl<'a> Writer<'a> {
         })
     }
 
-    fn updated(&self) -> usize {
+    pub(crate) fn updated(&self) -> usize {
         self.changed.len()
     }
 
-    fn rows(&self) -> impl Iterator<Item = &PullRequest> {
+    pub(crate) fn rows(&self) -> impl Iterator<Item = &PullRequest> {
         self.order.iter().filter_map(|id| self.rows.get(id))
     }
 
     /// A stored row as a [`SyncedPullRequest`], with its repository's facts.
-    fn synced_from(&self, pr: PullRequest) -> SyncedPullRequest {
+    pub(crate) fn synced_from(&self, pr: PullRequest) -> SyncedPullRequest {
         let repo = self
             .repos
             .get(&(pr.repo.owner.clone(), pr.repo.name.clone()));
@@ -722,7 +722,7 @@ impl<'a> Writer<'a> {
         }
     }
 
-    fn write(&mut self, item: &SyncedPullRequest) -> Result<bool, CoreError> {
+    pub(crate) fn write(&mut self, item: &SyncedPullRequest) -> Result<bool, CoreError> {
         let mut pr = item.pull_request.clone();
         pr.remote.account = self.account_id;
         pr.hidden = false;
@@ -768,7 +768,7 @@ impl<'a> Writer<'a> {
         Ok(true)
     }
 
-    fn set_hidden(&mut self, pr: &PullRequest, hidden: bool) -> Result<(), CoreError> {
+    pub(crate) fn set_hidden(&mut self, pr: &PullRequest, hidden: bool) -> Result<(), CoreError> {
         self.store.set_pull_request_hidden(pr.id, hidden)?;
         if let Some(row) = self.rows.get_mut(&pr.remote.id) {
             row.hidden = hidden;
