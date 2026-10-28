@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import type { ListRow, ProjectDto } from "../api";
-import { ChevronDownIcon, ChevronRightIcon, CloseIcon, CommentIcon, ExternalIcon, FolderPlusIcon, FunnelIcon, MoreIcon, SearchIcon, SlackIcon } from "../icons";
+import { AlertIcon, ChevronDownIcon, ChevronRightIcon, ClockIcon, CloseIcon, CommentIcon, DraftIcon, ExternalIcon, FolderPlusIcon, FunnelIcon, MoreIcon, SearchIcon, SlackIcon } from "../icons";
 import { Tooltip } from "../Tooltip";
 import { ReviewerAvatars } from "./ReviewerAvatars";
 import { QuickFilters } from "./QuickFilters";
@@ -43,6 +43,7 @@ import { setDragBadge } from "./dragBadge";
 import { pageIds, summaryText, type Elsewhere, type PageDto, type PageEntry, type PageRequest, type PageSection } from "./paging";
 import { usePagedList, type PageParams } from "./usePagedList";
 import { plainText } from "../textInput";
+import { commentsText, compactSlack, rowPills, staleCue, viewEmptyState, type RowPill, type StaleCue } from "./rowCues";
 
 /** A section as drawn: its loaded rows, plus counts and ids over every match. */
 type ShownSection = Section & { count: number; ids: number[] };
@@ -88,6 +89,8 @@ interface Props {
   onBulkReview: (ids: number[]) => void;
   /** Draft flags changed in the app ahead of the reload, by PR id. */
   draftPatches?: Record<number, boolean>;
+  /** Opens Settings, from the "no open PRs" empty state. */
+  onOpenSettings?: () => void;
   /** Filled with the list's actions so the command palette reuses them. */
   actionsRef?: { current: ListActions | null };
 }
@@ -98,6 +101,22 @@ export interface ListActions {
   focused: () => ListRow | null;
   selectedCount: number;
 }
+
+/** Controls inside a row that keep their own click behaviour. */
+const ROW_CONTROLS = "a, button, input, select, textarea, label, summary, [role='button'], [role='menu'], [role='menuitem'], [role='checkbox'], [tabindex]";
+
+/** Whether a click on a row should open its detail panel: not on a control, not ending a text selection. */
+export function rowClickOpens(target: EventTarget, row: Element): boolean {
+  const control = target instanceof Element ? target.closest(ROW_CONTROLS) : null;
+  if (control && control !== row && row.contains(control)) {
+    return false;
+  }
+  const selection = window.getSelection();
+  return !selection || selection.isCollapsed;
+}
+
+/** Below this list width rows switch to the compact two-line layout. */
+const COMPACT_LIST_PX = 820;
 
 const GROUPINGS: { id: Grouping; label: string }[] = [
   { id: "project", label: "Project" },
@@ -113,6 +132,8 @@ const ORDERINGS: { id: Ordering; label: string }[] = [
   { id: "slack", label: "Last Slack request" },
   { id: "readiness", label: "Readiness" },
   { id: "number", label: "Number" },
+  { id: "waiting", label: "Waiting longest" },
+  { id: "bumped", label: "Last bumped" },
 ];
 
 export function PrList({
@@ -139,6 +160,7 @@ export function PrList({
   onBulkReview,
   draftPatches,
   actionsRef,
+  onOpenSettings,
 }: Props) {
   const [query, setQuery] = useState("");
   const [debounced, setDebounced] = useState("");
@@ -216,6 +238,21 @@ export function PrList({
   const inView = page?.in_view ?? 0;
   const searching = query.trim() !== "" && (query.trim() !== debounced || list.pending);
   const { loadMore, hasMore, loadingMore } = list;
+  const [narrow, setNarrow] = useState(false);
+  // The panel takes most of the width; a narrow window does the same.
+  const compact = detailId !== null || narrow;
+  const viewEmpty = page ? viewEmptyState(viewKey, inView, query.trim() !== "", filtersActive(view.filters)) : { kind: "rows" as const };
+  const showSections = viewEmpty.kind === "rows" || viewEmpty.kind === "empty_project";
+
+  useEffect(() => {
+    const root = listRef.current;
+    if (!root || typeof ResizeObserver === "undefined") {
+      return;
+    }
+    const observer = new ResizeObserver(() => setNarrow(root.clientWidth < COMPACT_LIST_PX));
+    observer.observe(root);
+    return () => observer.disconnect();
+  }, []);
 
   // Infinite scroll: load the next page when the sentinel nears the viewport.
   useEffect(() => {
@@ -435,7 +472,7 @@ export function PrList({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <header className="flex items-start justify-between gap-4 px-4 py-3">
-        <div>
+        <div className="shrink-0">
           {currentProject !== null && editing?.id === currentProject && editing.where === "title" ? (
             <RenameField
               label={`Rename ${viewTitle(viewKey, projects)}`}
@@ -462,8 +499,8 @@ export function PrList({
           {editing?.error && editing.where === "title" && <p className="text-xs text-rose-300">{editing.error}</p>}
           <p className="text-sm text-slate-400">{page ? summaryText(page.summary, viewKey, syncProgress) : (syncProgress ?? "\u00a0")}</p>
         </div>
-        <div className="flex items-center gap-2">
-          <label className="flex w-80 items-center gap-2 rounded-md border border-slate-700 bg-slate-900 px-3 py-1.5 text-sm focus-within:border-violet-400">
+        <div className="flex min-w-0 items-center gap-2">
+          <label className="flex w-80 min-w-32 shrink items-center gap-2 rounded-md border border-slate-700 bg-slate-900 px-3 py-1.5 text-sm focus-within:border-violet-400">
             <SearchIcon className="shrink-0 text-slate-500" />
             <input {...plainText}
               ref={searchRef}
@@ -482,9 +519,21 @@ export function PrList({
           <FilterMenu view={view} orgs={page?.orgs ?? []} menu={menu} setMenu={setMenu} onViewChange={onViewChange} />
         </div>
       </header>
-      <div className="flex items-center gap-2 border-y border-slate-800 px-4 py-2 text-sm text-slate-300">
+      <div className="flex flex-wrap items-center gap-2 border-y border-slate-800 px-4 py-2 text-sm text-slate-300">
         <TriCheckbox label="Select all" state={global} onToggle={() => setSelected(toggleParent(ids, selected))} />
-        <span>{header}</span>
+        <span className="whitespace-nowrap">{header}</span>
+        <span className="flex-1" />
+        {filtersActive(view.filters) && (
+          <button
+            type="button"
+            className="flex h-7 items-center gap-1 whitespace-nowrap rounded-md px-1.5 text-xs text-violet-300 hover:bg-slate-800 hover:text-violet-200"
+            onClick={() => onViewChange(resetFilters(view))}
+          >
+            <CloseIcon />
+            Clear filters
+          </button>
+        )}
+        <SortPicker view={view} onViewChange={onViewChange} />
         <QuickFilters
           active={view.filters.quick}
           counts={page?.quick ?? null}
@@ -493,7 +542,7 @@ export function PrList({
       </div>
       <div
         ref={listRef}
-        className="min-h-0 flex-1 overflow-auto px-3 pb-20 pt-2"
+        className={`@container min-h-0 flex-1 overflow-auto px-3 pt-2 ${selected.size > 0 ? "pb-32" : "pb-20"}`}
         aria-label="Pull requests"
         aria-busy={list.pending || loadingMore}
         role="region"
@@ -513,7 +562,7 @@ export function PrList({
             Loading pull requests…
           </p>
         )}
-        {sections.map((section) => {
+        {showSections && sections.map((section) => {
           const open = !collapsed[section.key];
           const state = checkState(section.ids, selected);
           return (
@@ -616,6 +665,8 @@ export function PrList({
                     )}
                   </div>
                 )}
+                {/* Same height as a project header, whose ⋯ button sets it. */}
+                {section.projectId === null && <span aria-hidden="true" className="h-6 w-6" />}
               </header>
               {open && section.count === 0 && (
                 <p className="border-t border-slate-800 px-3 py-3 text-xs text-slate-500">
@@ -637,71 +688,57 @@ export function PrList({
                         setDragBadge(event.dataTransfer, ids.length);
                       }}
                       onDragEnd={() => setDropTarget(null)}
-                      onMouseDown={() => {
-                        setFocusIndex(index);
-                        // With the panel open, clicking a row shows that PR.
-                        if (detailId !== null && detailId !== row.id) {
+                      onMouseDown={() => setFocusIndex(index)}
+                      onClick={(event) => {
+                        // The whole row opens (or switches) the panel; its own controls keep their behaviour.
+                        if (rowClickOpens(event.target, event.currentTarget) && detailId !== row.id) {
                           onDetails(row);
                         }
                       }}
                       aria-label={`#${row.number} ${row.title}`}
                       aria-current={index === focus ? "true" : undefined}
                       data-focused={index === focus ? "true" : undefined}
-                      className={`flex items-center gap-3 border-t border-l-2 border-t-slate-800 px-2 py-1.5 ${index === focus ? "border-l-violet-400 bg-slate-900" : "border-l-transparent"}`}
+                      className={`flex ${compact ? "items-start gap-2 py-1" : "items-center gap-3 py-1.5"} cursor-pointer border-t border-l-2 border-t-slate-800 px-2 ${index === focus ? "border-l-violet-400 bg-slate-900" : "border-l-transparent hover:bg-slate-900/60"}`}
                     >
                       <TriCheckbox
                         label={`Select ${row.title}`}
                         state={selected.has(row.id) ? "all" : "none"}
                         onToggle={() => toggleRow(row.id)}
                       />
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2 text-sm">
-                          {view.show.numberTitle && (
-                            <button
-                              type="button"
-                              className="truncate text-left hover:underline"
-                              title="Readiness and code owners (Enter)"
-                              onClick={() => onDetails(row)}
-                            >
-                              <span className="text-slate-500">#{row.number}</span> {row.title}
-                            </button>
+                      {compact ? (
+                        <CompactRow row={row} view={view} now={now} onDetails={onDetails} onOpen={onOpen} />
+                      ) : (
+                        <>
+                          <div className="min-w-64 flex-1 overflow-hidden">
+                            <TitleLine row={row} view={view} now={now} onDetails={onDetails} />
+                            <p className="flex items-center gap-1 truncate text-xs text-slate-500">
+                              {view.show.repo && <span className="truncate">{row.repo}</span>}
+                              {view.show.repo && view.show.ci && <span aria-hidden="true">·</span>}
+                              {view.show.ci && <CiStatus checks={row.checks} />}
+                              {view.show.activity && <span className="whitespace-nowrap"> · updated {ago(row.updated_at, now)}</span>}
+                            </p>
+                          </div>
+                          {view.show.review && (
+                            <div className="flex w-36 shrink-0 items-center">
+                              <ReviewPill decision={row.review_decision} />
+                            </div>
                           )}
-                          {row.state !== "open" && (
-                            <span className="shrink-0 rounded bg-slate-800 px-1 text-xs text-slate-300">{row.state === "merged" ? "Merged" : "Closed"}</span>
+                          {view.show.review && (
+                            <div className="flex w-20 shrink-0 items-center justify-end">
+                              <ReviewerAvatars reviewers={row.pending_reviewers} />
+                            </div>
                           )}
-                          {view.show.badges && row.project_ids.length > 1 && (
-                            <span
-                              className="shrink-0 rounded bg-slate-800 px-1 text-xs text-slate-400"
-                              title={`Also in ${row.project_ids.length - 1} other project${row.project_ids.length > 2 ? "s" : ""}`}
-                            >
-                              +{row.project_ids.length - 1}
-                            </span>
+                          {/* Lowest priority first: the comment count, then the Slack text, give way on narrow lists. */}
+                          {view.show.threads && (
+                            <div className="hidden w-14 shrink-0 @min-[64rem]:flex">
+                              <Threads row={row} />
+                            </div>
                           )}
-                        </div>
-                        <p className="flex items-center gap-1 truncate text-xs text-slate-500">
-                          {view.show.repo && <span>{row.repo}</span>}
-                          {view.show.repo && view.show.ci && <span aria-hidden="true">·</span>}
-                          {view.show.ci && (
-                            <span className="flex items-center gap-1">
-                              <Dot tone={ciTone(row.checks)} />
-                              {ciLabel(row.checks)}
-                            </span>
-                          )}
-                          {view.show.activity && <span> · updated {ago(row.updated_at, now)}</span>}
-                        </p>
-                      </div>
-                      <div className="flex w-40 shrink-0 items-center">
-                        {view.show.review && <ReviewPill decision={row.review_decision} />}
-                      </div>
-                      {view.show.review && (
-                        <div className="flex w-20 shrink-0 items-center justify-end">
-                          <ReviewerAvatars reviewers={row.pending_reviewers} />
-                        </div>
+                          <div className="hidden w-44 shrink-0 items-center justify-end @min-[56rem]:flex">
+                            <SlackMark row={row} now={now} showMissing={view.show.notRequested} onOpen={onOpen} />
+                          </div>
+                        </>
                       )}
-                      {view.show.threads && <Threads row={row} />}
-                      <div className="flex w-44 shrink-0 items-center justify-end">
-                        <SlackMark row={row} now={now} showMissing={view.show.notRequested} onOpen={onOpen} />
-                      </div>
                     </article>
                   );
                 })}
@@ -714,7 +751,10 @@ export function PrList({
           </p>
         )}
         <div ref={sentinelRef} data-testid="list-sentinel" aria-hidden="true" className="h-px" />
-        {page && !list.pending && sections.length === 0 && (
+        {page && !list.pending && !showSections && (
+          <ViewEmptyState kind={viewEmpty.kind} onOpenSettings={onOpenSettings} />
+        )}
+        {page && !list.pending && showSections && sections.length === 0 && (
           <EmptyList
             title={viewTitle(viewKey, projects)}
             inView={inView}
@@ -1050,16 +1090,206 @@ function ReviewPill({ decision }: { decision: string | null }) {
 }
 
 function Threads({ row }: { row: ListRow }) {
-  const { text, title } = threadsLabel(row.unresolved_threads, row.total_threads);
+  const text = commentsText(row.unresolved_threads, row.total_threads);
+  if (text === null) {
+    return null;
+  }
+  const { title } = threadsLabel(row.unresolved_threads, row.total_threads);
   return (
     <span
-      className={`flex w-12 shrink-0 items-center gap-1 text-xs ${row.unresolved_threads > 0 ? "text-slate-300" : "text-slate-600"}`}
+      className={`flex shrink-0 items-center gap-1 text-xs tabular-nums ${row.unresolved_threads > 0 ? "text-slate-300" : "text-slate-500"}`}
       title={title}
       aria-label={title}
     >
       <CommentIcon size={14} />
       {text}
     </span>
+  );
+}
+
+const PILL_SPECS: Record<RowPill, { label: string; title: string; className: string; icon: ReactElement }> = {
+  draft: { label: "Draft", title: "Draft PR: not ready for review", className: "border-slate-600 text-slate-300", icon: <DraftIcon size={12} /> },
+  conflicts: { label: "Conflicts", title: "GitHub reports merge conflicts", className: "border-amber-500/50 text-amber-300", icon: <AlertIcon size={12} /> },
+};
+
+function RowPillTag({ pill }: { pill: RowPill }) {
+  const spec = PILL_SPECS[pill];
+  return (
+    <span title={spec.title} className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-1.5 text-[11px] leading-4 ${spec.className}`}>
+      {spec.icon}
+      {spec.label}
+    </span>
+  );
+}
+
+function StaleChip({ cue }: { cue: StaleCue }) {
+  return (
+    <span
+      title={cue.title}
+      className={`inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 text-[11px] leading-4 ${cue.kind === "waiting" ? "bg-amber-500/15 text-amber-300" : "bg-slate-800 text-slate-400"}`}
+    >
+      <ClockIcon size={12} />
+      {cue.label}
+    </span>
+  );
+}
+
+/** Row cues after the title: draft and conflict pills, then the age chip. */
+function RowCues({ row, now }: { row: ListRow; now: Date }) {
+  const stale = staleCue(row, now);
+  return (
+    <>
+      {rowPills(row).map((pill) => (
+        <RowPillTag key={pill} pill={pill} />
+      ))}
+      {stale && <StaleChip cue={stale} />}
+    </>
+  );
+}
+
+function TitleLine({ row, view, now, onDetails }: { row: ListRow; view: SavedView; now: Date; onDetails: (row: ListRow) => void }) {
+  return (
+    <div className="flex min-w-0 items-center gap-2 text-sm">
+      {view.show.numberTitle && (
+        <button type="button" className="min-w-0 truncate text-left hover:underline" title="Readiness and code owners (Enter)" onClick={() => onDetails(row)}>
+          <span className="text-slate-500">#{row.number}</span> {row.title}
+        </button>
+      )}
+      {row.state !== "open" && (
+        <span className="shrink-0 rounded bg-slate-800 px-1 text-xs text-slate-300">{row.state === "merged" ? "Merged" : "Closed"}</span>
+      )}
+      <RowCues row={row} now={now} />
+      {view.show.badges && row.project_ids.length > 1 && (
+        <span
+          className="shrink-0 rounded bg-slate-800 px-1 text-xs text-slate-400"
+          title={`Also in ${row.project_ids.length - 1} other project${row.project_ids.length > 2 ? "s" : ""}`}
+        >
+          +{row.project_ids.length - 1}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function CiStatus({ checks }: { checks: string }) {
+  return (
+    <span className="flex shrink-0 items-center gap-1">
+      <Dot tone={ciTone(checks)} />
+      {ciLabel(checks)}
+    </span>
+  );
+}
+
+/**
+ * Two-line row for a narrow list (detail panel open, small window): the title
+ * gets the full first line, everything else shares the second.
+ */
+/**
+ * The row while the detail panel is open or the list is narrow: the title wraps
+ * over two lines, repo and CI under it, and review, comments and Slack shrink
+ * to icons with tooltips. Avatars are left to the detail panel.
+ */
+function CompactRow({ row, view, now, onDetails, onOpen }: { row: ListRow; view: SavedView; now: Date; onDetails: (row: ListRow) => void; onOpen: (url: string) => void }) {
+  const review = view.show.review ? reviewLabel(row.review_decision) : null;
+  const slack = compactSlack(row.slack, now);
+  const permalink = row.slack?.permalink ?? null;
+  const fullTitle = `#${row.number} ${row.title}`;
+  return (
+    <div className="flex min-w-0 flex-1 items-start gap-2">
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 items-start gap-1.5 text-sm leading-snug">
+          {view.show.numberTitle && (
+            <button type="button" className="line-clamp-2 min-w-0 text-left break-words hover:underline" title={fullTitle} onClick={() => onDetails(row)}>
+              <span className="text-slate-500">#{row.number}</span> {row.title}
+            </button>
+          )}
+          {row.state !== "open" && (
+            <span className="shrink-0 rounded bg-slate-800 px-1 text-xs text-slate-300">{row.state === "merged" ? "Merged" : "Closed"}</span>
+          )}
+        </div>
+        <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-slate-500">
+          {view.show.repo && (
+            <span className="max-w-[16rem] truncate" title={row.repo}>
+              {row.repo}
+            </span>
+          )}
+          {view.show.ci && (
+            <>
+              <span aria-hidden="true">·</span>
+              <CiStatus checks={row.checks} />
+            </>
+          )}
+          <RowCues row={row} now={now} />
+        </div>
+      </div>
+      <div className="flex shrink-0 items-center gap-1.5 pt-0.5 text-xs text-slate-400">
+        {review && (
+          <span className="flex h-4 w-3 items-center justify-center" title={review} aria-label={review} role="img">
+            <Dot tone={reviewTone(row.review_decision)} />
+          </span>
+        )}
+        {view.show.threads && <Threads row={row} />}
+        {(slack.sent || view.show.notRequested) &&
+          (slack.sent && permalink ? (
+            <button type="button" aria-label={`Open Slack request for ${row.title}`} title={slack.title} className="flex items-center gap-0.5 tabular-nums hover:text-slate-200" onClick={() => onOpen(permalink)}>
+              <SlackIcon size={12} />
+              {slack.time}
+            </button>
+          ) : (
+            <span title={slack.title} aria-label={slack.title} role="img" className={`flex items-center gap-0.5 tabular-nums ${slack.sent ? "" : "text-slate-600"}`}>
+              <SlackIcon size={12} />
+              {slack.time}
+            </span>
+          ))}
+      </div>
+    </div>
+  );
+}
+
+const SORT_PICKS: Ordering[] = ["updated", "waiting", "bumped", "created", "slack", "readiness", "number"];
+
+/** Sort order, in the toolbar so "Waiting longest" and "Last bumped" are one click away. */
+function SortPicker({ view, onViewChange }: { view: SavedView; onViewChange: (view: SavedView) => void }) {
+  return (
+    <label className="flex h-7 items-center gap-1 rounded-md border border-slate-700 bg-slate-900 pl-2 text-xs text-slate-400 focus-within:border-violet-400">
+      Sort
+      <select
+        aria-label="Sort by"
+        className="h-full rounded-md bg-slate-900 pr-1 text-slate-200 outline-none"
+        value={view.ordering}
+        onChange={(event) => {
+          const ordering = event.target.value as Ordering;
+          // Both stale sorts read top-down: longest wait, latest bump.
+          const direction: Direction = ordering === "waiting" || ordering === "bumped" ? "desc" : view.direction;
+          onViewChange({ ...view, ordering, direction });
+        }}
+      >
+        {SORT_PICKS.map((id) => (
+          <option key={id} value={id}>
+            {labelOf(ORDERINGS, id)}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+/** One message for a view that has no PRs at all, instead of empty project groups. */
+function ViewEmptyState({ kind, onOpenSettings }: { kind: "no_reviews" | "no_prs"; onOpenSettings?: () => void }) {
+  return (
+    <div className="px-2 py-16 text-center text-sm text-slate-400">
+      <p className="font-medium text-slate-300">{kind === "no_reviews" ? "No reviews requested from you" : "No open PRs in your tracked orgs"}</p>
+      <p className="mt-1 text-xs text-slate-500">
+        {kind === "no_reviews"
+          ? "PRs where someone asks for your review show up here after the next sync."
+          : "New ones appear after the next sync. Check which orgs are tracked if you expected some here."}
+      </p>
+      {kind === "no_prs" && onOpenSettings && (
+        <button type="button" className="mt-3 rounded border border-slate-700 px-3 py-1 text-slate-200 hover:bg-slate-800" onClick={onOpenSettings}>
+          Open Settings
+        </button>
+      )}
+    </div>
   );
 }
 

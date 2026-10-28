@@ -272,7 +272,7 @@ test("rows show labelled threads, a review pill, and the Slack request status", 
   expect(screen.getAllByText("· workspace disabled")).toHaveLength(1);
   expect(screen.getByText("Not requested")).toBeInTheDocument();
   expect(screen.getByLabelText("1 unresolved of 3 review threads")).toBeInTheDocument();
-  expect(screen.getByLabelText("0 unresolved of 0 review threads")).toBeInTheDocument();
+  expect(screen.queryByLabelText("0 unresolved of 0 review threads")).not.toBeInTheDocument();
   expect(screen.queryByText("0/0")).not.toBeInTheDocument();
   expect(screen.getByText("Approved")).toBeInTheDocument();
   expect(screen.getByText("Changes requested")).toBeInTheDocument();
@@ -375,6 +375,29 @@ test("the title button and Enter open a row's details", async () => {
   expect(onDetails).toHaveBeenCalledTimes(2);
 });
 
+test("clicking anywhere on a row opens it, but not its controls or a text selection", async () => {
+  const onDetails = vi.fn();
+  await show(<Harness rows={rows} onDetails={onDetails} />);
+  const article = screen.getByRole("article", { name: /Fix tax rounding/ });
+  fireEvent.click(article);
+  expect(onDetails).toHaveBeenLastCalledWith(expect.objectContaining({ id: 3 }));
+  expect(onDetails).toHaveBeenCalledTimes(1);
+  fireEvent.click(within(article).getByRole("checkbox"));
+  expect(onDetails).toHaveBeenCalledTimes(1);
+  for (const link of within(article).queryAllByRole("link")) {
+    link.addEventListener("click", (event) => event.preventDefault());
+    fireEvent.click(link);
+  }
+  expect(onDetails).toHaveBeenCalledTimes(1);
+  const text = within(article).getByText(/acme\//);
+  const selecting = vi.spyOn(window, "getSelection").mockReturnValue({ isCollapsed: false } as Selection);
+  fireEvent.click(text);
+  expect(onDetails).toHaveBeenCalledTimes(1);
+  selecting.mockRestore();
+  fireEvent.click(text);
+  expect(onDetails).toHaveBeenCalledTimes(2);
+});
+
 test("with the detail panel open, arrows and clicks switch the PR it shows", async () => {
   const onDetails = vi.fn();
   const { rerender } = await show(<Harness rows={rows} onDetails={onDetails} />);
@@ -392,6 +415,7 @@ test("with the detail panel open, arrows and clicks switch the PR it shows", asy
   fireEvent.keyDown(window, { key: "k" });
   expect(focused()).toBe(order[0].getAttribute("aria-label"));
   fireEvent.mouseDown(order[2]);
+  fireEvent.click(order[2]);
   expect(onDetails).toHaveBeenLastCalledWith(expect.objectContaining({ id: idOf(order[2]) }));
   expect(onDetails).toHaveBeenCalledTimes(3);
 });
@@ -485,7 +509,7 @@ test("Enter on a button keeps its own action instead of opening the focused row"
 test("the empty list says why and offers the way out", async () => {
   vi.useFakeTimers();
   const { unmount } = await show(<Harness rows={[]} projects={[]} />);
-  expect(screen.getByText("No open pull requests in My PRs.")).toBeInTheDocument();
+  expect(screen.getByText("No open PRs in your tracked orgs")).toBeInTheDocument();
   unmount();
   await show(<Harness rows={rows} />);
   fireEvent.change(screen.getByRole("textbox", { name: "Search" }), { target: { value: "zzz-nothing" } });
@@ -846,4 +870,22 @@ test("a row shows who still has to review, and a row without requests shows no s
   const stack = within(asked).getByRole("group", { name: "Waiting on 4 reviewers" });
   expect(within(stack).getByTestId("reviewer-more")).toHaveTextContent("+1");
   expect(within(screen.getByRole("article", { name: "#2 Nobody asked" })).queryByTestId("reviewer-avatars")).toBeNull();
+});
+
+test("with the panel open, rows go compact: wrapped title, status dot and Slack icon with tooltips, no avatars", async () => {
+  await show(<Harness rows={rows} detailId={999} />);
+  const article = screen.getAllByRole("article")[0];
+  const title = within(article).getAllByRole("button").find((button) => button.className.includes("line-clamp-2"));
+  expect(title).toBeDefined();
+  expect(title?.getAttribute("title")).toMatch(/^#\d+ /);
+  for (const pill of ["Review pending", "Approved", "Changes requested"]) {
+    expect(screen.queryByText(pill)).not.toBeInTheDocument();
+  }
+  const reviewedRow = rows.find((item) => item.review_decision !== null);
+  if (reviewedRow) {
+    const article = screen.getByRole("article", { name: `#${reviewedRow.number} ${reviewedRow.title}` });
+    expect(within(article).getByRole("img", { name: /Review pending|Approved|Changes requested/ })).toBeInTheDocument();
+  }
+  expect(screen.queryByText("Not requested")).not.toBeInTheDocument();
+  expect(document.querySelector("[data-testid='reviewer-avatars']")).toBeNull();
 });

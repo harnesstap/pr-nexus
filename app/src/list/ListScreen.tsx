@@ -582,6 +582,10 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
               now={now}
               onViewChange={(next) => setViews((current) => ({ ...current, [viewKey]: next }))}
               onShowView={setViewKey}
+              onOpenSettings={() => {
+                setSettingsTab("accounts");
+                setViewKey("settings");
+              }}
               onOpen={(url) => void api.openExternal(url)}
               onRename={async (id, name) => {
                 await api.renameProject(id, name);

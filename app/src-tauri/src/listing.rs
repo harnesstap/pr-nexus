@@ -239,6 +239,9 @@ pub fn page(
         HashSet::new()
     } else if let Some(id) = project_view {
         HashSet::from([id])
+    } else if request.view_key == "to_review" {
+        // To review lists only PRs asking for you; empty projects there are noise.
+        HashSet::new()
     } else {
         live_ids.clone()
     };
@@ -566,8 +569,32 @@ fn rank(item: &Item, ordering: &str) -> i64 {
             _ => 2,
         },
         "number" => i64::try_from(item.row.number).unwrap_or(i64::MAX),
+        // Descending puts the longest wait first and rows not waiting last.
+        "waiting" => waiting_since(item).map_or(i64::MIN, |since| -since),
+        // Descending puts the latest bump (or request) first, unrequested last.
+        "bumped" => item.slack_stamp_ms.unwrap_or(0),
         _ => item.updated_ms,
     }
+}
+
+/// When an open PR started waiting on review: its Slack request, else its
+/// creation. `None` when nobody is asked to review it, or it is a draft or
+/// approved. Mirrors `waitingSince` in `app/src/list/stale.ts`.
+fn waiting_since(item: &Item) -> Option<i64> {
+    let row = &item.row;
+    let asked = row.reviewers_requested || row.slack.is_some();
+    if row.state != "open"
+        || row.is_draft
+        || !asked
+        || row.review_decision.as_deref() == Some("approved")
+    {
+        return None;
+    }
+    Some(if item.slack_requested_ms > 0 {
+        item.slack_requested_ms
+    } else {
+        item.created_ms
+    })
 }
 
 fn status_title(readiness: &str) -> &'static str {
@@ -1058,6 +1085,44 @@ mod tests {
         let page = page(&items, &projects, &request, None);
         assert_eq!(page.sections.len(), 1);
         assert_eq!(page.sections[0].key, "unassigned");
+    }
+
+    #[test]
+    fn to_review_drops_empty_project_groups() {
+        let projects = vec![project(1, "Billing", false), project(2, "Empty", false)];
+        let mut items = vec![item(1, &[1], 1)];
+        items[0].row.involvement = REVIEW_REQUESTED;
+        let mut request = request("project");
+        request.view_key = "to_review".into();
+        let page = page(&items, &projects, &request, None);
+        let keys: Vec<&str> = page.sections.iter().map(|s| s.key.as_str()).collect();
+        assert_eq!(keys, vec!["project:1"]);
+        let page = super::page(&[], &projects, &request, None);
+        assert!(page.sections.is_empty());
+    }
+
+    #[test]
+    fn waiting_and_bumped_orderings_put_unrequested_rows_last() {
+        let mut waiting_new = item(1, &[], 1);
+        waiting_new.row.reviewers_requested = true;
+        let mut waiting_old = item(2, &[], 1);
+        waiting_old.row.reviewers_requested = true;
+        waiting_old.created_ms = at(100).timestamp_millis();
+        let idle = item(3, &[], 1);
+        let mut bumped = item(4, &[], 1);
+        bumped.slack_stamp_ms = Some(at(2).timestamp_millis());
+        let mut draft = item(5, &[], 1);
+        draft.row.is_draft = true;
+        draft.row.reviewers_requested = true;
+        let items = vec![waiting_new, waiting_old, idle, bumped, draft];
+        let mut req = request("repository");
+        req.ordering = "waiting".into();
+        let page = page(&items, &[], &req, None);
+        let order: Vec<i64> = row_ids(&page).into_iter().flatten().collect();
+        assert_eq!(order, vec![2, 1, 3, 4, 5]);
+        req.ordering = "bumped".into();
+        let page = super::page(&items, &[], &req, None);
+        assert_eq!(row_ids(&page).into_iter().flatten().next(), Some(4));
     }
 
     #[test]

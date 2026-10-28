@@ -1,4 +1,5 @@
 import type { ListRow, ProjectDto } from "../api";
+import { waitingSince } from "./rowCues";
 import {
   AUTHOR,
   REVIEW_REQUESTED,
@@ -137,6 +138,9 @@ function countsText(summary: PageSummary, viewKey: string): string {
   const prs = `${open} open ${open === 1 ? "PR" : "PRs"}`;
   if (projectIdOf(viewKey) !== null) {
     return `${prs} in this project${extra}`;
+  }
+  if (open === 0 && finished === 0) {
+    return viewKey === "to_review" ? "No reviews requested from you" : "No open PRs";
   }
   const base = `${prs} across ${live} ${live === 1 ? "project" : "projects"}${extra}`;
   return unassigned > 0 && live > 0 ? `${base} · ${unassigned} unassigned` : base;
@@ -290,7 +294,11 @@ function keptEmpty(live: readonly ProjectDto[], viewKey: string, filters: Filter
     return new Set();
   }
   const current = projectIdOf(viewKey);
-  return current !== null ? new Set([current]) : new Set(live.map((project) => project.id));
+  if (current !== null) {
+    return new Set([current]);
+  }
+  // To review lists only PRs asking for you; empty projects there are noise.
+  return viewKey === "to_review" ? new Set() : new Set(live.map((project) => project.id));
 }
 
 interface Group {
@@ -375,6 +383,13 @@ function rank(row: ListRow, ordering: Ordering): number {
       return row.readiness === "ready" ? 0 : row.readiness === "unknown" ? 1 : 2;
     case "number":
       return row.number;
+    case "waiting": {
+      // Descending: the longest wait first, rows not waiting last.
+      const since = waitingSince(row);
+      return since === null ? Number.MIN_SAFE_INTEGER : -since;
+    }
+    case "bumped":
+      return row.slack ? new Date(row.slack.last_bumped_at ?? row.slack.requested_at).getTime() : 0;
     default: {
       const unreachable: never = ordering;
       return unreachable;

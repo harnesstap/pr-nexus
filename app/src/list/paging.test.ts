@@ -279,3 +279,22 @@ test("quick counts follow search and menu filters but ignore the quick filter", 
   expect(filtersActive(view.filters)).toBe(true);
   expect(resetFilters(view).filters.quick).toBeNull();
 });
+
+test("To review drops empty project groups and says nothing is requested", () => {
+  const rows = [row({ id: 1, title: "Review", involvement: 2, project_ids: [1] })];
+  const page = pageFromRows(rows, [auth, billing], request("to_review", defaultView()));
+  expect(page.sections.map((section) => section.title)).toEqual(["Auth"]);
+  const empty = pageFromRows([], [auth, billing], request("to_review", defaultView()));
+  expect(empty.sections).toEqual([]);
+  expect(summaryText(empty.summary, "to_review")).toBe("No reviews requested from you");
+});
+
+test("waiting longest puts the oldest review wait first and unrequested rows last", () => {
+  const rows = [
+    row({ id: 1, title: "Fresh", reviewers_requested: true, created_at: "2026-10-26T00:00:00Z" }),
+    row({ id: 2, title: "Old", reviewers_requested: true, created_at: "2026-10-20T00:00:00Z" }),
+    row({ id: 3, title: "Unasked", created_at: "2026-10-01T00:00:00Z" }),
+  ];
+  const view = { ...defaultView(), grouping: "org" as const, ordering: "waiting" as const, direction: "desc" as const };
+  expect(shownIds(rows, [], "mine", view)).toEqual([2, 1, 3]);
+});
