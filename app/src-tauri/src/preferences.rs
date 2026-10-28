@@ -54,6 +54,9 @@ pub struct MappingRowDto {
     pub team_slug: String,
     pub team_name: String,
     pub slack_workspace: String,
+    /// Slack team (`T…`), or empty: routes before the domain (§7.11).
+    #[serde(default)]
+    pub slack_team_id: String,
     pub slack_channel_name: String,
     pub slack_channel_id: String,
 }
@@ -65,6 +68,7 @@ impl From<CsvRow> for MappingRowDto {
             team_slug: row.team_slug,
             team_name: row.team_name,
             slack_workspace: row.slack_workspace,
+            slack_team_id: row.slack_team_id,
             slack_channel_name: row.slack_channel_name,
             slack_channel_id: row.slack_channel_id,
         }
@@ -80,6 +84,7 @@ impl From<MappingRowDto> for CsvRow {
             slack_channel_name: row.slack_channel_name,
             slack_channel_id: row.slack_channel_id,
             slack_workspace: row.slack_workspace,
+            slack_team_id: row.slack_team_id,
         }
     }
 }

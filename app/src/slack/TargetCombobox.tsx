@@ -2,7 +2,7 @@ import { useEffect, useId, useState } from "react";
 import type { Api, ReviewTarget, SlackWorkspace, TargetChoice, TargetMatch } from "../api";
 import { channelLabel, errorMessage } from "../api";
 import { plainText } from "../textInput";
-import { WorkspaceSelect } from "./WorkspaceSelect";
+import { targetWorkspaceName } from "./workspaces";
 
 /** Wait after the last keystroke before asking Slack (§7.11). */
 export const SEARCH_DEBOUNCE_MS = 250;
@@ -49,8 +49,9 @@ export function parseQuery(query: string): { channels: boolean; members: boolean
   return { channels: true, members: true, term: trimmed };
 }
 
+/** Channel IDs are unique across a grid, so the ID alone dedupes. */
 function keyOf(target: ReviewTarget) {
-  return `${target.workspace}/${target.channel_id}`;
+  return target.channel_id;
 }
 
 function describe(choice: TargetChoice) {
@@ -62,14 +63,14 @@ function describe(choice: TargetChoice) {
 
 /**
  * Select2-style Slack target picker (§7.11, §8.2): suggestions first, then a
- * debounced MCP search of the chosen workspace. ARIA combobox with a listbox;
+ * debounced MCP search of every enabled workspace, in priority order, merged
+ * and labeled with the workspace. ARIA combobox with a listbox;
  * "Enter an ID" stays available when search is unsupported or fails.
  */
 export function TargetCombobox({ api, workspaces, suggestions, value, onSelect, label = "Channel or person" }: Props) {
   const id = useId();
   const listId = `${id}-list`;
   const helpId = `${id}-help`;
-  const [picked, setPicked] = useState("");
   const [query, setQuery] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
@@ -78,23 +79,23 @@ export function TargetCombobox({ api, workspaces, suggestions, value, onSelect, 
   const [manualId, setManualId] = useState("");
   const [manualName, setManualName] = useState("");
 
-  const signedIn = workspaces.find((item) => item.signed_in) ?? workspaces[0];
-  const workspace = picked || value?.workspace || signedIn?.domain || "";
+  const enabled = workspaces.filter((item) => item.enabled !== false);
+  const several = enabled.length > 1;
   const text = query ?? (value ? channelLabel(value) : "");
   const parsed = parseQuery(query ?? "");
-  const searchKey = parsed.term ? `${workspace}\u0000${query?.trim()}` : "";
+  const searchKey = parsed.term ? (query ?? "").trim() : "";
   const result = searchKey ? found[searchKey] : undefined;
-  const searching = searchKey !== "" && workspace !== "" && result === undefined;
+  const searching = searchKey !== "" && enabled.length > 0 && result === undefined;
 
   useEffect(() => {
-    if (!searchKey || !workspace || found[searchKey]) {
+    if (!searchKey || enabled.length === 0 || found[searchKey]) {
       return;
     }
     let cancel = false;
     const wanted = (query ?? "").trim();
     const timer = window.setTimeout(() => {
       api
-        .searchSlackTargets(workspace, wanted)
+        .searchSlackTargets(wanted)
         .then((items) => ({ items, error: null }))
         .catch((err: unknown) => ({ items: [], error: errorMessage(err) }))
         .then((next) => {
@@ -107,7 +108,7 @@ export function TargetCombobox({ api, workspaces, suggestions, value, onSelect, 
       cancel = true;
       window.clearTimeout(timer);
     };
-  }, [api, found, query, searchKey, workspace]);
+  }, [api, found, query, searchKey, enabled.length]);
 
   const term = parsed.term.toLowerCase();
   const options: Option[] = [];
@@ -127,8 +128,9 @@ export function TargetCombobox({ api, workspaces, suggestions, value, onSelect, 
       options.push({ key, group: match.kind, target: match.target });
     }
   }
-  if (ID_PATTERN.test(parsed.term) && workspace) {
-    const target = { workspace, channel_id: parsed.term.toUpperCase(), channel_name: "" };
+  if (ID_PATTERN.test(parsed.term)) {
+    // No workspace: the send probes enabled workspaces in priority order.
+    const target: ReviewTarget = { workspace: "", channel_id: parsed.term.toUpperCase(), channel_name: "" };
     if (!seen.has(keyOf(target))) {
       options.push({ key: `id:${keyOf(target)}`, group: "id", target });
     }
@@ -175,29 +177,14 @@ export function TargetCombobox({ api, workspaces, suggestions, value, onSelect, 
     if (!channelId) {
       return;
     }
-    onSelect({ workspace, channel_id: channelId, channel_name: manualName.trim() }, null);
+    onSelect({ workspace: "", channel_id: channelId, channel_name: manualName.trim() }, null);
   }
 
   const input = "mt-1 w-full rounded border border-slate-700 bg-slate-950 px-2 py-1.5";
   let lastGroup: Option["group"] | null = null;
   return (
     <div className="space-y-1">
-      <div className={workspaces.length > 1 ? "grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)] gap-2" : undefined}>
-        {workspaces.length > 1 && (
-          <label className="block">
-            Workspace
-            <WorkspaceSelect
-              workspaces={workspaces}
-              value={workspace}
-              label="Workspace"
-              className={input}
-              onChange={(domain) => {
-                setPicked(domain);
-                setActive(0);
-              }}
-            />
-          </label>
-        )}
+      <div>
         <div className="relative">
           <label className="block" htmlFor={`${id}-input`}>
             {label}
@@ -258,20 +245,19 @@ export function TargetCombobox({ api, workspaces, suggestions, value, onSelect, 
                   >
                     <span>{option.group === "id" ? `Use ${option.target.channel_id}` : channelLabel(option.target)}</span>
                     <span className="truncate text-xs text-slate-500">
-                      {option.group === "suggested"
-                        ? describe(option.choice)
-                        : option.group === "member"
-                          ? "direct message"
-                          : workspaces.length > 1
-                            ? option.target.workspace
-                            : ""}
+                      {[
+                        option.group === "suggested" ? describe(option.choice) : option.group === "member" ? "direct message" : "",
+                        several && option.group !== "id" ? targetWorkspaceName(option.target) : "",
+                      ]
+                        .filter(Boolean)
+                        .join(" · ")}
                     </span>
                   </li>,
                 ];
               })}
               {searching && (
                 <li role="presentation" className="px-2 py-1 text-xs text-slate-400">
-                  Searching {workspace}…
+                  Searching {several ? `${enabled.length} workspaces` : targetWorkspaceName({ workspace: enabled[0]?.domain ?? "", workspace_name: enabled[0]?.team_name })}…
                 </li>
               )}
               {result?.error && (

@@ -16,6 +16,7 @@ use pr_nexus_core::providers::{
     ThreadMessage, ThreadReplies,
 };
 use pr_nexus_core::review::lifecycle::{self, Action, Target};
+use pr_nexus_core::review::route::{self, Workspace};
 use pr_nexus_core::settings;
 use pr_nexus_core::store::Store;
 use pr_nexus_providers::slack_mcp::{
@@ -43,11 +44,24 @@ pub struct SlackWorkspace {
     pub signed_in: bool,
     /// Was connected, but the token is gone or rejected: show Reconnect.
     pub needs_sign_in: bool,
+    /// Slack team (`T…`): the routing key (§7.11).
+    pub team_id: String,
+    /// Off: the grant stays, but nothing searches, sends, bumps or reads here.
+    pub enabled: bool,
+    /// 0 is tried first.
+    pub priority: usize,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct ReviewTarget {
+    /// Domain; a hint only, since a pasted link can carry the org host.
     pub workspace: String,
+    /// Slack team (`T…`) when known; routes before the domain.
+    #[serde(default)]
+    pub team_id: Option<String>,
+    /// Team name for display; empty when unknown.
+    #[serde(default)]
+    pub workspace_name: String,
     pub channel_id: String,
     pub channel_name: String,
 }
@@ -97,9 +111,19 @@ pub fn workspace_accounts(store: &Store) -> Result<Vec<Account>, CoreError> {
 }
 
 pub fn workspace_dto(state: &AppState, account: &Account) -> SlackWorkspace {
+    let team_id = account.slack_team_id().unwrap_or_default().to_owned();
+    let workspaces = route::workspaces(&state.store).unwrap_or_default();
+    let priority = workspaces
+        .iter()
+        .position(|ws| ws.team_id == team_id)
+        .unwrap_or(workspaces.len());
+    let enabled = workspaces.get(priority).is_none_or(|ws| ws.enabled);
     let connected = account.keychain_key.is_some();
     let usable = connected && token_usable(state, account, false);
     SlackWorkspace {
+        team_id,
+        enabled,
+        priority,
         id: account.id.0,
         team_name: account.display_name.clone(),
         domain: account.slack_workspace.clone().unwrap_or_default(),
@@ -164,10 +188,63 @@ pub(crate) fn mark_rejected(state: &AppState, account: i64) {
 pub async fn slack_workspaces(app: Shared<'_>) -> Result<Vec<SlackWorkspace>, AppError> {
     let state = app.inner().clone();
     validate_tokens(&state).await;
-    Ok(workspace_accounts(&state.store)?
+    workspace_list(&state)
+}
+
+/// Every workspace, in priority order.
+pub(crate) fn workspace_list(state: &AppState) -> Result<Vec<SlackWorkspace>, AppError> {
+    let mut list: Vec<SlackWorkspace> = workspace_accounts(&state.store)?
         .iter()
-        .map(|account| workspace_dto(&state, account))
-        .collect())
+        .map(|account| workspace_dto(state, account))
+        .collect();
+    list.sort_by_key(|ws| (ws.priority, ws.id));
+    Ok(list)
+}
+
+/// Turn a workspace on or off for routing (§7.11). The grant is kept.
+#[tauri::command]
+pub async fn slack_set_workspace_enabled(
+    app: Shared<'_>,
+    team_id: String,
+    enabled: bool,
+) -> Result<Vec<SlackWorkspace>, AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        known_team(state, &team_id)?;
+        settings::set_slack_workspace_enabled(&state.store, &team_id, enabled)?;
+        workspace_list(state)
+    })
+    .await
+}
+
+/// Save the routing priority: `team_ids` first to last (§7.11).
+#[tauri::command]
+pub async fn slack_set_workspace_order(
+    app: Shared<'_>,
+    team_ids: Vec<String>,
+) -> Result<Vec<SlackWorkspace>, AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        for team in &team_ids {
+            known_team(state, team)?;
+        }
+        settings::set_slack_workspace_order(&state.store, &team_ids)?;
+        workspace_list(state)
+    })
+    .await
+}
+
+fn known_team(state: &AppState, team_id: &str) -> Result<(), AppError> {
+    if workspace_accounts(&state.store)?
+        .iter()
+        .any(|account| account.slack_team_id() == Some(team_id))
+    {
+        Ok(())
+    } else {
+        Err(AppError::new("not_found", "Slack workspace not found"))
+    }
 }
 
 /// Browser sign-in for one workspace. Resolves when the redirect arrives,
@@ -292,6 +369,7 @@ pub(crate) fn targets_for(
     pr: &PullRequest,
     teams: &[String],
 ) -> Result<Vec<TargetChoice>, AppError> {
+    let workspaces = route::workspaces(store)?;
     let mut choices: Vec<TargetChoice> = Vec::new();
     for request in store.list_review_requests(pr.id)? {
         if request.status != pr_nexus_core::domain::RequestStatus::Active {
@@ -299,11 +377,16 @@ pub(crate) fn targets_for(
         }
         push_choice(
             &mut choices,
-            ReviewTarget {
-                workspace: request.workspace,
-                channel_id: request.channel_id,
-                channel_name: request.channel_name,
-            },
+            labeled(
+                &workspaces,
+                ReviewTarget {
+                    workspace: request.workspace,
+                    team_id: request.team_id,
+                    workspace_name: String::new(),
+                    channel_id: request.channel_id,
+                    channel_name: request.channel_name,
+                },
+            ),
             None,
             "request",
         );
@@ -316,17 +399,53 @@ pub(crate) fn targets_for(
         if let Some(row) = lookup_mapping(&rows, org, slug, "") {
             push_choice(
                 &mut choices,
-                ReviewTarget {
-                    workspace: row.slack_workspace.clone(),
-                    channel_id: row.slack_channel_id.clone(),
-                    channel_name: row.slack_channel_name.clone(),
-                },
+                labeled(
+                    &workspaces,
+                    ReviewTarget {
+                        workspace: row.slack_workspace.clone(),
+                        team_id: row.slack_team_id.clone(),
+                        workspace_name: String::new(),
+                        channel_id: row.slack_channel_id.clone(),
+                        channel_name: row.slack_channel_name.clone(),
+                    },
+                ),
                 Some(team),
                 "mapping",
             );
         }
     }
     Ok(choices)
+}
+
+/// `target` with the name of the workspace it names, else its domain.
+pub(crate) fn labeled(workspaces: &[Workspace], target: ReviewTarget) -> ReviewTarget {
+    let ws = route::find(workspaces, target.team_id.as_deref(), &target.workspace);
+    ReviewTarget {
+        workspace_name: ws.map_or_else(|| target.workspace.clone(), |ws| ws.label().to_owned()),
+        ..target
+    }
+}
+
+pub(crate) fn to_core(target: &ReviewTarget) -> Target {
+    Target {
+        workspace: target.workspace.clone(),
+        team_id: target.team_id.clone(),
+        channel_id: target.channel_id.clone(),
+        channel_name: target.channel_name.clone(),
+    }
+}
+
+pub(crate) fn from_core(workspaces: &[Workspace], target: Target) -> ReviewTarget {
+    labeled(
+        workspaces,
+        ReviewTarget {
+            workspace: target.workspace,
+            team_id: target.team_id,
+            workspace_name: String::new(),
+            channel_id: target.channel_id,
+            channel_name: target.channel_name,
+        },
+    )
 }
 
 fn push_choice(
@@ -336,7 +455,14 @@ fn push_choice(
     source: &str,
 ) {
     if let Some(existing) = choices.iter_mut().find(|choice| {
-        choice.target.workspace == target.workspace && choice.target.channel_id == target.channel_id
+        choice.target.channel_id == target.channel_id
+            && match (&choice.target.team_id, &target.team_id) {
+                (Some(a), Some(b)) => a == b,
+                _ => choice
+                    .target
+                    .workspace
+                    .eq_ignore_ascii_case(&target.workspace),
+            }
     }) {
         if let Some(team) = team
             && !existing.teams.contains(team)
@@ -352,27 +478,81 @@ fn push_choice(
     });
 }
 
-/// Search one workspace for a send target (§7.11). `#term` searches
-/// channels, `@term` members, a bare term both. An empty term returns
-/// nothing without calling Slack.
+/// Search every enabled workspace for a send target, in priority order
+/// (§7.11). `#term` searches channels, `@term` members, a bare term both.
+/// Results are merged, a channel seen by several workspaces is kept once
+/// (the first), and each is labeled with its workspace. An empty term
+/// returns nothing without calling Slack.
 #[tauri::command]
 pub async fn slack_search_targets(
     app: Shared<'_>,
-    workspace: String,
     query: String,
 ) -> Result<Vec<TargetMatch>, AppError> {
     let app = blocking::Handle::new(&app);
     blocking::run(move || {
         let state = app.inner().as_ref();
-        let workspace = workspace.trim().to_ascii_lowercase();
         let (channels, members, term) = target_query(&query);
-        if workspace.is_empty() || term.is_empty() {
+        if term.is_empty() {
             return Ok(Vec::new());
         }
-        let chat = chat_for(state, &workspace)?;
-        search_targets(chat.as_ref(), &workspace, term, channels, members)
+        let workspaces: Vec<Workspace> = route::workspaces(&state.store)?
+            .into_iter()
+            .filter(|ws| ws.enabled)
+            .collect();
+        search_all(&workspaces, term, channels, members, |ws| {
+            chat_for(state, &ws.team_id)
+        })
     })
     .await
+}
+
+/// [`search_targets`] over `workspaces`, merged and deduped. Errors only
+/// when no workspace answered.
+pub(crate) fn search_all(
+    workspaces: &[Workspace],
+    term: &str,
+    channels: bool,
+    members: bool,
+    mut chat_for: impl FnMut(&Workspace) -> Result<Arc<dyn ChatProvider>, AppError>,
+) -> Result<Vec<TargetMatch>, AppError> {
+    if workspaces.is_empty() {
+        return Err(AppError::new(
+            "validation",
+            "No enabled Slack workspace. Turn one on in Settings → Slack.",
+        ));
+    }
+    let mut found: Vec<TargetMatch> = Vec::new();
+    let mut failure = None;
+    let mut answered = false;
+    for ws in workspaces {
+        let base = ReviewTarget {
+            workspace: ws.domain().to_owned(),
+            team_id: Some(ws.team_id.clone()),
+            workspace_name: ws.label().to_owned(),
+            channel_id: String::new(),
+            channel_name: String::new(),
+        };
+        let hits = chat_for(ws)
+            .and_then(|chat| search_targets(chat.as_ref(), &base, term, channels, members));
+        match hits {
+            Ok(hits) => {
+                answered = true;
+                for hit in hits {
+                    if !found
+                        .iter()
+                        .any(|seen| seen.target.channel_id == hit.target.channel_id)
+                    {
+                        found.push(hit);
+                    }
+                }
+            }
+            Err(err) => failure = failure.or(Some(err)),
+        }
+    }
+    match failure {
+        Some(err) if !answered => Err(err),
+        _ => Ok(found),
+    }
 }
 
 /// `(search channels, search members, term)` for a picker query.
@@ -391,7 +571,7 @@ pub(crate) fn target_query(query: &str) -> (bool, bool, &str) {
 /// still returns the other; the error surfaces only when nothing worked.
 pub(crate) fn search_targets(
     chat: &dyn ChatProvider,
-    workspace: &str,
+    base: &ReviewTarget,
     term: &str,
     channels: bool,
     members: bool,
@@ -402,9 +582,9 @@ pub(crate) fn search_targets(
         match chat.search_channels(term, TARGET_SEARCH_LIMIT) {
             Ok(items) => found.extend(items.into_iter().map(|channel| TargetMatch {
                 target: ReviewTarget {
-                    workspace: workspace.to_owned(),
                     channel_id: channel.id,
                     channel_name: channel.name,
+                    ..base.clone()
                 },
                 kind: "channel".into(),
             })),
@@ -415,9 +595,9 @@ pub(crate) fn search_targets(
         match chat.search_users(term, TARGET_SEARCH_LIMIT) {
             Ok(items) => found.extend(items.into_iter().map(|user| TargetMatch {
                 target: ReviewTarget {
-                    workspace: workspace.to_owned(),
                     channel_id: user.id,
                     channel_name: user.name,
+                    ..base.clone()
                 },
                 kind: "member".into(),
             })),
@@ -442,13 +622,27 @@ pub async fn review_preview(
         let pr = load_pr(&state.store, pr_id)?;
         let target = validate_target(target)?;
         let plan = plan(state, &pr, &target)?;
-        let signed_in = state.demo || signed_in_account(state, &target.workspace)?.is_some();
-        let (action, bump_count, permalink) = match &plan.action {
-            Action::Request => ("request", 0, None),
-            Action::Bump { request } => ("bump", request.bump_count, request.permalink.clone()),
+        let workspaces = route::workspaces(&state.store)?;
+        let (action, bump_count, permalink, signed_in) = match &plan.action {
+            Action::Request => (
+                "request",
+                0,
+                None,
+                state.demo || any_usable(state, &workspaces, &to_core(&target))?,
+            ),
+            Action::Bump { request } => (
+                "bump",
+                request.bump_count,
+                request.permalink.clone(),
+                state.demo
+                    || signed_in_account(state, request_key(request))
+                        .ok()
+                        .flatten()
+                        .is_some(),
+            ),
         };
         Ok(ReviewPreview {
-            target,
+            target: labeled(&workspaces, target),
             action: action.into(),
             text: plan.text,
             warnings: plan.warnings,
@@ -484,24 +678,58 @@ fn send_blocking(
     let pr = load_pr(&state.store, pr_id)?;
     let target = validate_target(target)?;
     let plan = plan(state, &pr, &target)?;
-    let chat = chat_for(state, &target.workspace)?;
     let teams_json = serde_json::to_string(teams).unwrap_or_else(|_| "[]".into());
-    match lifecycle::send(
-        &state.store,
-        chat.as_ref(),
-        &pr,
-        &plan,
-        &teams_json,
-        Utc::now(),
-    ) {
-        Ok(request) => Ok(indicator(request)),
-        Err(err) => {
-            if matches!(err, CoreError::Provider(ProviderError::Unauthorized(_))) {
-                mark_rejected(state, chat.account_id().0);
-            }
-            Err(slack_error(err))
+    let mut send = |chat: &dyn ChatProvider, target: &Target| {
+        let plan = lifecycle::Plan {
+            target: target.clone(),
+            ..plan.clone()
+        };
+        let sent = lifecycle::send(&state.store, chat, &pr, &plan, &teams_json, Utc::now());
+        if let Err(CoreError::Provider(ProviderError::Unauthorized(_))) = &sent {
+            mark_rejected(state, chat.account_id().0);
         }
-    }
+        sent
+    };
+    let request = match &plan.action {
+        // A bump replies in the request's thread: that workspace or nothing.
+        Action::Bump { request } => {
+            let chat = chat_for(state, request_key(request))?;
+            send(chat.as_ref(), &plan.target).map_err(slack_error)?
+        }
+        Action::Request => {
+            let workspaces = route::workspaces(&state.store)?;
+            let mut chat_for_ws = |ws: &Workspace| {
+                chat_for(state, &ws.team_id).map_err(|err| CoreError::Validation(err.message))
+            };
+            let routed = route::send_routed(&workspaces, &plan.target, &mut chat_for_ws, &mut send)
+                .map_err(slack_error)?;
+            state.store.pin_mapping_team(
+                plan.target.channel_id.clone(),
+                plan.target.team_id.clone(),
+                plan.target.workspace.clone(),
+                routed.workspace.team_id.clone(),
+                routed.workspace.domain().to_owned(),
+            )?;
+            routed.value
+        }
+    };
+    Ok(indicator(request, &route::workspaces(&state.store)?))
+}
+
+/// The routing key of a stored request: its team, else its domain.
+pub(crate) fn request_key(request: &pr_nexus_core::domain::ReviewRequest) -> &str {
+    request.team_id.as_deref().unwrap_or(&request.workspace)
+}
+
+/// Some enabled workspace is signed in (the one the target names first).
+pub(crate) fn any_usable(
+    state: &AppState,
+    workspaces: &[Workspace],
+    target: &Target,
+) -> Result<bool, AppError> {
+    Ok(route::candidates(workspaces, target)
+        .iter()
+        .any(|ws| token_usable(state, &ws.account, true)))
 }
 
 fn plan(
@@ -513,11 +741,7 @@ fn plan(
     Ok(lifecycle::plan(
         &state.store,
         pr,
-        Target {
-            workspace: target.workspace.clone(),
-            channel_id: target.channel_id.clone(),
-            channel_name: target.channel_name.clone(),
-        },
+        to_core(target),
         requester.as_deref(),
         settings::min_bump_interval_hours(&state.store)?,
         Utc::now(),
@@ -536,8 +760,17 @@ pub(crate) fn load_pr(store: &Store, id: i64) -> Result<PullRequest, AppError> {
 pub(crate) fn validate_target(target: ReviewTarget) -> Result<ReviewTarget, AppError> {
     let workspace = target.workspace.trim().to_ascii_lowercase();
     let channel_id = target.channel_id.trim().to_ascii_uppercase();
-    if workspace.is_empty() {
-        return Err(AppError::new("validation", "Choose a Slack workspace"));
+    let team_id = target
+        .team_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|team| !team.is_empty())
+        .map(str::to_ascii_uppercase);
+    if team_id
+        .as_deref()
+        .is_some_and(|team| !pr_nexus_core::domain::is_slack_team_id(team))
+    {
+        return Err(AppError::new("validation", "Not a Slack team ID (T…)"));
     }
     let id_ok = channel_id.len() >= 9
         && channel_id.starts_with(['C', 'G', 'D', 'U', 'W'])
@@ -555,6 +788,8 @@ pub(crate) fn validate_target(target: ReviewTarget) -> Result<ReviewTarget, AppE
         .to_owned();
     Ok(ReviewTarget {
         workspace,
+        team_id,
+        workspace_name: target.workspace_name,
         channel_name: if name.is_empty() {
             channel_id.clone()
         } else {
@@ -564,20 +799,40 @@ pub(crate) fn validate_target(target: ReviewTarget) -> Result<ReviewTarget, AppE
     })
 }
 
-/// The workspace's account when its grant is usable.
-pub(crate) fn signed_in_account(
-    state: &AppState,
-    workspace: &str,
-) -> Result<Option<Account>, AppError> {
-    Ok(workspace_accounts(&state.store)?
+/// The account `key` (a team ID, else a domain) names, when its grant is
+/// usable. Never picks the first of several: two workspaces sharing a
+/// domain is an error that asks for the team.
+pub(crate) fn signed_in_account(state: &AppState, key: &str) -> Result<Option<Account>, AppError> {
+    let mut matches: Vec<Account> = workspace_accounts(&state.store)?
         .into_iter()
-        .find(|account| {
-            token_usable(state, account, true)
-                && account
-                    .slack_workspace
-                    .as_deref()
-                    .is_some_and(|domain| domain.eq_ignore_ascii_case(workspace))
-        }))
+        .filter(|account| account.is_slack_workspace(key))
+        .collect();
+    if matches.len() > 1 {
+        return Err(AppError::new(
+            "validation",
+            format!(
+                "More than one Slack workspace uses {key}. Pick the channel again so it names its workspace."
+            ),
+        ));
+    }
+    Ok(matches
+        .pop()
+        .filter(|account| token_usable(state, account, true)))
+}
+
+/// Refuse a workspace turned off in Settings → Slack.
+fn ensure_enabled(state: &AppState, account: &Account) -> Result<(), AppError> {
+    let disabled = settings::slack_disabled_workspaces(&state.store)?;
+    match account.slack_team_id() {
+        Some(team) if disabled.iter().any(|off| off == team) => Err(AppError::new(
+            "workspace_disabled",
+            format!(
+                "The {} Slack workspace is turned off. Turn it on in Settings → Slack.",
+                account.display_name
+            ),
+        )),
+        _ => Ok(()),
+    }
 }
 
 pub(crate) fn chat_for(
@@ -585,20 +840,37 @@ pub(crate) fn chat_for(
     workspace: &str,
 ) -> Result<Arc<dyn ChatProvider>, AppError> {
     if state.demo {
-        let account = signed_in_account(state, workspace)?
+        let slack = signed_in_account(state, workspace)?;
+        if let Some(account) = &slack {
+            ensure_enabled(state, account)?;
+        }
+        let domain = slack
+            .as_ref()
+            .and_then(|account| account.slack_workspace.clone())
+            .unwrap_or_else(|| workspace.to_owned());
+        let account = slack
             .or(crate::state::github_account(&state.store)?)
             .ok_or_else(|| AppError::new("unauthorized", "No demo account"))?;
         return Ok(Arc::new(DemoChat {
             account: account.id,
-            workspace: workspace.to_owned(),
+            workspace: domain,
         }));
     }
     let account = signed_in_account(state, workspace)?.ok_or_else(|| {
+        let name = workspace_accounts(&state.store)
+            .ok()
+            .and_then(|accounts| {
+                accounts
+                    .into_iter()
+                    .find(|account| account.is_slack_workspace(workspace))
+            })
+            .map_or_else(|| workspace.to_owned(), |account| account.display_name);
         AppError::new(
             "unauthorized",
-            format!("Slack sign-in expired. Reconnect the {workspace} workspace in Settings."),
+            format!("Slack sign-in expired. Reconnect the {name} workspace in Settings."),
         )
     })?;
+    ensure_enabled(state, &account)?;
     let mut chats = lock(&state.chats);
     if let Some(chat) = chats.get(&account.id.0) {
         return Ok(chat.clone());
@@ -831,6 +1103,8 @@ mod tests {
 
     fn target(workspace: &str, id: &str, name: &str) -> ReviewTarget {
         ReviewTarget {
+            workspace_name: String::new(),
+            team_id: None,
             workspace: workspace.into(),
             channel_id: id.into(),
             channel_name: name.into(),
@@ -850,7 +1124,17 @@ mod tests {
         assert_eq!(member, target("acme", "U0123456789", "Grace Hopper"));
         assert!(validate_target(target("acme", "X0123456789", "")).is_err());
         assert!(validate_target(target("acme", "D012", "")).is_err());
-        assert!(validate_target(target("", "C0123456789", "")).is_err());
+        // No workspace: routing picks the first enabled one that sees it.
+        assert!(validate_target(target("", "C0123456789", "")).is_ok());
+        let mut bad_team = target("acme", "C0123456789", "");
+        bad_team.team_id = Some("acme".into());
+        assert!(validate_target(bad_team).is_err());
+        let mut team = target("acme", "C0123456789", "");
+        team.team_id = Some(" t0acme0001 ".into());
+        assert_eq!(
+            validate_target(team).unwrap().team_id.as_deref(),
+            Some("T0ACME0001")
+        );
     }
 
     #[test]
@@ -896,11 +1180,113 @@ mod tests {
 
     #[test]
     fn search_keeps_what_worked_and_reports_a_lone_failure() {
-        let both = search_targets(&HalfChat, "acme", "team", true, true).unwrap();
+        let both = search_targets(&HalfChat, &target("acme", "", ""), "team", true, true).unwrap();
         assert_eq!(both.len(), 1);
         assert_eq!(both[0].kind, "channel");
         assert_eq!(both[0].target, target("acme", "C0ACME0001", "team-reviews"));
-        assert!(search_targets(&HalfChat, "acme", "grace", false, true).is_err());
+        assert!(search_targets(&HalfChat, &target("acme", "", ""), "grace", false, true).is_err());
+    }
+
+    fn ws(id: i64, team: &str, domain: &str, name: &str, enabled: bool) -> Workspace {
+        Workspace {
+            account: Account {
+                id: AccountId(id),
+                kind: AccountKind::Slack,
+                display_name: name.into(),
+                host: format!("{domain}.slack.com"),
+                external_id: format!("{team}:U0ALICE"),
+                slack_workspace: Some(domain.into()),
+                login: "alice".into(),
+                auth_mode: AuthMode::SlackMcpOauth,
+                keychain_key: None,
+                created_at: Utc::now(),
+            },
+            team_id: team.into(),
+            enabled,
+        }
+    }
+
+    #[test]
+    fn search_merges_every_workspace_dedupes_and_labels() {
+        let labs = ws(1, "T0LABS0001", "acme", "acme-labs", true);
+        let main = ws(2, "T0ACME0001", "acme-xyz", "acme", true);
+        let demo: Arc<dyn ChatProvider> = Arc::new(DemoChat {
+            account: AccountId(2),
+            workspace: "acme-xyz".into(),
+        });
+        let mut asked = Vec::new();
+        let found = search_all(&[labs.clone(), main.clone()], "team", true, false, |ws| {
+            asked.push(ws.team_id.clone());
+            if ws.team_id == "T0LABS0001" {
+                Ok(Arc::new(HalfChat) as Arc<dyn ChatProvider>)
+            } else {
+                Ok(demo.clone())
+            }
+        })
+        .unwrap();
+        assert_eq!(asked, ["T0LABS0001", "T0ACME0001"]);
+        let first = &found[0].target;
+        assert_eq!(first.channel_id, "C0ACME0001");
+        assert_eq!(
+            first.workspace_name, "acme-labs",
+            "first workspace wins a duplicate"
+        );
+        assert_eq!(first.team_id.as_deref(), Some("T0LABS0001"));
+        let ids: Vec<&str> = found
+            .iter()
+            .map(|hit| hit.target.channel_id.as_str())
+            .collect();
+        let mut unique = ids.clone();
+        unique.dedup();
+        assert_eq!(ids.len(), unique.len());
+        assert!(
+            found
+                .iter()
+                .skip(1)
+                .all(|hit| hit.target.workspace_name == "acme")
+        );
+    }
+
+    #[test]
+    fn search_fails_only_when_no_workspace_answers() {
+        let labs = ws(1, "T0LABS0001", "acme", "acme-labs", true);
+        let main = ws(2, "T0ACME0001", "acme-xyz", "acme", true);
+        let found = search_all(&[labs.clone(), main.clone()], "team", true, false, |ws| {
+            if ws.team_id == "T0LABS0001" {
+                Err(AppError::new("unauthorized", "expired"))
+            } else {
+                Ok(Arc::new(HalfChat) as Arc<dyn ChatProvider>)
+            }
+        })
+        .unwrap();
+        assert_eq!(found[0].target.workspace_name, "acme");
+        assert!(
+            search_all(&[labs], "team", true, false, |_| Err(AppError::new(
+                "unauthorized",
+                "x"
+            )))
+            .is_err()
+        );
+        assert!(search_all(&[], "team", true, false, |_| unreachable!()).is_err());
+    }
+
+    #[test]
+    fn labels_name_the_team_not_the_link_host() {
+        let all = [
+            ws(1, "T0LABS0001", "acme", "acme-labs", true),
+            ws(2, "T0ACME0001", "acme-xyz", "acme", false),
+        ];
+        let mut pinned = target("acme", "C1", "a");
+        pinned.team_id = Some("T0ACME0001".into());
+        assert_eq!(labeled(&all, pinned).workspace_name, "acme");
+        assert_eq!(
+            labeled(&all, target("acme", "C1", "a")).workspace_name,
+            "acme-labs"
+        );
+        assert_eq!(
+            labeled(&all, target("gone", "C1", "a")).workspace_name,
+            "gone"
+        );
     }
 
     #[test]
@@ -909,13 +1295,19 @@ mod tests {
             account: AccountId(1),
             workspace: "acme".into(),
         };
-        let people = search_targets(&demo, "acme", "grace", false, true).unwrap();
+        let people = search_targets(&demo, &target("acme", "", ""), "grace", false, true).unwrap();
         assert_eq!(people[0].kind, "member");
         assert_eq!(people[0].target.channel_id, "U0ACME0002");
         assert!(
-            search_targets(&demo, "acme", "nothing-matches", true, true)
-                .unwrap()
-                .is_empty()
+            search_targets(
+                &demo,
+                &target("acme", "", ""),
+                "nothing-matches",
+                true,
+                true
+            )
+            .unwrap()
+            .is_empty()
         );
     }
 

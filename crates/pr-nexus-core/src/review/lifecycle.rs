@@ -21,11 +21,18 @@ use super::message::{self, MessageMode};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Target {
     pub workspace: String,
+    /// Slack team (`T…`) to send through, when known. Wins over `workspace`.
+    pub team_id: Option<String>,
     pub channel_id: String,
     pub channel_name: String,
 }
 
 impl Target {
+    /// What picks the Slack account: the team ID when known, else the domain.
+    pub fn route_key(&self) -> &str {
+        self.team_id.as_deref().unwrap_or(&self.workspace)
+    }
+
     /// How the channel reads in text: `#reviews`, `DM` for a direct
     /// message (`D…`), never `#D…`, or `@name` for a member
     /// (`U…`). Mirrors `channelLabel` in the app.
@@ -86,8 +93,38 @@ pub fn active_request(
         .into_iter()
         .find(|request| {
             request.status == RequestStatus::Active
-                && request.workspace == workspace
                 && request.channel_id == channel_id
+                && same_workspace(request, workspace)
+        }))
+}
+
+/// `key` is a team ID or a domain. A request with a team matches by team;
+/// one saved before team IDs matches by domain.
+fn same_workspace(request: &ReviewRequest, key: &str) -> bool {
+    if crate::domain::is_slack_team_id(key) {
+        request.team_id.as_deref() == Some(key)
+    } else {
+        request.workspace.eq_ignore_ascii_case(key)
+    }
+}
+
+/// The active request for a target: same team when both sides know it,
+/// else the same domain (rows saved before team IDs).
+pub fn active_for_target(
+    store: &Store,
+    pr: &PullRequest,
+    target: &Target,
+) -> Result<Option<ReviewRequest>, CoreError> {
+    Ok(store
+        .list_review_requests(pr.id)?
+        .into_iter()
+        .find(|request| {
+            request.status == RequestStatus::Active
+                && request.channel_id == target.channel_id
+                && match (&request.team_id, &target.team_id) {
+                    (Some(have), Some(want)) => have == want,
+                    _ => request.workspace.eq_ignore_ascii_case(&target.workspace),
+                }
         }))
 }
 
@@ -104,7 +141,7 @@ pub fn plan(
     now: DateTime<Utc>,
 ) -> Result<Plan, CoreError> {
     let mut warnings = Vec::new();
-    let active = active_request(store, pr, &target.workspace, &target.channel_id)?;
+    let active = active_for_target(store, pr, &target)?;
     let (action, text) = match active {
         None => (
             Action::Request,
@@ -241,6 +278,7 @@ pub fn send(
                     id: format!("{}:{}", plan.target.channel_id, posted.ts),
                 },
                 workspace: plan.target.workspace.clone(),
+                team_id: plan.target.team_id.clone(),
                 channel_id: plan.target.channel_id.clone(),
                 channel_name: plan.target.channel_name.clone(),
                 root_ts: posted.ts.clone(),
@@ -296,7 +334,7 @@ pub(crate) mod tests {
             unimplemented!()
         }
         fn channel_info(&self, _: &str) -> Result<ChatChannel, ProviderError> {
-            unimplemented!()
+            Err(ProviderError::Unsupported("fake".into()))
         }
         fn post(&self, message: &OutgoingMessage<'_>) -> Result<PostedMessage, ProviderError> {
             if self.fail {
@@ -430,6 +468,7 @@ pub(crate) mod tests {
 
     pub(crate) fn target() -> Target {
         Target {
+            team_id: None,
             workspace: "acme".into(),
             channel_id: "C0TEAM".into(),
             channel_name: "team-web".into(),
@@ -531,6 +570,7 @@ pub(crate) mod tests {
     #[test]
     fn dm_targets_read_as_dm_in_warnings() {
         let target = |id: &str, name: &str| Target {
+            team_id: None,
             workspace: "acme".into(),
             channel_id: id.into(),
             channel_name: name.into(),

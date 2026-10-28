@@ -110,7 +110,16 @@ test("slack status prefers the latest bump and threads label explains the count"
     requested_at: "2026-10-24T12:00:00Z",
   };
   expect(slackStatus(null, now)).toBeNull();
-  expect(slackStatus(slack, now)).toEqual({ label: "Requested · 2d ago", title: "team · #reviews · requested 2d ago" });
+  expect(slackStatus(slack, now)).toEqual({ label: "Requested · 2d ago", title: "team · #reviews · requested 2d ago", workspace: "team", disabled: false });
+  // The team name wins over the domain, and a disabled workspace says so.
+  const labs = { ...slack, workspace: "acme", team_id: "T0ACME0002", workspace_name: "Acme Labs", workspace_disabled: true };
+  expect(slackStatus(labs, now)).toEqual({
+    label: "Requested · 2d ago",
+    title: "Acme Labs · #reviews · requested 2d ago · workspace disabled in Settings → Slack",
+    workspace: "Acme Labs",
+    disabled: true,
+  });
+  expect(sentToast({ ...labs, workspace_disabled: false })).toEqual({ text: "Review requested in Acme Labs · #reviews", link: null });
   expect(slackStatus({ ...slack, bump_count: 1, last_bumped_at: "2026-10-26T07:00:00Z" }, now)?.label).toBe("Bumped · 5h ago");
   expect(sentToast(slack)).toEqual({ text: "Review requested in team · #reviews", link: null });
   const dm = { ...slack, channel_id: "D0123456789", channel_name: "D0123456789", permalink: "https://acme.slack.com/archives/D0123456789/p1", bump_count: 1 };

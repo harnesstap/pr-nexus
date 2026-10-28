@@ -101,7 +101,7 @@ export const boot: Bootstrap = {
   slack_client_id: "",
   slack_redirect_uri: "http://127.0.0.1:47821/mcp/oauth/callback",
   slack_secret_saved: true,
-  slack_workspaces: [{ id: 1, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false }],
+  slack_workspaces: [{ id: 1, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false, team_id: "T0ACME0001", enabled: true, priority: 0 }],
   slack_mentions: "off",
   bump_broadcast: true,
   mapping_count: 12,

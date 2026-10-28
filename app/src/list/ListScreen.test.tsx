@@ -47,9 +47,11 @@ function api(projects: ProjectDto[], rows: SearchRow[] = []): Api {
     saveSlack: () => Promise.resolve(),
     slackManifestUrl: () => Promise.resolve(""),
     slackConnect: () =>
-      Promise.resolve({ id: 9, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false }),
+      Promise.resolve({ id: 9, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false, team_id: "T0ACME0001", enabled: true, priority: 0 }),
     slackCancelConnect: () => Promise.resolve(),
     slackRemoveWorkspace: () => Promise.resolve(),
+    slackSetWorkspaceEnabled: () => Promise.resolve([]),
+    slackSetWorkspaceOrder: () => Promise.resolve([]),
     reviewTargets: () => Promise.resolve([]),
     searchSlackTargets: () => Promise.resolve([]),
     reviewPreview: (_prId: number, target: ReviewTarget) =>
@@ -163,7 +165,7 @@ test("a failed first load shows the error with Try again", async () => {
 
 test("the skipped-mapping hint opens Settings → Mappings", async () => {
   window.localStorage.clear();
-  const slack = { ...boot, slack_workspaces: [{ id: 1, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false }] };
+  const slack = { ...boot, slack_workspaces: [{ id: 1, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false, team_id: "T0ACME0002", enabled: true, priority: 1 }] };
   render(<ListScreen api={api([])} boot={slack} onBoot={() => undefined} />);
   fireEvent.click(await screen.findByRole("button", { name: "Map team channels" }));
   expect(await screen.findByRole("tab", { name: "Mappings" })).toHaveAttribute("aria-selected", "true");

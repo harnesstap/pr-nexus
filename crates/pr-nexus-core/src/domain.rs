@@ -387,6 +387,62 @@ pub struct Account {
     pub created_at: DateTime<Utc>,
 }
 
+impl Account {
+    /// The Slack team ID (`T…`): `external_id` is `team:user`.
+    pub fn slack_team_id(&self) -> Option<&str> {
+        if self.kind != AccountKind::Slack {
+            return None;
+        }
+        self.external_id
+            .split_once(':')
+            .map(|(team, _)| team)
+            .filter(|team| !team.is_empty())
+    }
+
+    /// Whether `key` (a team ID, or a domain) names this Slack account.
+    pub fn is_slack_workspace(&self, key: &str) -> bool {
+        if is_slack_team_id(key) {
+            self.slack_team_id() == Some(key)
+        } else {
+            self.kind == AccountKind::Slack
+                && self
+                    .slack_workspace
+                    .as_deref()
+                    .is_some_and(|domain| domain.eq_ignore_ascii_case(key))
+        }
+    }
+}
+
+/// A Slack team or enterprise ID (`T0ACME0001`, `E0ACME0001`). Domains are
+/// stored lower-case, so the upper-case shape never names a domain.
+pub fn is_slack_team_id(value: &str) -> bool {
+    value.len() >= 7
+        && value.starts_with(['T', 'E'])
+        && value
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+}
+
+/// The one Slack account a key names. A domain shared by several
+/// accounts (an Enterprise Grid) names none: callers must not guess.
+pub fn unique_slack_account<'a>(accounts: &'a [Account], key: &str) -> SlackMatch<'a> {
+    let mut found = accounts
+        .iter()
+        .filter(|account| account.is_slack_workspace(key));
+    match (found.next(), found.next()) {
+        (None, _) => SlackMatch::None,
+        (Some(one), None) => SlackMatch::One(one),
+        (Some(_), Some(_)) => SlackMatch::Ambiguous,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlackMatch<'a> {
+    None,
+    One(&'a Account),
+    Ambiguous,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Repository {
     pub id: i64,
@@ -450,7 +506,10 @@ pub struct TeamChannelMapping {
     pub github_org: String,
     pub team_slug: String,
     pub team_name: String,
+    /// Domain, for display and links.
     pub slack_workspace: String,
+    /// Slack team (`T…`) that routes sends; `None` until resolved.
+    pub slack_team_id: Option<String>,
     pub slack_channel_id: String,
     pub slack_channel_name: String,
     pub disabled: bool,
@@ -518,7 +577,10 @@ pub struct ReviewRequest {
     pub pr: PrId,
     /// Slack account that owns `root`, when the workspace is connected.
     pub root: ProviderRef,
+    /// Domain, for display and links.
     pub workspace: String,
+    /// Slack team (`T…`) the request was posted through, when known.
+    pub team_id: Option<String>,
     pub channel_id: String,
     pub channel_name: String,
     /// Slack `ts` of the top-level request message. Bumps reply in its thread.

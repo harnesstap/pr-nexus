@@ -13,8 +13,7 @@ use chrono::{DateTime, Duration, TimeZone, Utc};
 use serde::Serialize;
 
 use crate::domain::{
-    AccountId, AccountKind, ChatThreadCacheEntry, CloseReason, PrId, RequestStatus, ReviewMessage,
-    ReviewRequest,
+    AccountId, ChatThreadCacheEntry, CloseReason, PrId, RequestStatus, ReviewMessage, ReviewRequest,
 };
 use crate::error::{CoreError, ProviderError};
 use crate::providers::{ChatProvider, SearchHit, ThreadMessage, ThreadReplies};
@@ -97,6 +96,8 @@ fn rfc3339<S: serde::Serializer>(
 /// One known thread, before it is read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Root {
+    /// Slack team (`T…`) when known; routes before `workspace`.
+    team_id: Option<String>,
     workspace: String,
     channel_id: String,
     channel_name: String,
@@ -141,6 +142,7 @@ fn collect_roots(
                 RequestStatus::Closed(reason) => (ThreadStatus::Closed, Some(reason)),
             };
             Root {
+                team_id: request.team_id.clone(),
                 workspace: request.workspace.clone(),
                 channel_id: request.channel_id.clone(),
                 channel_name: request.channel_name.clone(),
@@ -160,13 +162,15 @@ fn collect_roots(
             .thread_root_ts
             .clone()
             .unwrap_or_else(|| message.ts.clone());
-        let workspace = store
-            .get_account(message.slack_account_id)
-            .ok()
-            .flatten()
+        let account = store.get_account(message.slack_account_id).ok().flatten();
+        let team_id = account
+            .as_ref()
+            .and_then(|account| account.slack_team_id().map(str::to_owned));
+        let workspace = account
             .and_then(|account| account.slack_workspace)
             .unwrap_or_default();
         out.push(Root {
+            team_id,
             permalink: (message.thread_root_ts.is_none())
                 .then(|| message.permalink.clone())
                 .flatten()
@@ -245,12 +249,13 @@ fn read_root(
         error: None,
         unauthorized: false,
     };
-    let chat = match chat_for(&root.workspace) {
+    let key = root.team_id.as_deref().unwrap_or(&root.workspace);
+    let chat = match chat_for(key) {
         Ok(chat) => chat,
         Err(err) => {
             // Signed out: still show the last copy read with this workspace.
             thread.error = Some(core_message(err));
-            if let Some(account) = slack_account_for(store, &root.workspace)?
+            if let Some(account) = slack_account_for(store, key)?
                 && let Some((replies, fetched_at)) = cached_replies(store, account, root)?
             {
                 fill(&mut thread, &replies, fetched_at, true);
@@ -307,17 +312,13 @@ fn slack_account_for(store: &Store, workspace: &str) -> Result<Option<AccountId>
     if workspace.is_empty() {
         return Ok(None);
     }
-    Ok(store
-        .list_accounts()?
-        .into_iter()
-        .find(|account| {
-            account.kind == AccountKind::Slack
-                && account
-                    .slack_workspace
-                    .as_deref()
-                    .is_some_and(|name| name.eq_ignore_ascii_case(workspace))
-        })
-        .map(|account| account.id))
+    let accounts = store.list_accounts()?;
+    Ok(
+        match crate::domain::unique_slack_account(&accounts, workspace) {
+            crate::domain::SlackMatch::One(account) => Some(account.id),
+            crate::domain::SlackMatch::None | crate::domain::SlackMatch::Ambiguous => None,
+        },
+    )
 }
 
 fn core_message(err: CoreError) -> String {

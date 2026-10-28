@@ -416,10 +416,24 @@ impl ChatProvider for SlackMcpChatProvider {
         ))
     }
 
-    fn channel_info(&self, _channel_id: &str) -> Result<ChatChannel, ProviderError> {
-        Err(ProviderError::Unsupported(
-            "channel lookup is not available yet; enter the channel ID".into(),
-        ))
+    /// Read-only visibility probe before a send (§7.11): a member ID reads
+    /// the profile, a channel or DM reads its newest message.
+    fn channel_info(&self, channel_id: &str) -> Result<ChatChannel, ProviderError> {
+        if channel_id.starts_with(['U', 'W']) {
+            let name = self.user_name(channel_id)?;
+            return Ok(ChatChannel {
+                id: channel_id.to_owned(),
+                name,
+            });
+        }
+        let mut args = JsonObject::new();
+        args.insert("channel_id".into(), json!(channel_id));
+        args.insert("limit".into(), json!(1));
+        self.read(READ_CHANNEL, args)?;
+        Ok(ChatChannel {
+            id: channel_id.to_owned(),
+            name: channel_id.to_owned(),
+        })
     }
 
     fn post(&self, message: &OutgoingMessage<'_>) -> Result<PostedMessage, ProviderError> {
@@ -873,5 +887,35 @@ mod tests {
             slack.read_thread("C0TEAM", "1700000000.000100", 50),
             Err(ProviderError::Unauthorized(_))
         ));
+    }
+
+    #[test]
+    fn channel_info_probes_read_only() {
+        let missing = ToolOutput {
+            text: "Error: channel_not_found".into(),
+            is_error: true,
+            ..ToolOutput::default()
+        };
+        let (slack, fake) = provider_with_read(text("unused"), Some(missing));
+        let err = slack.channel_info("C0TEAM0001").unwrap_err();
+        assert!(matches!(err, ProviderError::Api { code, .. } if code == "channel_not_found"));
+        let calls = fake.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, READ_CHANNEL);
+        assert_eq!(
+            Value::Object(calls[0].1.clone()),
+            json!({"channel_id": "C0TEAM0001", "limit": 1})
+        );
+        drop(calls);
+
+        let (slack, fake) = provider_with_read(text("unused"), Some(text("{\"messages\":[]}")));
+        assert_eq!(slack.channel_info("D0SELF0001").unwrap().id, "D0SELF0001");
+        assert!(
+            fake.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(tool, _)| tool != SEND_MESSAGE)
+        );
     }
 }

@@ -257,11 +257,19 @@ test("rows show labelled threads, a review pill, and the Slack request status", 
           slack: { ...slack, bump_count: 2, last_bumped_at: "2026-10-26T07:00:00Z" },
         }),
         row({ id: 3, title: "Quiet one", total_threads: 0 }),
+        row({
+          id: 4,
+          title: "Labs one",
+          slack: { ...slack, team_id: "T0ACME0002", workspace_name: "Acme Labs", workspace_disabled: true, requested_at: "2026-10-25T12:00:00Z" },
+        }),
       ]}
     />,
   );
   expect(screen.getByText("Requested · 2d ago")).toBeInTheDocument();
   expect(screen.getByText("Bumped · 5h ago")).toBeInTheDocument();
+  expect(screen.getByText("· Acme Labs")).toBeInTheDocument();
+  expect(screen.getByText("· workspace disabled")).toBeInTheDocument();
+  expect(screen.getAllByText("· workspace disabled")).toHaveLength(1);
   expect(screen.getByText("Not requested")).toBeInTheDocument();
   expect(screen.getByLabelText("1 unresolved of 3 review threads")).toBeInTheDocument();
   expect(screen.getByLabelText("0 unresolved of 0 review threads")).toBeInTheDocument();

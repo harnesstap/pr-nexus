@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { Api, SlackWorkspace } from "../api";
 import { errorMessage } from "../api";
 import { plainText } from "../textInput";
+import { Tooltip } from "../Tooltip";
 
 export const DEFAULT_REDIRECT = "http://127.0.0.1:47821/mcp/oauth/callback";
 
@@ -46,6 +47,7 @@ export function SlackPanel({ api, fields, onFieldsChange, secretSaved, workspace
   const [notice, setNotice] = useState<string | null>(null);
   const [timedOut, setTimedOut] = useState(false);
   const [elapsed, setElapsed] = useState(0);
+  const [dragging, setDragging] = useState<number | null>(null);
   const set = (patch: Partial<SlackFields>) => onFieldsChange({ ...fields, ...patch });
 
   useEffect(() => {
@@ -105,6 +107,35 @@ export function SlackPanel({ api, fields, onFieldsChange, secretSaved, workspace
     }
   }
 
+  async function setEnabled(workspace: SlackWorkspace, enabled: boolean) {
+    setError(null);
+    try {
+      onWorkspacesChange(await api.slackSetWorkspaceEnabled(workspace.team_id, enabled));
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  }
+
+  /** Moves `from` to `to` in the priority list and saves the new order. */
+  async function move(from: number, to: number) {
+    if (to < 0 || to >= ordered.length || from === to) {
+      return;
+    }
+    const next = [...ordered];
+    const [item] = next.splice(from, 1);
+    next.splice(to, 0, item);
+    setError(null);
+    onWorkspacesChange(next.map((workspace, priority) => ({ ...workspace, priority })));
+    try {
+      onWorkspacesChange(await api.slackSetWorkspaceOrder(next.map((workspace) => workspace.team_id)));
+    } catch (err) {
+      setError(errorMessage(err));
+      onWorkspacesChange(ordered);
+    }
+  }
+
+  const ordered = [...workspaces].sort((a, b) => a.priority - b.priority);
+  const several = ordered.length > 1;
   const input = "mt-1 w-full rounded border border-slate-700 bg-slate-900 px-3 py-2";
   return (
     <div className="space-y-4">
@@ -154,24 +185,87 @@ export function SlackPanel({ api, fields, onFieldsChange, secretSaved, workspace
       </label>
       <div>
         <h3 className="text-sm font-medium">Connected workspaces</h3>
+        {several && (
+          <p className="mt-0.5 text-xs text-slate-400">
+            Sends try the first enabled workspace, then the next when Slack says the channel or person is not there.
+            Drag or use the arrows to reorder.
+          </p>
+        )}
         {workspaces.length === 0 ? (
           <p className="mt-1 text-sm text-slate-400">None yet.</p>
         ) : (
           <ul className="mt-2 space-y-2" aria-label="Connected workspaces">
-            {workspaces.map((workspace) => (
+            {ordered.map((workspace, index) => (
               <li
                 key={workspace.id}
-                className="flex items-center justify-between rounded border border-slate-700 px-3 py-2 text-sm"
+                aria-label={workspace.team_name}
+                draggable={several}
+                onDragStart={(event) => {
+                  setDragging(index);
+                  event.dataTransfer?.setData("text/plain", workspace.team_id);
+                }}
+                onDragOver={(event) => dragging !== null && event.preventDefault()}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  if (dragging !== null) {
+                    void move(dragging, index);
+                  }
+                  setDragging(null);
+                }}
+                onDragEnd={() => setDragging(null)}
+                className={`flex items-center justify-between rounded border border-slate-700 px-3 py-2 text-sm ${workspace.enabled ? "" : "opacity-60"} ${several ? "cursor-grab" : ""}`}
               >
-                <span>
+                <span className="flex items-center gap-2">
+                  <Tooltip
+                    label={workspace.enabled ? "Enabled" : "Disabled"}
+                    detail="Off keeps the sign-in but skips this workspace for search, sends, bumps and status reads."
+                    align="start"
+                  >
+                    <input
+                      type="checkbox"
+                      role="switch"
+                      aria-label={`Use ${workspace.team_name}`}
+                      checked={workspace.enabled}
+                      onChange={(event) => void setEnabled(workspace, event.target.checked)}
+                    />
+                  </Tooltip>
+                  <span>
                   <span className="font-medium">{workspace.team_name}</span>{" "}
                   <span className="text-slate-400">
                     · {workspace.domain}.slack.com · @{workspace.user_name}
                     {workspace.signed_in || workspace.needs_sign_in ? "" : " · signed out"}
                   </span>
                   {workspace.needs_sign_in && <span className="text-amber-300"> · needs sign-in</span>}
+                  {!workspace.enabled && <span className="text-slate-500"> · disabled</span>}
+                  </span>
                 </span>
                 <span className="flex items-center gap-3">
+                  {several && (
+                    <span className="flex items-center gap-1">
+                      <Tooltip label="Move up" detail="Try this workspace earlier when sending.">
+                        <button
+                          type="button"
+                          className="rounded px-1 text-xs text-slate-300 disabled:opacity-30"
+                          aria-label={`Move ${workspace.team_name} up`}
+                          disabled={index === 0}
+                          onClick={() => void move(index, index - 1)}
+                        >
+                          ↑
+                        </button>
+                      </Tooltip>
+                      <Tooltip label="Move down" detail="Try this workspace later when sending.">
+                        <button
+                          type="button"
+                          className="rounded px-1 text-xs text-slate-300 disabled:opacity-30"
+                          aria-label={`Move ${workspace.team_name} down`}
+                          disabled={index === ordered.length - 1}
+                          onClick={() => void move(index, index + 1)}
+                        >
+                          ↓
+                        </button>
+                      </Tooltip>
+                    </span>
+                  )}
                   {!workspace.signed_in && (
                     <button
                       type="button"

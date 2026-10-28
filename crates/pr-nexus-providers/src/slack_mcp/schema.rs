@@ -522,6 +522,7 @@ pub fn map_error(tool: &str, text: &str, retry_after_secs: Option<u64>) -> Provi
     for code in [
         "not_in_channel",
         "channel_not_found",
+        "user_not_found",
         "is_archived",
         "msg_too_long",
     ] {

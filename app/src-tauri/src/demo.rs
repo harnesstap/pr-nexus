@@ -164,6 +164,7 @@ pub fn seed_if_empty(store: &Store) -> Result<(), AppError> {
                     id: "C0123456789:1700000000.000100".into(),
                 },
                 workspace: "acme".into(),
+                team_id: None,
                 channel_id: "C0123456789".into(),
                 channel_name: "team-reviews".into(),
                 root_ts: "1700000000.000100".into(),

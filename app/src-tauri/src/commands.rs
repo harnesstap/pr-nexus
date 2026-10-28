@@ -140,6 +140,12 @@ pub struct SlackIndicator {
     pub last_bumped_at: Option<String>,
     pub bump_count: u32,
     pub workspace: String,
+    /// Slack team (`T…`) the request lives in, when known.
+    pub team_id: Option<String>,
+    /// Team name of that workspace, else the domain.
+    pub workspace_name: String,
+    /// That workspace is turned off: no bumps or status reads (§7.11).
+    pub workspace_disabled: bool,
     pub channel_id: String,
     pub channel_name: String,
     pub permalink: Option<String>,
@@ -715,7 +721,11 @@ fn list_items(state: &AppState) -> Result<Vec<listing::Item>, AppError> {
         .store
         .list_pull_requests_for_account_slim(account.id)?;
     let mut facts = state.store.list_facts(account.id)?;
-    Ok(prs.iter().map(|pr| to_item(&mut facts, pr, flag)).collect())
+    let workspaces = pr_nexus_core::review::route::workspaces(&state.store)?;
+    Ok(prs
+        .iter()
+        .map(|pr| to_item(&mut facts, &workspaces, pr, flag))
+        .collect())
 }
 
 /// Ids matching `query` in SQLite: title, description, repo, number, author,
@@ -1493,8 +1503,21 @@ pub async fn save_view_state(
     .await
 }
 
-pub(crate) fn indicator(request: pr_nexus_core::domain::ReviewRequest) -> SlackIndicator {
+pub(crate) fn indicator(
+    request: pr_nexus_core::domain::ReviewRequest,
+    workspaces: &[pr_nexus_core::review::route::Workspace],
+) -> SlackIndicator {
+    let ws = pr_nexus_core::review::route::find(
+        workspaces,
+        request.team_id.as_deref(),
+        &request.workspace,
+    );
+    let workspace_name = ws.map_or_else(|| request.workspace.clone(), |ws| ws.label().to_owned());
+    let workspace_disabled = ws.is_some_and(|ws| !ws.enabled);
     SlackIndicator {
+        team_id: request.team_id.clone(),
+        workspace_name,
+        workspace_disabled,
         requested_at: request.requested_at.to_rfc3339(),
         last_bumped_at: request.last_bumped_at.map(|value| value.to_rfc3339()),
         bump_count: request.bump_count,
@@ -1507,7 +1530,12 @@ pub(crate) fn indicator(request: pr_nexus_core::domain::ReviewRequest) -> SlackI
     }
 }
 
-fn to_item(facts: &mut ListFacts, pr: &PullRequest, flag: bool) -> listing::Item {
+fn to_item(
+    facts: &mut ListFacts,
+    workspaces: &[pr_nexus_core::review::route::Workspace],
+    pr: &PullRequest,
+    flag: bool,
+) -> listing::Item {
     let links = facts.links.remove(&pr.id).unwrap_or_default();
     let request = facts.active_requests.remove(&pr.id);
     let slack_requested_ms = request
@@ -1556,7 +1584,7 @@ fn to_item(facts: &mut ListFacts, pr: &PullRequest, flag: bool) -> listing::Item
                 || pr.merge_state == pr_nexus_core::domain::MergeStateStatus::Dirty,
             reviewers_requested: !pr.requested_reviewers.is_empty(),
             pending_reviewers: pending_reviewers(&pr.requested_reviewers),
-            slack: request.map(indicator),
+            slack: request.map(|request| indicator(request, workspaces)),
         },
         updated_ms: pr.updated_at.timestamp_millis(),
         created_ms: pr.created_at.timestamp_millis(),

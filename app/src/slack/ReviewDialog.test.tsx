@@ -23,7 +23,7 @@ function fake(overrides: Partial<Api> = {}) {
   const calls = { targets: [] as string[][], sent: [] as [ReviewTarget, string[]][] };
   const api = {
     prDetail: () => Promise.resolve(detail),
-    slackWorkspaces: () => Promise.resolve([{ id: 3, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false }]),
+    slackWorkspaces: () => Promise.resolve([{ id: 3, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false, team_id: "T0ACME0001", enabled: true, priority: 0 }]),
     reviewTargets: (_id: number, teams: string[]) => {
       calls.targets.push(teams);
       return Promise.resolve([mapped]);
@@ -126,9 +126,9 @@ test("a send whose link is unknown is a notice, not an error, and Send stays off
 
 test("a searched member replaces the mapped channel and the request keeps the PR's teams", async () => {
   const { api, calls } = fake({
-    searchSlackTargets: (workspace, query) =>
+    searchSlackTargets: (query: string) =>
       Promise.resolve(
-        query === "@grace" ? [{ kind: "member" as const, target: { workspace, channel_id: "U0ACME0002", channel_name: "Grace Hopper" } }] : [],
+        query === "@grace" ? [{ kind: "member" as const, target: { workspace: "acme", channel_id: "U0ACME0002", channel_name: "Grace Hopper" } }] : [],
       ),
   });
   render(<ReviewDialog api={api} row={row} onClose={() => undefined} onOpen={() => undefined} onSent={() => undefined} />);

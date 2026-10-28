@@ -304,6 +304,7 @@ fn cascades_follow_foreign_keys() {
         .unwrap();
     store
         .insert_review_request(ReviewRequest {
+            team_id: None,
             id: crate::domain::ReviewRequestId(0),
             pr: pr.id,
             root: ProviderRef {
@@ -384,6 +385,7 @@ fn review_request_constraints() {
     let (_dir, store) = open_temp();
     let (_gh, _repo, pr) = seed_pr(&store, "NODE_RR", PrState::Open);
     let base = ReviewRequest {
+        team_id: None,
         id: crate::domain::ReviewRequestId(0),
         pr: pr.id,
         root: ProviderRef {
@@ -530,6 +532,7 @@ fn every_remaining_table_round_trips() {
 
     let mapping = store
         .upsert_mapping(TeamChannelMapping {
+            slack_team_id: None,
             id: 0,
             layer: MappingLayer::User,
             github_org: "acme".to_owned(),
@@ -811,6 +814,15 @@ fn upgrading_from_version_3_rebuilds_search_text_with_the_new_fold() {
                 conn.execute(
                     "UPDATE pull_requests SET search_text = 'fix the widget\u{2013}latch'",
                     params![],
+                )
+                .map_err(db)?;
+                // Undo 0006 so the upgrade replays it from version 3.
+                conn.execute_batch(
+                    "UPDATE accounts SET slack_workspace_unique_v1 = slack_workspace;
+                     ALTER TABLE accounts DROP COLUMN slack_workspace;
+                     ALTER TABLE accounts RENAME COLUMN slack_workspace_unique_v1 TO slack_workspace;
+                     ALTER TABLE review_requests DROP COLUMN slack_team_id;
+                     ALTER TABLE team_channel_mappings DROP COLUMN slack_team_id;",
                 )
                 .map_err(db)?;
                 conn.pragma_update(None, "user_version", 3_i64)

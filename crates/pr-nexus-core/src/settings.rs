@@ -39,6 +39,10 @@ pub const MIN_BUMP_INTERVAL: &str = "review.min_bump_interval_hours";
 pub const BULK_BUMP_MAX_THREADS: &str = "review.bulk_bump_max_threads";
 /// Mentions search in the Slack panel (§7.10): `off`, `public`, or `all`.
 pub const SLACK_MENTIONS: &str = "slack.mentions";
+/// Slack team IDs in routing priority order (§7.11). Unlisted teams follow.
+pub const SLACK_WORKSPACE_ORDER: &str = "slack.workspace_order";
+/// Slack team IDs switched off: kept signed in, never used (§7.11).
+pub const SLACK_DISABLED_WORKSPACES: &str = "slack.disabled_workspaces";
 /// Bumps are thread replies; with this on they are also sent to the channel.
 pub const BUMP_BROADCAST: &str = "review.bump_broadcast";
 
@@ -283,6 +287,31 @@ pub fn slack_mentions(store: &Store) -> Result<MentionsScope, CoreError> {
 
 pub fn set_slack_mentions(store: &Store, scope: MentionsScope) -> Result<(), CoreError> {
     put_json(store, SLACK_MENTIONS, &scope.as_str())
+}
+
+pub fn slack_workspace_order(store: &Store) -> Result<Vec<String>, CoreError> {
+    json_or(store, SLACK_WORKSPACE_ORDER, Vec::new())
+}
+
+pub fn set_slack_workspace_order(store: &Store, teams: &[String]) -> Result<(), CoreError> {
+    put_json(store, SLACK_WORKSPACE_ORDER, teams)
+}
+
+pub fn slack_disabled_workspaces(store: &Store) -> Result<Vec<String>, CoreError> {
+    json_or(store, SLACK_DISABLED_WORKSPACES, Vec::new())
+}
+
+pub fn set_slack_workspace_enabled(
+    store: &Store,
+    team_id: &str,
+    enabled: bool,
+) -> Result<(), CoreError> {
+    let mut disabled = slack_disabled_workspaces(store)?;
+    disabled.retain(|team| team != team_id);
+    if !enabled {
+        disabled.push(team_id.to_owned());
+    }
+    put_json(store, SLACK_DISABLED_WORKSPACES, &disabled)
 }
 
 /// `review.bump_broadcast`: whether a bump reply is also sent to the

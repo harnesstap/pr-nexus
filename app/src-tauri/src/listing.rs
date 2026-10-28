@@ -940,6 +940,9 @@ mod tests {
         items[4].row.review_decision = Some("changes_requested".into());
         items[5].row.review_decision = Some("approved".into());
         items[6].row.slack = Some(crate::commands::SlackIndicator {
+            workspace_name: "acme".into(),
+            workspace_disabled: false,
+            team_id: None,
             requested_at: at(3).to_rfc3339(),
             last_bumped_at: None,
             bump_count: 0,

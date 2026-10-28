@@ -59,9 +59,11 @@ function api(overrides: Partial<Api> = {}): Api {
     saveSlack: () => Promise.resolve(),
     slackManifestUrl: () => Promise.resolve("https://api.slack.com/apps?new_app=1&manifest_json=%7B%7D"),
     slackConnect: () =>
-      Promise.resolve({ id: 9, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false }),
+      Promise.resolve({ id: 9, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false, team_id: "T0ACME0001", enabled: true, priority: 0 }),
     slackCancelConnect: () => Promise.resolve(),
     slackRemoveWorkspace: () => Promise.resolve(),
+    slackSetWorkspaceEnabled: () => Promise.resolve([]),
+    slackSetWorkspaceOrder: () => Promise.resolve([]),
     reviewTargets: () => Promise.resolve([]),
     searchSlackTargets: () => Promise.resolve([]),
     reviewPreview: (_prId: number, target: ReviewTarget) =>
@@ -147,7 +149,7 @@ test("the Slack step saves a custom redirect, connects in the browser, then allo
         },
         slackConnect: () =>
           new Promise((resolve) => {
-            release = () => resolve({ id: 3, team_name: "Acme Corp", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false });
+            release = () => resolve({ id: 3, team_name: "Acme Corp", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false, team_id: "T0ACME0002", enabled: true, priority: 1 });
           }),
       })}
       boot={{ ...boot, resume_step: "connect_chat" }}
@@ -244,7 +246,7 @@ test("a long Slack sign-in counts down, says still waiting, and offers a retry a
 });
 
 test("a connected workspace can be removed", async () => {
-  let remaining = [{ id: 4, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false }];
+  let remaining = [{ id: 4, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false, team_id: "T0ACME0003", enabled: true, priority: 2 }];
   render(
     <Wizard
       api={api({
@@ -334,7 +336,7 @@ test("the mapping step loads a CSV from the file dialog and imports it", async (
       boot={{
         ...boot,
         resume_step: "chat_mapping",
-        slack_workspaces: [{ id: 4, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false }],
+        slack_workspaces: [{ id: 4, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false, team_id: "T0ACME0004", enabled: true, priority: 3 }],
       }}
       onFinished={() => undefined}
     />,
@@ -355,7 +357,7 @@ test("the mapping step shows a file read error and an import parse error like a 
         pickMappingFile: () => pick(),
         importMapping: () => Promise.reject({ kind: "validation", message: "mapping csv: missing column slack_channel_id" }),
       })}
-      boot={{ ...boot, resume_step: "chat_mapping", slack_workspaces: [{ id: 4, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false }] }}
+      boot={{ ...boot, resume_step: "chat_mapping", slack_workspaces: [{ id: 4, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false, team_id: "T0ACME0005", enabled: true, priority: 4 }] }}
       onFinished={() => undefined}
     />,
   );
@@ -385,7 +387,7 @@ test("the mapping step preselects the only connected workspace for the import", 
       boot={{
         ...boot,
         resume_step: "chat_mapping",
-        slack_workspaces: [{ id: 4, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: false, needs_sign_in: true }],
+        slack_workspaces: [{ id: 4, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: false, needs_sign_in: true, team_id: "T0ACME0006", enabled: true, priority: 5 }],
       }}
       onFinished={() => undefined}
     />,

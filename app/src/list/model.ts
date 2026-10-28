@@ -1,3 +1,4 @@
+import { targetWorkspaceName } from "../slack/workspaces";
 import type { BulkOutcome, BulkResult, ListRow, ProjectDto, SlackIndicator, SyncStatus } from "../api";
 import { channelLabel } from "../api";
 
@@ -502,12 +503,18 @@ export function threadsLabel(unresolved: number, total: number): { text: string;
 }
 
 /** Row Slack indicator: the newest event (bump wins over the request) and its age. */
-export function slackStatus(slack: ListRow["slack"], now: Date): { label: string; title: string } | null {
+export function slackStatus(
+  slack: ListRow["slack"],
+  now: Date,
+): { label: string; title: string; workspace: string; disabled: boolean } | null {
   if (!slack) {
     return null;
   }
   const action = requestAction(slack, now);
-  return { label: action.label, title: `${slack.workspace} · ${channelLabel(slack)} · ${action.title}` };
+  const workspace = targetWorkspaceName(slack);
+  const disabled = slack.workspace_disabled === true;
+  const title = [workspace, channelLabel(slack), action.title, disabled ? "workspace disabled in Settings → Slack" : ""].filter(Boolean).join(" · ");
+  return { label: action.label, title, workspace, disabled };
 }
 
 /**
@@ -539,7 +546,9 @@ export interface Toast {
 /** Success toast for a single request or bump. */
 export function sentToast(slack: SlackIndicator): Toast {
   const what = slack.bump_count > 0 ? "Bumped" : "Review requested";
-  return { text: `${what} in ${slack.workspace} · ${channelLabel(slack)}`, link: slack.permalink };
+  const workspace = targetWorkspaceName(slack);
+  const where = workspace ? `${workspace} · ${channelLabel(slack)}` : channelLabel(slack);
+  return { text: `${what} in ${where}`, link: slack.permalink };
 }
 
 /** One-line summary of a bulk run: `Slack: 2 sent · 1 skipped · 1 failed`. */

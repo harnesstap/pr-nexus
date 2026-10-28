@@ -1,3 +1,4 @@
+import { targetWorkspaceName } from "./workspaces";
 import { useCallback, useEffect, useState } from "react";
 import type { Api, BulkCard, BulkPreview, BulkRequest, BulkResult, ChannelKey, ReviewTarget, SlackWorkspace } from "../api";
 import { channelLabel, errorMessage } from "../api";
@@ -194,12 +195,12 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen }: Props) {
                 {preview.cards.map((card) => (
                   <section
                     key={card.fingerprint}
-                    aria-label={`${card.target.workspace} ${channelLabel(card.target)}`}
+                    aria-label={[targetWorkspaceName(card.target), channelLabel(card.target)].filter(Boolean).join(" ")}
                     className="rounded border border-slate-700 p-3"
                   >
                     <header className="flex items-center justify-between gap-2">
                       <h3 className="font-medium">
-                        {card.target.workspace} · {channelLabel(card.target)}
+                        {[targetWorkspaceName(card.target), channelLabel(card.target)].filter(Boolean).join(" · ")}
                       </h3>
                       {(card.can_switch || card.single_top_level) && (
                         <label className="flex items-center gap-1 text-xs text-slate-300">

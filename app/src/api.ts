@@ -105,6 +105,8 @@ export interface MappingRow {
   team_slug: string;
   team_name: string;
   slack_workspace: string;
+  /** Slack team (`T…`) that routes sends; empty until known (§7.11). */
+  slack_team_id?: string;
   slack_channel_name: string;
   slack_channel_id: string;
 }
@@ -212,10 +214,21 @@ export interface SlackWorkspace {
   signed_in: boolean;
   /** Was connected, but the token is gone or rejected: offer Reconnect. */
   needs_sign_in: boolean;
+  /** Slack team (`T…`): the routing key (§7.11). */
+  team_id: string;
+  /** Off: the grant stays, but nothing searches, sends, bumps or reads here. */
+  enabled: boolean;
+  /** 0 is tried first. */
+  priority: number;
 }
 
 export interface ReviewTarget {
+  /** Domain; only a hint, since a pasted link can carry the org host. */
   workspace: string;
+  /** Slack team (`T…`) when known; routes before the domain. */
+  team_id?: string | null;
+  /** Team name for display; empty when unknown. */
+  workspace_name?: string;
   channel_id: string;
   channel_name: string;
 }
@@ -347,6 +360,12 @@ export interface ListRow {
     last_bumped_at: string | null;
     bump_count: number;
     workspace: string;
+    /** Slack team (`T…`) the request lives in, when known. */
+    team_id?: string | null;
+    /** Team name of that workspace, else the domain. */
+    workspace_name?: string;
+    /** That workspace is turned off in Settings → Slack. */
+    workspace_disabled?: boolean;
     channel_id: string;
     channel_name: string;
     permalink: string | null;
@@ -523,10 +542,15 @@ export interface Api {
   slackConnect(): Promise<SlackWorkspace>;
   slackCancelConnect(): Promise<void>;
   slackRemoveWorkspace(id: number): Promise<void>;
+  /** Turn a workspace on or off for routing; returns the list in priority order. */
+  slackSetWorkspaceEnabled(teamId: string, enabled: boolean): Promise<SlackWorkspace[]>;
+  /** Save the routing priority, first to last; returns the list. */
+  slackSetWorkspaceOrder(teamIds: string[]): Promise<SlackWorkspace[]>;
   reviewTargets(prId: number, teams: string[]): Promise<TargetChoice[]>;
   reviewPreview(prId: number, target: ReviewTarget): Promise<ReviewPreview>;
   /** `#term` channels, `@term` members, a bare term both; scoped to one workspace. */
-  searchSlackTargets(workspace: string, query: string): Promise<TargetMatch[]>;
+  /** Searches every enabled workspace in priority order; merged and labeled. */
+  searchSlackTargets(query: string): Promise<TargetMatch[]>;
   sendReview(prId: number, target: ReviewTarget, teams: string[]): Promise<SlackIndicator>;
   bulkPreview(request: BulkRequest): Promise<BulkPreview>;
   sendBulk(request: BulkRequest, fingerprints: string[]): Promise<BulkResult>;
@@ -611,9 +635,11 @@ export const tauriApi: Api = {
   slackConnect: () => invoke("slack_connect"),
   slackCancelConnect: () => invoke("slack_cancel_connect"),
   slackRemoveWorkspace: (id) => invoke("slack_remove_workspace", { id }),
+  slackSetWorkspaceEnabled: (teamId, enabled) => invoke("slack_set_workspace_enabled", { teamId, enabled }),
+  slackSetWorkspaceOrder: (teamIds) => invoke("slack_set_workspace_order", { teamIds }),
   reviewTargets: (prId, teams) => invoke("review_targets", { prId, teams }),
   reviewPreview: (prId, target) => invoke("review_preview", { prId, target }),
-  searchSlackTargets: (workspace, query) => invoke("slack_search_targets", { workspace, query }),
+  searchSlackTargets: (query) => invoke("slack_search_targets", { query }),
   sendReview: (prId, target, teams) => invoke("send_review", { prId, target, teams }),
   bulkPreview: (request) => invoke("bulk_preview", { request }),
   sendBulk: (request, fingerprints) => invoke("send_bulk", { request, fingerprints }),
