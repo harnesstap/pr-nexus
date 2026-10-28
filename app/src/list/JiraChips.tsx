@@ -1,4 +1,5 @@
 import type { JiraLinkDto, ProjectDto } from "../api";
+import { Tooltip } from "../Tooltip";
 
 /** One JIRA reference. Opens its link when it has one; a bare key without a base URL is plain text. */
 export function JiraChip({ link, onOpen }: { link: JiraLinkDto; onOpen?: (url: string) => void }) {
@@ -6,29 +7,32 @@ export function JiraChip({ link, onOpen }: { link: JiraLinkDto; onOpen?: (url: s
   const look = "inline-flex max-w-40 shrink-0 items-center truncate rounded border px-1.5 font-mono text-[11px] leading-4";
   if (!link.href) {
     return (
-      <span className={`${look} border-slate-700 text-slate-400`} title="Set a JIRA base URL in Settings to link bare keys">
-        {label}
-      </span>
+      <Tooltip label={label} detail="Set a JIRA base URL in Settings › Review to link bare keys">
+        <span tabIndex={0} className={`${look} border-slate-700 text-slate-400 outline-none`}>
+          {label}
+        </span>
+      </Tooltip>
     );
   }
   const href = link.href;
   return (
-    <a
-      href={href}
-      title={href}
-      className={`${look} border-sky-500/40 text-sky-200 hover:bg-sky-500/10`}
-      onClick={(event) => {
-        event.stopPropagation();
-        if (onOpen) {
-          event.preventDefault();
-          onOpen(href);
-        }
-      }}
-      target="_blank"
-      rel="noreferrer"
-    >
-      {label}
-    </a>
+    <Tooltip label={`Open ${label} in JIRA`} detail={href}>
+      <a
+        href={href}
+        className={`${look} border-sky-500/40 text-sky-200 hover:bg-sky-500/10`}
+        onClick={(event) => {
+          event.stopPropagation();
+          if (onOpen) {
+            event.preventDefault();
+            onOpen(href);
+          }
+        }}
+        target="_blank"
+        rel="noreferrer"
+      >
+        {label}
+      </a>
+    </Tooltip>
   );
 }
 
@@ -53,9 +57,11 @@ export function ProjectInfo({ project, onOpen, className = "" }: { project: Proj
         <JiraChip key={link.id} link={link} onOpen={onOpen} />
       ))}
       {description && (
-        <span className="min-w-0 truncate text-xs text-slate-500" title={description}>
-          {description.split("\n")[0]}
-        </span>
+        <Tooltip label="Project description" detail={description} align="start" className="min-w-0">
+          <span tabIndex={0} className="block min-w-0 truncate text-xs text-slate-500 outline-none">
+            {description.split("\n")[0]}
+          </span>
+        </Tooltip>
       )}
     </div>
   );

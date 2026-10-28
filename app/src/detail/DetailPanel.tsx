@@ -223,16 +223,15 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-2">
             <StateBadge state={state} />
-            <span
-              className="min-w-0 truncate text-xs text-slate-500"
-              title={`${row.repo} · ${overview?.base_ref ?? ""} ← ${overview?.head_ref ?? row.head_ref}`}
-            >
-              {row.repo}
-              {" · "}
-              <span className="font-mono">{overview?.base_ref ?? "…"}</span>
-              {" ← "}
-              <span className="font-mono">{overview?.head_ref ?? row.head_ref}</span>
-            </span>
+            <Tooltip label={row.repo} detail={`${overview?.base_ref ?? ""} ← ${overview?.head_ref ?? row.head_ref}`} align="start" className="min-w-0">
+              <span tabIndex={0} className="block min-w-0 truncate text-xs text-slate-500 outline-none">
+                {row.repo}
+                {" · "}
+                <span className="font-mono">{overview?.base_ref ?? "…"}</span>
+                {" ← "}
+                <span className="font-mono">{overview?.head_ref ?? row.head_ref}</span>
+              </span>
+            </Tooltip>
           </div>
           <h2 id="pr-detail-title" className="mt-1.5 text-base font-semibold leading-snug">
             <span className="text-slate-500">#{row.number}</span> {row.title}

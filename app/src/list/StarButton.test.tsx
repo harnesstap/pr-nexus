@@ -36,16 +36,16 @@ test("a JIRA chip links out when it has an href and is plain text otherwise", ()
       <JiraChip link={bare} onOpen={onOpen} />
     </>,
   );
-  fireEvent.click(screen.getByRole("link", { name: "ACME-123" }));
+  fireEvent.click(screen.getByRole("link", { name: /ACME-123/ }));
   expect(onOpen).toHaveBeenCalledWith("https://acme-labs.atlassian.net/browse/ACME-123");
-  expect(screen.getByText("ACME-7").closest("a")).toBeNull();
+  expect(screen.getByText("ACME-7", { selector: "span[tabindex]" }).closest("a")).toBeNull();
 });
 
 test("project info shows chips and the first description line, and nothing when empty", () => {
   const project: ProjectDto = { id: 1, name: "Auth", color: "#7c5cbf", archived: false, description: "Login revamp\nSecond line", sort_order: 0, jira_links: [linked] };
   const { rerender, container } = render(<ProjectInfo project={project} />);
   expect(screen.getByText("Login revamp")).toBeInTheDocument();
-  expect(screen.getByRole("link", { name: "ACME-123" })).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: /ACME-123/ })).toBeInTheDocument();
   rerender(<ProjectInfo project={{ ...project, description: " ", jira_links: [] }} />);
   expect(container).toBeEmptyDOMElement();
 });
