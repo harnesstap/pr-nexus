@@ -10,6 +10,7 @@ mod live;
 mod logging;
 mod mapping_file;
 mod preferences;
+pub mod services;
 mod slack;
 mod slack_link;
 mod state;

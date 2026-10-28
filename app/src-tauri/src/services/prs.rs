@@ -1,0 +1,222 @@
+//! Pull requests: the detail view and a filtered list for non-UI callers.
+//!
+//! [`list_prs`] reuses the list's own row building and status predicates
+//! ([`listing::status_matches`], [`listing::quick_matches`]), so a status here
+//! means exactly what the filter menu and quick filters show.
+
+use chrono::Utc;
+use pr_nexus_core::domain::PrId;
+use pr_nexus_core::ownership;
+use pr_nexus_core::settings;
+use serde::{Deserialize, Serialize};
+
+use crate::commands::{ListRow, PrDetail, detail_dto, list_items, search_ids, stored_pr, with_vcs};
+use crate::error::AppError;
+use crate::listing;
+use crate::services::projects::all_projects;
+use crate::state::AppState;
+
+/// Default and largest page for [`list_prs`].
+pub const DEFAULT_LIMIT: usize = 50;
+pub const MAX_LIMIT: usize = 200;
+
+/// Readiness, ownership and the explanations behind them (§6, §7.2).
+/// Demo mode uses the fixture provider; otherwise this calls GitHub.
+pub fn pr_detail(state: &AppState, id: i64) -> Result<PrDetail, AppError> {
+    let pr = stored_pr(state, PrId(id))?;
+    let flag = settings::blocked_review_required_is_ready(&state.store)?;
+    let report = with_vcs(state, |provider| {
+        ownership::resolve(&state.store, provider, &pr, flag, Utc::now())
+    })?;
+    Ok(detail_dto(pr.id, report))
+}
+
+/// PR Nexus's own statuses, as the list's filter menu and quick filters
+/// derive them. Names are stable (snake_case on the wire).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrStatus {
+    /// The PR is a draft.
+    Draft,
+    /// Not a draft and readiness is `ready`: every mandatory owner is covered.
+    Ready,
+    /// Not a draft and readiness is `blocked`: owners or rules still missing.
+    Blocked,
+    /// Not a draft and readiness could not be worked out yet.
+    Unknown,
+    /// Not a draft, nobody requested on GitHub, no active Slack request,
+    /// and no approval or change request yet.
+    NoReview,
+    /// Failing checks or merge conflicts.
+    CiTrouble,
+    /// Changes requested.
+    Declined,
+    /// Not a draft, approved, checks green and no conflicts.
+    MergeReady,
+}
+
+impl PrStatus {
+    pub const ALL: [PrStatus; 8] = [
+        PrStatus::Draft,
+        PrStatus::Ready,
+        PrStatus::Blocked,
+        PrStatus::Unknown,
+        PrStatus::NoReview,
+        PrStatus::CiTrouble,
+        PrStatus::Declined,
+        PrStatus::MergeReady,
+    ];
+
+    pub fn matches(self, row: &ListRow) -> bool {
+        match self {
+            PrStatus::Draft => listing::status_matches(row, "draft"),
+            PrStatus::Ready => listing::status_matches(row, "ready"),
+            PrStatus::Blocked => listing::status_matches(row, "blocked"),
+            PrStatus::Unknown => listing::status_matches(row, "unknown"),
+            PrStatus::NoReview => listing::quick_matches(row, "no_review"),
+            PrStatus::CiTrouble => listing::quick_matches(row, "ci_trouble"),
+            PrStatus::Declined => listing::quick_matches(row, "declined"),
+            PrStatus::MergeReady => listing::quick_matches(row, "ready"),
+        }
+    }
+
+    /// Every status `row` is in.
+    pub fn of(row: &ListRow) -> Vec<PrStatus> {
+        Self::ALL
+            .into_iter()
+            .filter(|status| status.matches(row))
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrStateFilter {
+    Open,
+    Merged,
+    Closed,
+}
+
+impl PrStateFilter {
+    fn as_str(self) -> &'static str {
+        match self {
+            PrStateFilter::Open => "open",
+            PrStateFilter::Merged => "merged",
+            PrStateFilter::Closed => "closed",
+        }
+    }
+}
+
+/// Filters for [`list_prs`]. Every field narrows; empty means no filter.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PrFilter {
+    /// Any of these statuses.
+    pub statuses: Vec<PrStatus>,
+    pub project_id: Option<i64>,
+    /// Hook for starred PRs. Not stored yet: `Some(_)` is rejected.
+    pub starred: Option<bool>,
+    /// `owner/name`, or just `name`, case-insensitive.
+    pub repo: Option<String>,
+    /// Author login, case-insensitive.
+    pub author: Option<String>,
+    pub state: Option<PrStateFilter>,
+    /// Same search as the list's search field.
+    pub query: Option<String>,
+    pub limit: Option<usize>,
+    /// `next_cursor` of the previous page.
+    pub cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PrListItem {
+    #[serde(flatten)]
+    pub row: ListRow,
+    pub statuses: Vec<PrStatus>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PrListPage {
+    pub items: Vec<PrListItem>,
+    /// Matches over every page.
+    pub total: usize,
+    pub next_cursor: Option<String>,
+}
+
+/// Synced, not hidden PRs matching `filter`, newest update first.
+pub fn list_prs(state: &AppState, filter: &PrFilter) -> Result<PrListPage, AppError> {
+    if filter.starred.is_some() {
+        return Err(AppError::new(
+            "validation",
+            "The starred filter is not available yet",
+        ));
+    }
+    let offset = match filter.cursor.as_deref() {
+        None | Some("") => 0,
+        Some(value) => value
+            .parse::<usize>()
+            .map_err(|_| AppError::new("validation", "Invalid cursor"))?,
+    };
+    let limit = filter.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
+    let found = match filter.query.as_deref() {
+        Some(query) => search_ids(state, &all_projects(state)?, query)?,
+        None => None,
+    };
+    let mut items: Vec<listing::Item> = list_items(state)?
+        .into_iter()
+        .filter(|item| matches_filter(&item.row, filter))
+        .filter(|item| found.as_ref().is_none_or(|ids| ids.contains(&item.row.id)))
+        .collect();
+    items.sort_by(|left, right| {
+        right
+            .updated_ms
+            .cmp(&left.updated_ms)
+            .then(left.row.id.cmp(&right.row.id))
+    });
+    let total = items.len();
+    let page: Vec<PrListItem> = items
+        .into_iter()
+        .skip(offset)
+        .take(limit)
+        .map(|item| PrListItem {
+            statuses: PrStatus::of(&item.row),
+            row: item.row,
+        })
+        .collect();
+    let end = offset + page.len();
+    Ok(PrListPage {
+        items: page,
+        total,
+        next_cursor: (end < total).then(|| end.to_string()),
+    })
+}
+
+/// Everything in [`PrFilter`] that only looks at one row.
+pub fn matches_filter(row: &ListRow, filter: &PrFilter) -> bool {
+    if row.hidden {
+        return false;
+    }
+    if !filter.statuses.is_empty() && !filter.statuses.iter().any(|status| status.matches(row)) {
+        return false;
+    }
+    if filter
+        .project_id
+        .is_some_and(|id| !row.project_ids.contains(&id))
+    {
+        return false;
+    }
+    if let Some(repo) = filter.repo.as_deref().map(str::trim) {
+        let full = format!("{}/{}", row.owner, row.repo);
+        if !repo.eq_ignore_ascii_case(&full) && !repo.eq_ignore_ascii_case(&row.repo) {
+            return false;
+        }
+    }
+    if let Some(author) = filter.author.as_deref().map(str::trim)
+        && !author
+            .trim_start_matches('@')
+            .eq_ignore_ascii_case(&row.author_login)
+    {
+        return false;
+    }
+    filter.state.is_none_or(|state| row.state == state.as_str())
+}
