@@ -1,4 +1,4 @@
-import { StarIcon } from "../icons";
+import { GitHubIcon, StarIcon } from "../icons";
 import { Tooltip } from "../Tooltip";
 import { hint } from "./shortcuts";
 
@@ -17,6 +17,25 @@ export function StarButton({ starred, title, onToggle, size = 14 }: { starred: b
         }}
       >
         <StarIcon filled={starred} size={size} />
+      </button>
+    </Tooltip>
+  );
+}
+
+/** Opens the PR on GitHub straight from its row, without opening the detail panel. */
+export function GitHubRowButton({ title, onOpen, size = 14 }: { title: string; onOpen: () => void; size?: number }) {
+  return (
+    <Tooltip label="Open on GitHub" shortcut={hint("github")}>
+      <button
+        type="button"
+        aria-label={`Open ${title} on GitHub`}
+        className="flex shrink-0 items-center justify-center rounded p-0.5 text-slate-600 hover:bg-slate-800 hover:text-slate-200 group-hover:text-slate-400 group-focus-within:text-slate-400 focus-visible:text-slate-200"
+        onClick={(event) => {
+          event.stopPropagation();
+          onOpen();
+        }}
+      >
+        <GitHubIcon size={size} />
       </button>
     </Tooltip>
   );

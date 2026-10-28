@@ -2,7 +2,8 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { expect, test, vi } from "vitest";
 import type { JiraLinkDto, ProjectDto } from "../api";
 import { JiraChip, ProjectInfo } from "./JiraChips";
-import { StarButton } from "./StarButton";
+import { GitHubRowButton, StarButton } from "./StarButton";
+import { StarredChip } from "./QuickFilters";
 
 test("the star toggles without reaching the row underneath", () => {
   const onToggle = vi.fn();
@@ -47,4 +48,26 @@ test("project info shows chips and the first description line, and nothing when 
   expect(screen.getByRole("link", { name: "ACME-123" })).toBeInTheDocument();
   rerender(<ProjectInfo project={{ ...project, description: " ", jira_links: [] }} />);
   expect(container).toBeEmptyDOMElement();
+});
+
+test("the row GitHub button opens the PR without bubbling to the row", () => {
+  const onOpen = vi.fn();
+  const onRow = vi.fn();
+  render(
+    <div onClick={onRow}>
+      <GitHubRowButton title="Fix tax rounding" onOpen={onOpen} />
+    </div>,
+  );
+  const button = screen.getByRole("button", { name: "Open Fix tax rounding on GitHub" });
+  expect(button.getAttribute("title")).toBeNull();
+  fireEvent.click(button);
+  expect(onOpen).toHaveBeenCalledOnce();
+  expect(onRow).not.toHaveBeenCalled();
+});
+
+test("the Starred chip shows its count and toggles", () => {
+  const onChange = vi.fn();
+  render(<StarredChip on={false} count={3} onChange={onChange} />);
+  fireEvent.click(screen.getByRole("button", { name: "Starred only (3)" }));
+  expect(onChange).toHaveBeenCalledWith(true);
 });

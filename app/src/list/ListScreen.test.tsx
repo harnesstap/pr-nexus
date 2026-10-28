@@ -285,11 +285,11 @@ test("details open beside the list, follow the clicked row, and close on Esc", a
   fake.prDetail = (id: number) => Promise.resolve(mockDetail(id));
   fake.prOverview = vi.fn(() => Promise.resolve(mockOverview()));
   render(<ListScreen api={fake} boot={boot} onBoot={() => undefined} />);
-  fireEvent.click(await screen.findByRole("button", { name: /^(?!Star )[^]*Migrate login/ }));
+  fireEvent.click(await screen.findByRole("button", { name: /^(?!Star |Open )[^]*Migrate login/ }));
   const panel = await screen.findByTestId("detail-panel");
   expect(within(panel).getByRole("heading", { name: /Migrate login/ })).toBeInTheDocument();
   // The list stays usable: another row switches the panel instead of being blocked by it.
-  fireEvent.click(screen.getByRole("button", { name: /^(?!Star )[^]*Add passkeys/ }));
+  fireEvent.click(screen.getByRole("button", { name: /^(?!Star |Open )[^]*Add passkeys/ }));
   expect(await within(screen.getByTestId("detail-panel")).findByRole("heading", { name: /Add passkeys/ })).toBeInTheDocument();
   fireEvent.keyDown(document, { key: "Escape" });
   await waitFor(() => expect(screen.queryByTestId("detail-panel")).not.toBeInTheDocument());

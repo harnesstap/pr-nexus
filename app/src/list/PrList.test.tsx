@@ -376,7 +376,7 @@ test("dragging a selected row onto a project section links the whole selection",
 test("the title button and Enter open a row's details", async () => {
   const onDetails = vi.fn();
   await show(<Harness rows={rows} onDetails={onDetails} />);
-  fireEvent.click(screen.getByRole("button", { name: /^(?!Star )[^]*Fix tax rounding/ }));
+  fireEvent.click(screen.getByRole("button", { name: /^(?!Star |Open )[^]*Fix tax rounding/ }));
   expect(onDetails).toHaveBeenLastCalledWith(expect.objectContaining({ id: 3 }));
   fireEvent.keyDown(window, { key: "Enter" });
   expect(onDetails).toHaveBeenCalledTimes(2);

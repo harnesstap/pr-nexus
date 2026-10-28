@@ -3,9 +3,9 @@ import type { ListRow, ProjectDto } from "../api";
 import { AlertIcon, ChevronDownIcon, ChevronRightIcon, ClockIcon, CloseIcon, CommentIcon, DraftIcon, FolderPlusIcon, FunnelIcon, MoreIcon, SearchIcon, SlackLogo } from "../icons";
 import { Tooltip } from "../Tooltip";
 import { ReviewerAvatars } from "./ReviewerAvatars";
-import { QuickFilters } from "./QuickFilters";
+import { QuickFilters, StarredChip } from "./QuickFilters";
 import { AddToProjectMenu } from "./AddToProjectMenu";
-import { StarButton } from "./StarButton";
+import { GitHubRowButton, StarButton } from "./StarButton";
 import { ProjectInfo } from "./JiraChips";
 import { isTypingTarget, wantsRowEnter } from "./keys";
 import { displayKey, hint, matchShortcut, shortcut, type ShortcutId } from "./shortcuts";
@@ -553,6 +553,11 @@ export function PrList({
             counts={page?.quick ?? null}
             onChange={(quick) => onViewChange({ ...view, filters: { ...view.filters, quick } })}
           />
+          <StarredChip
+            on={view.filters.starred}
+            count={page ? new Set(list.entries.flatMap((entry) => (entry.row?.starred ? [entry.row.id] : []))).size : null}
+            onChange={(starred) => onViewChange({ ...view, filters: { ...view.filters, starred } })}
+          />
           <FilterMenu view={view} orgs={page?.orgs ?? []} menu={menu} setMenu={setMenu} onViewChange={onViewChange} />
         </div>
       </div>
@@ -716,7 +721,7 @@ export function PrList({
                       aria-label={`#${row.number} ${row.title}`}
                       aria-current={index === focus ? "true" : undefined}
                       data-focused={index === focus ? "true" : undefined}
-                      className={`flex ${compact ? "items-start gap-2 py-1" : "items-center gap-3 py-1.5"} cursor-pointer border-t border-l-2 border-t-slate-800 px-2 ${index === focus ? "border-l-violet-400 bg-slate-900" : "border-l-transparent hover:bg-slate-900/60"}`}
+                      className={`group flex ${compact ? "items-start gap-2 py-1" : "items-center gap-3 py-1.5"} cursor-pointer border-t border-l-2 border-t-slate-800 px-2 ${index === focus ? "border-l-violet-400 bg-slate-900" : "border-l-transparent hover:bg-slate-900/60"}`}
                     >
                       <TriCheckbox
                         label={`Select ${row.title}`}
@@ -724,6 +729,7 @@ export function PrList({
                         onToggle={() => toggleRow(row.id)}
                       />
                       {onToggleStar && <StarButton starred={row.starred} title={row.title} onToggle={() => onToggleStar(row)} />}
+                      <GitHubRowButton title={row.title} onOpen={() => onOpen(row.url)} />
                       {compact ? (
                         <CompactRow row={row} view={view} now={now} onDetails={onDetails} onOpen={onOpen} />
                       ) : (

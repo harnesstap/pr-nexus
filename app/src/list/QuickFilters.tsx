@@ -1,7 +1,8 @@
 import type { ReactElement } from "react";
-import { AlertIcon, DeclinedIcon, DraftIcon, EyeOffIcon, MergeIcon } from "../icons";
+import { AlertIcon, DeclinedIcon, DraftIcon, EyeOffIcon, MergeIcon, StarIcon } from "../icons";
 import { Tooltip } from "../Tooltip";
 import { QUICK_FILTERS, type QuickFilter } from "./model";
+import { hint } from "./shortcuts";
 
 interface QuickSpec {
   label: string;
@@ -65,5 +66,33 @@ export function QuickFilters({ active, counts, onChange }: Props) {
         );
       })}
     </div>
+  );
+}
+
+/**
+ * The Starred filter as a toolbar chip, sized like the quick filters. It stacks with
+ * them (and with the menu filters) rather than replacing the active quick filter.
+ */
+export function StarredChip({ on, count, onChange }: { on: boolean; count: number | null; onChange: (on: boolean) => void }) {
+  return (
+    <Tooltip label="Starred only" shortcut={hint("star")} detail={on ? "Click again to show every PR" : "Show only the PRs you starred"} align="end">
+      <button
+        type="button"
+        aria-label={count === null ? "Starred only" : `Starred only (${count})`}
+        aria-pressed={on}
+        className={`flex h-8 shrink-0 items-center gap-1 rounded-md border px-1.5 text-xs ${
+          on ? "border-violet-400 bg-slate-800 text-amber-300" : "border-slate-700 bg-slate-900 text-slate-400 hover:text-white"
+        }`}
+        onClick={() => onChange(!on)}
+      >
+        <StarIcon filled={on} size={14} />
+        {on && <span className="hidden whitespace-nowrap @4xl:inline">Starred</span>}
+        {count !== null && (
+          <span aria-hidden="true" className={`min-w-4 tabular-nums ${count === 0 && !on ? "text-slate-600" : ""}`}>
+            {count}
+          </span>
+        )}
+      </button>
+    </Tooltip>
   );
 }
