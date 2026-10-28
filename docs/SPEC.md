@@ -1421,6 +1421,14 @@ Detect `X-GitHub-SSO: required; url=…` and show the authorization link.
 - *Keychain re-prompt after every update.* An ad-hoc signature has no stable team identity, so the keychain's "Always Allow" rule is tied to the exact binary hash. Each new version triggers a "PR Nexus wants to use your confidential information stored in 'dev.pr-nexus'" prompt, which needs the login password and then **Always Allow**. The single `vault` entry above keeps this to **one prompt per update**. The About tab and release notes explain it. Denying the prompt is handled: accounts show "token unavailable — unlock", with a retry button. Nothing is wiped.
 - *Future, optional:* Developer ID signing + notarization (Tauri reads `APPLE_*` secrets) would remove both issues. Nothing in v1 depends on it.
 
+**Local MCP server for agents (Settings → Agents (MCP)).**
+- *Off by default.* When enabled, the app serves MCP over Streamable HTTP at `http://127.0.0.1:{port}/mcp` (`rmcp`), on any free port or a fixed one from 1024 up. Toggling or changing the port starts, stops or moves the server without a restart; a taken port shows as an error in Settings and nothing else fails.
+- *Auth.* Every request needs `Authorization: Bearer pnx_…` (256 random bits, kept in the `vault` under `mcp.token`, compared in constant time). Settings shows it masked, copies it, and regenerates it after a confirmation; the old token stops working at once.
+- *DNS rebinding.* The Host header must be `127.0.0.1:{port}` or `localhost:{port}`, and an Origin header, when present, must be that same loopback origin. Anything else is a 403 before MCP runs.
+- *Capabilities.* Reads, Local writes and Slack sends are separate switches. Tools are listed and allowed only when their capability is on; a refused call is a tool error. Every call goes through one audit hook (tool, capability, outcome, duration, client name; argument values are not logged).
+- *Tools (Reads).* `list_projects`, `get_project`, `list_prs` (the list filter: statuses, starred, project, repo, author, state, query; 50 per page, up to 200, cursor paging) and `get_pr` (note, star, Slack request, cached branch status). They call the same services as the UI commands.
+- *Next.* Local writes (projects, links, notes, stars) with a persisted audit log, then Slack sends behind a mandatory preview token, then a stdio proxy for clients without HTTP.
+
 ## 10. Future (out of v1)
 
 ### 10.1 MCP server

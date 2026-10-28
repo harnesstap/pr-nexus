@@ -57,6 +57,7 @@ mod tests {
         ("commands.rs", include_str!("commands.rs")),
         ("context.rs", include_str!("context.rs")),
         ("mapping_file.rs", include_str!("mapping_file.rs")),
+        ("mcp/control.rs", include_str!("mcp/control.rs")),
         ("preferences.rs", include_str!("preferences.rs")),
         ("project_info.rs", include_str!("project_info.rs")),
         ("slack.rs", include_str!("slack.rs")),
@@ -119,6 +120,7 @@ mod tests {
             "commands",
             "context",
             "mapping_file",
+            "mcp::control",
             "preferences",
             "slack",
         ] {
@@ -137,11 +139,10 @@ mod tests {
             .map(str::trim)
             .filter(|entry| !entry.is_empty())
         {
-            let module = entry.split("::").next().unwrap_or(entry);
+            let path = entry.rsplit_once("::").map_or(entry, |(module, _)| module);
+            let file = format!("{}.rs", path.replace("::", "/"));
             assert!(
-                SOURCES
-                    .iter()
-                    .any(|(file, _)| *file == format!("{module}.rs")),
+                SOURCES.iter().any(|(source, _)| *source == file),
                 "{entry} lives in a file the async check does not read"
             );
         }

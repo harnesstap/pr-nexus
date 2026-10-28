@@ -1,4 +1,4 @@
-import type { Api, Preferences } from "../api";
+import type { Api, McpSettings, McpView, Preferences } from "../api";
 
 /** The §7.12 defaults, as the backend returns them on a fresh database. */
 export const DEFAULT_PREFERENCES: Preferences = {
@@ -29,7 +29,45 @@ type SettingsApi = Pick<
   | "checkUpdate"
   | "slackWorkspaces"
   | "pickMappingFile"
+  | "mcpSettings"
+  | "saveMcpSettings"
+  | "mcpToken"
+  | "regenerateMcpToken"
 >;
+
+export const FAKE_MCP_TOKEN = "pnx_0123456789abcdef0123456789abcdef0123456789abcdef0123456789ab7f3e";
+
+/** An in-memory MCP server: enabling it "runs" on port 43117 unless a port is set. */
+export function fakeMcp(initial: Partial<McpSettings> = {}): Pick<SettingsApi, "mcpSettings" | "saveMcpSettings" | "mcpToken" | "regenerateMcpToken"> {
+  let settings: McpSettings = { enabled: false, reads: true, local_writes: false, slack_sends: false, port: null, ...initial };
+  let token: string | null = settings.enabled ? FAKE_MCP_TOKEN : null;
+  const view = (): McpView => {
+    const port = settings.port ?? 43117;
+    return {
+      settings,
+      status: settings.enabled
+        ? { state: "running", url: `http://127.0.0.1:${port}/mcp`, port, error: null }
+        : { state: "off", url: null, port: null, error: null },
+      token_masked: token ? `pnx_••••••••••••${token.slice(-4)}` : null,
+    };
+  };
+  return {
+    mcpSettings: () => Promise.resolve(view()),
+    saveMcpSettings: (next) => {
+      settings = { ...next, local_writes: false, slack_sends: false };
+      token ??= settings.enabled ? FAKE_MCP_TOKEN : null;
+      return Promise.resolve(view());
+    },
+    mcpToken: () => {
+      token ??= FAKE_MCP_TOKEN;
+      return Promise.resolve(token);
+    },
+    regenerateMcpToken: () => {
+      token = FAKE_MCP_TOKEN.slice(0, -4) + "c0de";
+      return Promise.resolve(view());
+    },
+  };
+}
 
 /** In-memory Settings endpoints for tests and the browser preview. */
 export function fakeSettingsApi(overrides: Partial<SettingsApi> = {}): SettingsApi {
@@ -54,6 +92,7 @@ export function fakeSettingsApi(overrides: Partial<SettingsApi> = {}): SettingsA
     checkUpdate: () => Promise.resolve(null),
     slackWorkspaces: () => Promise.resolve([]),
     pickMappingFile: () => Promise.resolve(null),
+    ...fakeMcp(),
     ...overrides,
   };
 }

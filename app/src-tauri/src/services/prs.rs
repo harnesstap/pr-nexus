@@ -33,7 +33,7 @@ pub fn pr_detail(state: &AppState, id: i64) -> Result<PrDetail, AppError> {
 
 /// PR Nexus's own statuses, as the list's filter menu and quick filters
 /// derive them. Names are stable (snake_case on the wire).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PrStatus {
     /// The PR is a draft.
@@ -107,7 +107,8 @@ impl PrStatus {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// GitHub state of the pull request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PrStateFilter {
     Open,
@@ -126,11 +127,12 @@ impl PrStateFilter {
 }
 
 /// Filters for [`list_prs`]. Every field narrows; empty means no filter.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(default, deny_unknown_fields)]
 pub struct PrFilter {
-    /// Any of these statuses.
+    /// PRs in any of these PR Nexus statuses (OR). Empty: any status.
     pub statuses: Vec<PrStatus>,
+    /// Only PRs linked to this project (`id` from `list_projects`).
     pub project_id: Option<i64>,
     /// `Some(true)`: starred only; `Some(false)`: not starred.
     pub starred: Option<bool>,
@@ -138,9 +140,11 @@ pub struct PrFilter {
     pub repo: Option<String>,
     /// Author login, case-insensitive.
     pub author: Option<String>,
+    /// GitHub state. Unset: any state (closed PRs are kept a few days).
     pub state: Option<PrStateFilter>,
     /// Same search as the list's search field.
     pub query: Option<String>,
+    /// Page size, 1 to 200. Default 50.
     pub limit: Option<usize>,
     /// `next_cursor` of the previous page.
     pub cursor: Option<String>,
@@ -244,4 +248,38 @@ pub fn matches_filter(item: &listing::Item, filter: &PrFilter, now_ms: i64) -> b
         return false;
     }
     filter.state.is_none_or(|state| row.state == state.as_str())
+}
+
+/// One PR for non-UI callers: the list row and statuses, the note, the
+/// Branch card when cached, and the Slack request (`row.slack`). Reads
+/// local data only; it never calls GitHub for the overview.
+#[derive(Debug, Clone, Serialize)]
+pub struct PrInfo {
+    #[serde(flatten)]
+    pub item: PrListItem,
+    /// Empty when there is no note.
+    pub note: String,
+    pub note_updated_at: Option<String>,
+    /// `None` until the PR's overview has been loaded once.
+    pub branch: Option<pr_nexus_core::branch::BranchStatus>,
+}
+
+pub fn pr_info(state: &AppState, id: i64) -> Result<PrInfo, AppError> {
+    let now_ms = Utc::now().timestamp_millis();
+    let item = list_items(state)?
+        .into_iter()
+        .find(|item| item.row.id == id)
+        .ok_or_else(|| AppError::new("not_found", format!("No pull request with id {id}")))?;
+    let note = crate::services::project_info::pr_note(state, id)?;
+    // A failed compare is "no branch info", not a failed read.
+    let branch = crate::services::branch::branch_status_if_cached(state, id).unwrap_or(None);
+    Ok(PrInfo {
+        item: PrListItem {
+            statuses: PrStatus::of(&item, now_ms),
+            row: item.row,
+        },
+        note: note.note,
+        note_updated_at: note.updated_at,
+        branch,
+    })
 }

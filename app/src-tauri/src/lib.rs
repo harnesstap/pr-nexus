@@ -9,6 +9,7 @@ mod listing;
 mod live;
 mod logging;
 mod mapping_file;
+mod mcp;
 mod preferences;
 mod project_info;
 pub mod services;
@@ -50,6 +51,12 @@ pub fn run() {
             live::spawn(Arc::clone(&shared));
             let tokens = Arc::clone(&shared);
             tauri::async_runtime::spawn(async move { slack::validate_tokens(&tokens).await });
+            let agents = Arc::new(mcp::control::McpControl::new(Arc::clone(&shared))?);
+            if agents.settings().enabled {
+                let agents = Arc::clone(&agents);
+                tauri::async_runtime::spawn(async move { agents.apply().await });
+            }
+            app.manage(agents);
             app.manage(shared);
             if let Some(window) = app.get_webview_window("main") {
                 fit_to_monitor(&window);
@@ -147,6 +154,10 @@ pub fn run() {
             commands::merge_pr,
             commands::pr_branch_status,
             commands::update_pr_branch,
+            mcp::control::mcp_settings,
+            mcp::control::save_mcp_settings,
+            mcp::control::mcp_token,
+            mcp::control::regenerate_mcp_token,
         ])
         .run(tauri::generate_context!())
         .expect("error while running PR Nexus");

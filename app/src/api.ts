@@ -584,6 +584,30 @@ export interface PrDetail {
   from_cache: boolean;
 }
 
+/** Settings → Agents (MCP). Only `reads` works so far; the others stay false. */
+export interface McpSettings {
+  enabled: boolean;
+  reads: boolean;
+  local_writes: boolean;
+  slack_sends: boolean;
+  /** null: any free port, picked at each start. */
+  port: number | null;
+}
+
+export interface McpStatus {
+  state: "off" | "running" | "error";
+  url: string | null;
+  port: number | null;
+  error: string | null;
+}
+
+export interface McpView {
+  settings: McpSettings;
+  status: McpStatus;
+  /** `pnx_••••…abcd`, null until the token exists. */
+  token_masked: string | null;
+}
+
 export interface Api {
   bootstrap(): Promise<Bootstrap>;
   /** Never waits on the keychain; poll it while the state is `waiting` or `timed_out`. */
@@ -692,6 +716,12 @@ export interface Api {
   appInfo(): Promise<AppInfo>;
   /** Latest GitHub release when it is newer than this build; null otherwise. */
   checkUpdate(): Promise<UpdateInfo | null>;
+  mcpSettings(): Promise<McpView>;
+  /** Saves and starts, stops or moves the local MCP server. */
+  saveMcpSettings(settings: McpSettings): Promise<McpView>;
+  /** The full bearer token, for copying. Created on first use. */
+  mcpToken(): Promise<string>;
+  regenerateMcpToken(): Promise<McpView>;
 }
 
 export const tauriApi: Api = {
@@ -791,6 +821,10 @@ export const tauriApi: Api = {
   exportMapping: (mode) => invoke("export_mapping", { mode }),
   appInfo: () => invoke("app_info"),
   checkUpdate: () => invoke("check_update"),
+  mcpSettings: () => invoke("mcp_settings"),
+  saveMcpSettings: (settings) => invoke("save_mcp_settings", { settings }),
+  mcpToken: () => invoke("mcp_token"),
+  regenerateMcpToken: () => invoke("regenerate_mcp_token"),
 };
 
 /**

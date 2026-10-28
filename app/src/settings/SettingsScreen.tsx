@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { Api, Bootstrap, Preferences } from "../api";
 import { errorMessage } from "../api";
 import { AboutSettings } from "./AboutSettings";
+import { AgentsSettings } from "./AgentsSettings";
 import { MappingSettings } from "./MappingSettings";
 import { PreferencesForm } from "./PreferencesForm";
 import { SETTINGS_TABS, tabAfterKey, type SettingsTab } from "./tabs";
@@ -122,6 +123,7 @@ export function SettingsScreen({ api, boot, onBoot, accounts, tab, onTabChange, 
         )}
         {tab === "review" && prefsBody("review")}
         {tab === "sync" && prefsBody("sync")}
+        {tab === "agents" && <AgentsSettings api={api} />}
         {tab === "about" && <AboutSettings api={api} onRerunSetup={onRerunSetup} />}
       </div>
     </div>

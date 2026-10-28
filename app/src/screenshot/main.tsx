@@ -4,7 +4,8 @@ import { createRoot } from "react-dom/client";
 import App from "../App";
 import "../index.css";
 import { pageFromRows, type PageRequest } from "../list/paging";
-import type { JiraLinkDto, JiraLinkInput, ReviewTarget } from "../api";
+import type { JiraLinkDto, JiraLinkInput, McpSettings, ReviewTarget } from "../api";
+import { fakeMcp } from "../settings/fakes";
 import {
   boot,
   branchFixtures,
@@ -47,7 +48,13 @@ function jiraLink(input: JiraLinkInput): JiraLinkDto {
   return { id: nextLink, key: text.toUpperCase(), url: "", href: `${jiraBaseUrl}/browse/${text.toUpperCase()}` };
 }
 
+const mcp = fakeMcp();
+
 const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
+  mcp_settings: () => mcp.mcpSettings(),
+  save_mcp_settings: (args) => mcp.saveMcpSettings(args.settings as McpSettings),
+  mcp_token: () => mcp.mcpToken(),
+  regenerate_mcp_token: () => mcp.regenerateMcpToken(),
   bootstrap: () => boot,
   sync_status: () => boot.sync,
   list_projects: () => projects,

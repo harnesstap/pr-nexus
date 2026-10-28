@@ -29,6 +29,14 @@ tauri-plugin-window-state = "2"
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
+# Local MCP server (Streamable HTTP on 127.0.0.1), see src/mcp.
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+rand = "0.10"
+rmcp = { version = "3.8.0", default-features = false, features = ["server", "transport-streamable-http-server"] }
+schemars = "1"
+subtle = "2.6"
+tokio = { version = "1", features = ["net", "rt-multi-thread", "macros", "sync", "time"] }
+tokio-util = "0.7"
 
 [dev-dependencies]
 tempfile = "3"
