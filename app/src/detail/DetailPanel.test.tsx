@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, expect, test, vi } from "vitest";
 import type { Api, ContextThread, ListRow, PrOverview } from "../api";
 import { BlockerList, DetailPanel, WIDTH_KEY, clampWidth } from "./DetailPanel";
-import { mockDetail, mockOverview } from "./mock";
+import { mockBranch, mockDetail, mockOverview } from "./mock";
 import { bumpView, latestThread } from "./SlackLine";
 import { draftView } from "./draft";
 import { peopleGroups, PeopleRow, personLine, requiredSeats } from "./People";
@@ -94,6 +94,8 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
     setAutoMerge: vi.fn(() => Promise.resolve(mockOverview())),
     setPrDraft: vi.fn((_id: number, draft: boolean) => Promise.resolve(mockOverview({ is_draft: draft }))),
     mergePr: vi.fn(() => Promise.resolve(mockOverview({ state: "merged" }))),
+    prBranchStatus: vi.fn(() => Promise.resolve(mockBranch())),
+    updatePrBranch: vi.fn(() => Promise.resolve({ overview: mockOverview(), branch: mockBranch() })),
     loadPreferences: vi.fn(() => Promise.resolve({ min_bump_interval_hours: 0 })),
     ...overrides,
   } as unknown as Api;
@@ -133,7 +135,8 @@ test("shows a skeleton, then the cards, verdict and people from the overview", a
       .getAllByRole("listitem")
       .map((item) => item.textContent),
   ).toEqual(["1 check failing: unit tests.", "A reviewer requested changes.", "It needs 1 more approval."]);
-  expect(screen.getByLabelText(/^Conflicts: None/)).toBeTruthy();
+  expect(await screen.findByLabelText("Branch: Up to date, Up to date with main")).toBeTruthy();
+  expect(screen.queryByText("None")).toBeNull();
   const reviewers = screen.getByRole("group", { name: "Reviewers" });
   expect(reviewers.querySelectorAll("[data-login]")).toHaveLength(3);
   expect(reviewers.querySelector('[data-state="changes_requested"]')?.getAttribute("data-login")).toBe("sam");

@@ -316,6 +316,9 @@ impl DemoProvider {
             is_draft: pr.is_draft,
             base_ref: pr.base_ref.clone(),
             head_ref: pr.head_ref.clone(),
+            head_sha: pr.head_sha.clone(),
+            base_sha: format!("demo-base-{}", pr.number),
+            head_owner: pr.repo.owner.clone(),
             mergeable: pr.mergeable.as_str().into(),
             merge_state: pr.merge_state.as_str().into(),
             review_decision: pr.review_decision.map(|decision| decision.as_str().into()),
@@ -354,6 +357,36 @@ impl VcsProvider for DemoProvider {
         pr: &PullRequest,
     ) -> Result<pr_nexus_core::overview::PrOverview, ProviderError> {
         Ok(Self::overview(pr))
+    }
+    /// Demo behind counts: a strict-behind PR is 3 behind, others vary.
+    fn compare_branches(
+        &self,
+        pr: &PullRequest,
+        _: &pr_nexus_core::branch::BranchRef,
+        _: &pr_nexus_core::branch::BranchRef,
+    ) -> Result<pr_nexus_core::branch::BranchComparison, ProviderError> {
+        let behind_by = match pr.merge_state {
+            pr_nexus_core::domain::MergeStateStatus::Behind => 3,
+            _ => (pr.number % 3) as u32,
+        };
+        let mut authors = vec![pr.author_login.clone()];
+        if pr.number.is_multiple_of(2) {
+            authors.push("grace".into());
+        }
+        Ok(pr_nexus_core::branch::BranchComparison {
+            behind_by,
+            ahead_by: 2,
+            authors,
+        })
+    }
+    /// Demo updates succeed and change nothing.
+    fn update_branch(
+        &self,
+        _: &PullRequest,
+        _: &str,
+        _: pr_nexus_core::branch::UpdateMethod,
+    ) -> Result<(), ProviderError> {
+        Ok(())
     }
     /// Demo drafts flip locally; the stored row carries the new flag.
     fn set_draft(&self, _pr: &PullRequest, _draft: bool) -> Result<(), ProviderError> {

@@ -134,6 +134,15 @@ pub struct PrOverview {
     pub is_draft: bool,
     pub base_ref: String,
     pub head_ref: String,
+    /// Head commit; empty in overviews cached before it was fetched.
+    #[serde(default)]
+    pub head_sha: String,
+    /// Base branch tip.
+    #[serde(default)]
+    pub base_sha: String,
+    /// Owner of the head repository (differs from the base for a fork).
+    #[serde(default)]
+    pub head_owner: String,
     /// `mergeable`, `conflicting`, or `unknown`.
     pub mergeable: String,
     /// GitHub's `mergeStateStatus`, lower case: `clean`, `blocked`, `behind`,

@@ -1,6 +1,7 @@
 //! Detail-panel overview and auto-merge against a mock GitHub (§7.2).
 
 use chrono::{TimeZone, Utc};
+use pr_nexus_core::branch::{BranchRef, UpdateMethod};
 use pr_nexus_core::domain::{
     AccountId, ChecksState, Involvement, MergeStateStatus, Mergeable, PrId, PrState, ProviderRef,
     PullRequest, RepoRef,
@@ -62,6 +63,7 @@ const OVERVIEW: &str = r#"{"data":{
     "rebaseMergeAllowed":true,
     "pullRequest":{
       "state":"OPEN","isDraft":false,"baseRefName":"main","headRefName":"latch",
+      "headRefOid":"h1","baseRefOid":"b1","headRepositoryOwner":{"login":"alice"},
       "mergeable":"MERGEABLE","mergeStateStatus":"BLOCKED","reviewDecision":"REVIEW_REQUIRED",
       "viewerCanMergeAsAdmin":false,"viewerCanEnableAutoMerge":true,"viewerCanDisableAutoMerge":false,
       "autoMergeRequest":null,
@@ -149,6 +151,33 @@ fn mock_github() -> MockServer {
             ))
             .mount(&server)
             .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/acme/widgets/compare/acme:main...alice:feat%2Flatch"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"ahead_by":2,"behind_by":4,"commits":[{"author":{"login":"alice"}},{"author":{"login":"bob"}}]}"#,
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(body_string_contains("mutation UpdatePullRequestBranch"))
+            .and(body_string_contains(r#""expectedHeadOid":"h1""#))
+            .and(body_string_contains(r#""method":"MERGE""#))
+            .and(body_string_contains(r#""id":"PR_1""#))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"data":{"updatePullRequestBranch":{"pullRequest":{"id":"PR_1","headRefOid":"h2"}}}}"#,
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(body_string_contains("mutation UpdatePullRequestBranch"))
+            .and(body_string_contains(r#""method":"REBASE""#))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"data":null,"errors":[{"type":"UNPROCESSABLE","message":"expected head sha didn't match current head ref"}]}"#,
+            ))
+            .mount(&server)
+            .await;
         Mock::given(method("POST"))
             .and(path("/graphql"))
             .and(body_string_contains("mutation DisableAutoMerge"))
@@ -232,4 +261,40 @@ fn merge_sends_the_node_id_and_method_and_surfaces_errors() {
         .merge_pull_request(&pr(), MergeMethod::Rebase)
         .unwrap_err();
     assert!(err.to_string().contains("not mergeable"), "{err}");
+}
+
+#[test]
+fn compare_qualifies_both_owners_for_forks() {
+    let server = mock_github();
+    let client = GithubClient::with_base(server.uri(), AccountId(1), "token").unwrap();
+    let overview = client.pull_request_overview(&pr()).unwrap();
+    assert_eq!(
+        (overview.head_sha.as_str(), overview.base_sha.as_str()),
+        ("h1", "b1")
+    );
+    assert_eq!(overview.head_owner, "alice");
+    let base = BranchRef {
+        owner: "acme".into(),
+        name: "main".into(),
+    };
+    let head = BranchRef {
+        owner: "alice".into(),
+        name: "feat/latch".into(),
+    };
+    let found = client.compare_branches(&pr(), &base, &head).unwrap();
+    assert_eq!((found.behind_by, found.ahead_by), (4, 2));
+    assert_eq!(found.authors, vec!["alice", "bob"]);
+}
+
+#[test]
+fn update_branch_sends_expected_head_and_method_and_surfaces_errors() {
+    let server = mock_github();
+    let client = GithubClient::with_base(server.uri(), AccountId(1), "token").unwrap();
+    client
+        .update_branch(&pr(), "h1", UpdateMethod::Merge)
+        .unwrap();
+    let err = client
+        .update_branch(&pr(), "h1", UpdateMethod::Rebase)
+        .unwrap_err();
+    assert!(err.to_string().contains("expected head"), "{err}");
 }

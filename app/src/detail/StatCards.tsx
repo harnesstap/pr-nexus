@@ -1,17 +1,19 @@
 import { useState, type ReactNode } from "react";
 import type { OverviewCheck, PrOverview } from "../api";
-import { AlertIcon, CheckIcon, ClockIcon, CommentIcon, DeclinedIcon, MergeIcon } from "../icons";
+import { AlertIcon, CheckIcon, ClockIcon, CommentIcon, DeclinedIcon } from "../icons";
 import { Tooltip } from "../Tooltip";
 import { Avatar } from "./Avatar";
-import { approvalsSummary, checksSummary, commentsSummary, conflictsSummary, TONE_BAR, TONE_TEXT, type Summary } from "./status";
+import { approvalsSummary, checksSummary, commentsSummary, TONE_BAR, TONE_TEXT, type Summary } from "./status";
 
 interface Props {
   overview: PrOverview;
   onOpen: (url: string) => void;
+  /** The Branch card (BranchCard.tsx), the fourth slot. */
+  branch: ReactNode;
 }
 
 /** The four at-a-glance cards; the checks card lists what is failing when clicked. */
-export function StatCards({ overview, onOpen }: Props) {
+export function StatCards({ overview, onOpen, branch }: Props) {
   const [showChecks, setShowChecks] = useState(false);
   const checks = checksSummary(overview);
   const approvals = approvalsSummary(overview);
@@ -51,7 +53,7 @@ export function StatCards({ overview, onOpen }: Props) {
             </span>
           )}
         </Card>
-        <Card icon={<MergeIcon size={13} />} label="Conflicts" summary={conflictsSummary(overview)} />
+        {branch}
       </div>
       {showChecks && checks.attention.length > 0 && (
         <ul
@@ -69,11 +71,11 @@ export function StatCards({ overview, onOpen }: Props) {
 }
 
 /** Every card shares one frame so the grid stays uniform whatever the content. */
-const CARD = "flex h-full w-full min-w-0 flex-col rounded-lg border border-slate-800 bg-slate-900/70 p-3";
-const VALUE = "mt-1 h-7 truncate text-lg font-semibold leading-7 tabular-nums";
-const BAR_SLOT = "mt-1 h-1 shrink-0";
+export const CARD = "flex h-full w-full min-w-0 flex-col rounded-lg border border-slate-800 bg-slate-900/70 p-3";
+export const VALUE = "mt-1 h-7 truncate text-lg font-semibold leading-7 tabular-nums";
+export const BAR_SLOT = "mt-1 h-1 shrink-0";
 /** Two caption lines are always reserved, so a short caption does not shrink a card. */
-const CAPTION = "mt-1 line-clamp-2 min-h-8 text-xs leading-4 text-slate-500";
+export const CAPTION = "mt-1 line-clamp-2 min-h-8 text-xs leading-4 text-slate-500";
 
 function CardHead({ icon, label }: { icon: ReactNode; label: string }) {
   return (

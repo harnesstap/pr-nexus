@@ -2,6 +2,7 @@
 //!
 //! Network clients stay in `pr-nexus-providers`. The sync engine is a later milestone.
 
+pub mod branch;
 pub mod domain;
 pub mod error;
 pub mod jira;

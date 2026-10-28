@@ -73,6 +73,10 @@ impl From<ProviderError> for AppError {
             }
             ProviderError::NotFound(message) => Self::new("not_found", message),
             ProviderError::Network(message) => Self::new("network", message),
+            // Codes the Branch card's update explains in plain words.
+            ProviderError::Api { code, message } if code == "head_moved" || code == "conflicts" => {
+                Self::new(&code, message)
+            }
             ProviderError::Api { code, message } => Self::new("api", format!("{code}: {message}")),
             ProviderError::Decode(message) => Self::new("decode", message),
             ProviderError::Unsupported(message) => Self::new("unsupported", message),

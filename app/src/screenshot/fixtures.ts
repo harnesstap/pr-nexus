@@ -1,5 +1,16 @@
-import type { Bootstrap, ContextThread, PendingReviewer, PrOverview, ProjectDto, ReviewTarget, SlackIndicator, TargetChoice, TargetMatch } from "../api";
-import { mockDetail, mockOverview } from "../detail/mock";
+import type {
+  BranchStatus,
+  Bootstrap,
+  ContextThread,
+  PendingReviewer,
+  PrOverview,
+  ProjectDto,
+  ReviewTarget,
+  SlackIndicator,
+  TargetChoice,
+  TargetMatch,
+} from "../api";
+import { mockBranch, mockDetail, mockOverview } from "../detail/mock";
 import type { SearchRow } from "../list/paging";
 
 /** Made-up data for the README screenshot. Every name is generic. */
@@ -451,4 +462,36 @@ export const slackVariants: Record<string, ContextThread[]> = {
     },
   ],
   "long-channel": [{ ...slackThreads[0], channel_name: "acme-labs-web-platform-checkout-and-payments-reviews", requested_at: ago(1) }],
+};
+
+/** One open PR per Branch card state, by row id; `overview` patches that row's overview. */
+export const branchFixtures: Record<number, { overview: Partial<PrOverview>; branch: BranchStatus }> = {
+  1: { overview: {}, branch: mockBranch({ head_ref: "feature/482", conflicts_url: "https://github.com/acme/storefront/pull/482/conflicts" }) },
+  2: {
+    overview: {},
+    branch: mockBranch({
+      state: "behind",
+      behind_by: 3,
+      other_authors: ["grace"],
+      head_ref: "feature/479",
+      conflicts_url: "https://github.com/acme/storefront/pull/479/conflicts",
+    }),
+  },
+  5: {
+    overview: { merge_state: "behind" },
+    branch: mockBranch({
+      state: "update_required",
+      behind_by: 5,
+      head_ref: "feature/77",
+      conflicts_url: "https://github.com/acme/auth-service/pull/77/conflicts",
+    }),
+  },
+  8: {
+    overview: { mergeable: "conflicting", merge_state: "dirty" },
+    branch: mockBranch({ state: "conflicts", behind_by: null, head_ref: "feature/1204", conflicts_url: "https://github.com/acme/mobile/pull/1204/conflicts" }),
+  },
+  10: {
+    overview: { mergeable: "unknown", merge_state: "unknown" },
+    branch: mockBranch({ state: "checking", behind_by: null, head_ref: "feature/1210", conflicts_url: "https://github.com/acme/mobile/pull/1210/conflicts" }),
+  },
 };

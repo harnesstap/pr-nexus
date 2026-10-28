@@ -8,6 +8,8 @@
 // few controls and saves tooltip-*.png crops showing the app tooltip open.
 // `--scenes <dir>` saves the project-info and star views (project dialog, JIRA
 // chips, note and star, starred pinned, Starred filter, compact rows, Settings).
+// `--branch <dir>` saves the Branch card states (branch-*.png) into <dir>: one
+// PR per state, the Update branch menu open, and the rebase confirmation.
 // Uses an installed Chrome; set CHROME_PATH to pick another Chromium binary.
 import { mkdirSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -39,6 +41,11 @@ const listOut = outFlag === -1 ? null : process.argv[outFlag + 1];
 if (outFlag !== -1 && !listOut) {
   throw new Error("--out needs an output path");
 }
+const branchFlag = process.argv.indexOf("--branch");
+const branchDir = branchFlag === -1 ? null : process.argv[branchFlag + 1];
+if (branchFlag !== -1 && !branchDir) {
+  throw new Error("--branch needs an output directory");
+}
 const out = resolve(detailOut ?? listOut ?? resolve(appDir, "../docs/assets/screenshot-list.png"));
 const scenesFlag = process.argv.indexOf("--scenes");
 const scenesDir = scenesFlag === -1 ? null : process.argv[scenesFlag + 1];
@@ -57,6 +64,58 @@ const vite = await createServer({
 });
 await vite.listen();
 
+/** The Branch card fixtures (src/screenshot/fixtures.ts), one PR per state. */
+const BRANCH_STATES = [
+  ["up-to-date", "up_to_date", /split the payment step/],
+  ["behind", "behind", /Add address autocomplete to checkout/],
+  ["update-required", "update_required", /Register passkeys from account settings/],
+  ["conflicts", "conflicts", /Bump the minimum OS version/],
+  ["checking", "checking", /Crash on empty wishlist/],
+];
+
+async function branchShots(page, dir) {
+  const panel = page.getByTestId("detail-panel");
+  const save = async (name) => {
+    const path = resolve(dir, `branch-${name}.png`);
+    await page.waitForTimeout(300);
+    await page.screenshot({ path });
+    console.log(`wrote ${path} (${Math.round(statSync(path).size / 1024)} KB)`);
+  };
+  for (const [name, state, title] of BRANCH_STATES) {
+    await page
+      .getByRole("button", { name: new RegExp(`^(?!Star |Unstar |Open ).*${title.source}`, title.flags) })
+      .first()
+      .click();
+    await panel.locator(`[data-branch-state="${state}"]`).waitFor();
+    await save(name);
+    if (state === "update_required") {
+      // The merge card with Update branch on the behind blocker, at default and narrow width.
+      for (const [label, size] of [
+        ["default", width],
+        ["narrow", 760],
+      ]) {
+        await page.setViewportSize({ width: size, height: 900 });
+        await page.waitForTimeout(400);
+        const merge = panel.getByTestId("merge-verdict");
+        await merge.screenshot({ path: resolve(dir, `branch-merge-card-${label}.png`) });
+        console.log(`wrote branch-merge-card-${label}.png (${Math.round((await merge.boundingBox()).width)}px)`);
+      }
+      await page.setViewportSize({ width, height: 900 });
+    }
+  }
+  await page
+    .getByRole("button", { name: rowButton("Add address autocomplete to checkout") })
+    .first()
+    .click();
+  const card = panel.locator('[data-branch-state="behind"]');
+  await card.waitFor();
+  await card.getByRole("button", { name: "Update branch options" }).click();
+  await save("menu-open");
+  await page.getByRole("menuitem", { name: /Rebase/ }).click();
+  await page.getByRole("dialog").waitFor();
+  await save("rebase-confirm");
+}
+
 let browser;
 try {
   browser = await chromium.launch(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: "chrome" });
@@ -68,6 +127,8 @@ try {
     await shootTooltips(page, tooltipsDir);
   } else if (scenesDir) {
     await scenes(page, resolve(scenesDir));
+  } else if (branchDir) {
+    await branchShots(page, resolve(branchDir));
   } else if (detailOut) {
     await page
       .getByRole("button", {
@@ -88,7 +149,7 @@ try {
         .click();
     }
   }
-  if (!tooltipsDir && !scenesDir) {
+  if (!tooltipsDir && !scenesDir && !branchDir) {
     await page.waitForTimeout(500);
     await page.screenshot({ path: out });
     console.log(`wrote ${out} (${Math.round(statSync(out).size / 1024)} KB)`);

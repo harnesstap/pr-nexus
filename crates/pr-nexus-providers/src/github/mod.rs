@@ -9,6 +9,7 @@
 //! timeout error), and waits out a secondary rate limit before retrying.
 
 mod auth;
+mod branch;
 mod http;
 mod notifications;
 mod overview;
@@ -456,6 +457,24 @@ impl VcsProvider for GithubClient {
         method: pr_nexus_core::overview::MergeMethod,
     ) -> Result<(), ProviderError> {
         overview::merge(self, pr, method)
+    }
+
+    fn compare_branches(
+        &self,
+        pr: &PullRequest,
+        base: &pr_nexus_core::branch::BranchRef,
+        head: &pr_nexus_core::branch::BranchRef,
+    ) -> Result<pr_nexus_core::branch::BranchComparison, ProviderError> {
+        branch::compare(self, pr, base, head)
+    }
+
+    fn update_branch(
+        &self,
+        pr: &PullRequest,
+        expected_head: &str,
+        method: pr_nexus_core::branch::UpdateMethod,
+    ) -> Result<(), ProviderError> {
+        branch::update(self, pr, expected_head, method)
     }
 
     fn rate_limit(&self) -> Result<RateBudget, ProviderError> {

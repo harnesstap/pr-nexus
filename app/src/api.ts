@@ -494,12 +494,40 @@ export interface OverviewReviewer extends Person {
   state: "approved" | "changes_requested" | "commented" | "pending" | "dismissed";
 }
 
+/** What the Branch card shows (`pr_nexus_core::branch::BranchState`). */
+export type BranchState = "up_to_date" | "behind" | "update_required" | "conflicts" | "checking";
+
+/** How Update branch brings the base in. */
+export type UpdateMethod = "merge" | "rebase";
+
+/** The Branch card: conflicts and how far behind the base the head is. */
+export interface BranchStatus {
+  state: BranchState;
+  base_ref: string;
+  head_ref: string;
+  /** Null while unknown (not compared yet, or the compare failed). */
+  behind_by: number | null;
+  /** Commit authors on the head other than you; a rebase rewrites their commits too. */
+  other_authors: string[];
+  conflicts_url: string;
+  head_sha: string;
+}
+
+export interface BranchUpdate {
+  overview: PrOverview;
+  branch: BranchStatus;
+}
+
 /** The detail panel's at-a-glance facts (§7.2), cached per PR. */
 export interface PrOverview {
   state: "open" | "closed" | "merged";
   is_draft: boolean;
   base_ref: string;
   head_ref: string;
+  /** Head and base tips and the head repository's owner; absent in old cached copies. */
+  head_sha?: string;
+  base_sha?: string;
+  head_owner?: string;
   mergeable: "mergeable" | "conflicting" | "unknown";
   /** GitHub's mergeStateStatus, lower case. */
   merge_state: "clean" | "blocked" | "behind" | "dirty" | "unstable" | "has_hooks" | "draft" | "unknown";
@@ -646,6 +674,10 @@ export interface Api {
   setPrDraft(id: number, draft: boolean): Promise<PrOverview>;
   /** Merges now with `method`; irreversible, so the UI confirms first. Returns the fresh overview. */
   mergePr(id: number, method: MergeMethod): Promise<PrOverview>;
+  /** The Branch card; `refresh: false` reuses the cached overview. */
+  prBranchStatus(id: number, refresh: boolean): Promise<BranchStatus>;
+  /** Brings the base into the branch; the caller confirms a rebase first. */
+  updatePrBranch(id: number, method: UpdateMethod): Promise<BranchUpdate>;
   prSlackContext(prId: number, refresh: boolean): Promise<ContextThread[]>;
   prSlackMentions(prId: number): Promise<MentionGroup[]>;
   saveSlackMentions(scope: MentionsScope): Promise<void>;
@@ -744,6 +776,8 @@ export const tauriApi: Api = {
   setAutoMerge: (id, method) => invoke("set_auto_merge", { id, method }),
   setPrDraft: (id, draft) => invoke("set_pr_draft", { id, draft }),
   mergePr: (id, method) => invoke("merge_pr", { id, method }),
+  prBranchStatus: (id, refresh) => invoke("pr_branch_status", { id, refresh }),
+  updatePrBranch: (id, method) => invoke("update_pr_branch", { id, method }),
   prSlackContext: (prId, refresh) => invoke("pr_slack_context", { prId, refresh }),
   prSlackMentions: (prId) => invoke("pr_slack_mentions", { prId }),
   saveSlackMentions: (scope) => invoke("save_slack_mentions", { scope }),

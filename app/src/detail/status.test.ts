@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import { mockOverview } from "./mock";
-import { approvalsSummary, autoMergeView, canMergeNow, checksSummary, commentsSummary, conflictsSummary, mergeBlockers, mergeVerdict } from "./status";
+import { approvalsSummary, behindLine, autoMergeView, canMergeNow, checksSummary, commentsSummary, mergeBlockers, mergeVerdict } from "./status";
 
 test("checks count skipped as passing and list failures before running ones", () => {
   const summary = checksSummary(
@@ -16,7 +16,10 @@ test("checks count skipped as passing and list failures before running ones", ()
   );
   expect(summary).toMatchObject({ value: "2/4", tone: "bad", caption: "1 failing", ok: 2, total: 4 });
   expect(summary.attention.map((check) => check.name)).toEqual(["test", "slow"]);
-  expect(checksSummary(mockOverview({ checks: [{ name: "a", state: "pending", url: null, required: true }], checks_total: 1 }))).toMatchObject({ tone: "warn", caption: "1 running" });
+  expect(checksSummary(mockOverview({ checks: [{ name: "a", state: "pending", url: null, required: true }], checks_total: 1 }))).toMatchObject({
+    tone: "warn",
+    caption: "1 running",
+  });
   expect(checksSummary(mockOverview({ checks: [], checks_total: 0 }))).toMatchObject({ tone: "muted", caption: "No checks" });
   // GitHub lists only the first checks; the total still counts them all.
   expect(checksSummary(mockOverview({ checks: [{ name: "a", state: "passed", url: null, required: true }], checks_total: 120 })).value).toBe("1/120");
@@ -28,19 +31,21 @@ test("comments add the conversation and the code review", () => {
 });
 
 test("approvals show the missing count, changes requested, and an unknown requirement", () => {
-  expect(approvalsSummary({ approvals: 1, required_approvals: 2, review_decision: "review_required" })).toMatchObject({ value: "1/2", tone: "warn", caption: "1 more needed" });
+  expect(approvalsSummary({ approvals: 1, required_approvals: 2, review_decision: "review_required" })).toMatchObject({
+    value: "1/2",
+    tone: "warn",
+    caption: "1 more needed",
+  });
   expect(approvalsSummary({ approvals: 2, required_approvals: 2, review_decision: "approved" })).toMatchObject({ tone: "good", caption: "Approved" });
   expect(approvalsSummary({ approvals: 1, required_approvals: 1, review_decision: "changes_requested" })).toMatchObject({ tone: "bad" });
   expect(approvalsSummary({ approvals: 1, required_approvals: null, review_decision: null })).toMatchObject({ value: "1/?", requiredKnown: false });
   expect(approvalsSummary({ approvals: 0, required_approvals: 0, review_decision: null })).toMatchObject({ tone: "muted", caption: "No approvals" });
 });
 
-test("mergeability reads conflicts, behind and the unknown state", () => {
-  expect(conflictsSummary({ state: "open", mergeable: "conflicting", merge_state: "dirty" }).value).toBe("Yes");
-  expect(conflictsSummary({ state: "open", mergeable: "unknown", merge_state: "unknown" }).value).toBe("Checking");
-  expect(conflictsSummary({ state: "open", mergeable: "mergeable", merge_state: "behind" }).tone).toBe("warn");
-  expect(conflictsSummary({ state: "open", mergeable: "mergeable", merge_state: "blocked" }).value).toBe("None");
-  expect(conflictsSummary({ state: "merged", mergeable: "unknown", merge_state: "unknown" }).value).toBe("Merged");
+test("a branch that must be updated says how far behind it is", () => {
+  expect(behindLine(3)).toBe("3 commits behind · update required.");
+  expect(behindLine(1)).toBe("1 commit behind · update required.");
+  expect(mergeBlockers(mockOverview({ merge_state: "behind" }), 2)).toContain("2 commits behind · update required.");
 });
 
 test("the merge verdict names the first thing in the way", () => {
@@ -50,7 +55,10 @@ test("the merge verdict names the first thing in the way", () => {
   expect(verdict({ is_draft: true, merge_state: "draft" }).reason).toMatch(/draft/);
   expect(verdict({ merge_state: "dirty", mergeable: "conflicting" }).reason).toMatch(/conflicts/);
   expect(verdict({ merge_state: "behind" }).reason).toMatch(/behind/);
-  expect(verdict({ merge_state: "clean", viewer: { ...mockOverview().viewer, permission: "read" } })).toMatchObject({ can: false, reason: "You don't have write access to this repository." });
+  expect(verdict({ merge_state: "clean", viewer: { ...mockOverview().viewer, permission: "read" } })).toMatchObject({
+    can: false,
+    reason: "You don't have write access to this repository.",
+  });
   // Blocked: the most specific reason the overview supports.
   expect(verdict({ review_decision: "changes_requested" }).reason).toBe("A reviewer requested changes.");
   expect(verdict({ review_decision: "review_required", approvals: 0, required_approvals: 2 }).reason).toBe("It needs 2 more approvals.");
@@ -77,13 +85,12 @@ test("auto-merge offers the allowed methods, squash first, and says why it can't
 
 test("the blockers list every reason it can't merge, not just the first", () => {
   // The default mock: failing required check, changes requested, 1 of 2 approvals.
-  expect(mergeBlockers(mockOverview())).toEqual([
-    "1 check failing: unit tests.",
-    "A reviewer requested changes.",
-    "It needs 1 more approval.",
-  ]);
+  expect(mergeBlockers(mockOverview())).toEqual(["1 check failing: unit tests.", "A reviewer requested changes.", "It needs 1 more approval."]);
   expect(mergeVerdict(mockOverview()).blockers).toHaveLength(3);
-  expect(mergeBlockers(mockOverview({ is_draft: true, merge_state: "draft", review_decision: null, approvals: 2 }))).toEqual(["It is still a draft.", "1 check failing: unit tests."]);
+  expect(mergeBlockers(mockOverview({ is_draft: true, merge_state: "draft", review_decision: null, approvals: 2 }))).toEqual([
+    "It is still a draft.",
+    "1 check failing: unit tests.",
+  ]);
   expect(
     mergeBlockers(
       mockOverview({

@@ -1106,6 +1106,40 @@ pub async fn merge_pr(
     .await
 }
 
+/// The detail panel's Branch card. `refresh: false` reuses the cached
+/// overview; the behind count is compared only here, never during sync.
+#[tauri::command]
+pub async fn pr_branch_status(
+    app: State<'_, std::sync::Arc<AppState>>,
+    id: i64,
+    refresh: bool,
+) -> Result<pr_nexus_core::branch::BranchStatus, AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        if refresh {
+            crate::services::branch::branch_status(state, id)
+        } else {
+            crate::services::branch::branch_status_cached(state, id)
+        }
+    })
+    .await
+}
+
+/// Updates the pull request's branch from its base with `method` (`merge`
+/// or `rebase`) and returns the refreshed overview and Branch card. The UI
+/// confirms a rebase first.
+#[tauri::command]
+pub async fn update_pr_branch(
+    app: State<'_, std::sync::Arc<AppState>>,
+    id: i64,
+    method: String,
+) -> Result<pr_nexus_core::branch::BranchUpdate, AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || crate::services::branch::update_branch(app.inner().as_ref(), id, &method))
+        .await
+}
+
 /// Converts the pull request to a draft (`draft: true`) or marks it ready
 /// for review, and returns the refreshed overview.
 #[tauri::command]

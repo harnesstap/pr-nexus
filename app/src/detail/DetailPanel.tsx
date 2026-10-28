@@ -9,13 +9,14 @@ import { SlackContextPanel } from "../list/SlackContextPanel";
 import { StarButton } from "../list/StarButton";
 import { Tooltip } from "../Tooltip";
 import { AutoMerge } from "./AutoMerge";
+import { BranchAction, BranchCard, BranchError, RebaseConfirm, useBranch } from "./BranchCard";
 import { Expander } from "./Expander";
 import { NoteSection } from "./NoteSection";
 import { draftView, type DraftView } from "./draft";
 import { peopleGroups, PeopleRow, requiredSeats } from "./People";
 import { SlackLine } from "./SlackLine";
 import { StatCards, VerdictIcon } from "./StatCards";
-import { DRAFT_BLOCKER, mergeVerdict, TONE_TEXT } from "./status";
+import { behindLine, CONFLICTS_BLOCKER, DRAFT_BLOCKER, mergeVerdict, TONE_TEXT } from "./status";
 
 interface Props {
   api: Api;
@@ -71,6 +72,7 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
   const [width, setWidth] = useState(storedWidth);
   const [flipping, setFlipping] = useState(false);
   const panelRef = useRef<HTMLElement>(null);
+  const branch = useBranch({ api, prId: row.id, overview, fresh: loaded && !overviewError, onOverview: setOverview, onNotice });
 
   // Cache first so the cards show at once, then GitHub; again after every sync.
   useEffect(() => {
@@ -189,7 +191,19 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
     : row.state === "open" && row.is_draft
       ? "draft"
       : row.state;
-  const verdict = overview ? mergeVerdict(overview) : null;
+  const verdict = overview ? mergeVerdict(overview, branch.view.behindBy) : null;
+  /** The fix that sits on a blocker's row: Mark ready on the draft line, Update branch or Resolve on the branch line. */
+  const blockerAction = (text: string, only: boolean): ReactNode => {
+    if (overview?.state !== "open") {
+      return undefined;
+    }
+    if (draft.draft && (text === DRAFT_BLOCKER || only)) {
+      return <DraftAction draft={draft} busy={flipping} onToggle={() => void toggleDraft()} />;
+    }
+    const branchLine =
+      branch.view.state === "update_required" ? behindLine(branch.view.behindBy) : branch.view.state === "conflicts" ? CONFLICTS_BLOCKER : null;
+    return branchLine !== null && (text === branchLine || only) ? <BranchAction branch={branch} onOpen={onOpen} /> : undefined;
+  };
   const files = detail ? `${detail.files.length}${detail.files_truncated ? "+" : ""}` : "…";
 
   return (
@@ -255,7 +269,9 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
         )}
         {overview && (
           <>
-            <StatCards overview={overview} onOpen={onOpen} />
+            <StatCards overview={overview} onOpen={onOpen} branch={<BranchCard branch={branch} onOpen={onOpen} />} />
+            <BranchError branch={branch} />
+            <RebaseConfirm branch={branch} headRef={overview.head_ref} />
             {verdict && (
               <section aria-label="Merge" className="flex flex-col gap-2 rounded-lg border border-slate-800 bg-slate-950/40 p-3" data-testid="merge-verdict">
                 <div className="flex min-w-0 items-center gap-2">
@@ -276,10 +292,7 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
                 <BlockerList
                   items={(verdict.blockers.length > 1 ? verdict.blockers : [verdict.reason]).map((text) => ({
                     text,
-                    action:
-                      overview.state === "open" && draft.draft && (text === DRAFT_BLOCKER || verdict.blockers.length <= 1) ? (
-                        <DraftAction draft={draft} busy={flipping} onToggle={() => void toggleDraft()} />
-                      ) : undefined,
+                    action: blockerAction(text, verdict.blockers.length <= 1),
                   }))}
                   bullets={verdict.blockers.length > 1}
                 />

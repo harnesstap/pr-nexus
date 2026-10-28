@@ -7,6 +7,7 @@ import { pageFromRows, type PageRequest } from "../list/paging";
 import type { JiraLinkDto, JiraLinkInput, ReviewTarget } from "../api";
 import {
   boot,
+  branchFixtures,
   detail,
   draftOverview,
   draftRowId,
@@ -24,7 +25,9 @@ import {
   slackVariants,
 } from "./fixtures";
 
-const overviewFor = (id: unknown) => (id === draftRowId ? draftOverview : id === mergeableRowId ? mergeableOverview : overview);
+const baseOverviewFor = (id: unknown) => (id === draftRowId ? draftOverview : id === mergeableRowId ? mergeableOverview : overview);
+const overviewFor = (id: unknown) => ({ ...baseOverviewFor(id), ...(branchFixtures[Number(id)]?.overview ?? {}) });
+const branchFor = (id: unknown) => branchFixtures[Number(id)]?.branch ?? branchFixtures[1].branch;
 
 /**
  * The real app over mocked Tauri IPC, for the README screenshot
@@ -55,6 +58,8 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   pr_detail: () => detail,
   pr_overview: (args) => ({ ...overviewFor(args.id), fetched_at: new Date().toISOString() }),
   merge_pr: (args) => ({ ...overviewFor(args.id), state: "merged", fetched_at: new Date().toISOString() }),
+  pr_branch_status: (args) => branchFor(args.id),
+  update_pr_branch: (args) => ({ overview: { ...baseOverviewFor(args.id), fetched_at: new Date().toISOString() }, branch: branchFixtures[1].branch }),
   load_preferences: () => ({
     review_requester: "Ada Park",
     min_bump_interval_hours: 4,
