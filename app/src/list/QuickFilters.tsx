@@ -37,7 +37,7 @@ interface Props {
  */
 export function QuickFilters({ active, counts, onChange }: Props) {
   return (
-    <div role="group" aria-label="Quick filters" className="ml-auto flex items-center gap-1">
+    <div role="group" aria-label="Quick filters" className="flex items-center gap-1">
       {QUICK_FILTERS.map((key) => {
         const spec = QUICK_SPECS[key];
         const on = active === key;
@@ -54,6 +54,7 @@ export function QuickFilters({ active, counts, onChange }: Props) {
               onClick={() => onChange(on ? null : key)}
             >
               {spec.icon}
+              {on && <span className="whitespace-nowrap">{spec.label}</span>}
               {count !== undefined && (
                 <span aria-hidden="true" className={`min-w-4 tabular-nums ${count === 0 && !on ? "text-slate-600" : ""}`}>
                   {count}

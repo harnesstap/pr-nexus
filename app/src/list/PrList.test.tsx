@@ -272,7 +272,7 @@ test("rows show labelled threads, a review pill, and the Slack request status", 
   expect(screen.getAllByText("· workspace disabled")).toHaveLength(1);
   expect(screen.getByText("Not requested")).toBeInTheDocument();
   expect(screen.getByLabelText("1 unresolved of 3 review threads")).toBeInTheDocument();
-  expect(screen.getByLabelText("0 unresolved of 0 review threads")).toBeInTheDocument();
+  expect(screen.queryByLabelText("0 unresolved of 0 review threads")).not.toBeInTheDocument();
   expect(screen.queryByText("0/0")).not.toBeInTheDocument();
   expect(screen.getByText("Approved")).toBeInTheDocument();
   expect(screen.getByText("Changes requested")).toBeInTheDocument();
@@ -485,7 +485,7 @@ test("Enter on a button keeps its own action instead of opening the focused row"
 test("the empty list says why and offers the way out", async () => {
   vi.useFakeTimers();
   const { unmount } = await show(<Harness rows={[]} projects={[]} />);
-  expect(screen.getByText("No open pull requests in My PRs.")).toBeInTheDocument();
+  expect(screen.getByText("No open PRs in your tracked orgs")).toBeInTheDocument();
   unmount();
   await show(<Harness rows={rows} />);
   fireEvent.change(screen.getByRole("textbox", { name: "Search" }), { target: { value: "zzz-nothing" } });

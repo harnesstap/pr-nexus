@@ -7,7 +7,8 @@ export const REVIEW_REQUESTED = 2;
 const BUMP_DUE_MS = 24 * 60 * 60 * 1000;
 
 export type Grouping = "project" | "repository" | "org" | "status" | "updated";
-export type Ordering = "updated" | "created" | "slack" | "readiness" | "number";
+export type Ordering = "updated" | "created" | "slack" | "readiness" | "number" | "waiting" | "bumped";
+export const ORDERING_IDS: readonly Ordering[] = ["updated", "created", "slack", "readiness", "number", "waiting", "bumped"];
 export type Direction = "asc" | "desc";
 export type CheckState = "none" | "partial" | "all";
 export type StatusFilter = "ready" | "unknown" | "blocked" | "draft";
@@ -100,7 +101,7 @@ export function parseViewState(json: string | null): SavedView {
   const record = raw as Partial<SavedView>;
   return {
     grouping: pick(record.grouping, ["project", "repository", "org", "status", "updated"], base.grouping),
-    ordering: pick(record.ordering, ["updated", "created", "slack", "readiness", "number"], base.ordering),
+    ordering: pick(record.ordering, ORDERING_IDS, base.ordering),
     direction: pick(record.direction, ["asc", "desc"], base.direction),
     show: { ...base.show, ...(record.show ?? {}) },
     filters: {
