@@ -4,7 +4,8 @@ import type { Api, ContextThread, ListRow, PrOverview } from "../api";
 import { DetailPanel, WIDTH_KEY, clampWidth } from "./DetailPanel";
 import { mockDetail, mockOverview } from "./mock";
 import { latestThread } from "./SlackLine";
-import { participantStack } from "./People";
+import { draftView } from "./draft";
+import { participantStack, Participants, Reviewers, requiredSeats } from "./People";
 
 afterEach(() => window.localStorage.clear());
 
@@ -16,6 +17,7 @@ const row = {
   owner: "acme",
   repo: "acme/web",
   head_ref: "feature/checkout-steps",
+  author_login: "ada",
   is_draft: false,
   state: "open",
   slack: null,
@@ -50,6 +52,7 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
     prDetail: vi.fn((id: number) => Promise.resolve(mockDetail(id))),
     prSlackContext: vi.fn(() => Promise.resolve([])),
     setAutoMerge: vi.fn(() => Promise.resolve(mockOverview())),
+    setPrDraft: vi.fn((_id: number, draft: boolean) => Promise.resolve(mockOverview({ is_draft: draft }))),
     ...overrides,
   } as unknown as Api;
 }
@@ -117,14 +120,68 @@ test("a sync refreshes the overview", async () => {
   await waitFor(() => expect(vi.mocked(api.prOverview).mock.calls.filter(([, refresh]) => refresh)).toHaveLength(2));
 });
 
-test("with no Slack request, one quiet line offers to request", async () => {
+test("with no Slack request, one big button asks for review, right under the verdict", async () => {
   const api = fakeApi();
   const { onRequestReview } = renderPanel(api);
-  const line = await screen.findByTestId("slack-empty");
-  expect(line.textContent).toBe("Slack: no request yet·Request");
-  fireEvent.click(within(line).getByRole("button", { name: "Request" }));
+  const slot = await screen.findByTestId("slack-empty");
+  const button = within(slot).getByRole("button", { name: "Request review on Slack" });
+  // The header no longer carries a small Slack button.
+  expect(screen.getAllByRole("button", { name: /on Slack/ })).toEqual([button]);
+  expect(screen.getByTestId("merge-verdict").compareDocumentPosition(slot) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  fireEvent.click(button);
   expect(onRequestReview).toHaveBeenCalled();
   expect(screen.queryByRole("region", { name: "Slack request" })).toBeNull();
+});
+
+test("an existing request shows its summary with a Bump button in the same spot", async () => {
+  const api = fakeApi({ prSlackContext: vi.fn(() => Promise.resolve([thread])) });
+  const { onRequestReview } = renderPanel(api);
+  const region = await screen.findByRole("region", { name: "Slack request" });
+  expect(screen.queryByTestId("slack-empty")).toBeNull();
+  fireEvent.click(within(region).getByRole("button", { name: "Bump" }));
+  expect(onRequestReview).toHaveBeenCalled();
+});
+
+test("the state pill and the draft box flip draft and ready, optimistically", async () => {
+  let finish: (value: PrOverview) => void = () => undefined;
+  const api = fakeApi({
+    prOverview: vi.fn(() => Promise.resolve(mockOverview({ is_draft: true, merge_state: "draft" }))),
+    setPrDraft: vi.fn(() => new Promise<PrOverview>((done) => (finish = done))),
+  });
+  const onDraftChange = vi.fn();
+  const { onNotice } = renderPanel(api, { onDraftChange });
+  const verdict = await screen.findByTestId("merge-verdict");
+  expect(within(verdict).getByText("It is still a draft. Mark it ready for review first.")).toBeTruthy();
+  fireEvent.click(within(verdict).getByRole("button", { name: "Mark ready for review" }));
+  expect(api.setPrDraft).toHaveBeenCalledWith(7, false);
+  expect(onDraftChange).toHaveBeenCalledWith(7, false);
+  expect(screen.getByTestId("state-pill").textContent).toContain("Saving");
+  await act(async () => finish(mockOverview({ is_draft: false })));
+  expect(onDraftChange).toHaveBeenLastCalledWith(7, "saved");
+  expect(onNotice).toHaveBeenCalledWith("#42 is ready for review");
+  expect(screen.getByTestId("state-pill").textContent).toContain("Open");
+});
+
+test("a failed draft flip rolls back and explains the plan limit", async () => {
+  const api = fakeApi({ setPrDraft: vi.fn(() => Promise.reject(new Error("draft pull requests aren't available on this repository's plan"))) });
+  const onDraftChange = vi.fn();
+  const { onNotice } = renderPanel(api, { onDraftChange });
+  await screen.findByTestId("merge-verdict");
+  fireEvent.click(screen.getByRole("button", { name: "Open: convert to draft" }));
+  expect(onDraftChange).toHaveBeenCalledWith(7, true);
+  await waitFor(() => expect(onDraftChange).toHaveBeenLastCalledWith(7, null));
+  expect(screen.getByTestId("state-pill").textContent).toContain("Open");
+  expect(onNotice).toHaveBeenCalledWith("Couldn't convert to draft: draft pull requests aren't available on this repository's plan");
+});
+
+test("the draft toggle is off, with a reason, without access or once merged", async () => {
+  const api = fakeApi({
+    prOverview: vi.fn(() => Promise.resolve(mockOverview({ viewer: { ...mockOverview().viewer, login: "lee", permission: "read" } }))),
+  });
+  renderPanel(api);
+  await screen.findByTestId("merge-verdict");
+  expect((screen.getByTestId("state-pill") as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.getByTestId("state-pill-disabled")).toBeTruthy();
 });
 
 test("a Slack request shows compactly with its latest replies", async () => {
@@ -231,4 +288,33 @@ test("helpers: newest Slack thread and the participant stack", () => {
   const people = Array.from({ length: 8 }, (_, index) => ({ kind: "user" as const, login: `u${index}`, name: null, avatar_url: null }));
   expect(participantStack(people, 10)).toMatchObject({ more: 4 });
   expect(participantStack(people.slice(0, 2), 2)).toMatchObject({ more: 0 });
+});
+
+test("draftView: authors and writers may flip; closed, merged and readers may not", () => {
+  const open = { ...row, author_login: "ada" } as ListRow;
+  expect(draftView(open, mockOverview())).toMatchObject({ available: true, action: "Convert to draft" });
+  expect(draftView(open, mockOverview({ is_draft: true }))).toMatchObject({ available: true, action: "Mark ready for review" });
+  const reader = mockOverview({ viewer: { ...mockOverview().viewer, login: "lee", permission: "read" } });
+  expect(draftView(open, reader).reason).toMatch(/author or someone with write access/);
+  expect(draftView({ ...open, author_login: "lee" } as ListRow, reader).available).toBe(true);
+  expect(draftView(open, mockOverview({ state: "merged" })).reason).toBe("It is already merged.");
+  expect(draftView(open, mockOverview({ state: "closed" })).reason).toBe("The pull request is closed.");
+  expect(draftView(open, null).available).toBe(false);
+});
+
+test("code-owner teams not yet requested show as pending; an empty list says what's needed", () => {
+  const seats = requiredSeats([{ kind: "team", login: "acme/web", name: null, avatar_url: null, state: "pending" }], ["@acme/web", "@acme/api", "acme/api", "@acme/docs"], ["acme/docs"]);
+  expect(seats.map((seat) => seat.login)).toEqual(["acme/api"]);
+  render(<Reviewers reviewers={[]} required={seats} missing={1} />);
+  expect(screen.getByText("Code owner · waiting")).toBeTruthy();
+});
+
+test("with no one listed, the reviewers section says how many approvals are missing", () => {
+  render(<Reviewers reviewers={[]} missing={1} />);
+  expect(screen.getByText(/1 approval needed/)).toBeTruthy();
+});
+
+test("bot participants are kept and marked", () => {
+  render(<Participants participants={[{ kind: "bot", login: "deps-bot", name: null, avatar_url: null }]} total={1} />);
+  expect(screen.getByRole("group", { name: "1 participant" })).toBeTruthy();
 });

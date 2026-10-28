@@ -105,6 +105,23 @@ fn mock_github() -> MockServer {
             .await;
         Mock::given(method("POST"))
             .and(path("/graphql"))
+            .and(body_string_contains("mutation ConvertToDraft"))
+            .and(body_string_contains(r#""id":"PR_1""#))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"data":{"convertPullRequestToDraft":{"pullRequest":{"id":"PR_1","isDraft":true}}}}"#,
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(body_string_contains("mutation MarkReady"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"data":null,"errors":[{"type":"UNPROCESSABLE","message":"Draft pull requests are not supported in this repository."}]}"#,
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
             .and(body_string_contains("mutation EnableAutoMerge"))
             .and(body_string_contains(r#""method":"SQUASH""#))
             .and(body_string_contains(r#""id":"PR_1""#))
@@ -166,4 +183,16 @@ fn auto_merge_mutations_send_the_node_id_and_surface_errors() {
         .unwrap();
     let err = client.set_auto_merge(&pr(), None).unwrap_err();
     assert!(err.to_string().contains("not allowed"), "{err}");
+}
+
+#[test]
+fn draft_mutations_send_the_node_id_and_explain_plan_limits() {
+    let server = mock_github();
+    let client = GithubClient::with_base(server.uri(), AccountId(1), "token").unwrap();
+    client.set_draft(&pr(), true).unwrap();
+    let err = client.set_draft(&pr(), false).unwrap_err();
+    assert!(
+        matches!(err, pr_nexus_core::error::ProviderError::Unsupported(_)),
+        "{err}"
+    );
 }

@@ -2,14 +2,15 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { Api, Explanation, ListRow, MentionsScope, PrDetail, PrOverview } from "../api";
 import { errorMessage } from "../api";
 import { CloseButton } from "../CloseButton";
-import { AlertIcon, CheckIcon, DeclinedIcon, GitHubIcon, SlackIcon } from "../icons";
+import { AlertIcon, CheckIcon, DeclinedIcon, GitHubIcon } from "../icons";
 import { isTypingTarget } from "../list/keys";
 import { ago } from "../list/model";
 import { SlackContextPanel } from "../list/SlackContextPanel";
 import { Tooltip } from "../Tooltip";
 import { AutoMerge } from "./AutoMerge";
 import { Expander } from "./Expander";
-import { Participants, Reviewers } from "./People";
+import { draftView, type DraftView } from "./draft";
+import { Participants, requiredSeats, Reviewers } from "./People";
 import { SlackLine } from "./SlackLine";
 import { StatCards, VerdictIcon } from "./StatCards";
 import { mergeVerdict, TONE_TEXT } from "./status";
@@ -24,6 +25,11 @@ interface Props {
   /** Opens the Slack request/bump preview for this PR. */
   onRequestReview?: () => void;
   onNotice: (text: string) => void;
+  /**
+   * The draft flag changed here: `true`/`false` optimistically, `null` to roll the
+   * row back, and `"saved"` once GitHub agreed (the caller then refreshes).
+   */
+  onDraftChange?: (id: number, draft: boolean | null | "saved") => void;
   /** Adds the full Slack threads and mention search (§7.10) as an expander. */
   slack?: { mentions: MentionsScope };
 }
@@ -52,13 +58,14 @@ function storedWidth(): number {
  * The PR detail slide-over (§7.2): docked on the right while the list stays usable, so a
  * click or ↑/↓ in the list switches the PR. Esc or ✕ closes it.
  */
-export function DetailPanel({ api, row, version, onClose, onOpen, onRequestReview, onNotice, slack }: Props) {
+export function DetailPanel({ api, row, version, onClose, onOpen, onRequestReview, onNotice, onDraftChange, slack }: Props) {
   const [overview, setOverview] = useState<PrOverview | null>(null);
   const [overviewError, setOverviewError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [detail, setDetail] = useState<PrDetail | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [width, setWidth] = useState(storedWidth);
+  const [flipping, setFlipping] = useState(false);
   const panelRef = useRef<HTMLElement>(null);
 
   // Cache first so the cards show at once, then GitHub; again after every sync.
@@ -131,6 +138,29 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
     window.addEventListener("pointerup", up);
   }
 
+  async function toggleDraft() {
+    const view = draftView(row, overview);
+    if (!view.available || flipping || !overview) return;
+    const before = overview;
+    const next = !view.draft;
+    setFlipping(true);
+    setOverview({ ...before, is_draft: next, merge_state: next ? "draft" : before.merge_state === "draft" ? "unknown" : before.merge_state });
+    onDraftChange?.(row.id, next);
+    try {
+      const fresh = await api.setPrDraft(row.id, next);
+      setOverview(fresh);
+      onDraftChange?.(row.id, "saved");
+      onNotice(next ? `#${row.number} is a draft again` : `#${row.number} is ready for review`);
+    } catch (err) {
+      setOverview(before);
+      onDraftChange?.(row.id, null);
+      onNotice(`Couldn't ${next ? "convert to draft" : "mark ready for review"}: ${errorMessage(err)}`);
+    } finally {
+      setFlipping(false);
+    }
+  }
+
+  const draft = draftView(row, overview);
   const state = overview ? (overview.state === "open" && overview.is_draft ? "draft" : overview.state) : row.state === "open" && row.is_draft ? "draft" : row.state;
   const verdict = overview ? mergeVerdict(overview) : null;
   const files = detail ? `${detail.files.length}${detail.files_truncated ? "+" : ""}` : "…";
@@ -165,7 +195,7 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
       <header className="flex items-start gap-3 border-b border-slate-800 px-5 pb-3 pt-4">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <StatePill state={state} />
+            <StatePill state={state} draft={draft} busy={flipping} onToggle={() => void toggleDraft()} />
             <span className="truncate text-xs text-slate-500">
               {row.repo}
               {" · "}
@@ -179,11 +209,6 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
           </h2>
         </div>
         <div className="flex shrink-0 items-center gap-0.5">
-          {onRequestReview && (
-            <IconButton label={row.slack ? "Bump on Slack" : "Request on Slack"} detail="Preview the Slack message first" shortcut="R" onClick={onRequestReview}>
-              <SlackIcon size={16} />
-            </IconButton>
-          )}
           <IconButton label="Open on GitHub" shortcut="O" onClick={() => onOpen(row.url)}>
             <GitHubIcon size={16} />
           </IconButton>
@@ -214,19 +239,28 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
                     <p className="text-xs text-slate-400">{verdict.reason}</p>
                   </div>
                 </Tooltip>
+                {overview.state === "open" && overview.is_draft && (
+                  <DraftAction view={draft} busy={flipping} onClick={() => void toggleDraft()} />
+                )}
                 {overview.state === "open" && <AutoMerge api={api} prId={row.id} overview={overview} onChange={setOverview} onNotice={onNotice} />}
               </div>
             )}
+            {/* The one primary action, right under "can I merge": asking for review is what unblocks it. */}
+            <SlackLine api={api} prId={row.id} onOpen={onOpen} onRequest={onRequestReview} />
             {overviewError && <p className="text-xs text-amber-200">Showing the copy from {ago(overview.fetched_at, new Date())}; refreshing failed: {overviewError}</p>}
             <Section title="Reviewers">
-              <Reviewers reviewers={overview.reviewers} />
+              <Reviewers
+                reviewers={overview.reviewers}
+                required={detail ? requiredSeats(overview.reviewers, detail.mandatory_teams, detail.approved_teams) : []}
+                missing={overview.required_approvals === null ? 0 : Math.max(0, overview.required_approvals - overview.approvals)}
+              />
             </Section>
             <Section title="Participants">
               <Participants participants={overview.participants} total={overview.participants_total} />
             </Section>
           </>
         )}
-        <SlackLine api={api} prId={row.id} onOpen={onOpen} onRequest={onRequestReview} />
+        {!overview && <SlackLine api={api} prId={row.id} onOpen={onOpen} onRequest={onRequestReview} />}
         <div>
           <Expander title={`Files changed (${files})`} aside={detail?.codeowners_path ? "with code owners" : undefined}>
             <FilesBody detail={detail} error={detailError} />
@@ -253,9 +287,64 @@ const PILL: Record<string, { label: string; tone: string }> = {
   closed: { label: "Closed", tone: "bg-rose-500/15 text-rose-200 ring-rose-400/30" },
 };
 
-function StatePill({ state }: { state: string }) {
+/** The state pill doubles as the draft ↔ ready toggle while the PR is open. */
+function StatePill({ state, draft, busy, onToggle }: { state: string; draft: DraftView; busy: boolean; onToggle: () => void }) {
   const pill = PILL[state] ?? PILL.open;
-  return <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ${pill.tone}`}>{pill.label}</span>;
+  const look = `shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ${pill.tone}`;
+  if (state === "merged" || state === "closed") {
+    return <span className={look}>{pill.label}</span>;
+  }
+  const button = (
+    <button
+      type="button"
+      data-testid="state-pill"
+      aria-label={`${pill.label}: ${draft.action.toLowerCase()}`}
+      disabled={!draft.available || busy}
+      onClick={onToggle}
+      className={`${look} inline-flex items-center gap-1 enabled:hover:ring-2 disabled:cursor-default`}
+    >
+      {busy ? "Saving…" : pill.label}
+      <span aria-hidden="true" className="text-[9px] opacity-60">⇄</span>
+    </button>
+  );
+  if (!draft.available) {
+    return (
+      <Tooltip label={`Can't ${draft.action.toLowerCase()}`} detail={draft.reason ?? undefined} align="start">
+        <span tabIndex={0} data-testid="state-pill-disabled" className="inline-flex rounded-full outline-none focus-visible:ring-2 focus-visible:ring-violet-400">
+          {button}
+        </span>
+      </Tooltip>
+    );
+  }
+  return (
+    <Tooltip label={draft.action} detail={draft.draft ? "Reviewers get notified and it can merge" : "Hides it from merging until you mark it ready again"} align="start">
+      {button}
+    </Tooltip>
+  );
+}
+
+function DraftAction({ view, busy, onClick }: { view: DraftView; busy: boolean; onClick: () => void }) {
+  const button = (
+    <button
+      type="button"
+      disabled={!view.available || busy}
+      onClick={onClick}
+      className="rounded-md border border-amber-400/50 bg-amber-500/10 px-2.5 py-1 text-xs font-medium text-amber-100 enabled:hover:bg-amber-500/20 disabled:border-slate-700 disabled:bg-slate-800 disabled:text-slate-500"
+    >
+      {busy ? "Saving…" : "Mark ready for review"}
+    </button>
+  );
+  return view.available ? (
+    <Tooltip label="Mark ready for review" detail="Leaves draft so reviewers are notified and it can merge" side="top" align="end">
+      {button}
+    </Tooltip>
+  ) : (
+    <Tooltip label="Can't mark ready" detail={view.reason ?? undefined} side="top" align="end">
+      <span tabIndex={0} className="inline-flex rounded-md outline-none focus-visible:ring-2 focus-visible:ring-violet-400">
+        {button}
+      </span>
+    </Tooltip>
+  );
 }
 
 function IconButton({ label, detail, shortcut, onClick, children }: { label: string; detail?: string; shortcut?: string; onClick: () => void; children: ReactNode }) {

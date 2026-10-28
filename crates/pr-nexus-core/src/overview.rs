@@ -66,6 +66,8 @@ pub struct CheckItem {
 pub enum PersonKind {
     User,
     Team,
+    /// A GitHub App or other bot account; kept, but marked.
+    Bot,
 }
 
 /// A user or team, as drawn in an avatar.
@@ -186,6 +188,23 @@ pub fn set_auto_merge(
 ) -> Result<PrOverview, CoreError> {
     provider.set_auto_merge(pr, method)?;
     refresh(store, provider, pr)
+}
+
+/// Converts the pull request to a draft (`true`) or marks it ready for
+/// review (`false`), records the flag, then refreshes the overview.
+pub fn set_draft(
+    store: &Store,
+    provider: &dyn VcsProvider,
+    pr: &PullRequest,
+    draft: bool,
+) -> Result<PrOverview, CoreError> {
+    provider.set_draft(pr, draft)?;
+    store.set_pull_request_draft(pr.id, draft)?;
+    let pr = PullRequest {
+        is_draft: draft,
+        ..pr.clone()
+    };
+    refresh(store, provider, &pr)
 }
 
 /// Default for providers without an overview.

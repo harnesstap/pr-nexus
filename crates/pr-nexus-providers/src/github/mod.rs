@@ -446,6 +446,10 @@ impl VcsProvider for GithubClient {
         overview::set_auto_merge(self, pr, method)
     }
 
+    fn set_draft(&self, pr: &PullRequest, draft: bool) -> Result<(), ProviderError> {
+        overview::set_draft(self, pr, draft)
+    }
+
     fn rate_limit(&self) -> Result<RateBudget, ProviderError> {
         if let Some(budget) = self.budget.lock().expect("rate budget").clone() {
             return Ok(budget);

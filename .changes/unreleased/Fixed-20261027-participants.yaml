@@ -1,0 +1,3 @@
+kind: Fixed
+body: "Participants now include the PR author, commenters, reviewers and requested reviewers, deduplicated. Bots are kept and marked as bots, and required code-owner teams show as pending reviewers (\"1 more needed\") instead of \"No one yet\"."
+time: 2026-10-27T16:34:04.000000-10:00

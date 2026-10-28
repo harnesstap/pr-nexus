@@ -3,6 +3,7 @@ import type { Api, ContextThread } from "../api";
 import { channelLabel, errorMessage } from "../api";
 import { SlackIcon } from "../icons";
 import { shortTime, slackText } from "../list/slackText";
+import { Tooltip } from "../Tooltip";
 
 interface Props {
   api: Api;
@@ -23,8 +24,9 @@ export function latestThread(threads: ContextThread[]): ContextThread | null {
 }
 
 /**
- * The panel's Slack section (§7.10): one quiet line until a request exists, then the
- * latest request with its newest replies.
+ * The panel's Slack action (§7.10): one big "Request review on Slack" button until a
+ * request exists, then the latest request with its newest replies and a Bump button.
+ * Both open the preview, where another channel can still get a new request.
  */
 export function SlackLine({ api, prId, onOpen, onRequest }: Props) {
   const [threads, setThreads] = useState<ContextThread[] | null>(null);
@@ -41,27 +43,31 @@ export function SlackLine({ api, prId, onOpen, onRequest }: Props) {
     };
   }, [api, prId]);
 
-  if (error) {
-    return <p className="flex items-center gap-2 text-xs text-slate-500"><SlackIcon size={13} active={false} />Slack: couldn't read the threads ({error})</p>;
+  if (!threads && !error) {
+    return <div className="h-10 animate-pulse rounded-lg bg-slate-800/70" aria-label="Loading Slack" />;
   }
-  if (!threads) {
-    return <div className="h-4 w-48 animate-pulse rounded bg-slate-800" aria-label="Loading Slack" />;
-  }
-  const thread = latestThread(threads);
+  const thread = threads ? latestThread(threads) : null;
   if (!thread) {
     return (
-      <p className="flex items-center gap-2 text-xs text-slate-500" data-testid="slack-empty">
-        <SlackIcon size={13} active={false} />
-        <span>Slack: no request yet</span>
+      <div className="space-y-1.5" data-testid="slack-empty">
         {onRequest && (
-          <>
-            <span aria-hidden="true">·</span>
-            <button type="button" className="text-violet-300 hover:underline" onClick={onRequest}>
-              Request
+          <Tooltip label="Request review on Slack" shortcut="R" detail="Shows the exact message first; nothing is sent until you confirm" side="bottom" className="w-full">
+            <button
+              type="button"
+              onClick={onRequest}
+              className="flex w-full items-center justify-center gap-2 rounded-lg bg-violet-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-violet-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-300"
+            >
+              <SlackIcon size={16} />
+              Request review on Slack
             </button>
-          </>
+          </Tooltip>
         )}
-      </p>
+        {error ? (
+          <p className="text-xs text-slate-500">Slack: couldn't read the threads ({error})</p>
+        ) : (
+          !onRequest && <p className="text-xs text-slate-500">Slack: no request yet</p>
+        )}
+      </div>
     );
   }
   const [root, ...replies] = thread.messages;
@@ -72,17 +78,27 @@ export function SlackLine({ api, prId, onOpen, onRequest }: Props) {
       <header className="flex items-center gap-2">
         <SlackIcon size={13} />
         <span className="font-medium text-slate-200">{channelLabel(thread)}</span>
-        <span className="text-slate-500">
+        <span className="min-w-0 truncate text-slate-500">
           · requested {shortTime(thread.requested_at)}
           {thread.bump_count > 0 && ` · bumped ${thread.bump_count}×`}
           {thread.status === "closed" && " · closed"}
+          {threads && threads.length > 1 && ` · ${threads.length} threads`}
         </span>
-        {threads.length > 1 && <span className="text-slate-500">· {threads.length} threads</span>}
-        {thread.permalink && (
-          <button type="button" className="ml-auto text-violet-300 hover:underline" onClick={() => onOpen(thread.permalink ?? "")}>
-            Open ↗
-          </button>
-        )}
+        <span className="ml-auto flex shrink-0 items-center gap-2">
+          {thread.permalink && (
+            <button type="button" className="text-violet-300 hover:underline" onClick={() => onOpen(thread.permalink ?? "")}>
+              Open ↗
+            </button>
+          )}
+          {onRequest && (
+            <Tooltip label="Bump on Slack" shortcut="R" detail="Preview the bump first; pick another channel there to send a new request instead" side="bottom" align="end">
+              <button type="button" onClick={onRequest} className="flex items-center gap-1.5 rounded-md bg-violet-600 px-2.5 py-1 font-medium text-white hover:bg-violet-500">
+                <SlackIcon size={12} />
+                Bump
+              </button>
+            </Tooltip>
+          )}
+        </span>
       </header>
       {thread.error && <p className="mt-1 text-amber-200">{thread.error}</p>}
       {root && <p className="mt-2 line-clamp-2 whitespace-pre-line text-slate-300">{slackText(root.text)}</p>}

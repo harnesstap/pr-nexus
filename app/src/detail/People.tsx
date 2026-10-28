@@ -11,19 +11,53 @@ export const REVIEW_STATE: Record<OverviewReviewer["state"], { label: string; ri
   dismissed: { label: "Dismissed", ring: "ring-2 ring-slate-500", text: "text-slate-400" },
 };
 
+/** A pending seat GitHub didn't list as a request: a code-owner team the rules require. */
+export interface RequiredSeat extends OverviewReviewer {
+  required: true;
+}
+
+/**
+ * Code-owner teams still owed a review, as pending seats, unless GitHub already lists
+ * them as reviewers or they approved. Team names come as `@org/slug` or `org/slug`.
+ */
+export function requiredSeats(reviewers: OverviewReviewer[], mandatory: string[], approved: string[]): RequiredSeat[] {
+  const bare = (team: string) => team.replace(/^@/, "").toLowerCase();
+  const known = new Set([...reviewers.filter((r) => r.kind === "team").map((r) => bare(r.login)), ...approved.map(bare)]);
+  const seen = new Set<string>();
+  return mandatory
+    .map((team) => team.replace(/^@/, ""))
+    .filter((team) => !known.has(bare(team)) && !seen.has(bare(team)) && Boolean(seen.add(bare(team))))
+    .map((login) => ({ kind: "team", login, name: null, avatar_url: null, state: "pending", required: true }));
+}
+
+interface ReviewersProps {
+  reviewers: OverviewReviewer[];
+  /** Code-owner teams that must still review, shown as pending. */
+  required?: RequiredSeat[];
+  /** Approvals still missing under the branch rules, when known. */
+  missing?: number;
+}
+
 /** Who reviewed or still has to: one chip each, with the state as a coloured ring. */
-export function Reviewers({ reviewers }: { reviewers: OverviewReviewer[] }) {
-  if (reviewers.length === 0) {
-    return <p className="text-xs text-slate-500">No reviewers yet.</p>;
+export function Reviewers({ reviewers, required = [], missing = 0 }: ReviewersProps) {
+  const seats: OverviewReviewer[] = [...reviewers, ...required];
+  if (seats.length === 0) {
+    return (
+      <p className="text-xs text-slate-500">
+        No reviewers yet.
+        {missing > 0 && <span className="text-amber-300"> {missing} approval{missing === 1 ? "" : "s"} needed: request someone.</span>}
+      </p>
+    );
   }
   return (
     <ul className="flex flex-wrap gap-2" aria-label="Reviewers">
-      {reviewers.map((reviewer) => {
-        const state = REVIEW_STATE[reviewer.state];
+      {seats.map((reviewer) => {
+        const owner = "required" in reviewer;
+        const state = owner ? { ...REVIEW_STATE.pending, label: "Code owner · waiting" } : REVIEW_STATE[reviewer.state];
         const shown = reviewer.kind === "team" ? (reviewer.name ?? reviewer.login.split("/").pop() ?? reviewer.login) : reviewer.login;
         return (
           <li key={`${reviewer.kind}:${reviewer.login}`}>
-            <Tooltip label={reviewerLine(reviewer)} detail={state.label}>
+            <Tooltip label={reviewerLine(reviewer)} detail={owner ? "Required by CODEOWNERS; not requested on GitHub yet" : state.label}>
               <span
                 tabIndex={0}
                 data-state={reviewer.state}
@@ -33,6 +67,7 @@ export function Reviewers({ reviewers }: { reviewers: OverviewReviewer[] }) {
                   <Avatar person={reviewer} size={20} ring={`${state.ring} ring-offset-1 ring-offset-slate-900`} />
                 </span>
                 <span className="max-w-[9rem] truncate text-slate-200">{shown}</span>
+                {reviewer.kind === "bot" && <BotTag />}
                 <span className={state.text}>{state.label}</span>
               </span>
             </Tooltip>
@@ -60,7 +95,7 @@ export function Participants({ participants, total }: { participants: Person[]; 
   const { shown, more } = participantStack(participants, total);
   const count = Math.max(total, participants.length);
   const hiddenByGithub = count - participants.length;
-  const lines = participants.map(reviewerLine);
+  const lines = participants.map((person) => (person.kind === "bot" ? `${reviewerLine(person)} · bot` : reviewerLine(person)));
   if (hiddenByGithub > 0) {
     lines.push(`and ${hiddenByGithub} more`);
   }
@@ -82,4 +117,8 @@ export function Participants({ participants, total }: { participants: Person[]; 
       </span>
     </Tooltip>
   );
+}
+
+function BotTag() {
+  return <span className="rounded bg-slate-700/70 px-1 text-[10px] uppercase tracking-wide text-slate-300">bot</span>;
 }

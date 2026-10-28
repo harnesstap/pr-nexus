@@ -361,6 +361,10 @@ impl VcsProvider for DemoProvider {
     ) -> Result<pr_nexus_core::overview::PrOverview, ProviderError> {
         Ok(Self::overview(pr))
     }
+    /// Demo drafts flip locally; the stored row carries the new flag.
+    fn set_draft(&self, _pr: &PullRequest, _draft: bool) -> Result<(), ProviderError> {
+        Ok(())
+    }
     fn kind(&self) -> VcsKind {
         VcsKind::GitHub
     }

@@ -18,7 +18,7 @@ export function stackLayout(reviewers: PendingReviewer[]): { shown: PendingRevie
 }
 
 /** One tooltip line: "Name (@login)" for a user, "Team name (org/slug)" for a team. */
-export function reviewerLine(reviewer: PendingReviewer): string {
+export function reviewerLine(reviewer: Pick<PendingReviewer, "login" | "name"> & { kind: string }): string {
   if (reviewer.kind === "team") {
     return reviewer.name ? `${reviewer.name} (${reviewer.login})` : reviewer.login;
   }
@@ -26,7 +26,7 @@ export function reviewerLine(reviewer: PendingReviewer): string {
 }
 
 /** Up to two letters for the fallback badge. */
-export function initials(reviewer: PendingReviewer): string {
+export function initials(reviewer: Pick<PendingReviewer, "login" | "name"> & { kind: string }): string {
   const source = reviewer.name ?? (reviewer.kind === "team" ? (reviewer.login.split("/").pop() ?? "") : reviewer.login);
   const words = source.split(/[\s_-]+/).filter(Boolean);
   const letters = words.length > 1 ? words[0][0] + words[1][0] : source.slice(0, 2);

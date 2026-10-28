@@ -85,6 +85,8 @@ interface Props {
   onRequestReview: (row: ListRow) => void;
   /** Two or more PRs from the bottom bar (§7.9). */
   onBulkReview: (ids: number[]) => void;
+  /** Draft flags changed in the app ahead of the reload, by PR id. */
+  draftPatches?: Record<number, boolean>;
 }
 
 const GROUPINGS: { id: Grouping; label: string }[] = [
@@ -125,6 +127,7 @@ export function PrList({
   detailId = null,
   onRequestReview,
   onBulkReview,
+  draftPatches,
 }: Props) {
   const [query, setQuery] = useState("");
   const [debounced, setDebounced] = useState("");
@@ -178,7 +181,15 @@ export function PrList({
   );
   const list = usePagedList(loadPage, params, version, now);
   const page = list.page;
-  const sections = useMemo(() => shownSections(list.entries, page?.sections ?? []), [list.entries, page]);
+  const sections = useMemo(
+    () =>
+      shownSections(list.entries, page?.sections ?? []).map((section) =>
+        draftPatches && Object.keys(draftPatches).length > 0
+          ? { ...section, rows: section.rows.map((row) => (row.id in draftPatches ? { ...row, is_draft: draftPatches[row.id] } : row)) }
+          : section,
+      ),
+    [list.entries, page, draftPatches],
+  );
   const currentProject = projectIdOf(viewKey);
   const flat = useMemo(() => sections.flatMap((section) => section.rows.map((row) => ({ section, row }))), [sections]);
   // Every matching id, loaded or not: select-all, counts and drag cover them all.

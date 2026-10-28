@@ -462,6 +462,10 @@ pub trait VcsProvider: Send + Sync {
     ) -> Result<(), ProviderError> {
         Err(crate::overview::unsupported())
     }
+    /// Converts to a draft (`true`) or marks ready for review (`false`).
+    fn set_draft(&self, _pr: &PullRequest, _draft: bool) -> Result<(), ProviderError> {
+        Err(crate::overview::unsupported())
+    }
     fn request_team_review(&self, pr: &PullRequest, teams: &[TeamRef])
     -> Result<(), ProviderError>;
     /// One page of the notifications inbox. Read-only. A token that cannot

@@ -143,6 +143,24 @@ export const overview: PrOverview = mockOverview({
   merge_settings: { auto_merge_allowed: true, squash: true, merge: true, rebase: true },
 });
 
+/** #488 above: a draft with no reviews and no Slack request yet. */
+export const draftRowId = 4;
+
+export const draftOverview: PrOverview = {
+  ...overview,
+  is_draft: true,
+  merge_state: "draft",
+  head_ref: "feature/488",
+  review_decision: null,
+  issue_comments: 2,
+  review_comments: 0,
+  approvals: 0,
+  required_approvals: 1,
+  reviewers: [],
+  participants: [ada, grace],
+  participants_total: 2,
+};
+
 export const detail = mockDetail(detailRowId, {
   files: [
     { path: "src/checkout/AddressField.tsx", teams: ["@acme/web"] },
