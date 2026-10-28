@@ -1,0 +1,3 @@
+kind: Added
+body: "Requesting review on Slack warns when a PR is still a draft: the single dialog shows a yellow callout with an inline \"Mark ready for review\" (the same action as the merge card) and the send button reads \"Send anyway\"; the bulk dialog lists which selected PRs are drafts, badges them, and offers \"Mark all ready\". Drafts are no longer skipped from bulk requests. Review previews (single and bulk) now carry structured `pr_warnings` (`kind: \"draft\"`) for other callers such as MCP tools."
+time: 2026-10-28T13:10:00.000000Z

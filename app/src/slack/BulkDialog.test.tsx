@@ -41,11 +41,13 @@ function fake() {
         return Promise.resolve({
           cards: [{ ...card(true), target: request.target, fingerprint: "fp-dm", can_switch: false, single_top_level: false }],
           skipped: [],
+          pr_warnings: [],
         });
       }
       return Promise.resolve({
         cards: [card(request.single_top_level.length > 0)],
         skipped: request.pr_ids.includes(3) ? [{ pr: pr(3, 44, "Draft work"), detail: "Not open" }] : [],
+        pr_warnings: [],
       });
     },
     sendBulk: (request: BulkRequest, fingerprints: string[]): Promise<BulkResult> => {
@@ -118,8 +120,55 @@ test("titles with underscores preview as inline code with no Markdown warning", 
   const preview: BulkPreview = {
     cards: [{ ...card(true), messages: [{ action: "request", prs: [pr(1, 42, "feat: return location_ip_hash"), pr(2, 43, "fix: keep snake_case keys")], text, permalink: null }] }],
     skipped: [],
+    pr_warnings: [],
   };
   render(<BulkDialog api={{ ...api, bulkPreview: () => Promise.resolve(preview) }} prIds={[1, 2]} onClose={() => undefined} onSent={() => undefined} onOpen={() => undefined} />);
   expect(await screen.findByLabelText("Message preview")).toHaveTextContent("- `feat: return location_ip_hash`");
   expect(screen.queryByText(/Markdown characters/)).not.toBeInTheDocument();
+});
+
+const draft = (pr_id: number, number: number) => ({ kind: "draft" as const, pr_id, number, message: `#${number} is still a draft.` });
+
+test("drafts warn once with a count and a badge each, and can be sent anyway", async () => {
+  const { api } = fake();
+  const withDrafts: Api = {
+    ...api,
+    bulkPreview: (request: BulkRequest) => api.bulkPreview(request).then((planned) => ({ ...planned, pr_warnings: [draft(1, 42)] })),
+  };
+  render(<BulkDialog api={withDrafts} prIds={[1, 2]} onClose={() => undefined} onSent={() => undefined} onOpen={() => undefined} />);
+  await screen.findByText("Bump #42");
+  expect(screen.getByRole("note", { name: "Draft warning" })).toHaveTextContent("1 of 2 PRs is still a draft: #42.");
+  expect(screen.getAllByTestId("draft-badge")).toHaveLength(1);
+  expect(screen.getByRole("button", { name: "Send 2 messages anyway" })).toBeEnabled();
+});
+
+test("no drafts, no warning", async () => {
+  const { api } = fake();
+  render(<BulkDialog api={api} prIds={[1, 2]} onClose={() => undefined} onSent={() => undefined} onOpen={() => undefined} />);
+  await screen.findByText("Bump #42");
+  expect(screen.queryByRole("note", { name: "Draft warning" })).not.toBeInTheDocument();
+  expect(screen.queryByTestId("draft-badge")).not.toBeInTheDocument();
+});
+
+test("Mark all ready takes every draft out of draft and clears the warning", async () => {
+  const { api } = fake();
+  const flipped: [number, boolean][] = [];
+  const ready: number[] = [];
+  const withDrafts: Api = {
+    ...api,
+    bulkPreview: (request: BulkRequest) => api.bulkPreview(request).then((planned) => ({ ...planned, pr_warnings: [draft(1, 42), draft(2, 43)] })),
+    setPrDraft: (id: number, value: boolean) => {
+      flipped.push([id, value]);
+      return Promise.resolve({} as Awaited<ReturnType<Api["setPrDraft"]>>);
+    },
+  };
+  render(<BulkDialog api={withDrafts} prIds={[1, 2]} onClose={() => undefined} onSent={() => undefined} onOpen={() => undefined} onReady={(id) => ready.push(id)} />);
+  await screen.findByText("Bump #42");
+  expect(screen.getByRole("note", { name: "Draft warning" })).toHaveTextContent("2 of 2 PRs are still drafts: #42, #43.");
+  fireEvent.click(screen.getByRole("button", { name: "Mark all ready" }));
+  await waitFor(() => expect(screen.queryByRole("note", { name: "Draft warning" })).not.toBeInTheDocument());
+  expect(flipped).toEqual([[1, false], [2, false]]);
+  expect(ready).toEqual([1, 2]);
+  expect(screen.queryByTestId("draft-badge")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Send 2 messages" })).toBeEnabled();
 });

@@ -17,7 +17,7 @@ use crate::commands::{SlackIndicator, indicator};
 use crate::error::AppError;
 use crate::slack::{
     ReviewPreview, ReviewTarget, any_usable, chat_for, labeled, load_pr, mark_rejected,
-    request_key, signed_in_account, slack_error, to_core, validate_target,
+    pr_warnings, request_key, signed_in_account, slack_error, to_core, validate_target,
 };
 use crate::state::AppState;
 
@@ -69,6 +69,7 @@ pub fn preview(
         action: action.into(),
         text: plan.text,
         warnings: plan.warnings,
+        pr_warnings: pr_warnings(&pr),
         signed_in,
         bump_count,
         permalink,

@@ -4,7 +4,7 @@ import { createRoot } from "react-dom/client";
 import App from "../App";
 import "../index.css";
 import { pageFromRows, type PageRequest } from "../list/paging";
-import type { JiraLinkDto, JiraLinkInput, McpSettings, ReviewTarget } from "../api";
+import type { BulkRequest, JiraLinkDto, JiraLinkInput, ListRow, McpSettings, PrWarning, ReviewTarget } from "../api";
 import { fakeMcp } from "../settings/fakes";
 import {
   boot,
@@ -119,6 +119,30 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     rows.filter((row) => row.project_ids.includes(Number(args.projectId))).map((row) => ({ pr_id: row.id, source: "manual", rule_id: null })),
   rows_by_id: (args) => rows.filter((row) => (args.ids as number[]).includes(row.id)),
   review_targets: () => reviewChoices,
+  bulk_preview: (args) => {
+    const request = args.request as BulkRequest;
+    const picked = rows.filter((item) => request.pr_ids.includes(item.id));
+    const prs = picked.map((item) => ({ pr_id: item.id, number: item.number, title: item.title, repo: item.repo }));
+    const text = `Hello team\nCould someone please review these pull requests? (Ada Park)\n${picked
+      .map((item) => `- \`${item.title}\`\nhttps://github.com/${item.repo}/pull/${item.number}`)
+      .join("\n")}\nThanks!\n`;
+    const target = request.target ?? reviewChoices[0].target;
+    return {
+      cards: [
+        {
+          target,
+          messages: [{ action: "request", prs, text, permalink: null }],
+          warnings: [],
+          signed_in: true,
+          single_top_level: true,
+          can_switch: true,
+          fingerprint: "fp-screenshot",
+        },
+      ],
+      skipped: [],
+      pr_warnings: picked.flatMap(draftWarnings),
+    };
+  },
   review_preview: (args) => {
     const target = args.target as ReviewTarget;
     const row = rows.find((item) => item.id === args.prId);
@@ -127,6 +151,7 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
       action: "request",
       text: reviewText(row?.title ?? "", row ? `https://github.com/${row.repo}/pull/${row.number}` : ""),
       warnings: [],
+      pr_warnings: row ? draftWarnings(row) : [],
       signed_in: true,
       bump_count: 0,
       permalink: null,
@@ -134,18 +159,39 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     };
   },
   slack_search_targets: (args) => searchTargets(String(args.query ?? "")),
-  set_pr_draft: (args) => ({
+  set_pr_draft: (args) => {
+    const row = rows.find((item) => item.id === args.id);
+    if (row) {
+      row.is_draft = args.draft === true;
+    }
+    return {
     ...draftOverview,
     is_draft: args.draft === true,
     merge_state: args.draft === true ? "draft" : "blocked",
     fetched_at: new Date().toISOString(),
-  }),
+    };
+  },
   pr_slack_context: (args) =>
     args.prId === draftRowId || args.prId === mergeableRowId
       ? []
       : (slackVariants[(window as { __slackVariant?: string }).__slackVariant ?? ""] ?? slackThreads),
   pr_slack_mentions: () => [],
 };
+
+/** The backend's `slack::pr_warnings`: open drafts only. */
+function draftWarnings(row: ListRow): PrWarning[] {
+  return row.state === "open" && row.is_draft
+    ? [{ kind: "draft", pr_id: row.id, number: row.number, message: `#${row.number} is still a draft. Reviewers may skip it until it's marked ready.` }]
+    : [];
+}
+
+// `--slack-draft` scenes turn extra rows into drafts before the app loads.
+for (const id of (window as { __extraDrafts?: number[] }).__extraDrafts ?? []) {
+  const row = rows.find((item) => item.id === id);
+  if (row) {
+    row.is_draft = true;
+  }
+}
 
 mockWindows("main");
 mockIPC((cmd, args) => handlers[cmd]?.((args ?? {}) as Record<string, unknown>) ?? null);

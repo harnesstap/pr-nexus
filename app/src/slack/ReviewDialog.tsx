@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { Api, ListRow, ReviewPreview, ReviewTarget, SlackIndicator, SlackWorkspace, TargetChoice } from "../api";
 import { channelLabel, errorMessage } from "../api";
 import { plainText } from "../textInput";
+import { DraftWarning } from "./DraftWarning";
 import { Mrkdwn } from "./mrkdwn";
 import { TargetCombobox } from "./TargetCombobox";
 
@@ -12,7 +13,7 @@ interface Props {
   /** Called with the stored request after a post or bump succeeded. */
   onSent: (indicator: SlackIndicator) => void;
   onOpen: (url: string) => void;
-  /** Called after "Mark ready and request" took the PR out of draft. */
+  /** Called after "Mark ready for review" took the PR out of draft. */
   onReady?: (id: number) => void;
 }
 
@@ -40,8 +41,9 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady }: Pro
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [note, setNote] = useState("");
-  /** Cleared once "Mark ready and request" took it out of draft. */
-  const [draft, setDraft] = useState(row.state === "open" && row.is_draft);
+  /** Set once "Mark ready for review" took it out of draft here. */
+  const [markedReady, setMarkedReady] = useState(false);
+  const [marking, setMarking] = useState(false);
   /** The send went through but its link is unknown: never offer a resend. */
   const [unconfirmed, setUnconfirmed] = useState<string | null>(null);
 
@@ -106,23 +108,27 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady }: Pro
     void loadPreview(next);
   }
 
-  async function send(markReady = false) {
+  /** The same call as the merge card's "Mark ready for review". */
+  async function markReady() {
+    setMarking(true);
+    setError(null);
+    try {
+      await api.setPrDraft(row.id, false);
+      setMarkedReady(true);
+      onReady?.(row.id);
+    } catch (err) {
+      setError(`Couldn't mark it ready for review: ${errorMessage(err)}`);
+    } finally {
+      setMarking(false);
+    }
+  }
+
+  async function send() {
     if (!preview) {
       return;
     }
     setSending(true);
     setError(null);
-    if (markReady) {
-      try {
-        await api.setPrDraft(row.id, false);
-        setDraft(false);
-        onReady?.(row.id);
-      } catch (err) {
-        setError(`Couldn't mark it ready, so nothing was sent: ${errorMessage(err)}`);
-        setSending(false);
-        return;
-      }
-    }
     try {
       onSent(await api.sendReview(row.id, preview.target, chosen?.teams.length ? chosen.teams : teams, note));
     } catch (err) {
@@ -136,6 +142,8 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady }: Pro
   }
 
   const bump = preview?.action === "bump";
+  const draft =
+    !markedReady && ((row.state === "open" && row.is_draft) || (preview?.pr_warnings ?? []).some((warning) => warning.kind === "draft"));
   return (
     <div
       className="fixed inset-0 z-40 flex items-start justify-center overflow-auto bg-black/50 p-8"
@@ -153,6 +161,11 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady }: Pro
         <p className="truncate text-xs text-slate-500">
           #{row.number} {row.title} · {row.repo}
         </p>
+        {draft && (
+          <DraftWarning busy={marking} onMarkReady={() => void markReady()}>
+            This PR is still a draft. Reviewers may skip it.
+          </DraftWarning>
+        )}
         {choices === null ? (
           <p className="mt-4 text-slate-400">Finding channels…</p>
         ) : (
@@ -211,11 +224,6 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady }: Pro
             )}
           </div>
         )}
-        {draft && (
-          <p role="note" className="mt-3 rounded-md border border-amber-400/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
-            This PR is still a draft. Reviewers may skip it until it's marked ready.
-          </p>
-        )}
         {error && <p className="mt-3 text-rose-300">{error}</p>}
         {unconfirmed && (
           <p className="mt-3 text-amber-300" role="status">
@@ -226,23 +234,13 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady }: Pro
           <button type="button" className="rounded px-3 py-1.5 text-slate-300 hover:bg-slate-800" onClick={onClose}>
             {unconfirmed ? "Close" : "Cancel"}
           </button>
-          {draft && !bump && (
-            <button
-              type="button"
-              className="rounded bg-violet-500 px-3 py-1.5 font-medium text-white disabled:opacity-40"
-              disabled={!preview || !preview.signed_in || sending || unconfirmed !== null}
-              onClick={() => void send(true)}
-            >
-              {sending ? "Sending…" : "Mark ready and request"}
-            </button>
-          )}
           <button
             type="button"
-            className={`rounded px-3 py-1.5 font-medium disabled:opacity-40 ${draft && !bump ? "border border-slate-600 text-slate-200 enabled:hover:bg-slate-800" : "bg-violet-500 text-white"}`}
-            disabled={!preview || !preview.signed_in || sending || unconfirmed !== null}
+            className="rounded bg-violet-500 px-3 py-1.5 font-medium text-white disabled:opacity-40"
+            disabled={!preview || !preview.signed_in || sending || marking || unconfirmed !== null}
             onClick={() => void send()}
           >
-            {sending ? "Sending…" : bump ? "Bump in thread" : draft ? "Request anyway" : "Send request"}
+            {sending ? "Sending…" : bump ? (draft ? "Bump anyway" : "Bump in thread") : draft ? "Send anyway" : "Send request"}
           </button>
         </footer>
       </div>

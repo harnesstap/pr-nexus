@@ -34,6 +34,7 @@ function fake(overrides: Partial<Api> = {}) {
         action: "request",
         text: `Review please · #${target.channel_name}`,
         warnings: [],
+        pr_warnings: [],
         signed_in: true,
         bump_count: 0,
         permalink: null,
@@ -84,6 +85,7 @@ test("a bump shows the thread link and a signed-out workspace blocks Send", asyn
         action: "bump",
         text: "Friendly bump",
         warnings: ["Last bump was 2 h ago"],
+        pr_warnings: [],
         signed_in: false,
         bump_count: 1,
         permalink: "https://acme.slack.com/archives/C0123456789/p2",
@@ -105,7 +107,7 @@ test("without a mapping the channel is entered by hand and errors are shown", as
     reviewPreview: (_id, target) =>
       target.channel_id.length < 9
         ? Promise.reject({ kind: "validation", message: "Enter a Slack channel ID such as C0123456789" })
-        : Promise.resolve({ target, action: "request", text: "hand", warnings: [], signed_in: true, bump_count: 0, permalink: null, broadcast: true }),
+        : Promise.resolve({ target, action: "request", text: "hand", warnings: [], pr_warnings: [], signed_in: true, bump_count: 0, permalink: null, broadcast: true }),
   });
   render(<ReviewDialog api={api} row={row} onClose={() => undefined} onOpen={() => undefined} onSent={() => undefined} />);
   expect(await screen.findByText(/No mapped channel/)).toBeInTheDocument();
@@ -151,26 +153,63 @@ test("a searched member replaces the mapped channel and the request keeps the PR
 
 const draftRow = { ...row, state: "open", is_draft: true } as ListRow;
 
-test("a draft PR warns and offers to mark it ready before requesting", async () => {
+test("a draft PR warns at the top and can still be sent", async () => {
   const { api, calls } = fake();
-  const ready: number[] = [];
   const sent: SlackIndicator[] = [];
-  render(<ReviewDialog api={api} row={draftRow} onClose={() => undefined} onOpen={() => undefined} onReady={(id) => ready.push(id)} onSent={(item) => sent.push(item)} />);
+  render(<ReviewDialog api={api} row={draftRow} onClose={() => undefined} onOpen={() => undefined} onSent={(item) => sent.push(item)} />);
   await screen.findByLabelText("Message preview");
-  expect(screen.getByRole("note")).toHaveTextContent("This PR is still a draft");
-  expect(screen.getByRole("button", { name: "Request anyway" })).toBeEnabled();
-  fireEvent.click(screen.getByRole("button", { name: "Mark ready and request" }));
+  expect(screen.getByRole("note", { name: "Draft warning" })).toHaveTextContent("This PR is still a draft. Reviewers may skip it.");
+  fireEvent.click(screen.getByRole("button", { name: "Send anyway" }));
   await waitFor(() => expect(sent).toHaveLength(1));
-  expect(calls.order).toEqual(["draft:false", "send"]);
-  expect(ready).toEqual([7]);
+  expect(calls.order).toEqual(["send"]);
 });
 
-test("if marking ready fails, nothing is sent", async () => {
+test("a ready PR shows no draft warning", async () => {
+  const { api } = fake();
+  render(<ReviewDialog api={api} row={row} onClose={() => undefined} onOpen={() => undefined} onSent={() => undefined} />);
+  await screen.findByLabelText("Message preview");
+  expect(screen.queryByRole("note", { name: "Draft warning" })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Send request" })).toBeEnabled();
+});
+
+test("the backend's draft warning shows even when the row looked ready", async () => {
+  const { api } = fake({
+    reviewPreview: (_id: number, target: ReviewTarget): Promise<ReviewPreview> =>
+      Promise.resolve({
+        target,
+        action: "request",
+        text: "Hello\n",
+        warnings: [],
+        pr_warnings: [{ kind: "draft", pr_id: 7, number: 42, message: "#42 is still a draft." }],
+        signed_in: true,
+        bump_count: 0,
+        permalink: null,
+        broadcast: true,
+      }),
+  });
+  render(<ReviewDialog api={api} row={row} onClose={() => undefined} onOpen={() => undefined} onSent={() => undefined} />);
+  expect(await screen.findByRole("note", { name: "Draft warning" })).toBeInTheDocument();
+});
+
+test("Mark ready for review clears the warning without sending", async () => {
+  const { api, calls } = fake();
+  const ready: number[] = [];
+  render(<ReviewDialog api={api} row={draftRow} onClose={() => undefined} onOpen={() => undefined} onReady={(id) => ready.push(id)} onSent={() => undefined} />);
+  await screen.findByLabelText("Message preview");
+  fireEvent.click(screen.getByRole("button", { name: "Mark ready for review" }));
+  await waitFor(() => expect(screen.queryByRole("note", { name: "Draft warning" })).not.toBeInTheDocument());
+  expect(ready).toEqual([7]);
+  expect(calls.order).toEqual(["draft:false"]);
+  expect(screen.getByRole("button", { name: "Send request" })).toBeEnabled();
+});
+
+test("if marking ready fails, the warning stays and nothing is sent", async () => {
   const { api, calls } = fake({ setPrDraft: () => Promise.reject(new Error("no access")) });
   render(<ReviewDialog api={api} row={draftRow} onClose={() => undefined} onOpen={() => undefined} onSent={() => undefined} />);
   await screen.findByLabelText("Message preview");
-  fireEvent.click(screen.getByRole("button", { name: "Mark ready and request" }));
-  expect(await screen.findByText(/Couldn't mark it ready, so nothing was sent: no access/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Mark ready for review" }));
+  expect(await screen.findByText(/Couldn't mark it ready for review: no access/)).toBeInTheDocument();
+  expect(screen.getByRole("note", { name: "Draft warning" })).toBeInTheDocument();
   expect(calls.sent).toEqual([]);
 });
 
@@ -183,6 +222,7 @@ test("the preview renders like Slack and shows the optional note, which is sent"
         action: "request",
         text: "Hello team\nCould someone please review *Add passkeys*? :pray:\n<https://github.com/acme/widgets/pull/42|acme/widgets#42>\n",
         warnings: [],
+        pr_warnings: [],
         signed_in: true,
         bump_count: 0,
         permalink: null,
@@ -217,7 +257,7 @@ test("a title with underscores previews as inline code with no Markdown warning"
   const text = "Hello team\nCould someone please review `feat: return location_ip_hash in geolocate response`?\nhttps://github.com/acme/widgets/pull/42\nThanks!\n";
   const { api } = fake({
     reviewPreview: (_id: number, target: ReviewTarget): Promise<ReviewPreview> =>
-      Promise.resolve({ target, action: "request", text, warnings: [], signed_in: true, bump_count: 0, permalink: null, broadcast: true }),
+      Promise.resolve({ target, action: "request", text, warnings: [], pr_warnings: [], signed_in: true, bump_count: 0, permalink: null, broadcast: true }),
   });
   render(<ReviewDialog api={api} row={{ ...row, title: "feat: return location_ip_hash in geolocate response" }} onClose={() => undefined} onOpen={() => undefined} onSent={() => undefined} />);
   const preview = await screen.findByLabelText("Message preview");
