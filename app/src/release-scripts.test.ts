@@ -108,6 +108,53 @@ exit 0
   await expect(readFile(tauriDmg, "utf8")).rejects.toThrow();
 });
 
+test("reseal signs with RESEAL_IDENTITY inside-out without --deep", async () => {
+  const root = await tempDir("reseal-id-");
+  const bundle = join(root, "bundle");
+  const app = join(bundle, "macos", "PR Nexus.app");
+  const macosDir = join(app, "Contents", "MacOS");
+  const dmgDir = join(bundle, "dmg");
+  const signLog = join(root, "codesign.log");
+  await mkdir(macosDir, { recursive: true });
+  await mkdir(dmgDir, { recursive: true });
+  await writeFile(join(macosDir, "pr-nexus"), "desktop-bin");
+  await writeFile(join(dmgDir, "PR Nexus_0.1.0_aarch64.dmg"), "stale");
+  await writeExecutable(
+    join(root, "codesign"),
+    `#!/usr/bin/env bash
+echo "$*" >> ${JSON.stringify(signLog)}
+if [[ " $* " == *" -dv "* ]]; then echo "Sealed Resources version=2" >&2; fi
+exit 0
+`,
+  );
+  await writeExecutable(join(root, "hdiutil"), `#!/usr/bin/env bash\nout="\${@: -1}"; echo dmg > "$out"\n`);
+  await execFileAsync("/bin/bash", [resealScript, bundle], {
+    env: {
+      ...process.env,
+      PATH: `${root}:/usr/bin:/bin`,
+      RESEAL_UNAME: "Darwin",
+      RESEAL_CODESIGN: join(root, "codesign"),
+      RESEAL_HDIUTIL: join(root, "hdiutil"),
+      RESEAL_IDENTITY: "ABCDEF",
+      RESEAL_KEYCHAIN: "/tmp/kc",
+    },
+  });
+  const lines = (await readFile(signLog, "utf8")).trim().split("\n");
+  const signs = lines.filter((line) => line.includes("--sign ABCDEF"));
+  expect(signs).toHaveLength(2);
+  expect(signs[0]).toContain(join(macosDir, "pr-nexus"));
+  expect(signs[1].endsWith(app)).toBe(true);
+  for (const line of signs) {
+    expect(line).toContain("--identifier dev.pr-nexus");
+    expect(line).toContain("--timestamp=none");
+    expect(line).toContain("--keychain /tmp/kc");
+    expect(line).not.toContain("--deep");
+    expect(line).not.toContain("runtime");
+  }
+  expect(lines.some((line) => line.includes("--verify --deep --strict"))).toBe(true);
+  expect(lines.some((line) => line.includes("-d -r-"))).toBe(true);
+});
+
 test("reseal fails when the seal is still missing", async () => {
   const root = await tempDir("reseal-none-");
   const bundle = join(root, "bundle");

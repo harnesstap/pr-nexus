@@ -127,6 +127,31 @@ Do not create this ruleset from a script or the API in a pull request. A reposit
 - Delete the head branch after merge.
 - Allow `github-actions[bot]` to bypass pull-request requirements so the Tag release workflow can push the release commit and the `v*` tag to `main`.
 
+## macOS release signing (self-signed)
+
+Without a Developer ID, the release job signs `PR Nexus.app` with a stable self-signed certificate, `PR Nexus Release (self-signed)` (RSA 3072, valid until 2046), stored in the `MACOS_SELFSIGN_P12_BASE64` and `MACOS_SELFSIGN_P12_PASSWORD` Actions secrets. `APPLE_CERTIFICATE` stays reserved for a future Developer ID and takes precedence when set; with neither secret the job falls back to the ad-hoc reseal.
+
+The job imports the p12 into a temporary keychain, runs `scripts/reseal-macos-app.sh` with `RESEAL_IDENTITY` (nested code first, then the bundle, `--identifier dev.pr-nexus --timestamp=none`, no hardened runtime since nothing is notarized), checks `codesign --verify --deep --strict`, prints the designated requirement, rebuilds the DMG from the signed app and deletes the keychain. `workflow_dispatch` with `dry_run` and `macos_sign_dry_run` builds and signs on macOS without uploading or publishing.
+
+What users see:
+
+- Gatekeeper still shows the "unidentified developer" warning: a self-signed certificate is not trusted by macOS and cannot be notarized.
+- The keychain prompt for `dev.pr-nexus` appears once after the first signed install; click **Always Allow**. The designated requirement (identifier + certificate) stays the same across updates, so it does not come back.
+- Rotating this certificate, or moving to a Developer ID, changes the requirement and causes one more prompt.
+
+Verify an installed app:
+
+```sh
+codesign -dv --verbose=4 "/Applications/PR Nexus.app"   # Authority=PR Nexus Release (self-signed), Identifier=dev.pr-nexus
+codesign -d -r- "/Applications/PR Nexus.app"
+codesign -d --extract-certificates=/tmp/prn "/Applications/PR Nexus.app" && openssl x509 -inform DER -in /tmp/prn0 -noout -fingerprint -sha256
+```
+
+Certificate fingerprints:
+
+- SHA-1: `D8:CF:D5:07:DB:4E:53:B1:31:EC:FD:3A:6A:F3:EC:48:11:DF:87:50`
+- SHA-256: `AE:73:5C:1D:EF:D8:46:7D:22:49:3D:BE:2E:AE:81:60:63:08:17:7E:79:E4:F6:4A:1E:C0:9E:AA:59:F8:0C:85`
+
 ## Release
 
 v1 ships one artifact: an ad-hoc-sealed macOS Apple Silicon DMG. There is no auto-updater and no Apple Developer ID signature.
