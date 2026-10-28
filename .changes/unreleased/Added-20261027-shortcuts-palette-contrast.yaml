@@ -1,0 +1,3 @@
+kind: Added
+body: "Press `?` for a keyboard cheat sheet generated from the shortcut registry the list uses, and ⌘K / Ctrl+K for a command palette that runs list actions (request review, open in GitHub), switches views and projects, syncs, opens settings and jumps to any PR by number, title or repo. Secondary and tertiary text now meets WCAG AA contrast on the dark theme."
+time: 2026-10-28T04:30:00.000000Z

@@ -5,7 +5,8 @@ import { ClockIcon, CloseIcon, FolderIcon, GearIcon, HomeIcon, LogoIcon, PlusIco
 import { Tooltip } from "../Tooltip";
 import { OrgOption } from "../orgs";
 import { DRAG_MIME, TOAST_MS, bulkToast, defaultView, parseDragIds, parseViewState, renameError, sentToast, liveLabel, syncLabel, type SavedView, type Toast } from "./model";
-import { PrList } from "./PrList";
+import { PrList, type ListActions } from "./PrList";
+import { GlobalCommands } from "./GlobalCommands";
 import type { PageRequest } from "./paging";
 
 /** Sync status poll while syncing. The backend updates the count at most this often too. */
@@ -73,6 +74,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
     void reload();
   };
   const [bulkIds, setBulkIds] = useState<number[] | null>(null);
+  const listActions = useRef<ListActions | null>(null);
   const [notice, setNotice] = useState<Toast | null>(null);
   /** The bulk run's summary, shown as a toast once its dialog closes. */
   const [bulkSummary, setBulkSummary] = useState<string | null>(null);
@@ -600,6 +602,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
               onRequestReview={setReviewRow}
               onBulkReview={setBulkIds}
               draftPatches={shownDraftPatches}
+              actionsRef={listActions}
             />
             </div>
             {detailRow && (
@@ -674,6 +677,16 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
             }}
           />
         )}
+        <GlobalCommands
+          api={api}
+          projects={projects}
+          actions={listActions}
+          listShown={viewKey !== "settings"}
+          onView={setViewKey}
+          onDetails={setDetailRow}
+          onSync={(full) => void refresh(full)}
+          syncing={syncing}
+        />
         {dialogProject && (
           <ProjectDialog api={api} project={dialogProject} onClose={() => setEditingProject(null)} onChanged={reload} />
         )}
