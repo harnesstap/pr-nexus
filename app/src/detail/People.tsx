@@ -59,12 +59,18 @@ function uniq<T extends Person>(people: T[], skip: (person: T) => boolean = () =
  * Assignees other than the viewer, and Commenters not already shown above nor the viewer.
  * Empty groups are left out.
  */
-export function peopleGroups(overview: Pick<PrOverview, "author" | "reviewers" | "assignees" | "commenters" | "viewer">, required: RequiredSeat[] = []): PeopleGroup[] {
+export function peopleGroups(
+  overview: Pick<PrOverview, "author" | "reviewers" | "assignees" | "commenters" | "viewer">,
+  required: RequiredSeat[] = [],
+): PeopleGroup[] {
   const viewer = overview.viewer.login;
   const author = overview.author && !(viewer && same(overview.author.login, viewer)) ? [overview.author] : [];
   const reviewers = uniq<OverviewReviewer>([...overview.reviewers, ...required]);
   const shown = [...(overview.author ? [overview.author] : []), ...reviewers];
-  const commenters = uniq(overview.commenters, (person) => (viewer !== "" && same(person.login, viewer)) || shown.some((known) => same(known.login, person.login)));
+  const commenters = uniq(
+    overview.commenters,
+    (person) => (viewer !== "" && same(person.login, viewer)) || shown.some((known) => same(known.login, person.login)),
+  );
   const groups: PeopleGroup[] = [
     { key: "author", label: "Author", people: author },
     { key: "reviewers", label: "Reviewers", people: reviewers },
@@ -123,13 +129,21 @@ function Group({ group }: { group: PeopleGroup }) {
           {shown.map((person) => {
             const state = seatState(person);
             return (
-              <span key={`${person.kind}:${person.login}`} data-login={person.login} data-state={"state" in person ? person.state : undefined} className="relative inline-flex">
+              <span
+                key={`${person.kind}:${person.login}`}
+                data-login={person.login}
+                data-state={"state" in person ? person.state : undefined}
+                className="relative inline-flex"
+              >
                 <Avatar person={person} size={24} ring={state ? `${state.ring} ring-offset-1 ring-offset-slate-900` : undefined} />
               </span>
             );
           })}
           {more > 0 && (
-            <span data-testid={`${group.key}-more`} className="relative inline-flex h-6 min-w-6 items-center justify-center rounded-full bg-slate-700 px-1.5 text-[11px] font-medium text-slate-200 ring-2 ring-slate-900">
+            <span
+              data-testid={`${group.key}-more`}
+              className="relative inline-flex h-6 min-w-6 items-center justify-center rounded-full bg-slate-700 px-1.5 text-[11px] font-medium text-slate-200 ring-2 ring-slate-900"
+            >
               +{more}
             </span>
           )}

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Api, ContextThread, SlackWorkspace } from "../api";
 import { channelLabel, errorMessage } from "../api";
-import { SlackLogo } from "../icons";
+import { ExternalIcon, SlackLogo } from "../icons";
 import { ago } from "../list/model";
 import { shortTime, slackText } from "../list/slackText";
 import { slackActionBlock } from "../list/SyncBanners";
@@ -32,27 +32,27 @@ export interface BumpView {
   last: string | null;
   /** Set when the minimum interval hasn't passed: why Bump is disabled. */
   tooSoon: string | null;
+  /** Whole hours until the next bump is allowed; null when it already is. */
+  wait: number | null;
 }
 
 /** When the thread was last poked, and whether the settings allow another bump yet. */
 export function bumpView(thread: Pick<ContextThread, "last_bumped_at" | "requested_at">, minHours: number, now: Date): BumpView {
   const at = thread.last_bumped_at ?? thread.requested_at;
   if (!at) {
-    return { last: null, tooSoon: null };
+    return { last: null, tooSoon: null, wait: null };
   }
   const elapsed = (now.getTime() - new Date(at).getTime()) / 3_600_000;
   if (minHours <= 0 || elapsed >= minHours) {
-    return { last: ago(at, now), tooSoon: null };
+    return { last: ago(at, now), tooSoon: null, wait: null };
   }
   const wait = Math.max(1, Math.ceil(minHours - elapsed));
   return {
     last: ago(at, now),
+    wait,
     tooSoon: `Settings allow one bump every ${minHours}h. Try again in about ${wait}h.`,
   };
 }
-
-/** Secondary card actions share one look so "Open" and "Bump" sit as a pair. */
-const SECONDARY = "flex items-center gap-1 rounded-md border border-slate-700 px-2.5 py-1 font-medium text-slate-200 hover:bg-slate-800";
 
 /**
  * The panel's Slack action (§7.10): one big "Request review on Slack" button until a
@@ -111,73 +111,56 @@ export function SlackLine({ api, prId, minBumpHours = 0, onOpen, onRequest, work
   }
   const [root, ...replies] = thread.messages;
   const bump = bumpView(thread, minBumpHours, new Date());
-  const bumpLabel = bump.last ? `Bump · last ${bump.last}` : "Bump";
-  const bumpButton = (
-    <button
-      type="button"
-      disabled={blocked !== null || bump.tooSoon !== null}
-      onClick={onRequest}
-      className="flex items-center gap-1.5 rounded-md bg-violet-600 px-2.5 py-1 font-medium text-white enabled:hover:bg-violet-500 disabled:bg-slate-800 disabled:text-slate-500"
-    >
-      <SlackLogo size={12} />
-      {bumpLabel}
-    </button>
-  );
+  const channel = channelLabel(thread);
+  const team = workspaces.find((w) => w.domain === thread.workspace || w.team_name === thread.workspace)?.team_name ?? thread.workspace;
+  const meta = [
+    thread.bump_count > 0
+      ? `${thread.last_bumped_at ? `Bumped ${shortTime(thread.last_bumped_at)}` : `Requested ${shortTime(thread.requested_at)}`} · ${thread.bump_count} bump${thread.bump_count === 1 ? "" : "s"}`
+      : `Requested ${shortTime(thread.requested_at)}`,
+    team,
+    thread.status === "closed" ? "closed" : null,
+    threads && threads.length > 1 ? `${threads.length} threads` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
   const shown = replies.slice(-MAX_REPLIES);
   const more = replies.length - shown.length;
+  const disabledReason =
+    blocked ??
+    (bump.wait !== null ? `Bump available in ${bump.wait}h${bump.last ? ` (${thread.last_bumped_at ? "last bump" : "requested"} ${bump.last})` : ""}` : null);
   return (
-    <section aria-label="Slack request" className="rounded-lg border border-slate-800 bg-slate-900/50 p-3 text-xs">
-      {/* Channel and timing get a full line; the buttons sit on their own row so nothing truncates. */}
-      <header className="flex flex-col gap-2">
-        <p className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5">
-          <SlackLogo size={13} />
-          <span className="break-all font-medium text-slate-200">{channelLabel(thread)}</span>
-          <span data-testid="slack-meta" className="text-slate-500">
-            · requested {shortTime(thread.requested_at)}
-            {thread.bump_count > 0 && ` · bumped ${thread.bump_count}×`}
-            {thread.status === "closed" && " · closed"}
-            {threads && threads.length > 1 && ` · ${threads.length} threads`}
-          </span>
-        </p>
-        <span className="flex flex-wrap items-center justify-end gap-2">
-          {thread.permalink && (
-            <button type="button" className={SECONDARY} onClick={() => onOpen(thread.permalink ?? "")}>
-              Open in Slack ↗
-            </button>
-          )}
-          {onRequest &&
-            (blocked !== null || bump.tooSoon !== null ? (
-              <Tooltip
-                label={blocked ?? "Too soon to bump"}
-                detail={blocked ? "Reconnect it in Settings › Accounts" : (bump.tooSoon ?? undefined)}
-                side="bottom"
-                align="end"
-              >
-                <span
-                  tabIndex={0}
-                  data-testid="bump-disabled"
-                  className="inline-flex rounded-md outline-none focus-visible:ring-2 focus-visible:ring-violet-400"
-                >
-                  {bumpButton}
-                </span>
-              </Tooltip>
-            ) : (
-              <Tooltip
-                label="Bump on Slack"
-                shortcut="R"
-                detail="Preview the bump first; pick another channel there to send a new request instead"
-                side="bottom"
-                align="end"
-              >
-                {bumpButton}
-              </Tooltip>
-            ))}
+    <section aria-label="Slack request" className="flex flex-col gap-2 rounded-lg border border-slate-800 bg-slate-900/70 p-3 text-xs">
+      <header className="flex min-w-0 items-start gap-2">
+        <span className="mt-0.5 shrink-0">
+          <SlackLogo size={16} />
         </span>
+        <div className="min-w-0 flex-1">
+          <Tooltip label={channel} detail={team || undefined} align="start" className="max-w-full">
+            <p tabIndex={0} data-testid="slack-channel" className="truncate text-sm font-medium text-slate-100 outline-none">
+              {channel}
+            </p>
+          </Tooltip>
+          <p data-testid="slack-meta" className="truncate text-slate-500">
+            {meta}
+          </p>
+        </div>
+        {thread.permalink && (
+          <Tooltip label="Open in Slack" align="end">
+            <button
+              type="button"
+              aria-label="Open in Slack"
+              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-slate-400 hover:bg-slate-800 hover:text-slate-100"
+              onClick={() => onOpen(thread.permalink ?? "")}
+            >
+              <ExternalIcon size={14} />
+            </button>
+          </Tooltip>
+        )}
       </header>
-      {thread.error && <p className="mt-1 text-amber-200">{thread.error}</p>}
-      {root && <p className="mt-2 line-clamp-2 whitespace-pre-line text-slate-300">{slackText(root.text)}</p>}
-      {shown.length > 0 && (
-        <ol className="mt-2 space-y-1.5 border-l border-slate-700 pl-2.5">
+      {thread.error && <p className="text-amber-200">{thread.error}</p>}
+      {root && <Quote text={slackText(root.text)} />}
+      {shown.length > 0 ? (
+        <ol aria-label="Replies" className="space-y-1.5">
           {more > 0 && (
             <li className="text-slate-500">
               +{more} earlier repl{more === 1 ? "y" : "ies"}
@@ -187,12 +170,81 @@ export function SlackLine({ api, prId, minBumpHours = 0, onOpen, onRequest, work
             <li key={message.ts}>
               <span className="text-slate-200">{message.author}</span>
               <span className="text-slate-500"> · {shortTime(message.at)}</span>
-              <p className="line-clamp-2 text-slate-400">{slackText(message.text)}</p>
+              <p className="line-clamp-2 text-slate-400">
+                <InlineCode text={slackText(message.text)} />
+              </p>
             </li>
           ))}
         </ol>
+      ) : (
+        root && <p className="text-slate-500">No replies yet.</p>
       )}
-      {root && replies.length === 0 && <p className="mt-2 text-slate-500">No replies yet.</p>}
+      {onRequest && (
+        <footer className="flex flex-col gap-1 pt-1">
+          <Tooltip
+            label={blocked ?? (disabledReason ? "Too soon to bump" : "Bump on Slack")}
+            shortcut="R"
+            detail={
+              blocked
+                ? "Reconnect it in Settings › Accounts"
+                : (bump.tooSoon ?? "Preview the bump first; pick another channel there to send a new request instead")
+            }
+            side="top"
+            className="w-full"
+          >
+            <button
+              type="button"
+              data-testid={disabledReason ? "bump-disabled" : "bump"}
+              disabled={disabledReason !== null}
+              onClick={onRequest}
+              className="flex w-full items-center justify-center gap-2 rounded-lg bg-violet-600 px-4 py-2 text-sm font-semibold text-white enabled:hover:bg-violet-500 disabled:cursor-not-allowed disabled:bg-slate-800 disabled:text-slate-500"
+            >
+              <SlackLogo size={14} variant={disabledReason ? "mono" : "color"} />
+              {bump.last ? `Bump · last ${bump.last}` : "Bump"}
+            </button>
+          </Tooltip>
+          {disabledReason && <p className="text-center text-slate-500">{disabledReason}</p>}
+        </footer>
+      )}
     </section>
+  );
+}
+
+/** Lines of the sent message shown before "Show more". */
+const QUOTE_LINES = 3;
+
+/** The sent message as a quote, clamped with a toggle when it runs long. */
+function Quote({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  const long = text.split("\n").length > QUOTE_LINES || text.length > 180;
+  return (
+    <blockquote className="rounded-r-md border-l-2 border-slate-600 bg-slate-800/40 px-2.5 py-1.5 text-slate-300">
+      <p className={`whitespace-pre-line break-words ${open ? "" : "line-clamp-3"}`}>
+        <InlineCode text={text} />
+      </p>
+      {long && (
+        <button type="button" className="mt-0.5 text-violet-300 hover:text-violet-200" aria-expanded={open} onClick={() => setOpen(!open)}>
+          {open ? "Show less" : "Show more"}
+        </button>
+      )}
+    </blockquote>
+  );
+}
+
+/** `backticked` spans (PR titles are often wrapped that way) render as inline code. */
+export function InlineCode({ text }: { text: string }) {
+  const parts = text.split(/(`[^`\n]+`)/);
+  return (
+    <>
+      {parts.map((part, index) =>
+        part.length > 2 && part.startsWith("`") && part.endsWith("`") ? (
+          <code key={index} className="rounded bg-slate-800 px-1 font-mono text-[11px] text-slate-200">
+            {part.slice(1, -1)}
+          </code>
+        ) : (
+          part
+        ),
+      )}
+    </>
   );
 }

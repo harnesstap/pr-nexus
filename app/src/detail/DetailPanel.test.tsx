@@ -294,7 +294,7 @@ test("a Slack request shows compactly with its latest replies", async () => {
   renderPanel(api);
   const region = await screen.findByRole("region", { name: "Slack request" });
   expect(within(region).getByText("#eng-web")).toBeTruthy();
-  expect(region.textContent).toContain("bumped 1×");
+  expect(region.textContent).toContain("1 bump");
   expect(region.textContent).toContain("2 threads");
   expect(within(region).getByText("Could someone review this?")).toBeTruthy();
   expect(within(region).getByText("+1 earlier reply")).toBeTruthy();
@@ -556,7 +556,10 @@ test("no Merge button while something blocks it, and merge errors become a toast
   expect(within(verdict).queryByRole("button", { name: "Merge" })).toBeNull();
 
   cleanup();
-  const failing = fakeApi({ prOverview: vi.fn(() => Promise.resolve(mergeable())), mergePr: vi.fn(() => Promise.reject(new Error("Base branch was modified"))) });
+  const failing = fakeApi({
+    prOverview: vi.fn(() => Promise.resolve(mergeable())),
+    mergePr: vi.fn(() => Promise.reject(new Error("Base branch was modified"))),
+  });
   const { onNotice } = renderPanel(failing);
   fireEvent.click(await screen.findByRole("button", { name: "Merge" }));
   fireEvent.click(screen.getByRole("button", { name: "Confirm merge" }));
@@ -582,12 +585,12 @@ test("Bump says when it was last poked and waits for the minimum interval from s
   expect(onRequestReview).not.toHaveBeenCalled();
   fireEvent.focus(screen.getByTestId("bump-disabled"));
   expect(await screen.findByText(/one bump every 6h\. Try again in about 4h/)).toBeTruthy();
-  expect(within(region).getByRole("button", { name: "Open in Slack ↗" })).toBeTruthy();
+  expect(within(region).getByRole("button", { name: "Open in Slack" })).toBeTruthy();
 });
 
 test("bumpView: no limit, too soon, and never requested", () => {
   const now = new Date("2024-01-01T12:00:00Z");
-  expect(bumpView({ last_bumped_at: null, requested_at: "2024-01-01T06:00:00Z" }, 0, now)).toEqual({ last: "6h ago", tooSoon: null });
+  expect(bumpView({ last_bumped_at: null, requested_at: "2024-01-01T06:00:00Z" }, 0, now)).toEqual({ last: "6h ago", tooSoon: null, wait: null });
   expect(
     bumpView(
       {
@@ -599,7 +602,7 @@ test("bumpView: no limit, too soon, and never requested", () => {
     ).tooSoon,
   ).toMatch(/about 23h/);
   expect(bumpView({ last_bumped_at: "2024-01-01T11:00:00Z", requested_at: null }, 1, now).tooSoon).toBeNull();
-  expect(bumpView({ last_bumped_at: null, requested_at: null }, 6, now)).toEqual({ last: null, tooSoon: null });
+  expect(bumpView({ last_bumped_at: null, requested_at: null }, 6, now)).toEqual({ last: null, tooSoon: null, wait: null });
 });
 
 test("people groups: the viewer is hidden from assignees too", () => {

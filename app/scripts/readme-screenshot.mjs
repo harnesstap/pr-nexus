@@ -108,8 +108,14 @@ async function shootTooltips(page, dir) {
     [
       "detail-icon-button",
       async () => {
-        await page.getByRole("button", { name: rowButton("Add address autocomplete to checkout") }).first().click();
-        await page.getByTestId("detail-panel").getByRole("button", { name: /^Checks:/ }).waitFor();
+        await page
+          .getByRole("button", { name: rowButton("Add address autocomplete to checkout") })
+          .first()
+          .click();
+        await page
+          .getByTestId("detail-panel")
+          .getByRole("button", { name: /^Checks:/ })
+          .waitFor();
         return page.getByTestId("detail-panel").getByRole("button", { name: "Close details" });
       },
     ],
@@ -218,6 +224,31 @@ async function detailScenes(page, dir) {
   await page.waitForTimeout(500);
   await shot(page, resolve(dir, "detail-cards-narrow.png"));
   await slack.screenshot({ path: resolve(dir, "detail-slack-narrow.png") });
+  await page.setViewportSize({ width, height: 900 });
+  await page.keyboard.press("Escape");
+
+  // Each Slack card state at the default and a narrow (~360px card) width.
+  for (const variant of ["requested", "bumpable", "replies", "long-channel"]) {
+    await page.evaluate((name) => {
+      window.__slackVariant = name;
+    }, variant);
+    for (const [label, size] of [
+      ["default", width],
+      ["narrow", 760],
+    ]) {
+      await page.setViewportSize({ width: size, height: 900 });
+      await page
+        .getByRole("button", { name: rowButton("Add address autocomplete to checkout") })
+        .first()
+        .click();
+      const card = page.getByRole("region", { name: "Slack request" });
+      await card.waitFor();
+      await page.waitForTimeout(300);
+      await card.screenshot({ path: resolve(dir, `slack-card-${variant}-${label}.png`) });
+      console.log(`wrote slack-card-${variant}-${label}.png (${Math.round((await card.boundingBox()).width)}px)`);
+      await page.keyboard.press("Escape");
+    }
+  }
   await page.setViewportSize({ width, height: 900 });
   await page.keyboard.press("Escape");
 }

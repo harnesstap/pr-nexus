@@ -5,7 +5,24 @@ import App from "../App";
 import "../index.css";
 import { pageFromRows, type PageRequest } from "../list/paging";
 import type { JiraLinkDto, JiraLinkInput, ReviewTarget } from "../api";
-import { boot, detail, draftOverview, draftRowId, jiraBaseUrl, mergeableOverview, mergeableRowId, notes, overview, projects, reviewChoices, reviewText, rows, searchTargets, slackThreads } from "./fixtures";
+import {
+  boot,
+  detail,
+  draftOverview,
+  draftRowId,
+  jiraBaseUrl,
+  mergeableOverview,
+  mergeableRowId,
+  notes,
+  overview,
+  projects,
+  reviewChoices,
+  reviewText,
+  rows,
+  searchTargets,
+  slackThreads,
+  slackVariants,
+} from "./fixtures";
 
 const overviewFor = (id: unknown) => (id === draftRowId ? draftOverview : id === mergeableRowId ? mergeableOverview : overview);
 
@@ -86,17 +103,35 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     return null;
   },
   list_project_rules: () => [],
-  list_project_links: (args) => rows.filter((row) => row.project_ids.includes(Number(args.projectId))).map((row) => ({ pr_id: row.id, source: "manual", rule_id: null })),
+  list_project_links: (args) =>
+    rows.filter((row) => row.project_ids.includes(Number(args.projectId))).map((row) => ({ pr_id: row.id, source: "manual", rule_id: null })),
   rows_by_id: (args) => rows.filter((row) => (args.ids as number[]).includes(row.id)),
   review_targets: () => reviewChoices,
   review_preview: (args) => {
     const target = args.target as ReviewTarget;
     const row = rows.find((item) => item.id === args.prId);
-    return { target, action: "request", text: reviewText(row?.title ?? "", row ? `https://github.com/${row.repo}/pull/${row.number}` : ""), warnings: [], signed_in: true, bump_count: 0, permalink: null, broadcast: true };
+    return {
+      target,
+      action: "request",
+      text: reviewText(row?.title ?? "", row ? `https://github.com/${row.repo}/pull/${row.number}` : ""),
+      warnings: [],
+      signed_in: true,
+      bump_count: 0,
+      permalink: null,
+      broadcast: true,
+    };
   },
   slack_search_targets: (args) => searchTargets(String(args.query ?? "")),
-  set_pr_draft: (args) => ({ ...draftOverview, is_draft: args.draft === true, merge_state: args.draft === true ? "draft" : "blocked", fetched_at: new Date().toISOString() }),
-  pr_slack_context: (args) => (args.prId === draftRowId || args.prId === mergeableRowId ? [] : slackThreads),
+  set_pr_draft: (args) => ({
+    ...draftOverview,
+    is_draft: args.draft === true,
+    merge_state: args.draft === true ? "draft" : "blocked",
+    fetched_at: new Date().toISOString(),
+  }),
+  pr_slack_context: (args) =>
+    args.prId === draftRowId || args.prId === mergeableRowId
+      ? []
+      : (slackVariants[(window as { __slackVariant?: string }).__slackVariant ?? ""] ?? slackThreads),
   pr_slack_mentions: () => [],
 };
 
