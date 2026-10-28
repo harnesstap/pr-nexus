@@ -26,7 +26,7 @@ use crate::error::AppError;
 use crate::services::prs::pr_detail;
 use crate::services::review::ChatSource;
 use crate::slack::{
-    ReviewTarget, any_usable, load_pr, mark_rejected, signed_in_account, targets_for,
+    PrWarning, ReviewTarget, any_usable, load_pr, mark_rejected, signed_in_account, targets_for,
     validate_target,
 };
 use crate::state::AppState;
@@ -86,6 +86,8 @@ pub struct BulkSkip {
 pub struct BulkPreview {
     pub cards: Vec<BulkCard>,
     pub skipped: Vec<BulkSkip>,
+    /// One per selected PR that is still a draft; drafts are sent anyway.
+    pub pr_warnings: Vec<PrWarning>,
 }
 
 #[derive(Serialize)]
@@ -270,8 +272,9 @@ fn plan_request(
                     } else {
                         detail.mandatory_teams
                     };
-                    let blocked =
-                        (detail.readiness == "blocked").then(|| detail.readiness_notes.join("; "));
+                    let blocked = (detail.readiness == "blocked")
+                        .then(|| without_draft(&detail.readiness_notes))
+                        .flatten();
                     (blocked, teams)
                 }
                 Err(err) => {
@@ -335,10 +338,28 @@ fn plan_request(
 
 fn blocked_reasons(readiness: Readiness) -> Option<String> {
     match readiness {
-        Readiness::Blocked { reasons } => Some(reasons.join("; ")),
+        Readiness::Blocked { reasons } => without_draft(&reasons),
         Readiness::Ready { .. } | Readiness::Unknown { .. } => None,
     }
 }
+
+/// A draft only warns (see [`crate::slack::pr_warnings`]); any other reason
+/// still blocks. `None` when being a draft was the only reason.
+fn without_draft(reasons: &[String]) -> Option<String> {
+    let rest: Vec<&str> = reasons
+        .iter()
+        .map(String::as_str)
+        .filter(|reason| *reason != DRAFT_REASON)
+        .collect();
+    if rest.is_empty() && !reasons.is_empty() {
+        None
+    } else {
+        Some(rest.join("; "))
+    }
+}
+
+/// The readiness reason for a draft (`review::readiness`).
+const DRAFT_REASON: &str = "PR is a draft";
 
 fn preview_dto(
     state: &AppState,
@@ -391,8 +412,10 @@ fn preview_dto(
             fingerprint: card.fingerprint(),
         });
     }
+    let pr_warnings = prs.iter().flat_map(crate::slack::pr_warnings).collect();
     Ok(BulkPreview {
         cards,
+        pr_warnings,
         skipped: plan
             .skipped
             .iter()
@@ -464,4 +487,19 @@ fn pr_dto_by_id(prs: &[PullRequest], id: PrId, title: &str) -> BulkPr {
         },
         pr_dto,
     )
+}
+
+#[cfg(test)]
+mod draft_tests {
+    use super::{DRAFT_REASON, without_draft};
+
+    #[test]
+    fn a_draft_alone_does_not_block_but_other_reasons_still_do() {
+        assert_eq!(without_draft(&[DRAFT_REASON.to_owned()]), None);
+        assert_eq!(
+            without_draft(&[DRAFT_REASON.to_owned(), "PR has merge conflicts".to_owned()]),
+            Some("PR has merge conflicts".to_owned())
+        );
+        assert_eq!(without_draft(&[]), Some(String::new()));
+    }
 }

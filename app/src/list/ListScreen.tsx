@@ -686,6 +686,10 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
           <BulkDialog
             api={api}
             prIds={bulkIds}
+            onReady={(id) => {
+              changeDraft(id, false);
+              changeDraft(id, "saved");
+            }}
             onClose={() => {
               setBulkIds(null);
               if (bulkSummary) {

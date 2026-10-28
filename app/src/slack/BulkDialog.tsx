@@ -2,6 +2,7 @@ import { targetWorkspaceName } from "./workspaces";
 import { useCallback, useEffect, useState } from "react";
 import type { Api, BulkCard, BulkPreview, BulkRequest, BulkResult, ChannelKey, ReviewTarget, SlackWorkspace } from "../api";
 import { channelLabel, errorMessage } from "../api";
+import { DraftWarning } from "./DraftWarning";
 import { TargetCombobox } from "./TargetCombobox";
 
 interface Props {
@@ -12,6 +13,8 @@ interface Props {
   /** After each Send (and Retry failed): updates indicators and the closing toast. */
   onSent: (done: BulkResult) => void;
   onOpen: (url: string) => void;
+  /** Called for each PR "Mark all ready" took out of draft. */
+  onReady?: (id: number) => void;
 }
 
 const ACTION_LABEL = {
@@ -29,7 +32,7 @@ function sameKey(a: ChannelKey, b: ChannelKey) {
  * before anything is posted. Send posts one message at a time and reports a
  * result per PR and channel; nothing already posted is rolled back.
  */
-export function BulkDialog({ api, prIds, onClose, onSent, onOpen }: Props) {
+export function BulkDialog({ api, prIds, onClose, onSent, onOpen, onReady }: Props) {
   const [ids, setIds] = useState(prIds);
   const [oneChannel, setOneChannel] = useState(false);
   const [target, setTarget] = useState<ReviewTarget | null>(null);
@@ -40,6 +43,9 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [result, setResult] = useState<BulkResult | null>(null);
+  /** PRs taken out of draft from this dialog. */
+  const [readied, setReadied] = useState<number[]>([]);
+  const [marking, setMarking] = useState(false);
 
   const request = useCallback(
     (next: Partial<{ ids: number[]; oneChannel: boolean; single: ChannelKey[]; target: ReviewTarget }> = {}): BulkRequest => ({
@@ -132,6 +138,26 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen }: Props) {
     }
   }
 
+  /** Same call as the merge card's "Mark ready for review", once per draft. */
+  async function markAllReady() {
+    setMarking(true);
+    setError(null);
+    const failed: string[] = [];
+    for (const warning of drafts) {
+      try {
+        await api.setPrDraft(warning.pr_id, false);
+        setReadied((current) => [...current, warning.pr_id]);
+        onReady?.(warning.pr_id);
+      } catch (err) {
+        failed.push(`#${warning.number}: ${errorMessage(err)}`);
+      }
+    }
+    if (failed.length > 0) {
+      setError(`Couldn't mark ready for review: ${failed.join("; ")}`);
+    }
+    setMarking(false);
+  }
+
   function retryFailed() {
     if (!result) {
       return;
@@ -142,6 +168,8 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen }: Props) {
     void load(request({ ids: failed }));
   }
 
+  const drafts = (preview?.pr_warnings ?? []).filter((warning) => warning.kind === "draft" && !readied.includes(warning.pr_id));
+  const isDraft = (id: number) => drafts.some((warning) => warning.pr_id === id);
   const messageCount = preview?.cards.reduce((sum, card) => sum + card.messages.length, 0) ?? 0;
   const unsigned = preview?.cards.filter((card) => !card.signed_in) ?? [];
   const failedCount = result?.results.filter((item) => item.outcome === "failed").length ?? 0;
@@ -188,6 +216,12 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen }: Props) {
                 />
               </div>
             )}
+            {drafts.length > 0 && (
+              <DraftWarning busy={marking} onMarkReady={() => void markAllReady()} action={drafts.length === 1 ? "Mark ready for review" : "Mark all ready"}>
+                {drafts.length === 1 ? "1" : drafts.length} of {ids.length} PRs {drafts.length === 1 ? "is" : "are"} still {drafts.length === 1 ? "a draft" : "drafts"}:{" "}
+                {drafts.map((warning) => `#${warning.number}`).join(", ")}. Reviewers may skip {drafts.length === 1 ? "it" : "them"}.
+              </DraftWarning>
+            )}
             {loading && <p className="mt-4 text-slate-400">Planning messages…</p>}
             {preview && (
               <div className="mt-4 space-y-3">
@@ -212,7 +246,13 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen }: Props) {
                     {card.messages.map((message, index) => (
                       <div key={index} className="mt-2 space-y-1">
                         <p className="text-xs text-slate-400">
-                          {ACTION_LABEL[message.action]} · {message.prs.map((pr) => `#${pr.number}`).join(", ")}
+                          {ACTION_LABEL[message.action]} ·{" "}
+                          {message.prs.map((pr, index) => (
+                            <span key={pr.pr_id}>
+                              {index > 0 && ", "}#{pr.number}
+                              {isDraft(pr.pr_id) && <DraftBadge />}
+                            </span>
+                          ))}
                           {message.permalink && (
                             <>
                               {" "}
@@ -274,16 +314,25 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen }: Props) {
               <button
                 type="button"
                 className="rounded bg-violet-500 px-3 py-1.5 font-medium text-white disabled:opacity-40"
-                disabled={!preview || messageCount === 0 || unsigned.length > 0 || sending}
+                disabled={!preview || messageCount === 0 || unsigned.length > 0 || sending || marking}
                 onClick={() => void send()}
               >
-                {sending ? "Sending…" : `Send ${messageCount} message${messageCount === 1 ? "" : "s"}`}
+                {sending ? "Sending…" : `Send ${messageCount} message${messageCount === 1 ? "" : "s"}${drafts.length > 0 ? " anyway" : ""}`}
               </button>
             </>
           )}
         </footer>
       </div>
     </div>
+  );
+}
+
+/** The detail panel's "Draft" pill, small, beside a PR number. */
+function DraftBadge() {
+  return (
+    <span data-testid="draft-badge" className="ml-1 rounded-full bg-slate-700/60 px-1.5 py-px text-[10px] font-medium text-slate-300 ring-1 ring-slate-500/40">
+      Draft
+    </span>
   );
 }
 

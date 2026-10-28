@@ -10,6 +10,9 @@
 // chips, note and star, starred pinned, Starred filter, compact rows, Settings).
 // `--branch <dir>` saves the Branch card states (branch-*.png) into <dir>: one
 // PR per state, the Update branch menu open, and the rebase confirmation.
+// `--slack-draft <dir>` saves the Slack dialogs' draft warning (slack-draft-*.png):
+// the single request for draft #488 (default and narrow), after Mark ready, and
+// the bulk dialog with #488 and #58 as drafts, before and after Mark all ready.
 // Uses an installed Chrome; set CHROME_PATH to pick another Chromium binary.
 import { mkdirSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -51,6 +54,11 @@ const scenesFlag = process.argv.indexOf("--scenes");
 const scenesDir = scenesFlag === -1 ? null : process.argv[scenesFlag + 1];
 if (scenesFlag !== -1 && !scenesDir) {
   throw new Error("--scenes needs an output directory");
+}
+const slackDraftFlag = process.argv.indexOf("--slack-draft");
+const slackDraftDir = slackDraftFlag === -1 ? null : process.argv[slackDraftFlag + 1];
+if (slackDraftFlag !== -1 && !slackDraftDir) {
+  throw new Error("--slack-draft needs an output directory");
 }
 /** A row's own button, not its star (both carry the title). */
 const rowButton = (title) => new RegExp(`^(?!Star |Unstar |Open ).*${title}`);
@@ -116,14 +124,62 @@ async function branchShots(page, dir) {
   await save("rebase-confirm");
 }
 
+async function slackDraftShots(page, dir) {
+  mkdirSync(dir, { recursive: true });
+  const dialog = page.getByRole("dialog");
+  const save = async (name) => {
+    await page.waitForTimeout(300);
+    await page.screenshot({ path: resolve(dir, `slack-draft-${name}.png`) });
+    console.log(`wrote slack-draft-${name}.png`);
+  };
+  const openSingle = async () => {
+    await page.getByRole("button", { name: rowButton("Show saved cards first") }).first().click();
+    await page.getByTestId("detail-panel").getByRole("button", { name: "Request review on Slack" }).click();
+    await dialog.getByLabel("Message preview").waitFor();
+  };
+  await openSingle();
+  await save("single-default");
+  await page.setViewportSize({ width: 760, height: 900 });
+  await save("single-narrow");
+  await page.setViewportSize({ width, height: 900 });
+  await dialog.getByRole("button", { name: "Mark ready for review" }).click();
+  await dialog.getByRole("button", { name: "Send request" }).waitFor();
+  await save("single-after-mark-ready");
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
+
+  // Bulk: #488 is ready now, so turn it back into a draft through the same path.
+  await page.evaluate(() => globalThis.__TAURI_INTERNALS__.invoke("set_pr_draft", { id: 4, draft: true }));
+  for (const title of ["Show saved cards first", "Pin the base image for CI runners", "Add address autocomplete to checkout", "Register passkeys from account settings", "Offline cart sync"]) {
+    await page.getByRole("checkbox", { name: `Select ${title}` }).first().check();
+  }
+  await page.getByRole("button", { name: "Request / bump on Slack" }).first().click();
+  await dialog.getByLabel("Message preview").waitFor();
+  await save("bulk-default");
+  await page.setViewportSize({ width: 760, height: 900 });
+  await save("bulk-narrow");
+  await page.setViewportSize({ width, height: 900 });
+  await dialog.getByRole("button", { name: "Mark all ready" }).click();
+  await dialog.getByRole("button", { name: /^Send 1 message$/ }).waitFor();
+  await save("bulk-after-mark-ready");
+}
+
 let browser;
 try {
   browser = await chromium.launch(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: "chrome" });
   const page = await browser.newPage({ viewport: { width, height: 900 }, deviceScaleFactor: 2, colorScheme: "dark" });
   page.on("pageerror", (err) => console.error("page error:", err.message));
+  if (slackDraftDir) {
+    // #58 (row 12) is a draft too, for the bulk dialog.
+    await page.addInitScript(() => {
+      globalThis.__extraDrafts = [12];
+    });
+  }
   await page.goto(url);
   await page.getByRole("group", { name: "Quick filters" }).waitFor();
-  if (tooltipsDir) {
+  if (slackDraftDir) {
+    await slackDraftShots(page, resolve(slackDraftDir));
+  } else if (tooltipsDir) {
     await shootTooltips(page, tooltipsDir);
   } else if (scenesDir) {
     await scenes(page, resolve(scenesDir));
@@ -149,7 +205,7 @@ try {
         .click();
     }
   }
-  if (!tooltipsDir && !scenesDir && !branchDir) {
+  if (!tooltipsDir && !scenesDir && !branchDir && !slackDraftDir) {
     await page.waitForTimeout(500);
     await page.screenshot({ path: out });
     console.log(`wrote ${out} (${Math.round(statSync(out).size / 1024)} KB)`);

@@ -247,11 +247,20 @@ export interface TargetMatch {
   kind: "channel" | "member";
 }
 
+/** A non-blocking warning about the PR itself, e.g. it is still a draft. */
+export interface PrWarning {
+  kind: "draft";
+  pr_id: number;
+  number: number;
+  message: string;
+}
+
 export interface ReviewPreview {
   target: ReviewTarget;
   action: "request" | "bump";
   text: string;
   warnings: string[];
+  pr_warnings: PrWarning[];
   signed_in: boolean;
   bump_count: number;
   permalink: string | null;
@@ -300,6 +309,8 @@ export interface BulkCard {
 export interface BulkPreview {
   cards: BulkCard[];
   skipped: { pr: BulkPr; detail: string }[];
+  /** Selected PRs that are still drafts; they are sent anyway. */
+  pr_warnings: PrWarning[];
 }
 
 export interface BulkOutcome {

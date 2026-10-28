@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use chrono::Utc;
 use pr_nexus_core::domain::{
-    Account, AccountId, AccountKind, AuthMode, ChatKind, PrId, PullRequest,
+    Account, AccountId, AccountKind, AuthMode, ChatKind, PrId, PrState, PullRequest,
 };
 use pr_nexus_core::error::{CoreError, ProviderError};
 use pr_nexus_core::mapping::lookup_mapping;
@@ -95,11 +95,42 @@ pub struct ReviewPreview {
     pub action: String,
     pub text: String,
     pub warnings: Vec<String>,
+    /// Structured warnings about the PR itself (a draft, …), for the dialog
+    /// and for MCP tools that relay the same warning to agents.
+    pub pr_warnings: Vec<PrWarning>,
     pub signed_in: bool,
     pub bump_count: u32,
     pub permalink: Option<String>,
     /// A bump is also sent to the channel (`review.bump_broadcast`).
     pub broadcast: bool,
+}
+
+/// A non-blocking warning about a PR in a review-request preview.
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+pub struct PrWarning {
+    /// `draft`.
+    pub kind: String,
+    pub pr_id: i64,
+    pub number: u64,
+    pub message: String,
+}
+
+/// What reviewers should know before a request goes out: today, only that
+/// the PR is still a draft. Sending stays allowed.
+pub fn pr_warnings(pr: &PullRequest) -> Vec<PrWarning> {
+    if pr.state == PrState::Open && pr.is_draft {
+        vec![PrWarning {
+            kind: "draft".into(),
+            pr_id: pr.id.0,
+            number: pr.number,
+            message: format!(
+                "#{} is still a draft. Reviewers may skip it until it's marked ready.",
+                pr.number
+            ),
+        }]
+    } else {
+        Vec::new()
+    }
 }
 
 /// Slack accounts, newest last.

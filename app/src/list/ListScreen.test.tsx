@@ -60,12 +60,13 @@ function api(projects: ProjectDto[], rows: SearchRow[] = []): Api {
         action: "request" as const,
         text: "Hi, could you review this?",
         warnings: [],
+        pr_warnings: [],
         signed_in: true,
         bump_count: 0,
         permalink: null,
         broadcast: true,
       }),
-    bulkPreview: () => Promise.resolve({ cards: [], skipped: [] }),
+    bulkPreview: () => Promise.resolve({ cards: [], skipped: [], pr_warnings: [] }),
     sendBulk: () => Promise.resolve({ batch_id: "bulk-1", results: [], indicators: [] }),
     sendReview: (_prId: number, target: ReviewTarget) =>
       Promise.resolve({

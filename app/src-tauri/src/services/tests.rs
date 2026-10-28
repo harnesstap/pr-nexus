@@ -410,6 +410,52 @@ fn bulk_preview_posts_nothing_and_send_uses_the_fake() {
     assert_eq!(posted > 0, sent > 0);
 }
 
+#[test]
+fn previews_warn_about_drafts_without_blocking() {
+    use pr_nexus_core::domain::PrId;
+    let fx = fixture("draft-warning");
+    let state = &fx.state;
+    connect_fake_workspace(state);
+    let pr = pr_id(state, 1);
+
+    state.store.set_pull_request_draft(PrId(pr), false).unwrap();
+    let ready = review::preview(state, pr, channel()).unwrap();
+    assert!(ready.pr_warnings.is_empty(), "{:?}", ready.pr_warnings);
+
+    state.store.set_pull_request_draft(PrId(pr), true).unwrap();
+    let draft = review::preview(state, pr, channel()).unwrap();
+    assert_eq!(draft.pr_warnings.len(), 1);
+    assert_eq!(draft.pr_warnings[0].kind, "draft");
+    assert_eq!(draft.pr_warnings[0].pr_id, pr);
+    assert_eq!(draft.pr_warnings[0].number, 1);
+    let json = serde_json::to_value(&draft).unwrap();
+    assert_eq!(json["pr_warnings"][0]["kind"], "draft");
+
+    let request: BulkRequest = serde_json::from_value(serde_json::json!({
+        "pr_ids": [pr],
+        "target": channel_json(),
+    }))
+    .unwrap();
+    let bulk = bulk::preview(state, &request).unwrap();
+    assert_eq!(bulk.pr_warnings.len(), 1);
+    assert_eq!(bulk.pr_warnings[0].pr_id, pr);
+    assert!(
+        bulk.skipped
+            .iter()
+            .all(|skip| !skip.detail.contains("draft")),
+        "a draft warns but is not skipped: {:?}",
+        bulk.skipped
+    );
+
+    state.store.set_pull_request_draft(PrId(pr), false).unwrap();
+    assert!(
+        bulk::preview(state, &request)
+            .unwrap()
+            .pr_warnings
+            .is_empty()
+    );
+}
+
 fn channel_json() -> serde_json::Value {
     serde_json::json!({
         "workspace": "acme",
