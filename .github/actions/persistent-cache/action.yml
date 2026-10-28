@@ -1,0 +1,59 @@
+name: Persistent build cache
+description: >-
+  Self-hosted runners with a persistent CI_CACHE_DIR only. Points CARGO_TARGET_DIR and the bun install cache
+  at a directory on the runner's local disk that survives between jobs, so
+  Cargo rebuilds incrementally instead of restoring a GitHub cache.
+  Layout: <root>/pr-nexus/<runner name>/{target-<rustc hash>,bun}. Each runner
+  runs one job at a time and gets its own directory, so jobs never share one.
+  Bounded: target dirs built by another rustc are removed, and a target dir
+  over max-gb is emptied before the build (it then rebuilds from scratch).
+  Only directories this action created are ever removed.
+inputs:
+  root:
+    description: Cache root. It must survive between jobs (a mounted volume). Empty means <runner work dir>/_ci-cache.
+    default: ""
+  max-gb:
+    description: Size cap for one target dir, in GB. Empty means 8.
+    default: ""
+  rust:
+    description: Set CARGO_TARGET_DIR too (needs rustc on PATH).
+    default: "true"
+runs:
+  using: composite
+  steps:
+    - name: Select cache directories
+      shell: bash
+      env:
+        ROOT: ${{ inputs.root }}
+        MAX_GB: ${{ inputs.max-gb }}
+        WITH_RUST: ${{ inputs.rust }}
+        RUNNER_KEY: ${{ runner.name }}
+      run: |
+        set -euo pipefail
+        root="${ROOT:-$(dirname "$RUNNER_WORKSPACE")/_ci-cache}"
+        base="$root/pr-nexus/${RUNNER_KEY//[^A-Za-z0-9._-]/_}"
+        mkdir -p "$base/bun"
+        echo "BUN_INSTALL_CACHE_DIR=$base/bun" >> "$GITHUB_ENV"
+        # bun's cache only grows; cap it the same way.
+        if [ "$(du -sm "$base/bun" | cut -f1)" -gt 1024 ]; then
+          echo "bun cache over 1 GB, emptying it"
+          find "$base/bun" -mindepth 1 -delete
+        fi
+        [ "$WITH_RUST" = "true" ] || exit 0
+        hash="$(rustc -vV | sha256sum | cut -c1-12)"
+        target="$base/target-$hash"
+        for old in "$base"/target-*; do
+          if [ -d "$old" ] && [ "$old" != "$target" ]; then
+            echo "Removing target dir of an older toolchain: $old"
+            rm -rf "$old"
+          fi
+        done
+        mkdir -p "$target"
+        max_mb=$(( ${MAX_GB:-8} * 1024 ))
+        size_mb="$(du -sm "$target" | cut -f1)"
+        echo "Target dir $target: ${size_mb} MB (cap ${max_mb} MB)"
+        if [ "$size_mb" -gt "$max_mb" ]; then
+          echo "Over the cap, emptying it"
+          find "$target" -mindepth 1 -delete
+        fi
+        echo "CARGO_TARGET_DIR=$target" >> "$GITHUB_ENV"
