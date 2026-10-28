@@ -82,12 +82,29 @@ async function branchShots(page, dir) {
     console.log(`wrote ${path} (${Math.round(statSync(path).size / 1024)} KB)`);
   };
   for (const [name, state, title] of BRANCH_STATES) {
-    await page.getByRole("button", { name: title }).first().click();
+    await page
+      .getByRole("button", { name: new RegExp(`^(?!Star |Unstar |Open ).*${title.source}`, title.flags) })
+      .first()
+      .click();
     await panel.locator(`[data-branch-state="${state}"]`).waitFor();
     await save(name);
+    if (state === "update_required") {
+      // The merge card with Update branch on the behind blocker, at default and narrow width.
+      for (const [label, size] of [
+        ["default", width],
+        ["narrow", 760],
+      ]) {
+        await page.setViewportSize({ width: size, height: 900 });
+        await page.waitForTimeout(400);
+        const merge = panel.getByTestId("merge-verdict");
+        await merge.screenshot({ path: resolve(dir, `branch-merge-card-${label}.png`) });
+        console.log(`wrote branch-merge-card-${label}.png (${Math.round((await merge.boundingBox()).width)}px)`);
+      }
+      await page.setViewportSize({ width, height: 900 });
+    }
   }
   await page
-    .getByRole("button", { name: /Add address autocomplete to checkout/ })
+    .getByRole("button", { name: rowButton("Add address autocomplete to checkout") })
     .first()
     .click();
   const card = panel.locator('[data-branch-state="behind"]');
