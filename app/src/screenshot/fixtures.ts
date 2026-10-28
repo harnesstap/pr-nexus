@@ -73,17 +73,17 @@ function row(partial: Partial<SearchRow> & Pick<SearchRow, "id" | "number" | "ti
 }
 
 export const rows: SearchRow[] = [
-  row({ id: 1, number: 482, title: "Split the payment step into its own route", repo: "acme/storefront", project_ids: [1], review_decision: "approved", readiness: "ready", total_threads: 4, slack: slack(30, 6) }),
+  row({ id: 1, number: 482, title: "feat(checkout): split the payment step into its own route and lazy-load the card form", repo: "acme/storefront", project_ids: [1], review_decision: "approved", readiness: "ready", total_threads: 4, slack: slack(30, 6) }),
   row({ id: 2, pending_reviewers: asked("kim", "sam", "web"), number: 479, title: "Add address autocomplete to checkout", repo: "acme/storefront", project_ids: [1], unresolved_threads: 2, total_threads: 5, slack: slack(20, null) }),
-  row({ id: 3, pending_reviewers: asked("noor"), number: 131, title: "Expose order totals in the cart API", repo: "acme/orders-api", project_ids: [1], checks: "failure", readiness: "blocked", slack: slack(52, 26, "orders-team") }),
+  row({ id: 3, pending_reviewers: asked("noor"), number: 131, title: "fix: expose order totals in the cart API so the mobile client stops recomputing tax", repo: "acme/orders-api", project_ids: [1], checks: "failure", readiness: "blocked", slack: slack(52, 26, "orders-team") }),
   row({ id: 4, number: 488, title: "Show saved cards first", repo: "acme/storefront", project_ids: [1], is_draft: true, review_decision: null }),
   row({ id: 5, number: 77, title: "Register passkeys from account settings", repo: "acme/auth-service", project_ids: [2], review_decision: "approved", readiness: "ready", total_threads: 2, slack: slack(70, 22, "identity") }),
   row({ id: 6, pending_reviewers: asked("kim", "theo", "identity"), number: 79, title: "WebAuthn challenge store in Redis", repo: "acme/auth-service", project_ids: [2], review_decision: "changes_requested", readiness: "blocked", unresolved_threads: 3, total_threads: 3, slack: slack(40, null, "identity") }),
-  row({ id: 7, number: 502, title: "Passkey sign-in button on the login page", repo: "acme/storefront", project_ids: [2], review_decision: null }),
+  row({ id: 7, number: 502, title: "feat: stop bypassing the auth gate from the admin proxy", repo: "acme-labs/identity-gateway-service", project_ids: [2], review_decision: null }),
   row({ id: 8, pending_reviewers: asked("sam", "kim", "noor", "theo", "mobile"), number: 1204, title: "Bump the minimum OS version", repo: "acme/mobile", project_ids: [3], conflicts: true, readiness: "blocked", slack: slack(90, 40, "mobile") }),
   row({ id: 9, number: 1199, title: "Offline cart sync", repo: "acme/mobile", project_ids: [3], review_decision: "approved", readiness: "ready", total_threads: 6, slack: slack(26, null, "mobile") }),
   row({ id: 10, pending_reviewers: asked("theo"), number: 1210, title: "Crash on empty wishlist", repo: "acme/mobile", project_ids: [3], review_decision: "approved", checks: "pending", slack: slack(8, null, "mobile") }),
-  row({ id: 11, pending_reviewers: asked("noor", "sam"), number: 61, title: "Rotate the staging database credentials", repo: "acme/infra", project_ids: [], author_login: "grace", slack: slack(14, null, "platform") }),
+  row({ id: 11, pending_reviewers: asked("noor", "sam"), number: 61, title: "chore(infra): rotate the staging database credentials and move them to the secrets manager", repo: "acme/infra", project_ids: [], author_login: "grace", slack: slack(14, null, "platform") }),
   row({ id: 12, number: 58, title: "Pin the base image for CI runners", repo: "acme/infra", project_ids: [], checks: "pending", review_decision: null }),
 ];
 

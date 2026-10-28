@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import type { ListRow } from "../api";
-import { commentsText, rowPills, staleCue, viewEmptyState } from "./rowCues";
+import { commentsText, compactSlack, shortAgo, rowPills, staleCue, viewEmptyState } from "./rowCues";
 
 const now = new Date("2026-10-26T12:00:00Z");
 
@@ -81,4 +81,16 @@ test("empty state depends on the view, and never covers a search or filter miss"
   expect(viewEmptyState("to_review", 0, true, false)).toEqual({ kind: "rows" });
   expect(viewEmptyState("to_review", 0, false, true)).toEqual({ kind: "rows" });
   expect(viewEmptyState("to_review", 2, false, false)).toEqual({ kind: "rows" });
+});
+
+test("compact rows shrink times and keep the Slack detail in the tooltip", () => {
+  expect(shortAgo("2026-10-26T11:58:00Z", now)).toBe("2m");
+  expect(shortAgo("2026-10-26T10:00:00Z", now)).toBe("2h");
+  expect(shortAgo("2026-10-23T12:00:00Z", now)).toBe("3d");
+  expect(shortAgo("2026-09-26T12:00:00Z", now)).toBe("4w");
+  expect(compactSlack(null, now)).toEqual({ sent: false, time: null, title: "Not requested on Slack" });
+  const bumped = { ...slack("2026-10-24T12:00:00Z", "2026-10-26T10:00:00Z"), workspace: "acme" } as ListRow["slack"];
+  expect(compactSlack(bumped, now)).toEqual({ sent: true, time: "2h", title: "Bumped 2h ago · acme" });
+  const requested = { ...slack("2026-10-25T12:00:00Z"), workspace: "acme" } as ListRow["slack"];
+  expect(compactSlack(requested, now).title).toBe("Requested 1d ago · acme");
 });

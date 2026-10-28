@@ -871,3 +871,21 @@ test("a row shows who still has to review, and a row without requests shows no s
   expect(within(stack).getByTestId("reviewer-more")).toHaveTextContent("+1");
   expect(within(screen.getByRole("article", { name: "#2 Nobody asked" })).queryByTestId("reviewer-avatars")).toBeNull();
 });
+
+test("with the panel open, rows go compact: wrapped title, status dot and Slack icon with tooltips, no avatars", async () => {
+  await show(<Harness rows={rows} detailId={999} />);
+  const article = screen.getAllByRole("article")[0];
+  const title = within(article).getAllByRole("button").find((button) => button.className.includes("line-clamp-2"));
+  expect(title).toBeDefined();
+  expect(title?.getAttribute("title")).toMatch(/^#\d+ /);
+  for (const pill of ["Review pending", "Approved", "Changes requested"]) {
+    expect(screen.queryByText(pill)).not.toBeInTheDocument();
+  }
+  const reviewedRow = rows.find((item) => item.review_decision !== null);
+  if (reviewedRow) {
+    const article = screen.getByRole("article", { name: `#${reviewedRow.number} ${reviewedRow.title}` });
+    expect(within(article).getByRole("img", { name: /Review pending|Approved|Changes requested/ })).toBeInTheDocument();
+  }
+  expect(screen.queryByText("Not requested")).not.toBeInTheDocument();
+  expect(document.querySelector("[data-testid='reviewer-avatars']")).toBeNull();
+});

@@ -102,3 +102,33 @@ export function viewEmptyState(viewKey: string, inView: number, searching: boole
   }
   return { kind: "no_prs", settings: true };
 }
+
+/** Compact relative time for the compact row: `5m`, `2h`, `3d`, `4w`. */
+export function shortAgo(iso: string, now: Date): string {
+  const ms = Math.max(0, now.getTime() - new Date(iso).getTime());
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 60) {
+    return `${Math.max(1, minutes)}m`;
+  }
+  const hours = Math.floor(ms / HOUR_MS);
+  if (hours < 24) {
+    return `${hours}h`;
+  }
+  const days = Math.floor(ms / DAY_MS);
+  return days < 14 ? `${days}d` : `${Math.floor(days / 7)}w`;
+}
+
+/**
+ * The Slack cell of a compact row: a gray icon alone when nothing was sent,
+ * else the icon plus the time of the last send or bump. The full detail goes
+ * in the tooltip.
+ */
+export function compactSlack(slack: ListRow["slack"], now: Date): { sent: boolean; time: string | null; title: string } {
+  if (!slack) {
+    return { sent: false, time: null, title: "Not requested on Slack" };
+  }
+  const last = slack.last_bumped_at ?? slack.requested_at;
+  const verb = slack.last_bumped_at ? "Bumped" : "Requested";
+  const workspace = slack.workspace_name ?? slack.workspace;
+  return { sent: true, time: shortAgo(last, now), title: [`${verb} ${shortAgo(last, now)} ago`, workspace].filter(Boolean).join(" · ") };
+}

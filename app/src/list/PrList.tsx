@@ -43,7 +43,7 @@ import { setDragBadge } from "./dragBadge";
 import { pageIds, summaryText, type Elsewhere, type PageDto, type PageEntry, type PageRequest, type PageSection } from "./paging";
 import { usePagedList, type PageParams } from "./usePagedList";
 import { plainText } from "../textInput";
-import { commentsText, rowPills, staleCue, viewEmptyState, type RowPill, type StaleCue } from "./rowCues";
+import { commentsText, compactSlack, rowPills, staleCue, viewEmptyState, type RowPill, type StaleCue } from "./rowCues";
 
 /** A section as drawn: its loaded rows, plus counts and ids over every match. */
 type ShownSection = Section & { count: number; ids: number[] };
@@ -472,7 +472,7 @@ export function PrList({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <header className="flex items-start justify-between gap-4 px-4 py-3">
-        <div>
+        <div className="shrink-0">
           {currentProject !== null && editing?.id === currentProject && editing.where === "title" ? (
             <RenameField
               label={`Rename ${viewTitle(viewKey, projects)}`}
@@ -499,8 +499,8 @@ export function PrList({
           {editing?.error && editing.where === "title" && <p className="text-xs text-rose-300">{editing.error}</p>}
           <p className="text-sm text-slate-400">{page ? summaryText(page.summary, viewKey, syncProgress) : (syncProgress ?? "\u00a0")}</p>
         </div>
-        <div className="flex items-center gap-2">
-          <label className="flex w-80 items-center gap-2 rounded-md border border-slate-700 bg-slate-900 px-3 py-1.5 text-sm focus-within:border-violet-400">
+        <div className="flex min-w-0 items-center gap-2">
+          <label className="flex w-80 min-w-32 shrink items-center gap-2 rounded-md border border-slate-700 bg-slate-900 px-3 py-1.5 text-sm focus-within:border-violet-400">
             <SearchIcon className="shrink-0 text-slate-500" />
             <input {...plainText}
               ref={searchRef}
@@ -519,7 +519,7 @@ export function PrList({
           <FilterMenu view={view} orgs={page?.orgs ?? []} menu={menu} setMenu={setMenu} onViewChange={onViewChange} />
         </div>
       </header>
-      <div className="flex items-center gap-2 border-y border-slate-800 px-4 py-2 text-sm text-slate-300">
+      <div className="flex flex-wrap items-center gap-2 border-y border-slate-800 px-4 py-2 text-sm text-slate-300">
         <TriCheckbox label="Select all" state={global} onToggle={() => setSelected(toggleParent(ids, selected))} />
         <span className="whitespace-nowrap">{header}</span>
         <span className="flex-1" />
@@ -698,7 +698,7 @@ export function PrList({
                       aria-label={`#${row.number} ${row.title}`}
                       aria-current={index === focus ? "true" : undefined}
                       data-focused={index === focus ? "true" : undefined}
-                      className={`flex ${compact ? "items-start" : "items-center"} cursor-pointer gap-3 border-t border-l-2 border-t-slate-800 px-2 py-1.5 ${index === focus ? "border-l-violet-400 bg-slate-900" : "border-l-transparent hover:bg-slate-900/60"}`}
+                      className={`flex ${compact ? "items-start gap-2 py-1" : "items-center gap-3 py-1.5"} cursor-pointer border-t border-l-2 border-t-slate-800 px-2 ${index === focus ? "border-l-violet-400 bg-slate-900" : "border-l-transparent hover:bg-slate-900/60"}`}
                     >
                       <TriCheckbox
                         label={`Select ${row.title}`}
@@ -1184,48 +1184,63 @@ function CiStatus({ checks }: { checks: string }) {
  * Two-line row for a narrow list (detail panel open, small window): the title
  * gets the full first line, everything else shares the second.
  */
+/**
+ * The row while the detail panel is open or the list is narrow: the title wraps
+ * over two lines, repo and CI under it, and review, comments and Slack shrink
+ * to icons with tooltips. Avatars are left to the detail panel.
+ */
 function CompactRow({ row, view, now, onDetails, onOpen }: { row: ListRow; view: SavedView; now: Date; onDetails: (row: ListRow) => void; onOpen: (url: string) => void }) {
-  const status = slackStatus(row.slack, now);
   const review = view.show.review ? reviewLabel(row.review_decision) : null;
+  const slack = compactSlack(row.slack, now);
+  const permalink = row.slack?.permalink ?? null;
+  const fullTitle = `#${row.number} ${row.title}`;
   return (
-    <div className="min-w-0 flex-1">
-      <TitleLine row={row} view={view} now={now} onDetails={onDetails} />
-      <div className="flex min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap text-xs text-slate-500">
-        {view.show.repo && <span className="truncate">{row.repo}</span>}
-        {view.show.ci && (
-          <>
-            <span aria-hidden="true">·</span>
-            <CiStatus checks={row.checks} />
-          </>
-        )}
-        {review && (
-          <>
-            <span aria-hidden="true">·</span>
-            <span className="flex shrink-0 items-center gap-1 text-slate-400">
-              <Dot tone={reviewTone(row.review_decision)} />
-              {review}
+    <div className="flex min-w-0 flex-1 items-start gap-2">
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 items-start gap-1.5 text-sm leading-snug">
+          {view.show.numberTitle && (
+            <button type="button" className="line-clamp-2 min-w-0 text-left break-words hover:underline" title={fullTitle} onClick={() => onDetails(row)}>
+              <span className="text-slate-500">#{row.number}</span> {row.title}
+            </button>
+          )}
+          {row.state !== "open" && (
+            <span className="shrink-0 rounded bg-slate-800 px-1 text-xs text-slate-300">{row.state === "merged" ? "Merged" : "Closed"}</span>
+          )}
+        </div>
+        <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-slate-500">
+          {view.show.repo && (
+            <span className="max-w-[16rem] truncate" title={row.repo}>
+              {row.repo}
             </span>
-          </>
+          )}
+          {view.show.ci && (
+            <>
+              <span aria-hidden="true">·</span>
+              <CiStatus checks={row.checks} />
+            </>
+          )}
+          <RowCues row={row} now={now} />
+        </div>
+      </div>
+      <div className="flex shrink-0 items-center gap-1.5 pt-0.5 text-xs text-slate-400">
+        {review && (
+          <span className="flex h-4 w-3 items-center justify-center" title={review} aria-label={review} role="img">
+            <Dot tone={reviewTone(row.review_decision)} />
+          </span>
         )}
         {view.show.threads && <Threads row={row} />}
-        {status && (
-          <span className="flex shrink-0 items-center gap-1 text-slate-400" title={status.title}>
-            <span aria-hidden="true">·</span>
-            <SlackIcon size={12} />
-            {row.slack?.permalink ? (
-              <button type="button" aria-label={`Open Slack request for ${row.title}`} className="hover:underline" onClick={() => onOpen(row.slack!.permalink!)}>
-                {status.label}
-              </button>
-            ) : (
-              status.label
-            )}
-          </span>
-        )}
-        {view.show.review && row.pending_reviewers.length > 0 && (
-          <span className="ml-auto flex shrink-0 items-center">
-            <ReviewerAvatars reviewers={row.pending_reviewers} />
-          </span>
-        )}
+        {(slack.sent || view.show.notRequested) &&
+          (slack.sent && permalink ? (
+            <button type="button" aria-label={`Open Slack request for ${row.title}`} title={slack.title} className="flex items-center gap-0.5 tabular-nums hover:text-slate-200" onClick={() => onOpen(permalink)}>
+              <SlackIcon size={12} />
+              {slack.time}
+            </button>
+          ) : (
+            <span title={slack.title} aria-label={slack.title} role="img" className={`flex items-center gap-0.5 tabular-nums ${slack.sent ? "" : "text-slate-600"}`}>
+              <SlackIcon size={12} />
+              {slack.time}
+            </span>
+          ))}
       </div>
     </div>
   );
