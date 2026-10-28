@@ -23,6 +23,10 @@ export function SettingsScreen({ api, boot, onBoot, accounts, tab, onTabChange, 
   const [prefs, setPrefs] = useState<Preferences | null>(null);
   const [prefsError, setPrefsError] = useState<string | null>(null);
   const tabRefs = useRef<Partial<Record<SettingsTab, HTMLButtonElement | null>>>({});
+  // At narrow widths the tab row scrolls; keep the active tab visible.
+  useEffect(() => {
+    tabRefs.current[tab]?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+  }, [tab]);
 
   useEffect(() => {
     let cancel = false;
@@ -77,7 +81,7 @@ export function SettingsScreen({ api, boot, onBoot, accounts, tab, onTabChange, 
 
   return (
     <div className="mx-auto max-w-3xl">
-      <div role="tablist" aria-label="Settings sections" className="mb-6 flex gap-1 border-b border-slate-800">
+      <div role="tablist" aria-label="Settings sections" className="mb-6 flex gap-1 overflow-x-auto border-b border-slate-800 [scrollbar-width:thin]">
         {SETTINGS_TABS.map((item) => (
           <button
             key={item.id}
@@ -90,7 +94,7 @@ export function SettingsScreen({ api, boot, onBoot, accounts, tab, onTabChange, 
             aria-selected={tab === item.id}
             aria-controls={`settings-panel-${item.id}`}
             tabIndex={tab === item.id ? 0 : -1}
-            className={`-mb-px border-b-2 px-3 py-2 text-sm ${
+            className={`shrink-0 whitespace-nowrap border-b-2 px-3 py-2 text-sm ${
               tab === item.id ? "border-violet-400 text-slate-100" : "border-transparent text-slate-400 hover:text-slate-200"
             }`}
             onClick={() => onTabChange(item.id)}

@@ -91,4 +91,49 @@ mod tests {
         assert_ne!(first, second);
         assert_eq!(ensure(&vault).unwrap(), second);
     }
+
+    /// The token is one more key in the app's single vault entry, so turning
+    /// MCP on adds no keychain item and no extra prompt.
+    #[test]
+    fn the_token_lives_in_the_existing_vault_entry() {
+        use pr_nexus_providers::vault::{KeyringBackend, KeyringError};
+        use std::sync::{Arc, Mutex};
+        use std::time::Duration;
+
+        #[derive(Clone, Default)]
+        struct OneEntry(Arc<Mutex<Option<String>>>);
+        impl KeyringBackend for OneEntry {
+            fn read(&self) -> Result<Option<String>, KeyringError> {
+                Ok(self.0.lock().unwrap().clone())
+            }
+            fn write(&self, json: &str) -> Result<(), KeyringError> {
+                *self.0.lock().unwrap() = Some(json.to_owned());
+                Ok(())
+            }
+        }
+
+        let entry = OneEntry(Arc::new(Mutex::new(Some(
+            r#"{"github.token":"gho_acme"}"#.into(),
+        ))));
+        let vault = Vault::with_backend(Box::new(entry.clone()), Duration::from_secs(5));
+        let first = ensure(&vault).unwrap();
+        let second = regenerate(&vault).unwrap();
+        let wait = std::time::Instant::now();
+        while !entry
+            .0
+            .lock()
+            .unwrap()
+            .as_deref()
+            .unwrap_or("")
+            .contains(&second)
+        {
+            assert!(wait.elapsed() < Duration::from_secs(5), "token never saved");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let stored: serde_json::Value =
+            serde_json::from_str(entry.0.lock().unwrap().as_deref().unwrap()).unwrap();
+        assert_eq!(stored["github.token"], "gho_acme");
+        assert_eq!(stored[VAULT_KEY], second.as_str());
+        assert!(!stored.to_string().contains(&first));
+    }
 }

@@ -113,6 +113,7 @@ pub struct GetProjectArgs {
     pub project_id: i64,
     /// Linked PRs per page, 1 to 200. Default 50.
     #[serde(default)]
+    #[schemars(range(min = 1, max = 200))]
     pub limit: Option<usize>,
     /// `prs.next_cursor` of the previous page.
     #[serde(default)]
@@ -132,6 +133,21 @@ pub fn parse<T: DeserializeOwned>(arguments: JsonObject) -> Result<T, AppError> 
         .map_err(|err| AppError::new("validation", format!("Invalid arguments: {err}")))
 }
 
+/// `limit` outside 1..=200 is refused (not clamped), so an agent learns the
+/// range instead of silently getting a different page size.
+fn check_limit(limit: Option<usize>) -> Result<(), AppError> {
+    match limit {
+        Some(limit) if !(1..=prs::MAX_LIMIT).contains(&limit) => Err(AppError::new(
+            "validation",
+            format!(
+                "Invalid arguments: limit must be between 1 and {}",
+                prs::MAX_LIMIT
+            ),
+        )),
+        _ => Ok(()),
+    }
+}
+
 fn to_value<T: serde::Serialize>(value: T) -> Result<Value, AppError> {
     serde_json::to_value(value).map_err(|err| AppError::new("internal", err.to_string()))
 }
@@ -143,6 +159,7 @@ fn list_projects(state: &AppState, arguments: JsonObject) -> Result<Value, AppEr
 
 fn get_project(state: &AppState, arguments: JsonObject) -> Result<Value, AppError> {
     let args: GetProjectArgs = parse(arguments)?;
+    check_limit(args.limit)?;
     let project = projects::project_summary(state, args.project_id)?;
     let page = prs::list_prs(
         state,
@@ -158,6 +175,7 @@ fn get_project(state: &AppState, arguments: JsonObject) -> Result<Value, AppErro
 
 fn list_prs(state: &AppState, arguments: JsonObject) -> Result<Value, AppError> {
     let filter: PrFilter = parse(arguments)?;
+    check_limit(filter.limit)?;
     to_value(prs::list_prs(state, &filter)?)
 }
 

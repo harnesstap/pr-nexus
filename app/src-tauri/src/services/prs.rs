@@ -35,6 +35,7 @@ pub fn pr_detail(state: &AppState, id: i64) -> Result<PrDetail, AppError> {
 /// derive them. Names are stable (snake_case on the wire).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[schemars(description = "A PR Nexus status, as in the list's filter menu and quick filters.")]
 pub enum PrStatus {
     /// The PR is a draft.
     Draft,
@@ -46,6 +47,9 @@ pub enum PrStatus {
     Unknown,
     /// Not a draft, nobody requested on GitHub, no active Slack request,
     /// and no approval or change request yet.
+    #[schemars(
+        description = "Not a draft, nobody requested on GitHub, no active Slack request, and no approval or change request yet."
+    )]
     NoReview,
     /// Failing checks or merge conflicts.
     CiTrouble,
@@ -57,10 +61,16 @@ pub enum PrStatus {
     /// not approved, and waiting longer than
     /// [`listing::STALE_REVIEW_HOURS`] (48h) since the Slack request, else
     /// since creation.
+    #[schemars(
+        description = "Open, asked for review (GitHub or Slack), not approved, and waiting more than 48h since the Slack request, else since creation."
+    )]
     Waiting,
     /// The list's "Idle" chip: open, no GitHub update and no Slack request
     /// or bump for more than [`listing::IDLE_DAYS`] (7 days). A PR that is
     /// `waiting` is not also `idle`, as on the row.
+    #[schemars(
+        description = "Open, no GitHub update and no Slack request or bump for more than 7 days. A waiting PR is not also idle."
+    )]
     Idle,
 }
 
@@ -129,12 +139,16 @@ impl PrStateFilter {
 /// Filters for [`list_prs`]. Every field narrows; empty means no filter.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default, deny_unknown_fields)]
+#[schemars(
+    description = "Filters for listing pull requests. Every field narrows; an empty filter matches every PR."
+)]
 pub struct PrFilter {
     /// PRs in any of these PR Nexus statuses (OR). Empty: any status.
     pub statuses: Vec<PrStatus>,
     /// Only PRs linked to this project (`id` from `list_projects`).
     pub project_id: Option<i64>,
     /// `Some(true)`: starred only; `Some(false)`: not starred.
+    #[schemars(description = "true: starred only; false: not starred; omit: any.")]
     pub starred: Option<bool>,
     /// `owner/name`, or just `name`, case-insensitive.
     pub repo: Option<String>,
@@ -145,6 +159,7 @@ pub struct PrFilter {
     /// Same search as the list's search field.
     pub query: Option<String>,
     /// Page size, 1 to 200. Default 50.
+    #[schemars(range(min = 1, max = 200))]
     pub limit: Option<usize>,
     /// `next_cursor` of the previous page.
     pub cursor: Option<String>,

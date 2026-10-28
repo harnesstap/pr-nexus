@@ -246,6 +246,61 @@ async fn tools_list_has_the_read_tools_with_schemas() {
     assert!(list_prs["properties"]["limit"].is_object());
 }
 
+/// Every `description` string anywhere in `value`.
+fn descriptions<'a>(value: &'a Value, out: &mut Vec<&'a str>) {
+    match value {
+        Value::Object(map) => {
+            for (key, child) in map {
+                match (key.as_str(), child) {
+                    ("description", Value::String(text)) => out.push(text),
+                    _ => descriptions(child, out),
+                }
+            }
+        }
+        Value::Array(items) => items.iter().for_each(|item| descriptions(item, out)),
+        _ => {}
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn agent_facing_text_has_no_rust_doc_syntax() {
+    let h = harness().await;
+    let session = h.session().await;
+    let reply = h.rpc(&session, 2, "tools/list", json!({})).await;
+    let mut texts = Vec::new();
+    descriptions(&reply["result"]["tools"], &mut texts);
+    assert!(texts.len() > 20, "{texts:?}");
+    for text in texts {
+        for bad in ["Some(", "[`", "::", "\n"] {
+            assert!(!text.contains(bad), "{bad:?} in description {text:?}");
+        }
+    }
+    let tools = reply["result"]["tools"].as_array().unwrap();
+    let starred = &tools[2]["inputSchema"]["properties"]["starred"]["description"];
+    assert_eq!(
+        starred,
+        "true: starred only; false: not starred; omit: any."
+    );
+    for tool in [&tools[1], &tools[2]] {
+        let limit = &tool["inputSchema"]["properties"]["limit"];
+        assert_eq!(limit["minimum"], 1, "{limit}");
+        assert_eq!(limit["maximum"], 200, "{limit}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn out_of_range_limits_are_refused() {
+    let h = harness().await;
+    let session = h.session().await;
+    for limit in [0, 201] {
+        let reply = h.call(&session, "list_prs", json!({"limit": limit})).await;
+        assert_eq!(reply["isError"], true, "{reply}");
+        assert_eq!(reply["structuredContent"]["kind"], "validation");
+    }
+    let ok = h.call(&session, "list_prs", json!({"limit": 200})).await;
+    assert_ne!(ok["isError"], true, "{ok}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn read_tools_answer_from_the_store() {
     let h = harness().await;
