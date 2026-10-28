@@ -62,7 +62,7 @@ test("When sign-in and the bump interval both block Bump, the sign-in reason win
   const { unmount } = render(
     <SlackLine api={api([recent])} prId={1} minBumpHours={24} onOpen={() => undefined} onRequest={() => undefined} workspaces={[acme]} />,
   );
-  expect(await screen.findByRole("button", { name: /Bump · last/ })).toBeDisabled();
+  expect(await screen.findByRole("button", { name: /^Bump$/ })).toBeDisabled();
   fireEvent.focus(screen.getByTestId("bump-disabled"));
   expect(screen.getAllByRole("tooltip", { hidden: true }).some((tip) => tip.textContent?.includes("Acme Slack needs sign-in"))).toBe(true);
   unmount();
@@ -76,7 +76,7 @@ test("When sign-in and the bump interval both block Bump, the sign-in reason win
       workspaces={[{ ...acme, signed_in: true, needs_sign_in: false }]}
     />,
   );
-  expect(await screen.findByRole("button", { name: /Bump · last/ })).toBeDisabled();
+  expect(await screen.findByRole("button", { name: /^Bump$/ })).toBeDisabled();
   fireEvent.focus(screen.getByTestId("bump-disabled"));
   expect(screen.getAllByRole("tooltip", { hidden: true }).some((tip) => tip.textContent?.includes("Too soon to bump"))).toBe(true);
 });
@@ -100,4 +100,19 @@ test("the card shows the channel on one line, the message as a quote with inline
 test("InlineCode renders backticked spans as code", () => {
   const { container } = render(<InlineCode text="Review `Fix tax rounding` please" />);
   expect(container.querySelector("code")?.textContent).toBe("Fix tax rounding");
+});
+
+test("disabled Bump says requested before any bump and last bump after one", async () => {
+  const signedIn = [{ ...acme, signed_in: true, needs_sign_in: false }];
+  const fresh = { ...thread, requested_at: new Date(Date.now() - 18 * 60_000).toISOString(), last_bumped_at: null, bump_count: 0 };
+  const { unmount } = render(
+    <SlackLine api={api([fresh])} prId={1} minBumpHours={6} onOpen={() => undefined} onRequest={() => undefined} workspaces={signedIn} />,
+  );
+  expect(await screen.findByRole("button", { name: /^Bump$/ })).toBeDisabled();
+  expect(screen.getByText(/\(requested 18m ago\)/)).toBeTruthy();
+  unmount();
+  const bumped = { ...fresh, last_bumped_at: new Date(Date.now() - 18 * 60_000).toISOString(), bump_count: 1 };
+  render(<SlackLine api={api([bumped])} prId={1} minBumpHours={6} onOpen={() => undefined} onRequest={() => undefined} workspaces={signedIn} />);
+  expect(await screen.findByRole("button", { name: /^Bump$/ })).toBeDisabled();
+  expect(screen.getByText(/\(last bump 18m ago\)/)).toBeTruthy();
 });

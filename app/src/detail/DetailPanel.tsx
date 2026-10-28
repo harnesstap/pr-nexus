@@ -257,51 +257,39 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
           <>
             <StatCards overview={overview} onOpen={onOpen} />
             {verdict && (
-              <div className="flex flex-wrap items-center gap-3 rounded-lg border border-slate-800 bg-slate-950/40 p-3" data-testid="merge-verdict">
-                <span className={TONE_TEXT[verdict.tone]}>
-                  <VerdictIcon tone={verdict.tone} />
-                </span>
-                <div className="min-w-0 flex-1">
+              <section aria-label="Merge" className="flex flex-col gap-2 rounded-lg border border-slate-800 bg-slate-950/40 p-3" data-testid="merge-verdict">
+                <div className="flex min-w-0 items-center gap-2">
+                  <span className={`shrink-0 ${TONE_TEXT[verdict.tone]}`}>
+                    <VerdictIcon tone={verdict.tone} />
+                  </span>
                   <Tooltip
                     label="How this is worked out"
                     detail="GitHub doesn't say exactly who may press Merge, so this comes from the merge state, your permission and the branch rules your token can read."
                     align="start"
+                    className="min-w-0"
                   >
-                    <p tabIndex={0} className={`font-medium outline-none ${TONE_TEXT[verdict.tone]}`}>
+                    <p tabIndex={0} className={`truncate font-medium outline-none ${TONE_TEXT[verdict.tone]}`}>
                       {verdict.title}
                     </p>
                   </Tooltip>
-                  {verdict.blockers.length > 1 ? (
-                    <ul aria-label="What's in the way" className="mt-0.5 list-disc space-y-0.5 pl-4 text-xs text-slate-400">
-                      {verdict.blockers.map((blocker) =>
-                        blocker === DRAFT_BLOCKER && overview.state === "open" ? (
-                          <li key={blocker}>
-                            <span className="flex flex-wrap items-center justify-between gap-2">
-                              {blocker}
-                              <DraftAction draft={draft} busy={flipping} onToggle={() => void toggleDraft()} />
-                            </span>
-                          </li>
-                        ) : (
-                          <li key={blocker}>{blocker}</li>
-                        ),
-                      )}
-                    </ul>
-                  ) : draft.draft && overview.state === "open" ? (
-                    <p className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-400">
-                      {verdict.reason}
-                      <DraftAction draft={draft} busy={flipping} onToggle={() => void toggleDraft()} />
-                    </p>
-                  ) : (
-                    <p className="text-xs text-slate-400">{verdict.reason}</p>
-                  )}
                 </div>
+                <BlockerList
+                  items={(verdict.blockers.length > 1 ? verdict.blockers : [verdict.reason]).map((text) => ({
+                    text,
+                    action:
+                      overview.state === "open" && draft.draft && (text === DRAFT_BLOCKER || verdict.blockers.length <= 1) ? (
+                        <DraftAction draft={draft} busy={flipping} onToggle={() => void toggleDraft()} />
+                      ) : undefined,
+                  }))}
+                  bullets={verdict.blockers.length > 1}
+                />
                 {overview.state === "open" && (
-                  <div className="flex flex-wrap items-center gap-2">
+                  <div data-testid="merge-controls" className="flex flex-wrap items-center gap-2 border-t border-slate-800/70 pt-2">
                     <AutoMerge api={api} prId={row.id} overview={overview} onChange={setOverview} onNotice={onNotice} />
                     {!draft.draft && <DraftAction draft={draft} busy={flipping} onToggle={() => void toggleDraft()} />}
                   </div>
                 )}
-              </div>
+              </section>
             )}
             {/* The one primary action, right under "can I merge": asking for review is what unblocks it. */}
             <SlackLine api={api} prId={row.id} minBumpHours={minBumpHours} onOpen={onOpen} onRequest={onRequestReview} workspaces={slack?.workspaces} />
@@ -365,6 +353,27 @@ function StateBadge({ state }: { state: string }) {
     <span data-testid="state-badge" className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ${pill.tone}`}>
       {pill.label}
     </span>
+  );
+}
+
+/** One thing in the way of merging, with an optional fix beside it (Mark ready, Update branch, …). */
+export interface BlockerItem {
+  text: string;
+  action?: ReactNode;
+}
+
+/** Full-width blocker rows: text on the left, its action right-aligned on the same row. */
+export function BlockerList({ items, bullets }: { items: BlockerItem[]; bullets: boolean }) {
+  return (
+    <ul aria-label="What's in the way" className="flex flex-col gap-1 text-xs text-slate-400">
+      {items.map((item) => (
+        <li key={item.text} className="flex min-w-0 items-center gap-2">
+          {bullets && <span aria-hidden className="h-1 w-1 shrink-0 rounded-full bg-slate-500" />}
+          <span className="min-w-0 flex-1 break-words">{item.text}</span>
+          {item.action && <span className="shrink-0">{item.action}</span>}
+        </li>
+      ))}
+    </ul>
   );
 }
 

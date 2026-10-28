@@ -205,6 +205,14 @@ async function detailScenes(page, dir) {
     .click();
   await panel.getByRole("button", { name: "Mark ready for review" }).waitFor();
   await shot(page, resolve(dir, "detail-draft-draft.png"));
+  await panel.getByTestId("merge-verdict").screenshot({ path: resolve(dir, "detail-merge-draft-default.png") });
+  await page.setViewportSize({ width: 760, height: 900 });
+  await page.waitForTimeout(400);
+  await shot(page, resolve(dir, "detail-draft-draft-narrow.png"));
+  await panel.getByTestId("merge-verdict").screenshot({ path: resolve(dir, "detail-merge-draft-narrow.png") });
+  console.log(`merge card draft narrow: ${Math.round((await panel.getByTestId("merge-verdict").boundingBox()).width)}px`);
+  await page.setViewportSize({ width, height: 900 });
+  await page.waitForTimeout(400);
   await page.keyboard.press("Escape");
 
   await page
@@ -215,6 +223,14 @@ async function detailScenes(page, dir) {
     .click();
   await panel.getByRole("button", { name: "Convert to draft" }).waitFor();
   await shot(page, resolve(dir, "detail-draft-ready.png"));
+  await panel.getByTestId("merge-verdict").screenshot({ path: resolve(dir, "detail-merge-ready-default.png") });
+  await page.setViewportSize({ width: 760, height: 900 });
+  await page.waitForTimeout(400);
+  await shot(page, resolve(dir, "detail-draft-ready-narrow.png"));
+  await panel.getByTestId("merge-verdict").screenshot({ path: resolve(dir, "detail-merge-ready-narrow.png") });
+  console.log(`merge card ready narrow: ${Math.round((await panel.getByTestId("merge-verdict").boundingBox()).width)}px`);
+  await page.setViewportSize({ width, height: 900 });
+  await page.waitForTimeout(400);
   await panel.getByTestId("stat-cards").screenshot({ path: resolve(dir, "detail-cards-default.png") });
   console.log("wrote detail-cards-default.png");
 

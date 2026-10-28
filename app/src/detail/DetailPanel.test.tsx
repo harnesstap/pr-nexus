@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import type { Api, ContextThread, ListRow, PrOverview } from "../api";
-import { DetailPanel, WIDTH_KEY, clampWidth } from "./DetailPanel";
+import { BlockerList, DetailPanel, WIDTH_KEY, clampWidth } from "./DetailPanel";
 import { mockDetail, mockOverview } from "./mock";
 import { bumpView, latestThread } from "./SlackLine";
 import { draftView } from "./draft";
@@ -215,7 +215,7 @@ test("a draft shows Mark ready for review on its blocker line and flips optimist
   expect(screen.getByTestId("state-badge").textContent).toBe("Draft");
   // The header holds no toggle: the action lives in the merge card.
   expect(
-    within(screen.getByRole("banner")).queryByRole("button", {
+    within(screen.getAllByRole("banner")[0]).queryByRole("button", {
       name: /ready|draft/i,
     }),
   ).toBeNull();
@@ -577,10 +577,10 @@ test("Bump says when it was last poked and waits for the minimum interval from s
   } as unknown as Partial<Api>);
   const { onRequestReview } = renderPanel(api);
   const region = await screen.findByRole("region", { name: "Slack request" });
-  const bump = within(region).getByRole("button", {
-    name: "Bump · last 2h ago",
-  }) as HTMLButtonElement;
-  await waitFor(() => expect(bump.disabled).toBe(true));
+  const bump = (await within(region).findByTestId("bump-disabled")) as HTMLButtonElement;
+  expect(bump.disabled).toBe(true);
+  expect(bump.textContent).toBe("Bump");
+  expect(within(region).getByText("Bump available in 4h (last bump 2h ago)")).toBeTruthy();
   fireEvent.click(bump);
   expect(onRequestReview).not.toHaveBeenCalled();
   fireEvent.focus(screen.getByTestId("bump-disabled"));
@@ -610,4 +610,27 @@ test("people groups: the viewer is hidden from assignees too", () => {
   const byKey = Object.fromEntries(peopleGroups(overview).map((group) => [group.key, group.people.map((person) => person.login)]));
   expect(byKey.assignees).toEqual(["noor"]);
   expect(peopleGroups(mockOverview({ assignees: [user("ADA")] })).map((group) => group.key)).not.toContain("assignees");
+});
+
+test("the merge card keeps blockers full width with their action on the row, and merge controls on their own row", async () => {
+  const api = fakeApi({ prOverview: vi.fn(() => Promise.resolve(mockOverview({ is_draft: true, merge_state: "draft" }))) });
+  renderPanel(api);
+  const verdict = await screen.findByTestId("merge-verdict");
+  const row = within(verdict).getByText("It is still a draft.").closest("li") as HTMLElement;
+  expect(within(row).getByRole("button", { name: "Mark ready for review" })).toBeTruthy();
+  const controls = within(verdict).getByTestId("merge-controls");
+  expect(within(controls).queryByRole("button", { name: "Mark ready for review" })).toBeNull();
+  expect(controls.parentElement).toBe(verdict);
+});
+
+test("BlockerList renders any per-blocker action beside its text", () => {
+  render(
+    <BlockerList
+      bullets
+      items={[{ text: "3 commits behind · update required", action: <button type="button">Update branch</button> }, { text: "1 check failing: unit tests." }]}
+    />,
+  );
+  const rows = screen.getAllByRole("listitem");
+  expect(within(rows[0]).getByRole("button", { name: "Update branch" })).toBeTruthy();
+  expect(within(rows[1]).queryByRole("button")).toBeNull();
 });

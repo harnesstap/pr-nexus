@@ -200,7 +200,7 @@ export function SlackLine({ api, prId, minBumpHours = 0, onOpen, onRequest, work
               className="flex w-full items-center justify-center gap-2 rounded-lg bg-violet-600 px-4 py-2 text-sm font-semibold text-white enabled:hover:bg-violet-500 disabled:cursor-not-allowed disabled:bg-slate-800 disabled:text-slate-500"
             >
               <SlackLogo size={14} variant={disabledReason ? "mono" : "color"} />
-              {bump.last ? `Bump · last ${bump.last}` : "Bump"}
+              {!disabledReason && thread.last_bumped_at && bump.last ? `Bump · last ${bump.last}` : "Bump"}
             </button>
           </Tooltip>
           {disabledReason && <p className="text-center text-slate-500">{disabledReason}</p>}
