@@ -3,11 +3,12 @@
 
 use std::sync::{Arc, RwLock};
 
+use pr_nexus_core::store::AuditOutcome;
 use serde::Serialize;
 use tauri::State;
 use tokio::sync::Mutex;
 
-use super::audit::{AuditSink, LogAudit};
+use super::audit::{AuditSink, Fanout, LogAudit, StoreAudit};
 use super::server::{self, Running, Shared};
 use super::{McpSettings, config, token};
 use crate::blocking;
@@ -48,22 +49,42 @@ pub struct McpControl {
 
 impl McpControl {
     /// Reads the saved settings. Touches the keyring only once enabled.
-    pub fn new(state: Arc<AppState>) -> Result<Self, AppError> {
-        Self::with_audit(state, Arc::new(LogAudit))
+    /// Calls land in the Activity log and the app log; `on_write` runs after
+    /// each successful write.
+    pub fn new(
+        state: Arc<AppState>,
+        on_write: Option<Arc<dyn Fn() + Send + Sync>>,
+    ) -> Result<Self, AppError> {
+        Self::with_audit(state, Arc::new(LogAudit), on_write)
     }
 
-    pub fn with_audit(state: Arc<AppState>, audit: Arc<dyn AuditSink>) -> Result<Self, AppError> {
+    /// As [`McpControl::new`], with `extra` in place of the log line.
+    pub fn with_audit(
+        state: Arc<AppState>,
+        extra: Arc<dyn AuditSink>,
+        on_write: Option<Arc<dyn Fn() + Send + Sync>>,
+    ) -> Result<Self, AppError> {
         let settings = config::load(&state.store)?;
+        let audit = Arc::new(Fanout(vec![
+            Arc::new(StoreAudit(Arc::clone(&state))),
+            extra,
+        ]));
         Ok(Self {
             shared: Arc::new(Shared {
                 state,
                 settings: RwLock::new(settings),
                 token: RwLock::new(String::new()),
                 audit,
+                on_write,
             }),
             running: Mutex::new(None),
             status: RwLock::new(McpStatus::default()),
         })
+    }
+
+    #[cfg(test)]
+    pub fn app_state(&self) -> &Arc<AppState> {
+        &self.shared.state
     }
 
     pub fn settings(&self) -> McpSettings {
@@ -192,4 +213,62 @@ pub async fn mcp_token(mcp: State<'_, Arc<McpControl>>) -> Result<String, AppErr
 pub async fn regenerate_mcp_token(mcp: State<'_, Arc<McpControl>>) -> Result<McpView, AppError> {
     let mcp = Arc::clone(&mcp);
     mcp.regenerate().await
+}
+
+/// One Activity row as the Agents tab shows it.
+#[derive(Debug, Clone, Serialize)]
+pub struct AuditRow {
+    pub id: i64,
+    pub at: String,
+    pub client: String,
+    pub tool: String,
+    pub capability: String,
+    pub outcome: String,
+    pub summary: String,
+    pub error: Option<String>,
+}
+
+/// Rows the Activity list loads at once.
+const ACTIVITY_PAGE: usize = 200;
+
+/// The newest Activity rows, optionally one outcome (`allowed`, `denied`,
+/// `error`) only.
+#[tauri::command]
+pub async fn mcp_activity(
+    app: State<'_, Arc<AppState>>,
+    outcome: Option<String>,
+) -> Result<Vec<AuditRow>, AppError> {
+    let state = Arc::clone(&app);
+    blocking::run(move || {
+        let outcome =
+            match outcome.as_deref() {
+                None | Some("") | Some("all") => None,
+                Some(text) => Some(AuditOutcome::parse(text).ok_or_else(|| {
+                    AppError::new("validation", format!("Unknown outcome {text}"))
+                })?),
+            };
+        Ok(state
+            .store
+            .mcp_audit(outcome, ACTIVITY_PAGE)?
+            .into_iter()
+            .map(|entry| AuditRow {
+                id: entry.id,
+                at: entry.at.to_rfc3339(),
+                client: entry.client_name,
+                tool: entry.tool,
+                capability: entry.capability,
+                outcome: entry.outcome.as_str().to_owned(),
+                summary: entry.summary,
+                error: entry.error,
+            })
+            .collect())
+    })
+    .await
+}
+
+/// Empties the Activity log. The UI confirms first.
+#[tauri::command]
+pub async fn clear_mcp_activity(app: State<'_, Arc<AppState>>) -> Result<usize, AppError> {
+    let state = Arc::clone(&app);
+    blocking::run(move || Ok(state.store.clear_mcp_audit()?)).await
 }

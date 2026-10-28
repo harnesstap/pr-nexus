@@ -8,6 +8,8 @@ mod accounts;
 mod cache;
 mod listing;
 mod mappings;
+mod mcp_audit;
+pub use mcp_audit::{AUDIT_KEEP_DAYS, AUDIT_KEEP_ROWS, AuditEntry, AuditOutcome};
 mod migrate;
 mod project_info;
 mod projects;
@@ -210,7 +212,7 @@ mod tests {
         assert_eq!(mode.to_ascii_lowercase(), "wal");
         assert_eq!(foreign_keys, 1);
         assert_eq!(busy, 5000);
-        assert_eq!(version, 7);
+        assert_eq!(version, 8);
         assert!(tables.contains(&"pull_requests".to_owned()));
         assert!(tables.contains(&"review_requests".to_owned()));
         assert!(tables.contains(&"view_state".to_owned()));
@@ -224,7 +226,7 @@ mod tests {
                     .map_err(db)
             })
             .unwrap();
-        assert_eq!(version, 7);
+        assert_eq!(version, 8);
     }
 
     #[test]

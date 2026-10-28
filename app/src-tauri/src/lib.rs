@@ -19,7 +19,7 @@ mod state;
 
 use std::sync::Arc;
 
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 /// Desktop shell. The store and the GitHub client block on OS threads.
 pub fn run() {
@@ -51,7 +51,14 @@ pub fn run() {
             live::spawn(Arc::clone(&shared));
             let tokens = Arc::clone(&shared);
             tauri::async_runtime::spawn(async move { slack::validate_tokens(&tokens).await });
-            let agents = Arc::new(mcp::control::McpControl::new(Arc::clone(&shared))?);
+            let handle = app.handle().clone();
+            let on_write: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+                let _ = handle.emit(mcp::DATA_CHANGED_EVENT, ());
+            });
+            let agents = Arc::new(mcp::control::McpControl::new(
+                Arc::clone(&shared),
+                Some(on_write),
+            )?);
             if agents.settings().enabled {
                 let agents = Arc::clone(&agents);
                 tauri::async_runtime::spawn(async move { agents.apply().await });
@@ -158,6 +165,8 @@ pub fn run() {
             mcp::control::save_mcp_settings,
             mcp::control::mcp_token,
             mcp::control::regenerate_mcp_token,
+            mcp::control::mcp_activity,
+            mcp::control::clear_mcp_activity,
         ])
         .run(tauri::generate_context!())
         .expect("error while running PR Nexus");

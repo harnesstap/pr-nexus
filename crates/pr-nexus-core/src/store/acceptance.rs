@@ -816,7 +816,7 @@ fn upgrading_from_version_3_rebuilds_search_text_with_the_new_fold() {
                     params![],
                 )
                 .map_err(db)?;
-                // Undo 0006 so the upgrade replays it from version 3.
+                // Undo 0006-0008 so the upgrade replays them from version 3.
                 conn.execute_batch(
                     "UPDATE accounts SET slack_workspace_unique_v1 = slack_workspace;
                      ALTER TABLE accounts DROP COLUMN slack_workspace;
@@ -825,7 +825,8 @@ fn upgrading_from_version_3_rebuilds_search_text_with_the_new_fold() {
                      ALTER TABLE team_channel_mappings DROP COLUMN slack_team_id;
                      DROP TABLE pr_stars;
                      DROP TABLE pr_notes;
-                     DROP TABLE project_jira_links;",
+                     DROP TABLE project_jira_links;
+                     DROP TABLE mcp_audit;",
                 )
                 .map_err(db)?;
                 conn.pragma_update(None, "user_version", 3_i64)

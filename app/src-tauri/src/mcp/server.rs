@@ -22,9 +22,9 @@ use rmcp::{RoleServer, ServerHandler};
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
-use super::audit::{AuditEvent, AuditSink, Outcome};
+use super::audit::{AuditEvent, AuditSink, Outcome, summarize};
 use super::tools::{ToolSpec, registry};
-use super::{McpSettings, token};
+use super::{Capability, McpSettings, token};
 use crate::error::AppError;
 use crate::state::AppState;
 
@@ -42,11 +42,22 @@ pub struct Shared {
     pub settings: RwLock<McpSettings>,
     pub token: RwLock<String>,
     pub audit: Arc<dyn AuditSink>,
+    /// Runs after each successful write, so the app window reloads.
+    pub on_write: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl Shared {
     fn settings(&self) -> McpSettings {
         self.settings.read().expect("mcp settings").clone()
+    }
+
+    /// After an agent write: the list's idle poll sees a new revision, and
+    /// the window (when there is one) is told at once.
+    fn wrote(&self) {
+        self.state.sync.lock().expect("sync status").revision += 1;
+        if let Some(notify) = &self.on_write {
+            notify();
+        }
     }
 }
 
@@ -107,21 +118,28 @@ impl ServerHandler for NexusMcp {
             .peer_info()
             .map(|info| info.client_info.name.clone());
         let started = Instant::now();
-        let audit = |outcome: Outcome, arguments: serde_json::Map<String, serde_json::Value>| {
-            self.shared.audit.record(&AuditEvent {
-                tool: spec.name.to_owned(),
-                capability: spec.capability,
-                arguments,
-                outcome,
-                duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-                client: client.clone(),
-            });
-        };
+        let audit =
+            |outcome: Outcome, result: Option<&serde_json::Value>, error: Option<String>| {
+                self.shared.audit.record(&AuditEvent {
+                    tool: spec.name.to_owned(),
+                    capability: spec.capability,
+                    summary: summarize(spec.name, &arguments, result),
+                    arguments: arguments.clone(),
+                    outcome,
+                    duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                    client: client.clone(),
+                    error,
+                });
+            };
         if !self.shared.settings().allows(spec.capability) {
-            audit(Outcome::Denied, arguments);
+            let message = format!(
+                "{} is turned off in PR Nexus Settings → Agents (MCP).",
+                spec.name
+            );
+            audit(Outcome::Denied, None, Some(message.clone()));
             return Ok(CallToolResult::structured_error(json!({
                 "kind": "forbidden",
-                "message": format!("{} is turned off in PR Nexus Settings → Agents (MCP).", spec.name),
+                "message": message,
             }))
             .into());
         }
@@ -133,7 +151,10 @@ impl ServerHandler for NexusMcp {
             .map_err(|err| ErrorData::internal_error(err.to_string(), None))?;
         Ok(match result {
             Ok(value) => {
-                audit(Outcome::Ok, arguments);
+                audit(Outcome::Ok, Some(&value), None);
+                if spec.capability == Capability::LocalWrites {
+                    self.shared.wrote();
+                }
                 CallToolResult::structured(value)
             }
             Err(err) => {
@@ -141,7 +162,8 @@ impl ServerHandler for NexusMcp {
                     Outcome::Failed {
                         kind: err.kind.clone(),
                     },
-                    arguments,
+                    None,
+                    Some(err.message.clone()),
                 );
                 CallToolResult::structured_error(
                     json!({ "kind": err.kind, "message": err.message }),

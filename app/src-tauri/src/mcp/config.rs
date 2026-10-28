@@ -15,7 +15,7 @@ pub const SETTINGS_KEY: &str = "mcp.server";
 pub enum Capability {
     /// Read projects and pull requests.
     Reads,
-    /// Change local data: projects, links, notes, stars (phase 4).
+    /// Change local data: projects, links, notes, stars.
     LocalWrites,
     /// Post to Slack, always behind a preview (phase 5).
     SlackSends,
@@ -25,7 +25,7 @@ impl Capability {
     /// Whether this build has any tool for it. The UI shows the others as
     /// "coming soon" and the server refuses them whatever is saved.
     pub fn available(self) -> bool {
-        matches!(self, Capability::Reads)
+        matches!(self, Capability::Reads | Capability::LocalWrites)
     }
 }
 
