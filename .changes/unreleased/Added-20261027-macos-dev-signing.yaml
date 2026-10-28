@@ -1,0 +1,3 @@
+kind: Added
+body: "macOS dev: opt-in stable code signing for `bun run tauri dev` (`scripts/macos-dev-signing-setup.sh` plus a cargo runner), so the keychain's \"Always Allow\" survives rebuilds."
+time: 2026-10-27T14:30:00.000000-10:00

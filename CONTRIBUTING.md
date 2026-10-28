@@ -65,6 +65,21 @@ bun run dev
 # http://127.0.0.1:1420/preview.html?screen=list
 ```
 
+## macOS dev: stop keychain prompts
+
+Every `bun run tauri dev` rebuilds an ad-hoc signed binary whose code signature changes, so the keychain's "Always Allow" for the `dev.pr-nexus` item never matches and macOS asks for your password on each launch. Opt in to a stable local signing identity once:
+
+```sh
+scripts/macos-dev-signing-setup.sh   # idempotent; may ask for your login password to trust the cert
+security find-identity -v -p codesigning | grep "PR Nexus Dev"
+```
+
+From then on `.cargo/config.toml` sets a macOS-only cargo runner (`scripts/macos-dev-codesign-runner.sh`) that, when the identity exists, runs `codesign --force --sign "PR Nexus Dev" --identifier dev.pr-nexus` on the `pr-nexus` app binary before executing it. Test binaries and other platforms are untouched; without the identity it just runs the binary. If signing fails it prints a warning and still launches. Use another identity with `PR_NEXUS_DEV_SIGN_IDENTITY`, or skip signing with `PR_NEXUS_DEV_SIGN=0`.
+
+The existing keychain item was trusted for the old ad-hoc build, so the first signed launch prompts once: enter your password and click **Always Allow**. The designated requirement (identifier + certificate) stays the same afterwards, so the choice survives rebuilds.
+
+Manual fallback for the identity: Keychain Access > Certificate Assistant > Create a Certificate..., name `PR Nexus Dev`, Identity Type *Self-Signed Root*, Certificate Type *Code Signing*.
+
 ## Changelog
 
 Do not edit `CHANGELOG.md` by hand. Install [Changie](https://changie.dev/) and add a fragment:
