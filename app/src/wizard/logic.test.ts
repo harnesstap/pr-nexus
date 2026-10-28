@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { backEnabled, nextEnabled, nextHint, nextLabel, showSkip, type StepModel } from "./logic";
+import { backEnabled, connectBlock, nextEnabled, nextHint, nextLabel, showSkip, startIndex, visibleSteps, type StepModel } from "./logic";
 
 const ready: StepModel = {
   vcs: "github",
@@ -49,4 +49,23 @@ test("mapping Next imports only when CSV was pasted", () => {
   expect(nextLabel("chat_mapping", { ...ready, csvFilled: true })).toBe("Import & next");
   expect(nextLabel("chat_mapping", { ...ready, csvFilled: false })).toBe("Next");
   expect(nextLabel("connect_vcs", ready)).toBe("Next");
+});
+
+test("single-choice steps are hidden and a resume on one opens the first shown step", () => {
+  const all = ["choose_vcs", "connect_vcs", "choose_vcs_scope", "choose_chat", "connect_chat", "chat_mapping", "done"] as const;
+  const shown = visibleSteps(all);
+  expect(shown).toEqual(["connect_vcs", "choose_vcs_scope", "connect_chat", "chat_mapping", "done"]);
+  expect(startIndex(shown, "choose_chat")).toBe(0);
+  expect(startIndex(shown, "connect_chat")).toBe(2);
+});
+
+test("Connect GitHub needs input for the chosen mode", () => {
+  const base = { pat: "", ghReady: false, oauthConfigured: false };
+  expect(connectBlock("pat", base)).toMatch(/Paste a token/);
+  expect(connectBlock("pat", { ...base, pat: "  " })).not.toBeNull();
+  expect(connectBlock("pat", { ...base, pat: "github_pat_x" })).toBeNull();
+  expect(connectBlock("gh_cli", base)).toMatch(/gh auth login/);
+  expect(connectBlock("gh_cli", { ...base, ghReady: true })).toBeNull();
+  expect(connectBlock("device", base)).toMatch(/PR_NEXUS_GITHUB_OAUTH_CLIENT_ID/);
+  expect(connectBlock("device", { ...base, oauthConfigured: true })).toBeNull();
 });

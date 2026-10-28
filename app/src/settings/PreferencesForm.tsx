@@ -1,6 +1,7 @@
-import { useState, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import type { Api, Preferences } from "../api";
-import { errorMessage } from "../api";
+import { Switch } from "../Switch";
+import { SaveBar, useSaveBar } from "./SaveBar";
 import { toMinutes } from "./tabs";
 import { plainText } from "../textInput";
 import { Tooltip } from "../Tooltip";
@@ -16,38 +17,22 @@ const input = "mt-1 w-28 rounded border border-slate-700 bg-slate-900 px-2 py-1"
 
 /** Settings → Review and Settings → Sync: the §7.12 keys, saved together. */
 export function PreferencesForm({ api, prefs, section, onSaved }: Props) {
-  const [draft, setDraft] = useState(prefs);
-  const [status, setStatus] = useState<{ text: string; error: boolean } | null>(null);
-  const [saving, setSaving] = useState(false);
+  const { draft, setDraft, bar } = useSaveBar(prefs, async (next) => {
+    const saved = await api.savePreferences(next);
+    onSaved(saved);
+    return saved;
+  });
 
   function patch(next: Partial<Preferences>) {
     setDraft((current) => ({ ...current, ...next }));
-    setStatus(null);
   }
-
-  async function save() {
-    setSaving(true);
-    setStatus(null);
-    try {
-      const saved = await api.savePreferences(draft);
-      setDraft(saved);
-      onSaved(saved);
-      setStatus({ text: "Saved.", error: false });
-    } catch (err) {
-      setStatus({ text: errorMessage(err), error: true });
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  const dirty = JSON.stringify(draft) !== JSON.stringify(prefs);
 
   return (
     <form
       className="space-y-5"
       onSubmit={(event) => {
         event.preventDefault();
-        void save();
+        bar.onSave();
       }}
     >
       {section === "review" ? (
@@ -107,10 +92,9 @@ export function PreferencesForm({ api, prefs, section, onSaved }: Props) {
               detail="Watch your GitHub notifications and refresh only the PRs they mention, about once a minute. Unchanged checks cost nothing against the rate limit. Notifications are never marked as read."
               align="start"
             >
-              <label className="flex w-fit items-center gap-2 text-sm">
-                <input type="checkbox" checked={draft.live_updates} onChange={(event) => patch({ live_updates: event.target.checked })} />
+              <Switch label="Live updates" className="text-sm" checked={draft.live_updates} onChange={(on) => patch({ live_updates: on })}>
                 Live updates
-              </label>
+              </Switch>
             </Tooltip>
             <p className="mt-1 text-xs text-slate-500">
               Near-real-time refresh between syncs. Needs a classic token or the GitHub CLI; other tokens fall back to the periodic sync.
@@ -148,16 +132,7 @@ export function PreferencesForm({ api, prefs, section, onSaved }: Props) {
           </Field>
         </>
       )}
-      <div className="flex items-center gap-3">
-        <button type="submit" className="rounded bg-violet-500 px-3 py-2 text-sm disabled:opacity-50" disabled={saving || !dirty}>
-          {saving ? "Saving…" : "Save"}
-        </button>
-        {status && (
-          <span role="status" className={`text-sm ${status.error ? "text-rose-300" : "text-slate-300"}`}>
-            {status.text}
-          </span>
-        )}
-      </div>
+      <SaveBar {...bar} submit />
     </form>
   );
 }
@@ -175,10 +150,9 @@ function Field({ label, help, children }: { label: string; help: string; childre
 function Check({ label, help, checked, onChange }: { label: string; help: string; checked: boolean; onChange: (on: boolean) => void }) {
   return (
     <div>
-      <label className="flex items-center gap-2 text-sm">
-        <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
+      <Switch label={label} className="text-sm" checked={checked} onChange={onChange}>
         {label}
-      </label>
+      </Switch>
       <p className="mt-1 text-xs text-slate-500">{help}</p>
     </div>
   );

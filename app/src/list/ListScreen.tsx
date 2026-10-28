@@ -4,7 +4,7 @@ import { errorMessage } from "../api";
 import { ClockIcon, CloseIcon, FolderIcon, GearIcon, HomeIcon, LogoIcon, PlusIcon, RefreshIcon } from "../icons";
 import { Tooltip } from "../Tooltip";
 import { OrgOption } from "../orgs";
-import { DRAG_MIME, TOAST_MS, bulkToast, defaultView, parseDragIds, parseViewState, renameError, sentToast, liveLabel, syncLabel, type SavedView, type Toast } from "./model";
+import { DRAG_MIME, TOAST_MS, bulkToast, defaultView, parseDragIds, parseViewState, renameError, sentToast, syncLabel, type SavedView, type Toast } from "./model";
 import { PrList, type ListActions } from "./PrList";
 import { GlobalCommands } from "./GlobalCommands";
 import type { PageRequest } from "./paging";
@@ -15,12 +15,13 @@ const SYNC_POLL_MS = 500;
 const IDLE_POLL_MS = 15_000;
 import { DetailPanel } from "../detail/DetailPanel";
 import { ProjectDialog } from "./ProjectDialog";
-import { SlackSettings } from "../slack/SlackSettings";
+import { AccountsSettings } from "../settings/AccountsSettings";
 import { BulkDialog } from "../slack/BulkDialog";
 import { ReviewDialog } from "../slack/ReviewDialog";
 import { SettingsScreen } from "../settings/SettingsScreen";
 import type { SettingsTab } from "../settings/tabs";
 import { KeyringBanner } from "../KeyringBanner";
+import { SlackSignInBanner, SyncErrorBanner, SyncPopover } from "./SyncBanners";
 import { MappingHint, UpdateBanner } from "./Banners";
 import { showMappingHint } from "./hints";
 import { plainText } from "../textInput";
@@ -153,7 +154,15 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
     };
   }, [api, syncing, noteRevision]);
 
-  const loadPage = useCallback((request: PageRequest) => api.listPage(request), [api]);
+  const [openCount, setOpenCount] = useState<number | null>(null);
+  const loadPage = useCallback(
+    async (request: PageRequest) => {
+      const page = await api.listPage(request);
+      setOpenCount(page.summary.open);
+      return page;
+    },
+    [api],
+  );
 
   useEffect(() => {
     let cancel = false;
@@ -311,15 +320,11 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
 
   const activeProjects = projects.filter((project) => !project.archived);
   const dialogProject = projects.find((project) => project.id === editingProject) ?? null;
-  const syncTone = sync.phase === "error" || sync.paused || sync.phase === "paused" ? "bg-amber-400" : sync.phase === "syncing" ? "bg-sky-400" : "bg-emerald-400";
+  const syncTone = sync.phase === "error" ? "bg-rose-400" : sync.paused || sync.phase === "paused" ? "bg-amber-400" : sync.phase === "syncing" ? "bg-sky-400" : "bg-emerald-400";
 
-  const orgPicker = (inSettings: boolean) => (
+  const orgPicker = () => (
     <div>
-      {inSettings ? (
-        <h2 className="text-base font-semibold">Tracked orgs</h2>
-      ) : (
-        <h1 className="text-lg font-semibold">Choose orgs to track</h1>
-      )}
+      <h1 className="text-lg font-semibold">Choose orgs to track</h1>
       <p className="mt-2 text-sm text-slate-400">
         Nothing is selected by default. The list stays empty until you pick at least one org or include personal repos.
       </p>
@@ -459,7 +464,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
             )
           )}
         </section>
-        <footer className="border-t border-slate-800 px-2 py-2 text-sm">
+        <footer className="relative border-t border-slate-800 px-2 py-2 text-sm">
           <NavButton current={viewKey} id="settings" icon={<GearIcon />} onSelect={setViewKey}>
             Settings
           </NavButton>
@@ -467,6 +472,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
             <button
               type="button"
               aria-expanded={detail}
+              data-sync-trigger=""
               aria-label={`${syncLabel(sync, now)}, sync details`}
               className="flex items-center gap-2 text-left"
               onClick={() => setDetail((open) => !open)}
@@ -480,26 +486,15 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
               </button>
             </Tooltip>
           </div>
-          {detail && liveLabel(sync, now) && <p className="px-2 pt-1 text-xs text-slate-500">{liveLabel(sync, now)}</p>}
           {detail && (
-            <div className="flex items-center justify-between gap-2 px-2 pt-1 text-xs text-slate-500">
-              <p>{sync.message}</p>
-              <Tooltip
-                label="Full resync"
-                detail="Re-read every open PR from GitHub, not only what changed. Runs on its own at start and every 6 hours."
-                side="top"
-                align="end"
-              >
-                <button
-                  type="button"
-                  disabled={syncing}
-                  className="shrink-0 rounded px-1 hover:bg-slate-800 hover:text-slate-200 disabled:opacity-50"
-                  onClick={() => void refresh(true)}
-                >
-                  Full resync
-                </button>
-              </Tooltip>
-            </div>
+            <SyncPopover
+              sync={sync}
+              now={now}
+              prCount={openCount}
+              onSync={() => void refresh()}
+              onFullResync={() => void refresh(true)}
+              onClose={() => setDetail(false)}
+            />
           )}
         </footer>
       </aside>
@@ -512,6 +507,16 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
               setViewKey("settings");
             }}
             onDismiss={() => setMappingHint(false)}
+          />
+        )}
+        <SyncErrorBanner sync={sync} now={now} onReconnect={() => onRerunSetup?.()} onRetry={() => void refresh()} />
+        {viewKey !== "settings" && (
+          <SlackSignInBanner
+            workspaces={boot.slack_workspaces}
+            onReconnect={() => {
+              setSettingsTab("accounts");
+              setViewKey("settings");
+            }}
           />
         )}
         <KeyringBanner api={api} initial={boot.keyring} onReady={() => void api.bootstrap().then(onBoot)} />
@@ -529,26 +534,22 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
               onTabChange={setSettingsTab}
               onRerunSetup={() => onRerunSetup?.()}
               accounts={
-                <div className="space-y-8">
-                  <section aria-labelledby="accounts-providers">
-                    <h2 id="accounts-providers" className="text-base font-semibold">
-                      Providers
-                    </h2>
-                    <p className="mt-2 text-sm text-slate-300">
-                      GitHub{boot.github_login ? ` · signed in as ${boot.github_login}` : ""} · Slack
-                    </p>
-                    <p className="mt-1 text-xs text-slate-500">
-                      To change the GitHub account, use About → Re-run setup.
-                    </p>
-                  </section>
-                  {orgPicker(true)}
-                  <SlackSettings api={api} boot={boot} onMentionsChange={(scope) => onBoot({ ...boot, slack_mentions: scope })} />
-                </div>
+                <AccountsSettings
+                  api={api}
+                  boot={boot}
+                  onOrgsSaved={async (nextOrgs, nextPersonal) => {
+                    setOrgs(nextOrgs);
+                    setPersonal(nextPersonal);
+                    await refresh();
+                  }}
+                  onMentionsChange={(scope) => onBoot({ ...boot, slack_mentions: scope })}
+                  onWorkspacesChange={(workspaces) => onBoot({ ...boot, slack_workspaces: workspaces })}
+                />
               }
             />
           </section>
         ) : needsOrgs ? (
-          <section className="max-w-xl px-6 py-8">{orgPicker(false)}</section>
+          <section className="max-w-xl px-6 py-8">{orgPicker()}</section>
         ) : listState.phase === "loading" ? (
           <p role="status" className="px-6 py-8 text-sm text-slate-400">
             Loading pull requests…
@@ -616,7 +617,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
                 onRequestReview={() => setReviewRow(detailRow)}
                 onNotice={(text) => setNotice({ text })}
                 onDraftChange={changeDraft}
-                slack={{ mentions: boot.slack_mentions }}
+                slack={{ mentions: boot.slack_mentions, workspaces: boot.slack_workspaces }}
               />
             )}
           </div>

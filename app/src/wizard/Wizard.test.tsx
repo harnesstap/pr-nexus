@@ -118,24 +118,49 @@ function api(overrides: Partial<Api> = {}): Api {
   };
 }
 
-test("step 1 shows only GitHub, preselected, and back is disabled", () => {
-  render(<Wizard api={api()} boot={boot} onFinished={() => undefined} />);
+test("the single-choice provider steps are skipped and recorded once", async () => {
+  const providers: string[][] = [];
+  render(
+    <Wizard
+      api={api({
+        saveProviders: (vcs, chat) => {
+          providers.push([vcs, chat]);
+          return Promise.resolve();
+        },
+      })}
+      boot={boot}
+      onFinished={() => undefined}
+    />,
+  );
+  expect(screen.getByRole("heading", { name: /Step 1 of 5 · / })).toBeInTheDocument();
+  expect(screen.queryByRole("radio", { name: /^GitHub/ })).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Back" })).toBeDisabled();
-  expect(screen.queryByRole("button", { name: "Skip" })).not.toBeInTheDocument();
-  const cards = screen.getAllByRole("radio");
-  expect(cards).toHaveLength(1);
-  expect(cards[0]).toHaveAccessibleName(/GitHub/);
-  expect(cards[0]).toHaveAttribute("aria-checked", "true");
-  expect(screen.queryByText(/coming soon/i)).not.toBeInTheDocument();
+  await waitFor(() => expect(providers).toEqual([["github", "slack"]]));
 });
 
-test("step 2 shows only Slack, preselected", () => {
+test("a resume step that points at a hidden step opens the first shown step", () => {
   render(<Wizard api={api()} boot={{ ...boot, resume_step: "choose_chat" }} onFinished={() => undefined} />);
-  const cards = screen.getAllByRole("radio");
-  expect(cards).toHaveLength(1);
-  expect(cards[0]).toHaveAccessibleName(/Slack/);
-  expect(cards[0]).toHaveAttribute("aria-checked", "true");
-  expect(screen.queryByText(/coming soon/i)).not.toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: /Step 1 of 5 · / })).toBeInTheDocument();
+});
+
+test("Connect GitHub stays disabled until a token is pasted, and explains why", () => {
+  render(<Wizard api={api()} boot={{ ...boot, gh_ready: false, resume_step: "connect_vcs" }} onFinished={() => undefined} />);
+  fireEvent.click(screen.getByRole("radio", { name: /personal access token/ }));
+  const connect = screen.getByRole("button", { name: "Connect GitHub" });
+  expect(connect).toBeDisabled();
+  expect(screen.getByText("Why is this disabled?")).toBeInTheDocument();
+  fireEvent.change(screen.getByPlaceholderText("github_pat_…"), { target: { value: "github_pat_x" } });
+  expect(connect).toBeEnabled();
+  expect(screen.queryByText("Why is this disabled?")).not.toBeInTheDocument();
+});
+
+test("the device-flow env hint sits behind the disclosure", () => {
+  render(<Wizard api={api()} boot={{ ...boot, oauth_client_configured: false, resume_step: "connect_vcs" }} onFinished={() => undefined} />);
+  fireEvent.click(screen.getByRole("radio", { name: /device flow/ }));
+  expect(screen.getByRole("button", { name: /Copy & open/ })).toBeDisabled();
+  const why = screen.getByText("Why is this disabled?").closest("details");
+  expect(why).not.toHaveAttribute("open");
+  expect(why).toHaveTextContent(/PR_NEXUS_GITHUB_OAUTH_CLIENT_ID/);
 });
 
 test("the Slack step saves a custom redirect, connects in the browser, then allows Next", async () => {
@@ -288,7 +313,7 @@ test("skipping the mapping step lands on Done before the list opens", async () =
     />,
   );
   fireEvent.click(screen.getByRole("button", { name: "Skip" }));
-  expect(await screen.findByRole("heading", { name: /Step 7 of 7 · Done/ })).toBeInTheDocument();
+  expect(await screen.findByRole("heading", { name: /Step 5 of 5 · Done/ })).toBeInTheDocument();
   expect(screen.getByText(/mapping: skipped/)).toBeInTheDocument();
   expect(finished).toBe(false);
   const open = screen.getByRole("button", { name: "Open PR Nexus" });

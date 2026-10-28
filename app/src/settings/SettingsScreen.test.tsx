@@ -63,12 +63,12 @@ test("Review saves the bump broadcast setting and passes it up to the app", asyn
     },
   }) as Api;
   render(<Harness api={api} start="review" onBoot={(next) => booted.push(next)} />);
-  const toggle = await screen.findByRole("checkbox", { name: "Also post bumps to the channel" });
+  const toggle = await screen.findByRole("switch", { name: "Also post bumps to the channel" });
   expect(toggle).toBeChecked();
-  expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+  expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
   fireEvent.click(toggle);
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
-  expect(await screen.findByText("Saved.")).toBeInTheDocument();
+  expect(await screen.findByText("Saved")).toBeInTheDocument();
   expect(saved).toEqual([{ ...DEFAULT_PREFERENCES, bump_broadcast: false }]);
   expect(booted.map((next) => next.bump_broadcast)).toEqual([false]);
 });
@@ -86,7 +86,7 @@ test("Sync edits intervals in minutes and shows an error from the backend", asyn
   expect(focused).toHaveValue(3);
   fireEvent.change(focused, { target: { value: "45" } });
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
-  expect(await screen.findByRole("status")).toHaveTextContent(/between 60 and 3600/);
+  expect(await screen.findByRole("alert")).toHaveTextContent(/between 60 and 3600/);
   expect(saved[0]?.focused_interval_s).toBe(2700);
 });
 
@@ -328,10 +328,10 @@ test("Sync has a Live updates toggle, on by default, that saves off", async () =
     },
   }) as Api;
   render(<Harness api={api} start="sync" />);
-  const toggle = await screen.findByRole("checkbox", { name: "Live updates" });
+  const toggle = await screen.findByRole("switch", { name: "Live updates" });
   expect(toggle).toBeChecked();
   fireEvent.click(toggle);
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
-  expect(await screen.findByText("Saved.")).toBeInTheDocument();
+  expect(await screen.findByText("Saved")).toBeInTheDocument();
   expect(saved).toEqual([{ ...DEFAULT_PREFERENCES, live_updates: false }]);
 });

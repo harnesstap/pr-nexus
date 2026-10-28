@@ -7,7 +7,7 @@ import { OrgOption } from "../orgs";
 import { DEFAULT_REDIRECT, SlackPanel, type SlackFields } from "../slack/SlackPanel";
 import { WorkspaceSelect } from "../slack/WorkspaceSelect";
 import { chosenWorkspace, csvHasWorkspaceColumn, rememberWorkspace } from "../slack/workspaces";
-import { backEnabled, nextEnabled, nextHint, nextLabel, showSkip, stepTitle, type StepModel } from "./logic";
+import { AUTO_STEPS, backEnabled, connectBlock, nextEnabled, nextHint, nextLabel, showSkip, startIndex, stepTitle, visibleSteps, type StepModel } from "./logic";
 import { plainText } from "../textInput";
 import { CheckIcon, ChevronLeftIcon, ChevronRightIcon, CopyIcon, GitHubIcon, LogoIcon, RefreshIcon, SkipIcon } from "../icons";
 
@@ -27,10 +27,10 @@ interface Props {
 }
 
 export function Wizard({ api, boot, onFinished, onCancel }: Props) {
-  const steps = boot.steps;
+  const steps = useMemo(() => visibleSteps(boot.steps), [boot.steps]);
   // A re-run must not drop the user back into setup on the next launch if they quit halfway.
   const finishedAt = onCancel ? boot.onboarding.finished_at : null;
-  const start = Math.max(0, steps.indexOf(boot.resume_step));
+  const start = startIndex(steps, boot.resume_step);
   const [index, setIndex] = useState(start);
   const [completed, setCompleted] = useState<string[]>(boot.onboarding.completed);
   const [slackSkipped, setSlackSkipped] = useState(boot.onboarding.slack_skipped);
@@ -91,7 +91,7 @@ export function Wizard({ api, boot, onFinished, onCancel }: Props) {
 
   const mode = chosenMode ?? (gh.ready ? "gh_cli" : "pat");
 
-  const step = steps[index] ?? "choose_vcs";
+  const step = steps[index] ?? steps[0] ?? "connect_vcs";
   // The Done screen's button sits where Skip/Next were; a short delay keeps a
   // double click on the previous step from skipping the summary.
   const [armedIndex, setArmedIndex] = useState<number | null>(null);
@@ -153,11 +153,24 @@ export function Wizard({ api, boot, onFinished, onCancel }: Props) {
     slackConnected: workspaces.some((item) => item.signed_in),
   };
   const hint = busy ? null : nextHint(step, model);
+  const blocked = connectBlock(mode, { pat, ghReady: gh.ready, oauthConfigured: boot.oauth_client_configured });
   const canNext = nextEnabled(step, model) && !busy;
   const filteredChoices = useMemo(
     () => choices.filter((org) => org.toLowerCase().includes(orgFilter.trim().toLowerCase())),
     [choices, orgFilter],
   );
+
+  // The provider steps have one answer each: record it once instead of showing them.
+  useEffect(() => {
+    const hidden = boot.steps.filter((item) => AUTO_STEPS.includes(item) && !boot.onboarding.completed.includes(item));
+    if (hidden.length === 0) {
+      return;
+    }
+    api
+      .saveProviders("github", "slack")
+      .then(() => setCompleted((current) => [...current, ...hidden.filter((item) => !current.includes(item))]))
+      .catch((err: unknown) => setError(errorMessage(err)));
+  }, [api, boot.steps, boot.onboarding.completed]);
 
   async function persist(nextIndex: number, extra?: Partial<OnboardingState>) {
     const nextStep = steps[nextIndex] ?? step;
@@ -175,9 +188,6 @@ export function Wizard({ api, boot, onFinished, onCancel }: Props) {
     setError(null);
     setBusy(true);
     try {
-      if (step === "choose_vcs" || step === "choose_chat") {
-        await api.saveProviders("github", "slack");
-      }
       if (step === "connect_vcs" && !githubConnected) {
         return;
       }
@@ -336,20 +346,6 @@ export function Wizard({ api, boot, onFinished, onCancel }: Props) {
         </h1>
       </header>
       <section className="mt-8 flex-1">
-        {step === "choose_vcs" && (
-          <ProviderStep
-            prompt="Where do your pull requests live?"
-            name="GitHub"
-            detail="github.com"
-          />
-        )}
-        {step === "choose_chat" && (
-          <ProviderStep
-            prompt="Where do you ask for reviews?"
-            name="Slack"
-            detail="One or more workspaces"
-          />
-        )}
         {step === "connect_vcs" && (
           <div className="space-y-4">
             <label className="flex items-start gap-3">
@@ -394,11 +390,6 @@ export function Wizard({ api, boot, onFinished, onCancel }: Props) {
                 {deviceCode && (
                   <span className="mt-1 block font-mono text-sm">code: {deviceCode}</span>
                 )}
-                {!boot.oauth_client_configured && (
-                  <span className="mt-1 block text-sm text-slate-400">
-                    Needs a client id in github.oauth_client_id or PR_NEXUS_GITHUB_OAUTH_CLIENT_ID.
-                  </span>
-                )}
               </span>
             </label>
             <div className="flex gap-2">
@@ -406,10 +397,10 @@ export function Wizard({ api, boot, onFinished, onCancel }: Props) {
                 type="button"
                 className="flex items-center gap-2 rounded bg-violet-500 px-3 py-2 text-sm font-medium text-white disabled:opacity-40"
                 onClick={() => void connect()}
-                disabled={busy || (mode === "device" && !boot.oauth_client_configured)}
+                disabled={busy || blocked !== null}
               >
                 {mode === "device" ? <CopyIcon /> : <GitHubIcon />}
-                {mode === "device" ? "Copy & open" : "Connect"}
+                {mode === "device" ? "Copy & open" : "Connect GitHub"}
               </button>
               {mode === "device" && deviceCode && (
                 <button type="button" className="flex items-center gap-2 rounded border border-slate-600 px-3 py-2 text-sm" onClick={() => void poll()}>
@@ -418,6 +409,12 @@ export function Wizard({ api, boot, onFinished, onCancel }: Props) {
                 </button>
               )}
             </div>
+            {blocked && !githubConnected && (
+              <details className="text-sm text-slate-400">
+                <summary className="cursor-pointer text-slate-300">Why is this disabled?</summary>
+                <p className="mt-1">{blocked}</p>
+              </details>
+            )}
             {githubConnected && (
               <p className="text-sm text-emerald-300">Connected as @{login}</p>
             )}
@@ -635,19 +632,6 @@ export function Wizard({ api, boot, onFinished, onCancel }: Props) {
 }
 
 /** v1 supports one provider per step, shown as a single preselected card. */
-function ProviderStep({ prompt, name, detail }: { prompt: string; name: string; detail: string }) {
-  return (
-    <div>
-      <p className="mb-4 text-slate-300">{prompt}</p>
-      <div role="radiogroup" aria-label={prompt} className="grid gap-3 sm:grid-cols-3">
-        <button type="button" role="radio" aria-checked="true" className="rounded-lg border border-violet-400 bg-violet-500/10 px-4 py-5 text-left">
-          <span className="block font-medium">{name}</span>
-          <span className="mt-1 block text-sm text-slate-400">{detail}</span>
-        </button>
-      </div>
-    </div>
-  );
-}
 
 function mergeOrgs(current: string[], extra: string[]): string[] {
   const next = [...current];

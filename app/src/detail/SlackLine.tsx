@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import type { Api, ContextThread } from "../api";
+import type { Api, ContextThread, SlackWorkspace } from "../api";
 import { channelLabel, errorMessage } from "../api";
 import { SlackIcon } from "../icons";
 import { shortTime, slackText } from "../list/slackText";
+import { slackActionBlock } from "../list/SyncBanners";
 import { Tooltip } from "../Tooltip";
 
 interface Props {
@@ -11,6 +12,8 @@ interface Props {
   onOpen: (url: string) => void;
   /** Opens the request or bump preview. */
   onRequest?: () => void;
+  /** Connected workspaces; one that needs sign-in disables its action. */
+  workspaces?: SlackWorkspace[];
 }
 
 /** Replies shown under the request before the rest fold into "+N more". */
@@ -28,7 +31,7 @@ export function latestThread(threads: ContextThread[]): ContextThread | null {
  * request exists, then the latest request with its newest replies and a Bump button.
  * Both open the preview, where another channel can still get a new request.
  */
-export function SlackLine({ api, prId, onOpen, onRequest }: Props) {
+export function SlackLine({ api, prId, onOpen, onRequest, workspaces = [] }: Props) {
   const [threads, setThreads] = useState<ContextThread[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -47,15 +50,17 @@ export function SlackLine({ api, prId, onOpen, onRequest }: Props) {
     return <div className="h-10 animate-pulse rounded-lg bg-slate-800/70" aria-label="Loading Slack" />;
   }
   const thread = threads ? latestThread(threads) : null;
+  const blocked = slackActionBlock(workspaces, thread?.workspace);
   if (!thread) {
     return (
       <div className="space-y-1.5" data-testid="slack-empty">
         {onRequest && (
-          <Tooltip label="Request review on Slack" shortcut="R" detail="Shows the exact message first; nothing is sent until you confirm" side="bottom" className="w-full">
+          <Tooltip label={blocked ?? "Request review on Slack"} shortcut="R" detail={blocked ? "Reconnect it in Settings › Accounts" : "Shows the exact message first; nothing is sent until you confirm"} side="bottom" className="w-full">
             <button
               type="button"
               onClick={onRequest}
-              className="flex w-full items-center justify-center gap-2 rounded-lg bg-violet-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-violet-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-300"
+              disabled={blocked !== null}
+              className="flex w-full items-center justify-center gap-2 rounded-lg bg-violet-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-300"
             >
               <SlackIcon size={16} />
               Request review on Slack
@@ -91,8 +96,8 @@ export function SlackLine({ api, prId, onOpen, onRequest }: Props) {
             </button>
           )}
           {onRequest && (
-            <Tooltip label="Bump on Slack" shortcut="R" detail="Preview the bump first; pick another channel there to send a new request instead" side="bottom" align="end">
-              <button type="button" onClick={onRequest} className="flex items-center gap-1.5 rounded-md bg-violet-600 px-2.5 py-1 font-medium text-white hover:bg-violet-500">
+            <Tooltip label={blocked ?? "Bump on Slack"} shortcut="R" detail={blocked ? "Reconnect it in Settings › Accounts" : "Preview the bump first; pick another channel there to send a new request instead"} side="bottom" align="end">
+              <button type="button" onClick={onRequest} disabled={blocked !== null} className="flex items-center gap-1.5 rounded-md bg-violet-600 px-2.5 py-1 font-medium text-white hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-50">
                 <SlackIcon size={12} />
                 Bump
               </button>

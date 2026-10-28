@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import type { Api, Explanation, ListRow, MentionsScope, PrDetail, PrOverview } from "../api";
+import type { Api, Explanation, ListRow, MentionsScope, PrDetail, PrOverview, SlackWorkspace } from "../api";
 import { errorMessage } from "../api";
 import { CloseButton } from "../CloseButton";
 import { AlertIcon, CheckIcon, DeclinedIcon, GitHubIcon } from "../icons";
@@ -31,7 +31,7 @@ interface Props {
    */
   onDraftChange?: (id: number, draft: boolean | null | "saved") => void;
   /** Adds the full Slack threads and mention search (§7.10) as an expander. */
-  slack?: { mentions: MentionsScope };
+  slack?: { mentions: MentionsScope; workspaces?: SlackWorkspace[] };
 }
 
 /** Panel width as a share of the window, remembered across launches. */
@@ -246,7 +246,7 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
               </div>
             )}
             {/* The one primary action, right under "can I merge": asking for review is what unblocks it. */}
-            <SlackLine api={api} prId={row.id} onOpen={onOpen} onRequest={onRequestReview} />
+            <SlackLine api={api} prId={row.id} onOpen={onOpen} onRequest={onRequestReview} workspaces={slack?.workspaces} />
             {overviewError && <p className="text-xs text-amber-200">Showing the copy from {ago(overview.fetched_at, new Date())}; refreshing failed: {overviewError}</p>}
             <PeopleRow
               groups={peopleGroups(overview, detail ? requiredSeats(overview.reviewers, detail.mandatory_teams, detail.approved_teams) : [])}
@@ -254,7 +254,7 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
             />
           </>
         )}
-        {!overview && <SlackLine api={api} prId={row.id} onOpen={onOpen} onRequest={onRequestReview} />}
+        {!overview && <SlackLine api={api} prId={row.id} onOpen={onOpen} onRequest={onRequestReview} workspaces={slack?.workspaces} />}
         <div>
           <Expander title={`Files changed (${files})`} aside={detail?.codeowners_path ? "with code owners" : undefined}>
             <FilesBody detail={detail} error={detailError} />
