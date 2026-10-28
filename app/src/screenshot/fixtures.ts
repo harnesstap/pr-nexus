@@ -406,9 +406,9 @@ const webReviews: ReviewTarget = { workspace: "acme", team_id: "T0ACME0001", wor
 /** The code-owner channel the review dialog suggests. */
 export const reviewChoices: TargetChoice[] = [{ target: webReviews, teams: ["@acme/web"], source: "mapping" }];
 
-/** The request text as the backend renders it (Slack mrkdwn). */
+/** The request text as the backend renders it: the title as inline code, the bare URL on its own line. */
 export function reviewText(title: string, url: string): string {
-  return `Hello team\nCould someone please review *${title}*? (Ada Park) :pray:\n<${url}|${url.replace("https://github.com/", "")}>\nThanks! :rocket:`;
+  return `Hello team\nCould someone please review \`${title.replaceAll("`", "'")}\`? (Ada Park)\n${url}\nThanks!\n`;
 }
 
 const labs = (target: ReviewTarget): ReviewTarget => ({

@@ -111,3 +111,15 @@ test("Escape closes the dialog", async () => {
   fireEvent.keyDown(document, { key: "Escape" });
   expect(closed).toBe(true);
 });
+
+test("titles with underscores preview as inline code with no Markdown warning", async () => {
+  const { api } = fake();
+  const text = "Hello team\nCould someone please review these pull requests?\n- `feat: return location_ip_hash`\nhttps://github.com/acme/widgets/pull/42\n- `fix: keep snake_case keys`\nhttps://github.com/acme/widgets/pull/43\nThanks!\n";
+  const preview: BulkPreview = {
+    cards: [{ ...card(true), messages: [{ action: "request", prs: [pr(1, 42, "feat: return location_ip_hash"), pr(2, 43, "fix: keep snake_case keys")], text, permalink: null }] }],
+    skipped: [],
+  };
+  render(<BulkDialog api={{ ...api, bulkPreview: () => Promise.resolve(preview) }} prIds={[1, 2]} onClose={() => undefined} onSent={() => undefined} onOpen={() => undefined} />);
+  expect(await screen.findByLabelText("Message preview")).toHaveTextContent("- `feat: return location_ip_hash`");
+  expect(screen.queryByText(/Markdown characters/)).not.toBeInTheDocument();
+});

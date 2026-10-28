@@ -1,7 +1,7 @@
 Hello team
 Could someone please review these pull requests?
-- Fix the widget latch
+- `Fix the widget latch`
 https://github.com/acme/widgets/pull/1
-- Add the widget gauge
+- `Add the widget gauge`
 https://github.com/acme/widgets/pull/2
 Thanks!
