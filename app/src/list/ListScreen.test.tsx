@@ -102,6 +102,7 @@ function api(projects: ProjectDto[], rows: SearchRow[] = []): Api {
     prOverview: () => Promise.resolve(null),
     setAutoMerge: () => Promise.reject(new Error("unused")),
     setPrDraft: () => Promise.reject(new Error("unused")),
+    mergePr: () => Promise.reject(new Error("unused")),
     prSlackContext: () => Promise.resolve([]),
     prSlackMentions: () => Promise.resolve([]),
     saveSlackMentions: () => Promise.resolve(),

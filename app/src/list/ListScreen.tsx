@@ -656,6 +656,10 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
             api={api}
             row={reviewRow}
             onClose={() => setReviewRow(null)}
+            onReady={(id) => {
+              changeDraft(id, false);
+              changeDraft(id, "saved");
+            }}
             onOpen={(url) => void api.openExternal(url)}
             onSent={(slack) => {
               setReviewRow(null);

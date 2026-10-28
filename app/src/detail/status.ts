@@ -74,7 +74,12 @@ export function approvalsSummary(
   return { tone: approvals > 0 ? "good" : "muted", value, caption: approvals > 0 ? "Approved" : "No approvals", requiredKnown };
 }
 
-export function mergeabilitySummary(overview: Pick<PrOverview, "state" | "mergeable" | "merge_state">): Summary {
+/**
+ * The Conflicts card: only whether the branch merges cleanly into its base.
+ * Checks, reviews and drafts live in the verdict, so "None" here never reads
+ * as "ready to merge".
+ */
+export function conflictsSummary(overview: Pick<PrOverview, "state" | "mergeable" | "merge_state">): Summary {
   if (overview.state === "merged") {
     return { tone: "good", value: "Merged", caption: "Already in the base branch" };
   }
@@ -82,7 +87,7 @@ export function mergeabilitySummary(overview: Pick<PrOverview, "state" | "mergea
     return { tone: "muted", value: "Closed", caption: "Not merged" };
   }
   if (overview.mergeable === "conflicting" || overview.merge_state === "dirty") {
-    return { tone: "bad", value: "Conflicts", caption: "Resolve before merging" };
+    return { tone: "bad", value: "Yes", caption: "Resolve before merging" };
   }
   if (overview.mergeable === "unknown" || overview.merge_state === "unknown") {
     return { tone: "muted", value: "Checking", caption: "GitHub is computing it" };
@@ -90,7 +95,7 @@ export function mergeabilitySummary(overview: Pick<PrOverview, "state" | "mergea
   if (overview.merge_state === "behind") {
     return { tone: "warn", value: "Behind", caption: "Update from the base branch" };
   }
-  return { tone: "good", value: "Clean", caption: "No conflicts" };
+  return { tone: "good", value: "None", caption: "Merges cleanly into the base" };
 }
 
 const WRITE = new Set(["admin", "maintain", "write"]);
@@ -102,6 +107,54 @@ export interface MergeVerdict {
   title: string;
   /** Why, in one sentence. */
   reason: string;
+  /** Everything in the way, when it can't merge; empty otherwise. */
+  blockers: string[];
+}
+
+const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
+
+/**
+ * Every reason an open pull request can't merge yet, in a fixed order: draft,
+ * access, conflicts, behind, failing checks, required checks still running,
+ * changes requested, and missing approvals.
+ */
+export function mergeBlockers(overview: PrOverview): string[] {
+  if (overview.state !== "open") {
+    return [];
+  }
+  const out: string[] = [];
+  if (overview.is_draft || overview.merge_state === "draft") {
+    out.push("It is still a draft.");
+  }
+  if (overview.viewer.permission !== null && !WRITE.has(overview.viewer.permission)) {
+    out.push("You don't have write access to this repository.");
+  }
+  if (overview.mergeable === "conflicting" || overview.merge_state === "dirty") {
+    out.push("It has merge conflicts with the base branch.");
+  }
+  if (overview.merge_state === "behind") {
+    out.push("The branch is behind its base.");
+  }
+  const failed = overview.checks.filter((check) => check.state === "failed");
+  if (failed.length > 0) {
+    const required = failed.filter((check) => check.required).length;
+    const names = failed.map((check) => check.name).join(", ");
+    out.push(`${plural(failed.length, "check")} failing${required > 0 && required < failed.length ? ` (${required} required)` : required > 0 ? "" : " (not required)"}: ${names}.`);
+  }
+  const running = overview.checks.filter((check) => check.required && check.state === "pending");
+  if (running.length > 0) {
+    out.push(`${plural(running.length, "required check")} still running: ${running.map((check) => check.name).join(", ")}.`);
+  }
+  if (overview.review_decision === "changes_requested") {
+    out.push("A reviewer requested changes.");
+  }
+  const required = overview.required_approvals;
+  if (required !== null && overview.approvals < required) {
+    out.push(`It needs ${plural(required - overview.approvals, "more approval")}.`);
+  } else if (overview.review_decision === "review_required") {
+    out.push("It is waiting for a required review.");
+  }
+  return out;
 }
 
 /**
@@ -110,8 +163,8 @@ export interface MergeVerdict {
  * what the branch rules let it see; see the panel tooltip.
  */
 export function mergeVerdict(overview: PrOverview): MergeVerdict {
-  const no = (reason: string, tone: Tone = "bad"): MergeVerdict => ({ can: false, tone, title: "You can't merge", reason });
-  const yes = (reason: string, tone: Tone = "good"): MergeVerdict => ({ can: true, tone, title: "You can merge", reason });
+  const no = (reason: string, tone: Tone = "bad"): MergeVerdict => ({ can: false, tone, title: "You can't merge", reason, blockers: mergeBlockers(overview) });
+  const yes = (reason: string, tone: Tone = "good"): MergeVerdict => ({ can: true, tone, title: "You can merge", reason, blockers: [] });
   if (overview.state === "merged") {
     return no("It is already merged.", "muted");
   }
@@ -119,7 +172,7 @@ export function mergeVerdict(overview: PrOverview): MergeVerdict {
     return no("The pull request is closed.", "muted");
   }
   if (overview.is_draft || overview.merge_state === "draft") {
-    return no("It is still a draft. Mark it ready for review first.", "warn");
+    return no("It is still a draft. Mark it ready for review first (the Draft pill above).", "warn");
   }
   if (overview.viewer.permission !== null && !WRITE.has(overview.viewer.permission)) {
     return no("You don't have write access to this repository.", "muted");
@@ -218,6 +271,11 @@ export function autoMergeView(overview: PrOverview): AutoMergeView {
     );
   }
   return { ...base, enabled: false, available: true, reason: null };
+}
+
+/** Whether to offer a direct Merge button: open, mergeable now, and a method to use. */
+export function canMergeNow(overview: PrOverview): boolean {
+  return overview.state === "open" && !overview.auto_merge && mergeVerdict(overview).can && autoMergeView(overview).methods.length > 0;
 }
 
 /** Text and background classes for a tone. */

@@ -17,6 +17,7 @@ const ENABLE: &str = include_str!("graphql/enable_auto_merge.graphql");
 const DISABLE: &str = include_str!("graphql/disable_auto_merge.graphql");
 const TO_DRAFT: &str = include_str!("graphql/convert_to_draft.graphql");
 const MARK_READY: &str = include_str!("graphql/mark_ready.graphql");
+const MERGE: &str = include_str!("graphql/merge_pull_request.graphql");
 
 pub(crate) fn fetch(client: &GithubClient, pr: &PullRequest) -> Result<PrOverview, ProviderError> {
     let body = client.graphql(
@@ -46,6 +47,20 @@ pub(crate) fn set_auto_merge(
         )?,
         None => client.graphql(DISABLE, json!({ "id": pr.remote.id }))?,
     };
+    data(&body)?;
+    Ok(())
+}
+
+/// Merges the pull request now with `method` (GraphQL `mergePullRequest`).
+pub(crate) fn merge(
+    client: &GithubClient,
+    pr: &PullRequest,
+    method: MergeMethod,
+) -> Result<(), ProviderError> {
+    let body = client.graphql(
+        MERGE,
+        json!({ "id": pr.remote.id, "method": method.graphql() }),
+    )?;
     data(&body)?;
     Ok(())
 }

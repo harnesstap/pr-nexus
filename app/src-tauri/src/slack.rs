@@ -662,11 +662,14 @@ pub async fn send_review(
     pr_id: i64,
     target: ReviewTarget,
     teams: Vec<String>,
+    note: Option<String>,
 ) -> Result<SlackIndicator, AppError> {
     let state = app.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || send_blocking(&state, pr_id, target, &teams))
-        .await
-        .map_err(|err| AppError::new("internal", err.to_string()))?
+    tauri::async_runtime::spawn_blocking(move || {
+        send_blocking(&state, pr_id, target, &teams, note.as_deref())
+    })
+    .await
+    .map_err(|err| AppError::new("internal", err.to_string()))?
 }
 
 fn send_blocking(
@@ -674,10 +677,11 @@ fn send_blocking(
     pr_id: i64,
     target: ReviewTarget,
     teams: &[String],
+    note: Option<&str>,
 ) -> Result<SlackIndicator, AppError> {
     let pr = load_pr(&state.store, pr_id)?;
     let target = validate_target(target)?;
-    let plan = plan(state, &pr, &target)?;
+    let plan = lifecycle::with_note(plan(state, &pr, &target)?, note);
     let teams_json = serde_json::to_string(teams).unwrap_or_else(|_| "[]".into());
     let mut send = |chat: &dyn ChatProvider, target: &Target| {
         let plan = lifecycle::Plan {

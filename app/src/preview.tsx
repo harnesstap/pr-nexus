@@ -260,6 +260,7 @@ const api: Api = {
   prOverview: () => Promise.resolve(mockOverview()),
   setAutoMerge: (_id, method) =>
     Promise.resolve(mockOverview(method ? { auto_merge: { method, enabled_by: "ada", enabled_at: null } } : {})),
+  mergePr: () => Promise.resolve(mockOverview({ state: "merged", merge_state: "unknown" })),
   setPrDraft: (_id, draft) => Promise.resolve(mockOverview({ is_draft: draft, merge_state: draft ? "draft" : "blocked" })),
   prSlackContext: () => Promise.resolve(previewThreads),
   prSlackMentions: () => Promise.resolve([]),

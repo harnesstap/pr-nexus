@@ -132,6 +132,25 @@ fn mock_github() -> MockServer {
             .await;
         Mock::given(method("POST"))
             .and(path("/graphql"))
+            .and(body_string_contains("mutation MergePullRequest"))
+            .and(body_string_contains(r#""method":"SQUASH""#))
+            .and(body_string_contains(r#""id":"PR_1""#))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"data":{"mergePullRequest":{"pullRequest":{"id":"PR_1","state":"MERGED"}}}}"#,
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(body_string_contains("mutation MergePullRequest"))
+            .and(body_string_contains(r#""method":"REBASE""#))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"data":null,"errors":[{"type":"UNPROCESSABLE","message":"Pull Request is not mergeable"}]}"#,
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
             .and(body_string_contains("mutation DisableAutoMerge"))
             .respond_with(ResponseTemplate::new(200).set_body_string(
                 r#"{"data":null,"errors":[{"type":"FORBIDDEN","message":"Viewer is not allowed"}]}"#,
@@ -200,4 +219,17 @@ fn draft_mutations_send_the_node_id_and_explain_plan_limits() {
         matches!(err, pr_nexus_core::error::ProviderError::Unsupported(_)),
         "{err}"
     );
+}
+
+#[test]
+fn merge_sends_the_node_id_and_method_and_surfaces_errors() {
+    let server = mock_github();
+    let client = GithubClient::with_base(server.uri(), AccountId(1), "token").unwrap();
+    client
+        .merge_pull_request(&pr(), MergeMethod::Squash)
+        .unwrap();
+    let err = client
+        .merge_pull_request(&pr(), MergeMethod::Rebase)
+        .unwrap_err();
+    assert!(err.to_string().contains("not mergeable"), "{err}");
 }

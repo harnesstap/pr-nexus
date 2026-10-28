@@ -49,6 +49,39 @@ export function parseQuery(query: string): { channels: boolean; members: boolean
   return { channels: true, members: true, term: trimmed };
 }
 
+/** Where a search result sorts: what the prefix asks for first, then workspace order, then names starting with the term. */
+export function rankMatches(matches: TargetMatch[], query: string, workspaceOrder: string[]): TargetMatch[] {
+  const trimmed = query.trim();
+  const peopleFirst = trimmed.startsWith("@");
+  const term = parseQuery(trimmed).term.toLowerCase();
+  const kindRank = (kind: TargetMatch["kind"]) => ((kind === "member") === peopleFirst ? 0 : 1);
+  const wsRank = (workspace: string) => {
+    const at = workspaceOrder.indexOf(workspace);
+    return at === -1 ? workspaceOrder.length : at;
+  };
+  const prefixRank = (name: string) => {
+    const lower = name.toLowerCase();
+    if (!term || lower.startsWith(term)) {
+      return 0;
+    }
+    // A later word starting with the term ("Grace Hopper" for "hop") beats a mid-word hit.
+    return lower.split(/[\s\-_.]+/).some((word) => word.startsWith(term)) ? 1 : 2;
+  };
+  return matches
+    .map((match, index) => ({ match, index, key: [kindRank(match.kind), wsRank(match.target.workspace), prefixRank(match.target.channel_name)] }))
+    .sort((a, b) => a.key[0] - b.key[0] || a.key[1] - b.key[1] || a.key[2] - b.key[2] || a.index - b.index)
+    .map((item) => item.match);
+}
+
+/** The header an option sits under: one per kind, split by workspace when several are searched. */
+function sectionOf(option: Option, several: boolean): { key: string; label: string } {
+  if (several && (option.group === "channel" || option.group === "member")) {
+    const name = targetWorkspaceName(option.target);
+    return { key: `${option.group}:${option.target.workspace}`, label: `${GROUP_LABEL[option.group]} · ${name}` };
+  }
+  return { key: option.group, label: GROUP_LABEL[option.group] };
+}
+
 /** Channel IDs are unique across a grid, so the ID alone dedupes. */
 function keyOf(target: ReviewTarget) {
   return target.channel_id;
@@ -121,7 +154,8 @@ export function TargetCombobox({ api, workspaces, suggestions, value, onSelect, 
     seen.add(keyOf(choice.target));
     options.push({ key: keyOf(choice.target), group: "suggested", target: choice.target, choice });
   }
-  for (const match of result?.items ?? []) {
+  const order = enabled.map((item) => item.domain);
+  for (const match of rankMatches(result?.items ?? [], query ?? "", order)) {
     const key = keyOf(match.target);
     if (!seen.has(key)) {
       seen.add(key);
@@ -181,7 +215,7 @@ export function TargetCombobox({ api, workspaces, suggestions, value, onSelect, 
   }
 
   const input = "mt-1 w-full rounded border border-slate-700 bg-slate-950 px-2 py-1.5";
-  let lastGroup: Option["group"] | null = null;
+  let lastSection: string | null = null;
   return (
     <div className="space-y-1">
       <div>
@@ -222,14 +256,19 @@ export function TargetCombobox({ api, workspaces, suggestions, value, onSelect, 
               id={listId}
               role="listbox"
               aria-label={label}
-              className="absolute z-50 mt-1 max-h-72 w-full overflow-auto rounded border border-slate-700 bg-slate-900 py-1 shadow-xl"
+              className="absolute z-50 mt-1 max-h-60 w-full overflow-auto rounded border border-slate-700 bg-slate-900 py-1 shadow-xl"
             >
               {options.map((option, index) => {
-                const header = option.group !== lastGroup ? GROUP_LABEL[option.group] : null;
-                lastGroup = option.group;
+                const section = sectionOf(option, several);
+                const header = section.key !== lastSection ? section.label : null;
+                lastSection = section.key;
                 return [
                   header && (
-                    <li key={`h-${option.group}`} role="presentation" className="px-2 pt-1 text-[11px] uppercase tracking-wide text-slate-500">
+                    <li
+                      key={`h-${section.key}`}
+                      role="presentation"
+                      className="sticky top-0 bg-slate-900 px-2 pb-0.5 pt-1.5 text-[11px] font-medium uppercase tracking-wide text-slate-500"
+                    >
                       {header}
                     </li>
                   ),
@@ -247,7 +286,7 @@ export function TargetCombobox({ api, workspaces, suggestions, value, onSelect, 
                     <span className="truncate text-xs text-slate-500">
                       {[
                         option.group === "suggested" ? describe(option.choice) : option.group === "member" ? "direct message" : "",
-                        several && option.group !== "id" ? targetWorkspaceName(option.target) : "",
+                        several && option.group === "suggested" ? targetWorkspaceName(option.target) : "",
                       ]
                         .filter(Boolean)
                         .join(" · ")}
@@ -276,7 +315,7 @@ export function TargetCombobox({ api, workspaces, suggestions, value, onSelect, 
       </div>
       <p id={helpId} className="text-xs text-slate-500">
         Type # to search channels or @ to search people; a person gets a direct message. Code-owner channels are listed
-        first.{" "}
+        first{several ? ", then results by workspace" : ""}.{" "}
         <button type="button" className="underline" onClick={() => setManual((shown) => !shown)} aria-expanded={manual}>
           {manual ? "Hide ID entry" : "Enter an ID"}
         </button>

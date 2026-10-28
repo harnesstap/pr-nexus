@@ -7,7 +7,7 @@ import {
   approvalsSummary,
   checksSummary,
   commentsSummary,
-  mergeabilitySummary,
+  conflictsSummary,
   TONE_BAR,
   TONE_TEXT,
   type Summary,
@@ -59,7 +59,7 @@ export function StatCards({ overview, onOpen }: Props) {
             </span>
           )}
         </Card>
-        <Card icon={<MergeIcon size={13} />} label="Mergeable" summary={mergeabilitySummary(overview)} />
+        <Card icon={<MergeIcon size={13} />} label="Conflicts" summary={conflictsSummary(overview)} />
       </div>
       {showChecks && checks.attention.length > 0 && (
         <ul id="detail-checks" aria-label="Checks needing attention" className="mt-2 divide-y divide-slate-800 rounded-lg border border-slate-800 bg-slate-900/50">

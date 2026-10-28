@@ -1402,6 +1402,27 @@ pub async fn set_auto_merge(
     .await
 }
 
+/// Merges the pull request now with `method` (`squash`, `merge`, `rebase`)
+/// and returns the refreshed overview. The UI confirms first.
+#[tauri::command]
+pub async fn merge_pr(
+    app: State<'_, std::sync::Arc<AppState>>,
+    id: i64,
+    method: String,
+) -> Result<PrOverview, AppError> {
+    let method = MergeMethod::parse(&method)
+        .ok_or_else(|| AppError::new("validation", format!("unknown merge method {method}")))?;
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        let pr = stored_pr(state, PrId(id))?;
+        with_vcs(state, |provider| {
+            overview::merge(&state.store, provider, &pr, method)
+        })
+    })
+    .await
+}
+
 /// Converts the pull request to a draft (`draft: true`) or marks it ready
 /// for review, and returns the refreshed overview.
 #[tauri::command]

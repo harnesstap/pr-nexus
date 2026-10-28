@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import type { Api, ListRow, ReviewPreview, ReviewTarget, SlackIndicator, SlackWorkspace, TargetChoice } from "../api";
 import { channelLabel, errorMessage } from "../api";
+import { plainText } from "../textInput";
+import { Mrkdwn } from "./mrkdwn";
 import { TargetCombobox } from "./TargetCombobox";
 
 interface Props {
@@ -10,13 +12,24 @@ interface Props {
   /** Called with the stored request after a post or bump succeeded. */
   onSent: (indicator: SlackIndicator) => void;
   onOpen: (url: string) => void;
+  /** Called after "Mark ready and request" took the PR out of draft. */
+  onReady?: (id: number) => void;
+}
+
+/**
+ * The note as the backend appends it (`lifecycle::with_note`): after a blank
+ * line, trimmed, and only when it isn't blank.
+ */
+export function withNote(text: string, note: string): string {
+  const trimmed = note.trim();
+  return trimmed ? `${text.trimEnd()}\n\n${trimmed}\n` : text;
 }
 
 /**
  * Request or bump review on Slack for one PR (§7.11). Shows the exact text
  * before anything is posted; Send is the only call that reaches Slack.
  */
-export function ReviewDialog({ api, row, onClose, onSent, onOpen }: Props) {
+export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady }: Props) {
   const [teams, setTeams] = useState<string[]>([]);
   const [choices, setChoices] = useState<TargetChoice[] | null>(null);
   const [workspaces, setWorkspaces] = useState<SlackWorkspace[]>([]);
@@ -26,6 +39,9 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen }: Props) {
   const [preview, setPreview] = useState<ReviewPreview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
+  const [note, setNote] = useState("");
+  /** Cleared once "Mark ready and request" took it out of draft. */
+  const [draft, setDraft] = useState(row.state === "open" && row.is_draft);
   /** The send went through but its link is unknown: never offer a resend. */
   const [unconfirmed, setUnconfirmed] = useState<string | null>(null);
 
@@ -90,14 +106,25 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen }: Props) {
     void loadPreview(next);
   }
 
-  async function send() {
+  async function send(markReady = false) {
     if (!preview) {
       return;
     }
     setSending(true);
     setError(null);
+    if (markReady) {
+      try {
+        await api.setPrDraft(row.id, false);
+        setDraft(false);
+        onReady?.(row.id);
+      } catch (err) {
+        setError(`Couldn't mark it ready, so nothing was sent: ${errorMessage(err)}`);
+        setSending(false);
+        return;
+      }
+    }
     try {
-      onSent(await api.sendReview(row.id, preview.target, chosen?.teams.length ? chosen.teams : teams));
+      onSent(await api.sendReview(row.id, preview.target, chosen?.teams.length ? chosen.teams : teams, note));
     } catch (err) {
       if (err && typeof err === "object" && (err as { kind?: unknown }).kind === "sent_unconfirmed") {
         setUnconfirmed(errorMessage(err));
@@ -155,9 +182,21 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen }: Props) {
                     </>
                   )}
                 </p>
-                <pre aria-label="Message preview" className="whitespace-pre-wrap rounded bg-slate-950 p-3 text-xs">
-                  {preview.text}
-                </pre>
+                <div className="rounded border border-slate-800 bg-slate-950 p-3">
+                  <Mrkdwn label="Message preview" text={withNote(preview.text, note)} onOpen={onOpen} />
+                </div>
+                <label className="block text-xs text-slate-400">
+                  Note (optional, added after a blank line)
+                  <textarea
+                    {...plainText}
+                    aria-label="Note"
+                    rows={2}
+                    value={note}
+                    onChange={(event) => setNote(event.target.value)}
+                    placeholder="Context for reviewers, e.g. the risky part to look at first"
+                    className="mt-1 block w-full resize-y rounded-md border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-slate-100 placeholder:text-slate-600 focus:border-violet-500 focus:outline-none"
+                  />
+                </label>
                 {preview.warnings.map((warning) => (
                   <p key={warning} className="text-xs text-amber-300">
                     {warning}
@@ -172,6 +211,11 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen }: Props) {
             )}
           </div>
         )}
+        {draft && (
+          <p role="note" className="mt-3 rounded-md border border-amber-400/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+            This PR is still a draft. Reviewers may skip it until it's marked ready.
+          </p>
+        )}
         {error && <p className="mt-3 text-rose-300">{error}</p>}
         {unconfirmed && (
           <p className="mt-3 text-amber-300" role="status">
@@ -182,13 +226,23 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen }: Props) {
           <button type="button" className="rounded px-3 py-1.5 text-slate-300 hover:bg-slate-800" onClick={onClose}>
             {unconfirmed ? "Close" : "Cancel"}
           </button>
+          {draft && !bump && (
+            <button
+              type="button"
+              className="rounded bg-violet-500 px-3 py-1.5 font-medium text-white disabled:opacity-40"
+              disabled={!preview || !preview.signed_in || sending || unconfirmed !== null}
+              onClick={() => void send(true)}
+            >
+              {sending ? "Sending…" : "Mark ready and request"}
+            </button>
+          )}
           <button
             type="button"
-            className="rounded bg-violet-500 px-3 py-1.5 font-medium text-white disabled:opacity-40"
+            className={`rounded px-3 py-1.5 font-medium disabled:opacity-40 ${draft && !bump ? "border border-slate-600 text-slate-200 enabled:hover:bg-slate-800" : "bg-violet-500 text-white"}`}
             disabled={!preview || !preview.signed_in || sending || unconfirmed !== null}
             onClick={() => void send()}
           >
-            {sending ? "Sending…" : bump ? "Bump in thread" : "Send request"}
+            {sending ? "Sending…" : bump ? "Bump in thread" : draft ? "Request anyway" : "Send request"}
           </button>
         </footer>
       </div>
