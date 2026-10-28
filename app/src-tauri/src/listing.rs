@@ -515,7 +515,7 @@ fn passes_menu(item: &Item, filters: &FiltersDto, now_ms: i64) -> bool {
     true
 }
 
-fn status_matches(row: &ListRow, status: &str) -> bool {
+pub(crate) fn status_matches(row: &ListRow, status: &str) -> bool {
     match status {
         "draft" => row.is_draft,
         "ready" | "unknown" | "blocked" => !row.is_draft && row.readiness == status,

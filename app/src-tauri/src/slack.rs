@@ -15,7 +15,7 @@ use pr_nexus_core::providers::{
     ChatChannel, ChatProvider, ChatUser, OutgoingMessage, Page, PostedMessage, SearchHit,
     ThreadMessage, ThreadReplies,
 };
-use pr_nexus_core::review::lifecycle::{self, Action, Target};
+use pr_nexus_core::review::lifecycle::Target;
 use pr_nexus_core::review::route::{self, Workspace};
 use pr_nexus_core::settings;
 use pr_nexus_core::store::Store;
@@ -27,8 +27,9 @@ use tauri::State;
 use tauri_plugin_opener::OpenerExt;
 
 use crate::blocking;
-use crate::commands::{SlackIndicator, indicator};
+use crate::commands::SlackIndicator;
 use crate::error::AppError;
+use crate::services::review;
 use crate::state::AppState;
 
 type Shared<'a> = State<'a, Arc<AppState>>;
@@ -617,42 +618,7 @@ pub async fn review_preview(
     target: ReviewTarget,
 ) -> Result<ReviewPreview, AppError> {
     let app = blocking::Handle::new(&app);
-    blocking::run(move || {
-        let state = app.inner().as_ref();
-        let pr = load_pr(&state.store, pr_id)?;
-        let target = validate_target(target)?;
-        let plan = plan(state, &pr, &target)?;
-        let workspaces = route::workspaces(&state.store)?;
-        let (action, bump_count, permalink, signed_in) = match &plan.action {
-            Action::Request => (
-                "request",
-                0,
-                None,
-                state.demo || any_usable(state, &workspaces, &to_core(&target))?,
-            ),
-            Action::Bump { request } => (
-                "bump",
-                request.bump_count,
-                request.permalink.clone(),
-                state.demo
-                    || signed_in_account(state, request_key(request))
-                        .ok()
-                        .flatten()
-                        .is_some(),
-            ),
-        };
-        Ok(ReviewPreview {
-            target: labeled(&workspaces, target),
-            action: action.into(),
-            text: plan.text,
-            warnings: plan.warnings,
-            signed_in,
-            bump_count,
-            permalink,
-            broadcast: settings::bump_broadcast(&state.store)?,
-        })
-    })
-    .await
+    blocking::run(move || review::preview(app.inner().as_ref(), pr_id, target)).await
 }
 
 /// Plans again (the state may have moved since the preview) and posts.
@@ -665,55 +631,17 @@ pub async fn send_review(
     note: Option<String>,
 ) -> Result<SlackIndicator, AppError> {
     let state = app.inner().clone();
-    blocking::run(move || send_blocking(&state, pr_id, target, &teams, note.as_deref())).await
-}
-
-fn send_blocking(
-    state: &AppState,
-    pr_id: i64,
-    target: ReviewTarget,
-    teams: &[String],
-    note: Option<&str>,
-) -> Result<SlackIndicator, AppError> {
-    let pr = load_pr(&state.store, pr_id)?;
-    let target = validate_target(target)?;
-    let plan = lifecycle::with_note(plan(state, &pr, &target)?, note);
-    let teams_json = serde_json::to_string(teams).unwrap_or_else(|_| "[]".into());
-    let mut send = |chat: &dyn ChatProvider, target: &Target| {
-        let plan = lifecycle::Plan {
-            target: target.clone(),
-            ..plan.clone()
-        };
-        let sent = lifecycle::send(&state.store, chat, &pr, &plan, &teams_json, Utc::now());
-        if let Err(CoreError::Provider(ProviderError::Unauthorized(_))) = &sent {
-            mark_rejected(state, chat.account_id().0);
-        }
-        sent
-    };
-    let request = match &plan.action {
-        // A bump replies in the request's thread: that workspace or nothing.
-        Action::Bump { request } => {
-            let chat = chat_for(state, request_key(request))?;
-            send(chat.as_ref(), &plan.target).map_err(slack_error)?
-        }
-        Action::Request => {
-            let workspaces = route::workspaces(&state.store)?;
-            let mut chat_for_ws = |ws: &Workspace| {
-                chat_for(state, &ws.team_id).map_err(|err| CoreError::Validation(err.message))
-            };
-            let routed = route::send_routed(&workspaces, &plan.target, &mut chat_for_ws, &mut send)
-                .map_err(slack_error)?;
-            state.store.pin_mapping_team(
-                plan.target.channel_id.clone(),
-                plan.target.team_id.clone(),
-                plan.target.workspace.clone(),
-                routed.workspace.team_id.clone(),
-                routed.workspace.domain().to_owned(),
-            )?;
-            routed.value
-        }
-    };
-    Ok(indicator(request, &route::workspaces(&state.store)?))
+    blocking::run(move || {
+        review::send(
+            &state,
+            &review::LiveChats,
+            pr_id,
+            target,
+            &teams,
+            note.as_deref(),
+        )
+    })
+    .await
 }
 
 /// The routing key of a stored request: its team, else its domain.
@@ -730,22 +658,6 @@ pub(crate) fn any_usable(
     Ok(route::candidates(workspaces, target)
         .iter()
         .any(|ws| token_usable(state, &ws.account, true)))
-}
-
-fn plan(
-    state: &AppState,
-    pr: &PullRequest,
-    target: &ReviewTarget,
-) -> Result<lifecycle::Plan, AppError> {
-    let requester = settings::review_requester(&state.store)?;
-    Ok(lifecycle::plan(
-        &state.store,
-        pr,
-        to_core(target),
-        requester.as_deref(),
-        settings::min_bump_interval_hours(&state.store)?,
-        Utc::now(),
-    )?)
 }
 
 pub(crate) fn load_pr(store: &Store, id: i64) -> Result<PullRequest, AppError> {
@@ -941,7 +853,7 @@ fn auth_error(err: SlackAuthError) -> AppError {
 }
 
 /// Same as `From<CoreError>`, with Slack wording for rate limits.
-fn slack_error(err: CoreError) -> AppError {
+pub(crate) fn slack_error(err: CoreError) -> AppError {
     match err {
         CoreError::Provider(ProviderError::RateLimited { reset_at, .. }) => AppError {
             kind: "rate_limited".into(),

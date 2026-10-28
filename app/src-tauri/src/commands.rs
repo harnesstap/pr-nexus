@@ -1,11 +1,10 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use chrono::Utc;
 use pr_nexus_core::domain::{
-    Account, AccountId, AccountKind, AuthMode, LinkSource, PrId, Project, ProjectId, ProjectRule,
-    PullRequest, ReplacedLink, RequestedReviewer, Reviewer, RuleKind, ViewState,
+    Account, AccountId, AccountKind, AuthMode, LinkSource, PrId, PullRequest, RequestedReviewer,
+    Reviewer, ViewState,
 };
-use pr_nexus_core::linking;
 use pr_nexus_core::mapping::{self, ImportMode};
 use pr_nexus_core::onboarding::{self, OnboardingState};
 use pr_nexus_core::overview::{self, MergeMethod, PrOverview};
@@ -24,6 +23,7 @@ use tauri_plugin_opener::OpenerExt;
 use crate::blocking;
 use crate::error::AppError;
 use crate::listing;
+use crate::services::projects;
 use crate::slack_link;
 use crate::state::{self, AppState};
 
@@ -712,7 +712,7 @@ pub async fn set_focus(
 }
 
 /// Every synced row of the GitHub account, built with one query per table.
-fn list_items(state: &AppState) -> Result<Vec<listing::Item>, AppError> {
+pub(crate) fn list_items(state: &AppState) -> Result<Vec<listing::Item>, AppError> {
     let Some(account) = state::github_account(&state.store)? else {
         return Ok(Vec::new());
     };
@@ -730,7 +730,7 @@ fn list_items(state: &AppState) -> Result<Vec<listing::Item>, AppError> {
 
 /// Ids matching `query` in SQLite: title, description, repo, number, author,
 /// branch, and linked project names. `None` for a blank query.
-fn search_ids(
+pub(crate) fn search_ids(
     state: &AppState,
     projects: &[ProjectDto],
     query: &str,
@@ -766,14 +766,7 @@ fn search_ids(
     ))
 }
 
-fn all_projects(state: &AppState) -> Result<Vec<ProjectDto>, AppError> {
-    Ok(state
-        .store
-        .list_projects()?
-        .into_iter()
-        .map(project_dto)
-        .collect())
-}
+pub use crate::services::projects::{LinkDto, LinkOutcomeDto, ReplacedLinkDto, RuleDto};
 
 /// One slice of the list plus counts over every match (§8.2).
 #[tauri::command]
@@ -782,17 +775,7 @@ pub async fn list_page(
     request: listing::PageRequest,
 ) -> Result<listing::PageDto, AppError> {
     let app = blocking::Handle::new(&app);
-    blocking::run(move || page_for(app.inner().as_ref(), &request)).await
-}
-
-fn page_for(
-    state: &AppState,
-    request: &listing::PageRequest,
-) -> Result<listing::PageDto, AppError> {
-    let projects = all_projects(state)?;
-    let items = list_items(state)?;
-    let found = search_ids(state, &projects, &request.query)?;
-    Ok(listing::page(&items, &projects, request, found.as_ref()))
+    blocking::run(move || projects::page_for(app.inner().as_ref(), &request)).await
 }
 
 /// Rows by id, in the order asked, for dialogs that outlive the loaded pages.
@@ -802,18 +785,9 @@ pub async fn rows_by_id(
     ids: Vec<i64>,
 ) -> Result<Vec<ListRow>, AppError> {
     let app = blocking::Handle::new(&app);
-    blocking::run(move || {
-        let state = app.inner().as_ref();
-        let mut by_id: HashMap<i64, ListRow> = list_items(state)?
-            .into_iter()
-            .map(|item| (item.row.id, item.row))
-            .collect();
-        Ok(ids.iter().filter_map(|id| by_id.remove(id)).collect())
-    })
-    .await
+    blocking::run(move || projects::rows_by_id(app.inner().as_ref(), ids)).await
 }
 
-/// Open PRs the project dialog can link by hand: matching, not linked yet.
 #[tauri::command]
 pub async fn link_candidates(
     app: State<'_, std::sync::Arc<AppState>>,
@@ -822,54 +796,8 @@ pub async fn link_candidates(
     limit: usize,
 ) -> Result<Vec<ListRow>, AppError> {
     let app = blocking::Handle::new(&app);
-    blocking::run(move || {
-        let state = app.inner().as_ref();
-        let projects = all_projects(state)?;
-        let Some(found) = search_ids(state, &projects, &query)? else {
-            return Ok(Vec::new());
-        };
-        let linked: HashSet<i64> = state
-            .store
-            .list_project_links(ProjectId(project_id))?
-            .into_iter()
-            .filter(|link| !matches!(link.source, LinkSource::Excluded))
-            .map(|link| link.pr.0)
-            .collect();
-        let mut items: Vec<listing::Item> = list_items(state)?
-            .into_iter()
-            .filter(|item| {
-                found.contains(&item.row.id)
-                    && !linked.contains(&item.row.id)
-                    && !item.row.hidden
-                    && item.row.state == "open"
-            })
-            .collect();
-        // `12` or `#12` puts PR number 12 first, then the newest matches.
-        let exact: Option<u64> = query.trim().trim_start_matches('#').parse().ok();
-        items.sort_by(|left, right| {
-            (Some(right.row.number) == exact)
-                .cmp(&(Some(left.row.number) == exact))
-                .then(right.updated_ms.cmp(&left.updated_ms))
-                .then(left.row.id.cmp(&right.row.id))
-        });
-        Ok(items
-            .into_iter()
-            .take(limit.min(50))
-            .map(|item| item.row)
-            .collect())
-    })
-    .await
-}
-
-fn project_dto(project: Project) -> ProjectDto {
-    ProjectDto {
-        id: project.id.0,
-        name: project.name,
-        color: project.color,
-        archived: project.archived,
-        description: project.description,
-        sort_order: project.sort_order,
-    }
+    blocking::run(move || projects::link_candidates(app.inner().as_ref(), project_id, query, limit))
+        .await
 }
 
 #[tauri::command]
@@ -877,16 +805,7 @@ pub async fn list_projects(
     app: State<'_, std::sync::Arc<AppState>>,
 ) -> Result<Vec<ProjectDto>, AppError> {
     let app = blocking::Handle::new(&app);
-    blocking::run(move || {
-        let state = app.inner().as_ref();
-        Ok(state
-            .store
-            .list_projects()?
-            .into_iter()
-            .map(project_dto)
-            .collect())
-    })
-    .await
+    blocking::run(move || projects::list_projects(app.inner().as_ref())).await
 }
 
 #[tauri::command]
@@ -895,15 +814,9 @@ pub async fn create_project(
     name: String,
 ) -> Result<ProjectDto, AppError> {
     let app = blocking::Handle::new(&app);
-    blocking::run(move || {
-        let state = app.inner().as_ref();
-        Ok(project_dto(state.store.create_project(name)?))
-    })
-    .await
+    blocking::run(move || projects::create_project(app.inner().as_ref(), name)).await
 }
 
-/// "Add to project → New project from selection…": the project and its manual
-/// links are created together, or not at all.
 #[tauri::command]
 pub async fn create_project_with_prs(
     app: State<'_, std::sync::Arc<AppState>>,
@@ -911,16 +824,8 @@ pub async fn create_project_with_prs(
     pr_ids: Vec<i64>,
 ) -> Result<ProjectDto, AppError> {
     let app = blocking::Handle::new(&app);
-    blocking::run(move || {
-        let state = app.inner().as_ref();
-        let (project, _) = state.store.create_project_with_prs(
-            name,
-            pr_ids.into_iter().map(PrId).collect(),
-            Utc::now(),
-        )?;
-        Ok(project_dto(project))
-    })
-    .await
+    blocking::run(move || projects::create_project_with_prs(app.inner().as_ref(), name, pr_ids))
+        .await
 }
 
 #[tauri::command]
@@ -930,12 +835,7 @@ pub async fn rename_project(
     name: String,
 ) -> Result<(), AppError> {
     let app = blocking::Handle::new(&app);
-    blocking::run(move || {
-        let state = app.inner().as_ref();
-        state.store.rename_project(ProjectId(id), name)?;
-        Ok(())
-    })
-    .await
+    blocking::run(move || projects::rename_project(app.inner().as_ref(), id, name)).await
 }
 
 #[tauri::command]
@@ -945,12 +845,7 @@ pub async fn archive_project(
     archived: bool,
 ) -> Result<(), AppError> {
     let app = blocking::Handle::new(&app);
-    blocking::run(move || {
-        let state = app.inner().as_ref();
-        state.store.set_project_archived(ProjectId(id), archived)?;
-        Ok(())
-    })
-    .await
+    blocking::run(move || projects::archive_project(app.inner().as_ref(), id, archived)).await
 }
 
 #[tauri::command]
@@ -959,55 +854,7 @@ pub async fn delete_project(
     id: i64,
 ) -> Result<(), AppError> {
     let app = blocking::Handle::new(&app);
-    blocking::run(move || {
-        let state = app.inner().as_ref();
-        state.store.delete_project(ProjectId(id))?;
-        Ok(())
-    })
-    .await
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct RuleDto {
-    pub id: Option<i64>,
-    pub project_id: i64,
-    pub kind: String,
-    pub pattern: String,
-    pub priority: i32,
-}
-
-#[derive(Serialize)]
-pub struct LinkDto {
-    pub pr_id: i64,
-    pub source: String,
-    pub rule_id: Option<i64>,
-}
-
-fn rule_dto(rule: ProjectRule) -> RuleDto {
-    RuleDto {
-        id: Some(rule.id),
-        project_id: rule.project.0,
-        kind: rule.kind.as_str().to_owned(),
-        pattern: rule.pattern,
-        priority: rule.priority,
-    }
-}
-
-fn parse_kind(kind: &str) -> Result<RuleKind, AppError> {
-    kind.parse::<RuleKind>()
-        .map_err(|_| AppError::new("validation", format!("Unknown rule kind {kind}")))
-}
-
-fn account_prs(state: &AppState) -> Result<Vec<PullRequest>, AppError> {
-    Ok(match state::github_account(&state.store)? {
-        Some(account) => state.store.list_pull_requests_for_account(account.id)?,
-        None => Vec::new(),
-    })
-}
-
-fn relink_all(state: &AppState) -> Result<(), AppError> {
-    linking::relink(&state.store, &account_prs(state)?)?;
-    Ok(())
+    blocking::run(move || projects::delete_project(app.inner().as_ref(), id)).await
 }
 
 #[tauri::command]
@@ -1017,13 +864,7 @@ pub async fn set_project_color(
     color: String,
 ) -> Result<ProjectDto, AppError> {
     let app = blocking::Handle::new(&app);
-    blocking::run(move || {
-        let state = app.inner().as_ref();
-        Ok(project_dto(
-            state.store.set_project_color(ProjectId(id), color)?,
-        ))
-    })
-    .await
+    blocking::run(move || projects::set_project_color(app.inner().as_ref(), id, color)).await
 }
 
 #[tauri::command]
@@ -1032,41 +873,16 @@ pub async fn list_project_rules(
     project_id: i64,
 ) -> Result<Vec<RuleDto>, AppError> {
     let app = blocking::Handle::new(&app);
-    blocking::run(move || {
-        let state = app.inner().as_ref();
-        let mut rules = state.store.list_project_rules(ProjectId(project_id))?;
-        rules.sort_by(|a, b| b.priority.cmp(&a.priority).then(a.id.cmp(&b.id)));
-        Ok(rules.into_iter().map(rule_dto).collect())
-    })
-    .await
+    blocking::run(move || projects::list_project_rules(app.inner().as_ref(), project_id)).await
 }
 
-/// Creates (`id: null`) or updates a rule, then re-evaluates every rule (§8.1).
 #[tauri::command]
 pub async fn save_project_rule(
     app: State<'_, std::sync::Arc<AppState>>,
     rule: RuleDto,
 ) -> Result<RuleDto, AppError> {
     let app = blocking::Handle::new(&app);
-    blocking::run(move || {
-        let state = app.inner().as_ref();
-        let kind = parse_kind(&rule.kind)?;
-        let pattern = linking::validate(kind, &rule.pattern)?;
-        let value = ProjectRule {
-            id: rule.id.unwrap_or(0),
-            project: ProjectId(rule.project_id),
-            kind,
-            pattern,
-            priority: rule.priority,
-        };
-        let saved = match rule.id {
-            Some(_) => state.store.update_project_rule(value)?,
-            None => state.store.insert_project_rule(value)?,
-        };
-        relink_all(state)?;
-        Ok(rule_dto(saved))
-    })
-    .await
+    blocking::run(move || projects::save_project_rule(app.inner().as_ref(), rule)).await
 }
 
 #[tauri::command]
@@ -1075,15 +891,9 @@ pub async fn delete_project_rule(
     id: i64,
 ) -> Result<(), AppError> {
     let app = blocking::Handle::new(&app);
-    blocking::run(move || {
-        let state = app.inner().as_ref();
-        state.store.delete_project_rule(id)?;
-        relink_all(state)
-    })
-    .await
+    blocking::run(move || projects::delete_project_rule(app.inner().as_ref(), id)).await
 }
 
-/// Live preview: how many open PRs `kind`/`pattern` would link.
 #[tauri::command]
 pub async fn preview_rule(
     app: State<'_, std::sync::Arc<AppState>>,
@@ -1091,17 +901,7 @@ pub async fn preview_rule(
     pattern: String,
 ) -> Result<usize, AppError> {
     let app = blocking::Handle::new(&app);
-    blocking::run(move || {
-        let state = app.inner().as_ref();
-        let kind = parse_kind(&kind)?;
-        Ok(linking::preview_count(
-            &state.store,
-            &account_prs(state)?,
-            kind,
-            &pattern,
-        )?)
-    })
-    .await
+    blocking::run(move || projects::preview_rule(app.inner().as_ref(), kind, pattern)).await
 }
 
 #[tauri::command]
@@ -1110,80 +910,9 @@ pub async fn list_project_links(
     project_id: i64,
 ) -> Result<Vec<LinkDto>, AppError> {
     let app = blocking::Handle::new(&app);
-    blocking::run(move || {
-        let state = app.inner().as_ref();
-        Ok(state
-            .store
-            .list_project_links(ProjectId(project_id))?
-            .into_iter()
-            .map(|link| {
-                let (source, rule_id) = match link.source {
-                    LinkSource::Manual => ("manual", None),
-                    LinkSource::Rule(id) => ("rule", Some(id)),
-                    LinkSource::Excluded => ("excluded", None),
-                };
-                LinkDto {
-                    pr_id: link.pr.0,
-                    source: source.to_owned(),
-                    rule_id,
-                }
-            })
-            .collect())
-    })
-    .await
+    blocking::run(move || projects::list_project_links(app.inner().as_ref(), project_id)).await
 }
 
-/// What one manual link replaced: `before` is `null` (not linked), `"rule"`
-/// (with `rule_id`) or `"excluded"`. The list's Undo hands these back.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ReplacedLinkDto {
-    pub pr_id: i64,
-    pub before: Option<String>,
-    pub rule_id: Option<i64>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct LinkOutcomeDto {
-    /// Rows that became manual links; PRs already linked by hand are not counted.
-    pub changed: usize,
-    pub undo: Vec<ReplacedLinkDto>,
-}
-
-fn replaced_dto(item: ReplacedLink) -> ReplacedLinkDto {
-    let (before, rule_id) = match item.before {
-        None => (None, None),
-        Some(LinkSource::Manual) => (Some("manual"), None),
-        Some(LinkSource::Rule(id)) => (Some("rule"), Some(id)),
-        Some(LinkSource::Excluded) => (Some("excluded"), None),
-    };
-    ReplacedLinkDto {
-        pr_id: item.pr.0,
-        before: before.map(str::to_owned),
-        rule_id,
-    }
-}
-
-fn replaced_from_dto(dto: ReplacedLinkDto) -> Result<ReplacedLink, AppError> {
-    let before = match (dto.before.as_deref(), dto.rule_id) {
-        (None, _) => None,
-        (Some("manual"), _) => Some(LinkSource::Manual),
-        (Some("excluded"), _) => Some(LinkSource::Excluded),
-        (Some("rule"), Some(id)) => Some(LinkSource::Rule(id)),
-        (Some(other), _) => {
-            return Err(AppError::new(
-                "validation",
-                format!("Cannot undo a link that was {other}"),
-            ));
-        }
-    };
-    Ok(ReplacedLink {
-        pr: PrId(dto.pr_id),
-        before,
-    })
-}
-
-/// Manual links: drag-and-drop onto a project, "Add to project", or "Add pull
-/// request" in the project dialog. All or nothing; the outcome carries Undo.
 #[tauri::command]
 pub async fn link_prs(
     app: State<'_, std::sync::Arc<AppState>>,
@@ -1191,25 +920,9 @@ pub async fn link_prs(
     pr_ids: Vec<i64>,
 ) -> Result<LinkOutcomeDto, AppError> {
     let app = blocking::Handle::new(&app);
-    blocking::run(move || {
-        let state = app.inner().as_ref();
-        let project = ProjectId(project_id);
-        if state.store.get_project(project)?.is_none() {
-            return Err(AppError::new("validation", "Project not found"));
-        }
-        let replaced =
-            state
-                .store
-                .link_manual(project, pr_ids.into_iter().map(PrId).collect(), Utc::now())?;
-        Ok(LinkOutcomeDto {
-            changed: replaced.len(),
-            undo: replaced.into_iter().map(replaced_dto).collect(),
-        })
-    })
-    .await
+    blocking::run(move || projects::link_prs(app.inner().as_ref(), project_id, pr_ids)).await
 }
 
-/// Undo for [`link_prs`]: puts each still-manual row back the way it was.
 #[tauri::command]
 pub async fn undo_link_prs(
     app: State<'_, std::sync::Arc<AppState>>,
@@ -1217,17 +930,7 @@ pub async fn undo_link_prs(
     undo: Vec<ReplacedLinkDto>,
 ) -> Result<usize, AppError> {
     let app = blocking::Handle::new(&app);
-    blocking::run(move || {
-        let state = app.inner().as_ref();
-        let replaced = undo
-            .into_iter()
-            .map(replaced_from_dto)
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(state
-            .store
-            .undo_manual_links(ProjectId(project_id), replaced)?)
-    })
-    .await
+    blocking::run(move || projects::undo_link_prs(app.inner().as_ref(), project_id, undo)).await
 }
 
 #[tauri::command]
@@ -1237,20 +940,7 @@ pub async fn unlink_pr(
     pr_id: i64,
 ) -> Result<(), AppError> {
     let app = blocking::Handle::new(&app);
-    blocking::run(move || {
-        let state = app.inner().as_ref();
-        let project = ProjectId(project_id);
-        let pr = PrId(pr_id);
-        let rule_matches = match state.store.get_pull_request(pr)? {
-            Some(value) => linking::rule_matches(&state.store, &value, project)?,
-            None => false,
-        };
-        state
-            .store
-            .unlink_pr(project, pr, rule_matches, Utc::now())?;
-        Ok(())
-    })
-    .await
+    blocking::run(move || projects::unlink_pr(app.inner().as_ref(), project_id, pr_id)).await
 }
 
 #[tauri::command]
@@ -1260,12 +950,7 @@ pub async fn restore_pr(
     pr_id: i64,
 ) -> Result<(), AppError> {
     let app = blocking::Handle::new(&app);
-    blocking::run(move || {
-        let state = app.inner().as_ref();
-        state.store.restore_pr(ProjectId(project_id), PrId(pr_id))?;
-        relink_all(state)
-    })
-    .await
+    blocking::run(move || projects::restore_pr(app.inner().as_ref(), project_id, pr_id)).await
 }
 
 #[derive(Serialize)]
@@ -1316,21 +1001,15 @@ pub async fn pr_detail(
     id: i64,
 ) -> Result<PrDetail, AppError> {
     let state = app.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || pr_detail_blocking(&state, PrId(id)))
+    tauri::async_runtime::spawn_blocking(move || crate::services::prs::pr_detail(&state, id))
         .await
         .map_err(|err| AppError::new("internal", err.to_string()))?
 }
 
-pub(crate) fn pr_detail_blocking(state: &AppState, id: PrId) -> Result<PrDetail, AppError> {
-    let pr = stored_pr(state, id)?;
-    let flag = settings::blocked_review_required_is_ready(&state.store)?;
-    let report = with_vcs(state, |provider| {
-        ownership::resolve(&state.store, provider, &pr, flag, Utc::now())
-    })?;
-    Ok(detail_dto(pr.id, report))
-}
-
-fn stored_pr(state: &AppState, id: PrId) -> Result<pr_nexus_core::domain::PullRequest, AppError> {
+pub(crate) fn stored_pr(
+    state: &AppState,
+    id: PrId,
+) -> Result<pr_nexus_core::domain::PullRequest, AppError> {
     state
         .store
         .get_pull_request(id)?
@@ -1338,7 +1017,7 @@ fn stored_pr(state: &AppState, id: PrId) -> Result<pr_nexus_core::domain::PullRe
 }
 
 /// Runs `work` against GitHub, or the fixture provider in demo mode.
-fn with_vcs<T>(
+pub(crate) fn with_vcs<T>(
     state: &AppState,
     work: impl FnOnce(&dyn VcsProvider) -> Result<T, pr_nexus_core::error::CoreError>,
 ) -> Result<T, AppError> {
@@ -1442,7 +1121,7 @@ pub async fn set_pr_draft(
     .await
 }
 
-fn detail_dto(id: PrId, report: OwnershipReport) -> PrDetail {
+pub(crate) fn detail_dto(id: PrId, report: OwnershipReport) -> PrDetail {
     use pr_nexus_core::domain::{Readiness, TeamRef};
     use pr_nexus_core::providers::ClassicProtection;
     let names = |teams: &[TeamRef]| teams.iter().map(ToString::to_string).collect::<Vec<_>>();
@@ -1778,19 +1457,19 @@ mod tests {
             "feat/ssp-123",
             "grace-h",
         ] {
-            let page = page_for(&state, &request("mine", query)).unwrap();
+            let page = projects::page_for(&state, &request("mine", query)).unwrap();
             assert_eq!(numbers(&page), vec![123], "{query}");
             let ids: Vec<i64> = listing_ids(&page);
             assert_eq!(ids.len(), 1, "{query}: select-all ids follow the search");
         }
-        let widgets = page_for(&state, &request("mine", "acme/widgets")).unwrap();
+        let widgets = projects::page_for(&state, &request("mine", "acme/widgets")).unwrap();
         assert_eq!(numbers(&widgets), vec![1, 2, 3]);
     }
 
     #[test]
     fn an_empty_search_says_where_the_matches_are() {
         let (_dir, state) = state_with_hyphenated_repo();
-        let mine = page_for(&state, &request("mine", "floor")).unwrap();
+        let mine = projects::page_for(&state, &request("mine", "floor")).unwrap();
         assert!(mine.entries.iter().all(|entry| entry.row.is_none()));
         let elsewhere = mine.elsewhere.unwrap();
         assert_eq!(
@@ -1805,15 +1484,15 @@ mod tests {
 
         let mut with_closed = request("mine", "floor");
         with_closed.filters.archived = true;
-        let page = page_for(&state, &with_closed).unwrap();
+        let page = projects::page_for(&state, &with_closed).unwrap();
         assert_eq!(numbers(&page), vec![125]);
         assert_eq!(page.summary.finished, 1);
 
-        let to_review = page_for(&state, &request("to_review", "service-ssp")).unwrap();
+        let to_review = projects::page_for(&state, &request("to_review", "service-ssp")).unwrap();
         assert_eq!(numbers(&to_review), vec![124]);
         assert_eq!(to_review.elsewhere.unwrap().views[0].count, 1);
         assert!(
-            page_for(&state, &request("mine", ""))
+            projects::page_for(&state, &request("mine", ""))
                 .unwrap()
                 .elsewhere
                 .is_none()

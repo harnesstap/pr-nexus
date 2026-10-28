@@ -108,6 +108,27 @@ impl AppState {
     }
 }
 
+#[cfg(test)]
+impl AppState {
+    /// A state over a fresh database at `path`, with an in-memory vault.
+    pub(crate) fn for_tests(path: &std::path::Path, demo: bool) -> Self {
+        Self {
+            store: Store::open(path).expect("test store"),
+            vault: Arc::new(Vault::memory("test")),
+            chats: Mutex::new(HashMap::new()),
+            slack_cancel: Mutex::new(None),
+            slack_tokens: Mutex::new(HashMap::new()),
+            sync: Mutex::new(SyncStatus::demo()),
+            sync_gate: Mutex::new(()),
+            device: Mutex::new(None),
+            focused: AtomicBool::new(true),
+            wake: Arc::new((Mutex::new(false), Condvar::new())),
+            live: crate::live::LiveShared::default(),
+            demo,
+        }
+    }
+}
+
 pub fn demo_enabled() -> bool {
     std::env::var("PR_NEXUS_DEMO").ok().as_deref() == Some("1")
 }
