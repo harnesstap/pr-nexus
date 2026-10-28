@@ -21,6 +21,41 @@ export function showSkip(step: StepId): boolean {
   return step === "connect_chat" || step === "chat_mapping";
 }
 
+/**
+ * Steps with a single possible answer (GitHub, Slack) are not shown: the wizard
+ * records the choice itself, so setup is five screens instead of seven.
+ */
+export const AUTO_STEPS: readonly StepId[] = ["choose_vcs", "choose_chat"];
+
+export function visibleSteps(steps: readonly StepId[]): StepId[] {
+  return steps.filter((step) => !AUTO_STEPS.includes(step));
+}
+
+/** Where to open: the resume step, or the first shown step when it points at a hidden one. */
+export function startIndex(steps: readonly StepId[], resume: StepId): number {
+  return Math.max(0, steps.indexOf(resume));
+}
+
+export type GithubMode = "gh_cli" | "pat" | "device";
+
+/** Why Connect GitHub is disabled, or null when it can run. */
+export function connectBlock(mode: GithubMode, input: { pat: string; ghReady: boolean; oauthConfigured: boolean }): string | null {
+  switch (mode) {
+    case "gh_cli":
+      return input.ghReady ? null : "The gh CLI has no token yet. Run gh auth login, or paste a token instead.";
+    case "pat":
+      return input.pat.trim() ? null : "Paste a token above to connect.";
+    case "device":
+      return input.oauthConfigured
+        ? null
+        : "Device sign-in needs a GitHub OAuth app client id, set in github.oauth_client_id or the PR_NEXUS_GITHUB_OAUTH_CLIENT_ID environment variable. None ships with PR Nexus.";
+    default: {
+      const unreachable: never = mode;
+      return unreachable;
+    }
+  }
+}
+
 export function backEnabled(index: number): boolean {
   return index > 0;
 }

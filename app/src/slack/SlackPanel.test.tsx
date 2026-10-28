@@ -108,3 +108,19 @@ test("one workspace has no reorder controls", () => {
   expect(screen.queryByRole("button", { name: /Move/ })).not.toBeInTheDocument();
   expect(screen.getByRole("switch", { name: "Use Acme" })).toBeInTheDocument();
 });
+
+test("rows show a priority number and a drag handle; a stale workspace gets a prominent Reconnect", () => {
+  setup([acme, { ...labs, signed_in: false, needs_sign_in: true }]);
+  expect(within(screen.getByRole("listitem", { name: "Acme" })).getByLabelText("Priority 1")).toHaveTextContent("1");
+  expect(within(screen.getByRole("listitem", { name: "Acme Labs" })).getByLabelText("Priority 2")).toHaveTextContent("2");
+  expect(screen.getAllByTestId("drag-handle")).toHaveLength(2);
+  expect(screen.getByRole("listitem", { name: "Acme Labs" })).toHaveAttribute("data-state", "needs-sign-in");
+  expect(screen.getByRole("button", { name: "Reconnect Acme Labs" })).toBeInTheDocument();
+});
+
+test("a disabled workspace stays listed and connected but marked never used", () => {
+  setup([acme, { ...labs, enabled: false }]);
+  const row = screen.getByRole("listitem", { name: "Acme Labs" });
+  expect(row).toHaveAttribute("data-state", "disabled");
+  expect(within(row).getByText(/never used/)).toBeInTheDocument();
+});
