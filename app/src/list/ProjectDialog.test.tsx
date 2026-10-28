@@ -101,7 +101,7 @@ test("a rule-linked PR that is removed becomes excluded and can be restored", as
   } as unknown as Api;
   render(<ProjectDialog api={api} project={project} onClose={() => undefined} onChanged={() => Promise.resolve()} />);
   const badge = await screen.findByText("Rule");
-  expect(badge).toHaveAttribute("title", "Ticket key: AUTH-*");
+  expect(badge).toHaveAccessibleDescription("Ticket key: AUTH-*");
   fireEvent.click(await screen.findByRole("button", { name: "Remove Migrate login" }));
   expect(await screen.findByText("Excluded")).toBeInTheDocument();
   expect(api.unlinkPr).toHaveBeenCalledWith(1, 1);

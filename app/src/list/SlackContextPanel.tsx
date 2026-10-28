@@ -3,6 +3,7 @@ import type { Api, ContextThread, MentionGroup, MentionsScope } from "../api";
 import { channelLabel, errorMessage } from "../api";
 import { ago, requestAction } from "./model";
 import { shortTime, slackText } from "./slackText";
+import { Tooltip } from "../Tooltip";
 
 interface Props {
   api: Api;
@@ -108,11 +109,13 @@ function Thread({ thread, onOpen }: { thread: ContextThread; onOpen: (url: strin
       <header className="flex items-baseline justify-between gap-2 text-xs">
         <span className="min-w-0 truncate">
           <span className="font-medium text-slate-200">{label}</span>
-          <span className="text-slate-500" title={status.title}>
-            {" · "}
-            {status.label}
-            {thread.messages.length > 0 && ` · ${replies} ${replies === 1 ? "reply" : "replies"}${thread.has_more ? "+" : ""}`}
-          </span>
+          <Tooltip label={status.title} align="start">
+            <span className="text-slate-500">
+              {" · "}
+              {status.label}
+              {thread.messages.length > 0 && ` · ${replies} ${replies === 1 ? "reply" : "replies"}${thread.has_more ? "+" : ""}`}
+            </span>
+          </Tooltip>
         </span>
         {thread.permalink && (
           <button type="button" className="shrink-0 text-violet-300 hover:underline" onClick={() => onOpen(thread.permalink ?? "")}>
@@ -134,11 +137,15 @@ function Thread({ thread, onOpen }: { thread: ContextThread; onOpen: (url: strin
               {message.is_bot && " (app)"}
               {" · "}
               {message.permalink ? (
-                <button type="button" className="hover:underline" title={message.at ?? undefined} onClick={() => onOpen(message.permalink ?? "")}>
-                  {shortTime(message.at)}
-                </button>
+                <Tooltip label={message.at} align="start">
+                  <button type="button" className="hover:underline" onClick={() => onOpen(message.permalink ?? "")}>
+                    {shortTime(message.at)}
+                  </button>
+                </Tooltip>
               ) : (
-                <span title={message.at ?? undefined}>{shortTime(message.at)}</span>
+                <Tooltip label={message.at} align="start">
+                  <span>{shortTime(message.at)}</span>
+                </Tooltip>
               )}
             </p>
             <p className="whitespace-pre-wrap break-words text-slate-200">{slackText(message.text)}</p>

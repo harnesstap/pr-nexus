@@ -242,9 +242,11 @@ export function SlackPanel({ api, fields, onFieldsChange, secretSaved, workspace
                   } ${dragging === index ? "opacity-50" : ""}`}
                 >
                   {several && (
-                    <span aria-hidden="true" title="Drag to reorder" data-testid="drag-handle" className="cursor-grab select-none text-base leading-none text-slate-400 hover:text-slate-200">
-                      ⠿
-                    </span>
+                    <Tooltip label="Drag to reorder">
+                      <span aria-hidden="true" data-testid="drag-handle" className="cursor-grab select-none text-base leading-none text-slate-400 hover:text-slate-200">
+                        ⠿
+                      </span>
+                    </Tooltip>
                   )}
                   <span
                     aria-label={`Priority ${index + 1}`}

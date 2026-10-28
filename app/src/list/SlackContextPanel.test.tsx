@@ -72,7 +72,7 @@ test("signed out, a known thread still shows its stored last action and permalin
   render(<SlackContextPanel api={{ prSlackContext: () => Promise.resolve([bumped]) } as unknown as Api} prId={7} mentions="off" onOpen={onOpen} />);
   const dm = await screen.findByRole("article", { name: "DM thread" });
   const status = within(dm).getByText(/Bumped · 9h ago/);
-  expect(status).toHaveAttribute("title", "requested 1d ago · 1 bump");
+  expect(status).toHaveAccessibleDescription("requested 1d ago · 1 bump");
   expect(within(dm).getByText(/Open the thread in Slack to read the replies/)).toBeInTheDocument();
   fireEvent.click(within(dm).getByRole("button", { name: "Open ↗" }));
   expect(onOpen).toHaveBeenCalledWith(active.permalink);

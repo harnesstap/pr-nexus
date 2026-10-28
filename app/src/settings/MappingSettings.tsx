@@ -6,6 +6,7 @@ import { WorkspaceSelect } from "../slack/WorkspaceSelect";
 import { chosenWorkspace, csvHasWorkspaceColumn, rememberWorkspace } from "../slack/workspaces";
 import { MAPPING_FIELDS, matchesMapping } from "./tabs";
 import { plainText } from "../textInput";
+import { Tooltip } from "../Tooltip";
 
 interface Props {
   api: Api;
@@ -115,15 +116,16 @@ export function MappingSettings({ api, skippedInSetup, onCountChange, workspaces
           <h2 id="mapping-table" className="text-base font-semibold">
             Team channels
           </h2>
-          <input {...plainText}
-            type="search"
-            aria-label="Filter mappings"
-            placeholder="Filter teams or channels"
-            title="Matches team, workspace and channel"
-            className={`${box} w-72 text-sm`}
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-          />
+          <Tooltip label="Matches team, workspace and channel">
+            <input {...plainText}
+              type="search"
+              aria-label="Filter mappings"
+              placeholder="Filter teams or channels"
+              className={`${box} w-72 text-sm`}
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+            />
+          </Tooltip>
           <button
             type="button"
             className="rounded border border-slate-700 px-2 py-1 text-sm hover:bg-slate-800"

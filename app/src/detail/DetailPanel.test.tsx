@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import type { Api, ContextThread, ListRow, PrOverview } from "../api";
 import { DetailPanel, WIDTH_KEY, clampWidth } from "./DetailPanel";
@@ -259,7 +259,7 @@ test("auto-merge errors become a toast and unavailable controls explain why", as
   await waitFor(() => expect(onNotice).toHaveBeenCalledWith("Could not change auto-merge: Pull request is in clean status"));
 
   const draft = fakeApi({ prOverview: vi.fn(() => Promise.resolve(mockOverview({ is_draft: true }))) });
-  document.body.innerHTML = "";
+  cleanup();
   renderPanel(draft);
   const wrapper = await screen.findByTestId("auto-merge-disabled");
   expect((within(wrapper).getByRole("button", { name: "Enable auto-merge" }) as HTMLButtonElement).disabled).toBe(true);
@@ -392,7 +392,7 @@ test("no Merge button while something blocks it, and merge errors become a toast
   const verdict = await screen.findByTestId("merge-verdict");
   expect(within(verdict).queryByRole("button", { name: "Merge" })).toBeNull();
 
-  document.body.innerHTML = "";
+  cleanup();
   const failing = fakeApi({ prOverview: vi.fn(() => Promise.resolve(mergeable())), mergePr: vi.fn(() => Promise.reject(new Error("Base branch was modified"))) });
   const { onNotice } = renderPanel(failing);
   fireEvent.click(await screen.findByRole("button", { name: "Merge" }));

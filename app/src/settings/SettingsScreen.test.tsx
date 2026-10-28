@@ -199,7 +199,7 @@ test("Import: Choose file loads the picked CSV for the same preview", async () =
   render(<Harness api={api} start="mappings" />);
   await screen.findByRole("option", { name: "Acme (acme.slack.com)" });
   fireEvent.click(screen.getByRole("button", { name: "Choose file…" }));
-  expect(await screen.findByTitle("/home/ada/teams.csv")).toHaveTextContent("Loaded teams.csv");
+  expect(await screen.findByText((_, element) => element?.className === "truncate" && element.textContent === "Loaded teams.csv")).toHaveAccessibleDescription("/home/ada/teams.csv");
   expect(screen.getByRole("textbox", { name: "Mapping CSV" })).toHaveValue("github_org,github_team_slug\nacme,web");
   fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
   expect(await screen.findByRole("alert")).toHaveTextContent("mapping csv: missing column slack_channel_id");

@@ -267,11 +267,11 @@ test("rows show labelled threads, a review pill, and the Slack request status", 
   );
   const requested = screen.getByRole("button", { name: /^Open Slack request for Requested one/ });
   expect(requested).toHaveTextContent(/^2d ago$/);
-  expect(requested).toHaveAttribute("title", "acme-team · #reviews · requested 2d ago");
+  expect(requested).toHaveAccessibleDescription("acme-team · #reviews · requested 2d ago");
   expect(requested.querySelector("svg")).toHaveAttribute("data-variant", "color");
   expect(screen.getByRole("button", { name: /^Open Slack request for Bumped one/ })).toHaveTextContent(/^5h ago$/);
   const labs = screen.getByRole("button", { name: /^Open Slack request for Labs one/ });
-  expect(labs).toHaveAttribute("title", "Acme Labs · #reviews · requested 1d ago · workspace disabled in Settings → Slack");
+  expect(labs).toHaveAccessibleDescription("Acme Labs · #reviews · requested 1d ago · workspace disabled in Settings → Slack");
   expect(labs).toHaveAccessibleName("Open Slack request for Labs one: Acme Labs · #reviews · requested 1d ago · workspace disabled in Settings → Slack");
   expect(screen.queryByText(/Requested ·|Not requested$|· Acme Labs/)).not.toBeInTheDocument();
   const missing = screen.getByRole("img", { name: "Not requested on Slack" });
@@ -883,7 +883,7 @@ test("with the panel open, rows go compact: wrapped title, status dot and Slack 
   const article = screen.getAllByRole("article")[0];
   const title = within(article).getAllByRole("button").find((button) => button.className.includes("line-clamp-2"));
   expect(title).toBeDefined();
-  expect(title?.getAttribute("title")).toMatch(/^#\d+ /);
+  expect(title).toHaveAccessibleDescription(/^#\d+ /);
   for (const pill of ["Review pending", "Approved", "Changes requested"]) {
     expect(screen.queryByText(pill)).not.toBeInTheDocument();
   }

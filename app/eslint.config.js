@@ -17,6 +17,13 @@ export default tseslint.config(
     },
     rules: {
       ...reactHooks.configs.recommended.rules,
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector: "JSXOpeningElement[name.name=/^[a-z]/] > JSXAttribute[name.name='title']",
+          message: "The HTML title attribute shows the OS tooltip. Wrap the element in <Tooltip label=…> from src/Tooltip.tsx instead.",
+        },
+      ],
     },
   },
   {

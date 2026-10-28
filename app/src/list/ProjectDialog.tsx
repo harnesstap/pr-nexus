@@ -4,6 +4,7 @@ import type { Api, ListRow, ProjectDto, ProjectLinkDto, ProjectRuleDto, RuleKind
 import { errorMessage } from "../api";
 import { PROJECT_COLORS, RULE_KINDS, ruleKindLabel } from "./projects";
 import { plainText } from "../textInput";
+import { Tooltip } from "../Tooltip";
 
 /** Candidate search waits this long after the last keystroke. */
 const CANDIDATE_DEBOUNCE_MS = 200;
@@ -260,25 +261,27 @@ export function ProjectDialog({ api, project, onClose, onChanged }: Props) {
                   </span>
                   <SourceBadge source={link.source} rule={rule} />
                   {link.source === "excluded" ? (
-                    <button
-                      type="button"
-                      aria-label={`Restore ${title}`}
-                      title="Let auto-link rules add this PR again"
-                      className="rounded px-2 py-0.5 text-xs hover:bg-slate-800"
-                      onClick={() => void run(() => api.restorePr(project.id, link.pr_id))}
-                    >
-                      Restore
-                    </button>
+                    <Tooltip label="Let auto-link rules add this PR again" align="end">
+                      <button
+                        type="button"
+                        aria-label={`Restore ${title}`}
+                        className="rounded px-2 py-0.5 text-xs hover:bg-slate-800"
+                        onClick={() => void run(() => api.restorePr(project.id, link.pr_id))}
+                      >
+                        Restore
+                      </button>
+                    </Tooltip>
                   ) : (
-                    <button
-                      type="button"
-                      aria-label={`Remove ${title}`}
-                      title={link.source === "rule" ? "Removes it and keeps rules from adding it back" : "Remove from this project"}
-                      className="rounded px-2 py-0.5 text-xs hover:bg-slate-800"
-                      onClick={() => void run(() => api.unlinkPr(project.id, link.pr_id))}
-                    >
-                      Remove
-                    </button>
+                    <Tooltip label={link.source === "rule" ? "Removes it and keeps rules from adding it back" : "Remove from this project"} align="end">
+                      <button
+                        type="button"
+                        aria-label={`Remove ${title}`}
+                        className="rounded px-2 py-0.5 text-xs hover:bg-slate-800"
+                        onClick={() => void run(() => api.unlinkPr(project.id, link.pr_id))}
+                      >
+                        Remove
+                      </button>
+                    </Tooltip>
                   )}
                 </li>
               );
@@ -296,9 +299,9 @@ function SourceBadge({ source, rule }: { source: ProjectLinkDto["source"]; rule:
   const title = source === "rule" && rule ? `${ruleKindLabel(rule.kind)}: ${rule.pattern}` : undefined;
   const tone = source === "manual" ? "border-sky-500/40 text-sky-200" : source === "rule" ? "border-violet-500/40 text-violet-200" : "border-slate-700 text-slate-500";
   return (
-    <span title={title} className={`shrink-0 rounded border px-1.5 text-xs ${tone}`}>
-      {text}
-    </span>
+    <Tooltip label={title} className="shrink-0">
+      <span className={`shrink-0 rounded border px-1.5 text-xs ${tone}`}>{text}</span>
+    </Tooltip>
   );
 }
 
