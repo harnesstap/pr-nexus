@@ -152,6 +152,9 @@ pub(crate) fn parse(body: &Value, fetched_at: String) -> Result<PrOverview, Prov
         is_draft: flag(node.get("isDraft")),
         base_ref: opt_str(node.get("baseRefName")).unwrap_or_default(),
         head_ref: opt_str(node.get("headRefName")).unwrap_or_default(),
+        head_sha: opt_str(node.get("headRefOid")).unwrap_or_default(),
+        base_sha: opt_str(node.get("baseRefOid")).unwrap_or_default(),
+        head_owner: opt_str(node.pointer("/headRepositoryOwner/login")).unwrap_or_default(),
         mergeable: match node.get("mergeable").and_then(Value::as_str) {
             Some("MERGEABLE") => "mergeable".into(),
             Some("CONFLICTING") => "conflicting".into(),

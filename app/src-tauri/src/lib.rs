@@ -145,6 +145,8 @@ pub fn run() {
             commands::set_auto_merge,
             commands::set_pr_draft,
             commands::merge_pr,
+            commands::pr_branch_status,
+            commands::update_pr_branch,
         ])
         .run(tauri::generate_context!())
         .expect("error while running PR Nexus");

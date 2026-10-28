@@ -474,6 +474,26 @@ pub trait VcsProvider: Send + Sync {
     ) -> Result<(), ProviderError> {
         Err(crate::overview::unsupported())
     }
+    /// Compares `base...head` (REST compare): how far the head is behind,
+    /// and who wrote its commits. One request; never called by sync.
+    fn compare_branches(
+        &self,
+        _pr: &PullRequest,
+        _base: &crate::branch::BranchRef,
+        _head: &crate::branch::BranchRef,
+    ) -> Result<crate::branch::BranchComparison, ProviderError> {
+        Err(crate::overview::unsupported())
+    }
+    /// Brings the base into the head with `method`, only if the head is
+    /// still `expected_head`.
+    fn update_branch(
+        &self,
+        _pr: &PullRequest,
+        _expected_head: &str,
+        _method: crate::branch::UpdateMethod,
+    ) -> Result<(), ProviderError> {
+        Err(crate::overview::unsupported())
+    }
     fn request_team_review(&self, pr: &PullRequest, teams: &[TeamRef])
     -> Result<(), ProviderError>;
     /// One page of the notifications inbox. Read-only. A token that cannot

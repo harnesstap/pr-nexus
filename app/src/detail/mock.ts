@@ -1,4 +1,4 @@
-import type { PrDetail, PrOverview } from "../api";
+import type { BranchStatus, PrDetail, PrOverview } from "../api";
 
 /** A made-up open PR for tests, the preview and the screenshot. Override what a case needs. */
 export function mockOverview(overrides: Partial<PrOverview> = {}): PrOverview {
@@ -71,6 +71,20 @@ export function mockDetail(id: number, overrides: Partial<PrDetail> = {}): PrDet
     rules_error: null,
     protection: "Branch protection requires code-owner reviews",
     from_cache: false,
+    ...overrides,
+  };
+}
+
+/** A made-up Branch card: up to date with `main` unless overridden. */
+export function mockBranch(overrides: Partial<BranchStatus> = {}): BranchStatus {
+  return {
+    state: "up_to_date",
+    base_ref: "main",
+    head_ref: "feature/checkout-steps",
+    behind_by: 0,
+    other_authors: [],
+    conflicts_url: "https://github.com/acme/web/pull/42/conflicts",
+    head_sha: "0123456789abcdef",
     ...overrides,
   };
 }

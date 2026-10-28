@@ -419,3 +419,25 @@ fn channel_json() -> serde_json::Value {
         "channel_name": "team-reviews",
     })
 }
+
+#[test]
+fn branch_status_and_update_go_through_the_demo_provider() {
+    use pr_nexus_core::branch::BranchState;
+    let fixture = fixture("branch");
+    let state = &fixture.state;
+    let id = pr_id(
+        state,
+        prs::list_prs(state, &PrFilter::default()).unwrap().items[0]
+            .row
+            .number,
+    );
+    let status = super::branch::branch_status(state, id).unwrap();
+    assert!(status.conflicts_url.ends_with("/conflicts"));
+    assert_ne!(status.state, BranchState::Checking);
+    let cached = super::branch::branch_status_cached(state, id).unwrap();
+    assert_eq!(cached, status);
+    let updated = super::branch::update_branch(state, id, "merge").unwrap();
+    assert_eq!(updated.branch.base_ref, status.base_ref);
+    let err = super::branch::update_branch(state, id, "squash").unwrap_err();
+    assert_eq!(err.kind, "validation");
+}

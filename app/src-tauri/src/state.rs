@@ -75,6 +75,8 @@ pub struct AppState {
     pub wake: Arc<(Mutex<bool>, Condvar)>,
     /// Live updates from the notifications inbox (§6).
     pub live: crate::live::LiveShared,
+    /// Behind counts for the Branch card, keyed on head and base SHAs.
+    pub branch_cache: pr_nexus_core::branch::BranchCache,
     /// `PR_NEXUS_DEMO=1`: seeded local data only, never talk to GitHub.
     pub demo: bool,
 }
@@ -103,6 +105,7 @@ impl AppState {
             focused: AtomicBool::new(true),
             wake: Arc::new((Mutex::new(false), Condvar::new())),
             live: crate::live::LiveShared::default(),
+            branch_cache: pr_nexus_core::branch::BranchCache::default(),
             demo,
         })
     }
@@ -124,6 +127,7 @@ impl AppState {
             focused: AtomicBool::new(true),
             wake: Arc::new((Mutex::new(false), Condvar::new())),
             live: crate::live::LiveShared::default(),
+            branch_cache: pr_nexus_core::branch::BranchCache::default(),
             demo,
         }
     }
@@ -443,6 +447,7 @@ mod tests {
             focused: AtomicBool::new(true),
             wake: Arc::new((Mutex::new(false), Condvar::new())),
             live: crate::live::LiveShared::default(),
+            branch_cache: pr_nexus_core::branch::BranchCache::default(),
             demo: true,
         };
         (state, path)

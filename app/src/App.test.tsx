@@ -118,6 +118,8 @@ function api(): Api {
     setAutoMerge: () => Promise.reject(new Error("unused")),
     setPrDraft: () => Promise.reject(new Error("unused")),
     mergePr: () => Promise.reject(new Error("unused")),
+    prBranchStatus: () => Promise.reject(new Error("unused")),
+    updatePrBranch: () => Promise.reject(new Error("unused")),
     prSlackContext: () => Promise.resolve([]),
     prSlackMentions: () => Promise.resolve([]),
     saveSlackMentions: () => Promise.resolve(),

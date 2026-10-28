@@ -12,6 +12,9 @@ query PullRequestOverview($owner: String!, $name: String!, $number: Int!) {
       isDraft
       baseRefName
       headRefName
+      headRefOid
+      baseRefOid
+      headRepositoryOwner { login }
       mergeable
       mergeStateStatus
       reviewDecision

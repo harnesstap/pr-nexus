@@ -97,44 +97,11 @@ export function approvalsSummary(overview: Pick<PrOverview, "approvals" | "requi
   };
 }
 
-/**
- * The Conflicts card: only whether the branch merges cleanly into its base.
- * Checks, reviews and drafts live in the verdict, so "None" here never reads
- * as "ready to merge".
- */
-export function conflictsSummary(overview: Pick<PrOverview, "state" | "mergeable" | "merge_state">): Summary {
-  if (overview.state === "merged") {
-    return {
-      tone: "good",
-      value: "Merged",
-      caption: "Already in the base branch",
-    };
-  }
-  if (overview.state === "closed") {
-    return { tone: "muted", value: "Closed", caption: "Not merged" };
-  }
-  if (overview.mergeable === "conflicting" || overview.merge_state === "dirty") {
-    return { tone: "bad", value: "Yes", caption: "Resolve before merging" };
-  }
-  if (overview.mergeable === "unknown" || overview.merge_state === "unknown") {
-    return {
-      tone: "muted",
-      value: "Checking",
-      caption: "GitHub is computing it",
-    };
-  }
-  if (overview.merge_state === "behind") {
-    return {
-      tone: "warn",
-      value: "Behind",
-      caption: "Update from the base branch",
-    };
-  }
-  return {
-    tone: "good",
-    value: "None",
-    caption: "Merges cleanly into the base",
-  };
+const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
+
+/** The blocker for a branch the rules require to be up to date; matches the Branch card. */
+export function behindLine(behindBy: number | null): string {
+  return behindBy === null ? "The branch is behind its base · update required." : `${plural(behindBy, "commit")} behind · update required.`;
 }
 
 const WRITE = new Set(["admin", "maintain", "write"]);
@@ -150,17 +117,18 @@ export interface MergeVerdict {
   blockers: string[];
 }
 
-const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
-
 /** The draft blocker line; the merge card puts "Mark ready for review" on it. */
 export const DRAFT_BLOCKER = "It is still a draft.";
+
+/** The conflicts blocker line; the merge card puts "Resolve on GitHub" on it. */
+export const CONFLICTS_BLOCKER = "It has merge conflicts with the base branch.";
 
 /**
  * Every reason an open pull request can't merge yet, in a fixed order: draft,
  * access, conflicts, behind, failing checks, required checks still running,
  * changes requested, and missing approvals.
  */
-export function mergeBlockers(overview: PrOverview): string[] {
+export function mergeBlockers(overview: PrOverview, behindBy: number | null = null): string[] {
   if (overview.state !== "open") {
     return [];
   }
@@ -172,10 +140,10 @@ export function mergeBlockers(overview: PrOverview): string[] {
     out.push("You don't have write access to this repository.");
   }
   if (overview.mergeable === "conflicting" || overview.merge_state === "dirty") {
-    out.push("It has merge conflicts with the base branch.");
+    out.push(CONFLICTS_BLOCKER);
   }
   if (overview.merge_state === "behind") {
-    out.push("The branch is behind its base.");
+    out.push(behindLine(behindBy));
   }
   const failed = overview.checks.filter((check) => check.state === "failed");
   if (failed.length > 0) {
@@ -206,21 +174,15 @@ export function mergeBlockers(overview: PrOverview): string[] {
  * flag for this, so it is derived from the merge state, the token's permission, and
  * what the branch rules let it see; see the panel tooltip.
  */
-export function mergeVerdict(overview: PrOverview): MergeVerdict {
+export function mergeVerdict(overview: PrOverview, behindBy: number | null = null): MergeVerdict {
   const no = (reason: string, tone: Tone = "bad"): MergeVerdict => ({
     can: false,
     tone,
     title: "You can't merge",
     reason,
-    blockers: mergeBlockers(overview),
+    blockers: mergeBlockers(overview, behindBy),
   });
-  const yes = (reason: string, tone: Tone = "good"): MergeVerdict => ({
-    can: true,
-    tone,
-    title: "You can merge",
-    reason,
-    blockers: [],
-  });
+  const yes = (reason: string, tone: Tone = "good"): MergeVerdict => ({ can: true, tone, title: "You can merge", reason, blockers: [] });
   if (overview.state === "merged") {
     return no("It is already merged.", "muted");
   }
@@ -244,7 +206,7 @@ export function mergeVerdict(overview: PrOverview): MergeVerdict {
     case "unstable":
       return yes("Some checks that are not required are failing.", "warn");
     case "behind":
-      return no("The branch is behind its base. Update it first.", "warn");
+      return no(behindLine(behindBy), "warn");
     case "blocked":
       return overview.viewer.can_merge_as_admin
         ? yes("Branch rules aren't met yet, but you can bypass them as an admin.", "warn")
