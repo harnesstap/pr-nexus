@@ -14,6 +14,11 @@
 #   RESEAL_APP         override path to PR Nexus.app
 #   RESEAL_CODESIGN    codesign binary (tests)
 #   RESEAL_HDIUTIL     hdiutil binary (tests)
+#   RESEAL_IDENTITY    sign with this keychain identity instead of ad-hoc
+#                      (release self-signed cert). Nested code first, then
+#                      the bundle, with --identifier dev.pr-nexus and
+#                      --timestamp=none; no --deep, no hardened runtime.
+#   RESEAL_KEYCHAIN    keychain holding RESEAL_IDENTITY (optional)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -45,23 +50,59 @@ fi
 CODESIGN="${RESEAL_CODESIGN:-codesign}"
 HDIUTIL="${RESEAL_HDIUTIL:-hdiutil}"
 
+IDENTITY="${RESEAL_IDENTITY:-}"
+# Must match identifier in app/src-tauri/tauri.conf.json.
+BUNDLE_ID="dev.pr-nexus"
+
 sign_adhoc() {
   local target="$1"
   log "codesign --force --sign - $target"
   "$CODESIGN" --force --sign - "$target"
 }
 
-MACOS_DIR="$APP/Contents/MacOS"
-if [ -d "$MACOS_DIR" ]; then
-  for bin in "$MACOS_DIR"/*; do
-    [ -e "$bin" ] || continue
-    [ -d "$bin" ] && continue
-    sign_adhoc "$bin"
-  done
-fi
+sign_identity() {
+  local target="$1" ident="$2"
+  local args=(--force --sign "$IDENTITY" --identifier "$ident" --timestamp=none)
+  if [ -n "${RESEAL_KEYCHAIN:-}" ]; then
+    args+=(--keychain "$RESEAL_KEYCHAIN")
+  fi
+  log "codesign ${args[*]} $target"
+  "$CODESIGN" "${args[@]}" "$target"
+}
 
-log "codesign --force --deep --sign - $APP"
-"$CODESIGN" --force --deep --sign - "$APP"
+MACOS_DIR="$APP/Contents/MacOS"
+if [ -n "$IDENTITY" ]; then
+  # Inside-out: frameworks and helper binaries, then the bundle (which seals
+  # the main executable with the bundle identifier).
+  if [ -d "$APP/Contents/Frameworks" ]; then
+    for fw in "$APP/Contents/Frameworks"/*; do
+      [ -e "$fw" ] || continue
+      sign_identity "$fw" "$BUNDLE_ID.$(basename "$fw" | sed 's/\.[^.]*$//')"
+    done
+  fi
+  if [ -d "$MACOS_DIR" ]; then
+    for bin in "$MACOS_DIR"/*; do
+      [ -e "$bin" ] || continue
+      [ -d "$bin" ] && continue
+      sign_identity "$bin" "$BUNDLE_ID"
+    done
+  fi
+  sign_identity "$APP" "$BUNDLE_ID"
+  "$CODESIGN" --verify --deep --strict --verbose=2 "$APP"
+  log "designated requirement:"
+  "$CODESIGN" -d -r- "$APP" 2>&1 || true
+else
+  if [ -d "$MACOS_DIR" ]; then
+    for bin in "$MACOS_DIR"/*; do
+      [ -e "$bin" ] || continue
+      [ -d "$bin" ] && continue
+      sign_adhoc "$bin"
+    done
+  fi
+
+  log "codesign --force --deep --sign - $APP"
+  "$CODESIGN" --force --deep --sign - "$APP"
+fi
 
 dump="$("$CODESIGN" -dv --verbose=4 "$APP" 2>&1 || true)"
 printf '%s\n' "$dump"
