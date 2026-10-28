@@ -1402,6 +1402,25 @@ pub async fn set_auto_merge(
     .await
 }
 
+/// Converts the pull request to a draft (`draft: true`) or marks it ready
+/// for review, and returns the refreshed overview.
+#[tauri::command]
+pub async fn set_pr_draft(
+    app: State<'_, std::sync::Arc<AppState>>,
+    id: i64,
+    draft: bool,
+) -> Result<PrOverview, AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        let pr = stored_pr(state, PrId(id))?;
+        with_vcs(state, |provider| {
+            overview::set_draft(&state.store, provider, &pr, draft)
+        })
+    })
+    .await
+}
+
 fn detail_dto(id: PrId, report: OwnershipReport) -> PrDetail {
     use pr_nexus_core::domain::{Readiness, TeamRef};
     use pr_nexus_core::providers::ClassicProtection;
@@ -1789,5 +1808,27 @@ mod tests {
         ids.sort_unstable();
         ids.dedup();
         ids
+    }
+
+    #[test]
+    fn demo_draft_toggle_updates_the_row_and_the_overview() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::open(dir.path().join("pr-nexus.db")).unwrap();
+        crate::demo::seed_if_empty(&state.store).unwrap();
+        let account = state::github_account(&state.store).unwrap().unwrap();
+        let pr = state
+            .store
+            .list_pull_requests_for_account(account.id)
+            .unwrap()
+            .into_iter()
+            .find(|pr| pr.state == PrState::Open)
+            .unwrap();
+        for draft in [!pr.is_draft, pr.is_draft] {
+            let fresh =
+                overview::set_draft(&state.store, &crate::demo::DemoProvider, &pr, draft).unwrap();
+            assert_eq!(fresh.is_draft, draft);
+            let row = state.store.get_pull_request(pr.id).unwrap().unwrap();
+            assert_eq!(row.is_draft, draft);
+        }
     }
 }

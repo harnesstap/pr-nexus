@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Api, Bootstrap, ListRow, ProjectDto, ReplacedLinkDto } from "../api";
 import { errorMessage } from "../api";
 import { ClockIcon, CloseIcon, FolderIcon, GearIcon, HomeIcon, LogoIcon, PlusIcon, RefreshIcon } from "../icons";
@@ -196,6 +196,33 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
     }, 200);
     return () => window.clearTimeout(timer);
   }, [api, view, viewKey, loaded]);
+
+  // Optimistic draft flips, kept until the reload after the save has landed.
+  const [draftPatches, setDraftPatches] = useState<Record<number, { draft: boolean; until: number }>>({});
+  const shownDraftPatches = useMemo(() => {
+    const live: Record<number, boolean> = {};
+    for (const [id, patch] of Object.entries(draftPatches)) if (version <= patch.until) live[Number(id)] = patch.draft;
+    return live;
+  }, [draftPatches, version]);
+
+  function changeDraft(id: number, draft: boolean | null | "saved") {
+    if (draft === "saved") {
+      setDraftPatches((current) => (current[id] ? { ...current, [id]: { ...current[id], until: version + 1 } } : current));
+      void reload();
+      return;
+    }
+    if (draft === null) {
+      setDraftPatches((current) => {
+        const rest = { ...current };
+        delete rest[id];
+        return rest;
+      });
+      setDetailRow((current) => (current && current.id === id ? { ...current, is_draft: !current.is_draft } : current));
+      return;
+    }
+    setDraftPatches((current) => ({ ...current, [id]: { draft, until: Number.MAX_SAFE_INTEGER } }));
+    setDetailRow((current) => (current && current.id === id ? { ...current, is_draft: draft } : current));
+  }
 
   async function reload() {
     setVersion((value) => value + 1);
@@ -572,6 +599,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
               onDetails={setDetailRow}
               onRequestReview={setReviewRow}
               onBulkReview={setBulkIds}
+              draftPatches={shownDraftPatches}
             />
             </div>
             {detailRow && (
@@ -584,6 +612,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
                 onOpen={(url) => void api.openExternal(url)}
                 onRequestReview={() => setReviewRow(detailRow)}
                 onNotice={(text) => setNotice({ text })}
+                onDraftChange={changeDraft}
                 slack={{ mentions: boot.slack_mentions }}
               />
             )}

@@ -1,7 +1,8 @@
 // Renders the real app over mocked Tauri IPC (screenshot.html) and saves the
 // README screenshot. Usage, from app/: bun run screenshot
 // `bun run screenshot -- --detail <path>` opens #479's detail panel and saves
-// that view to <path> instead.
+// that view to <path> instead; `--draft <path>` opens draft #488, which has
+// no Slack request yet.
 // Uses an installed Chrome; set CHROME_PATH to pick another Chromium binary.
 import { statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -12,7 +13,12 @@ import { createServer } from "vite";
 
 const appDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const detailFlag = process.argv.indexOf("--detail");
-const detailOut = detailFlag === -1 ? null : process.argv[detailFlag + 1];
+const draftFlag = process.argv.indexOf("--draft");
+const draftOut = draftFlag === -1 ? null : process.argv[draftFlag + 1];
+if (draftFlag !== -1 && !draftOut) {
+  throw new Error("--draft needs an output path");
+}
+const detailOut = detailFlag === -1 ? draftOut : process.argv[detailFlag + 1];
 if (detailFlag !== -1 && !detailOut) {
   throw new Error("--detail needs an output path");
 }
@@ -31,9 +37,13 @@ try {
   await page.goto(url);
   await page.getByRole("group", { name: "Quick filters" }).waitFor();
   if (detailOut) {
-    await page.getByRole("button", { name: /Add address autocomplete to checkout/ }).first().click();
+    await page.getByRole("button", { name: draftOut ? /Show saved cards first/ : /Add address autocomplete to checkout/ }).first().click();
     await page.getByTestId("detail-panel").getByRole("button", { name: /^Checks:/ }).waitFor();
-    await page.getByTestId("detail-panel").getByRole("button", { name: /^Checks:/ }).click();
+    if (draftOut) {
+      await page.getByTestId("detail-panel").getByRole("button", { name: "Request review on Slack" }).waitFor();
+    } else {
+      await page.getByTestId("detail-panel").getByRole("button", { name: /^Checks:/ }).click();
+    }
   }
   await page.waitForTimeout(500);
   await page.screenshot({ path: out });

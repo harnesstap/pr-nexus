@@ -4,7 +4,7 @@ import { createRoot } from "react-dom/client";
 import App from "../App";
 import "../index.css";
 import { pageFromRows, type PageRequest } from "../list/paging";
-import { boot, detail, overview, projects, rows, slackThreads } from "./fixtures";
+import { boot, detail, draftOverview, draftRowId, overview, projects, rows, slackThreads } from "./fixtures";
 
 /**
  * The real app over mocked Tauri IPC, for the README screenshot
@@ -19,8 +19,9 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   slack_workspaces: () => boot.slack_workspaces,
   check_update: () => null,
   pr_detail: () => detail,
-  pr_overview: () => ({ ...overview, fetched_at: new Date().toISOString() }),
-  pr_slack_context: () => slackThreads,
+  pr_overview: (args) => ({ ...(args.id === draftRowId ? draftOverview : overview), fetched_at: new Date().toISOString() }),
+  set_pr_draft: (args) => ({ ...draftOverview, is_draft: args.draft === true, merge_state: args.draft === true ? "draft" : "blocked", fetched_at: new Date().toISOString() }),
+  pr_slack_context: (args) => (args.prId === draftRowId ? [] : slackThreads),
   pr_slack_mentions: () => [],
 };
 

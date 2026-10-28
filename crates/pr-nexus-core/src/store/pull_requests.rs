@@ -150,6 +150,18 @@ impl Store {
         })
     }
 
+    /// Records a draft flip made from the app, ahead of the next sync.
+    pub fn set_pull_request_draft(&self, id: PrId, draft: bool) -> Result<(), CoreError> {
+        self.write(move |conn| {
+            conn.execute(
+                "UPDATE pull_requests SET is_draft = ?1 WHERE id = ?2",
+                params![sql_bool(draft), id.0],
+            )
+            .map_err(db)?;
+            Ok(())
+        })
+    }
+
     pub fn set_pull_request_hidden(&self, id: PrId, hidden: bool) -> Result<(), CoreError> {
         self.write(move |conn| {
             conn.execute(

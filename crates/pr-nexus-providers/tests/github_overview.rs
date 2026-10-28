@@ -67,8 +67,8 @@ const OVERVIEW: &str = r#"{"data":{
       "autoMergeRequest":null,
       "comments":{"totalCount":3},
       "reviewThreads":{"nodes":[{"comments":{"totalCount":2}},{"comments":{"totalCount":1}}]},
-      "participants":{"totalCount":4,"nodes":[
-        {"login":"alice","name":"Alice","avatarUrl":"https://example.test/a"},
+      "author":{"__typename":"User","login":"alice","name":"Alice","avatarUrl":"https://example.test/a"},
+      "assignees":{"nodes":[
         {"login":"bob","name":"","avatarUrl":"https://example.test/b"}
       ]},
       "reviewRequests":{"nodes":[
@@ -100,6 +100,23 @@ fn mock_github() -> MockServer {
             .and(path("/repos/acme/widgets/rules/branches/main"))
             .respond_with(ResponseTemplate::new(200).set_body_string(
                 r#"[{"type":"pull_request","parameters":{"required_approving_review_count":2}}]"#,
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(body_string_contains("mutation ConvertToDraft"))
+            .and(body_string_contains(r#""id":"PR_1""#))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"data":{"convertPullRequestToDraft":{"pullRequest":{"id":"PR_1","isDraft":true}}}}"#,
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(body_string_contains("mutation MarkReady"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"data":null,"errors":[{"type":"UNPROCESSABLE","message":"Draft pull requests are not supported in this repository."}]}"#,
             ))
             .mount(&server)
             .await;
@@ -147,8 +164,13 @@ fn overview_reads_checks_comments_people_and_merge_rights() {
     assert_eq!(overview.reviewers[1].person.kind, PersonKind::Team);
     assert_eq!(overview.reviewers[1].person.login, "acme/core");
     assert_eq!(overview.reviewers[1].state, ReviewState::Pending);
-    assert_eq!(overview.participants_total, 4);
-    assert_eq!(overview.participants[1].name, None);
+    assert_eq!(
+        overview.author.as_ref().map(|a| a.login.as_str()),
+        Some("alice")
+    );
+    assert_eq!(overview.assignees.len(), 1);
+    assert_eq!(overview.assignees[0].login, "bob");
+    assert_eq!(overview.assignees[0].name, None);
     assert_eq!(overview.viewer.login, "alice");
     assert_eq!(overview.viewer.permission.as_deref(), Some("write"));
     assert!(overview.viewer.can_enable_auto_merge);
@@ -166,4 +188,16 @@ fn auto_merge_mutations_send_the_node_id_and_surface_errors() {
         .unwrap();
     let err = client.set_auto_merge(&pr(), None).unwrap_err();
     assert!(err.to_string().contains("not allowed"), "{err}");
+}
+
+#[test]
+fn draft_mutations_send_the_node_id_and_explain_plan_limits() {
+    let server = mock_github();
+    let client = GithubClient::with_base(server.uri(), AccountId(1), "token").unwrap();
+    client.set_draft(&pr(), true).unwrap();
+    let err = client.set_draft(&pr(), false).unwrap_err();
+    assert!(
+        matches!(err, pr_nexus_core::error::ProviderError::Unsupported(_)),
+        "{err}"
+    );
 }

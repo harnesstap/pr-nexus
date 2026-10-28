@@ -1,0 +1,3 @@
+kind: Added
+body: "Detail panel: one prominent \"Request review on Slack\" button under the merge verdict (shortcut `r`) replaces the small header icon; once a request exists it shows the request summary with Bump. The state pill toggles Draft ↔ Ready for review (plus \"Mark ready for review\" in the draft box), optimistically with a toast and rollback, disabled with a reason when you can't change it."
+time: 2026-10-27T16:34:04.000000-10:00

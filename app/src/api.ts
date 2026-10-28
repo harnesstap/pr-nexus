@@ -454,7 +454,8 @@ export interface OverviewCheck {
 
 /** A user or team; `login` is `org/slug` for a team. */
 export interface Person {
-  kind: "user" | "team";
+  /** Bots are kept and marked, so a bot-authored PR still lists its author. */
+  kind: "user" | "team" | "bot";
   login: string;
   name: string | null;
   avatar_url: string | null;
@@ -482,8 +483,11 @@ export interface PrOverview {
   /** Null when the token cannot see the branch rules. */
   required_approvals: number | null;
   reviewers: OverviewReviewer[];
-  participants: Person[];
-  participants_total: number;
+  /** Null for a deleted account. */
+  author: Person | null;
+  assignees: Person[];
+  /** Authors of PR and review-thread comments, deduped; bots included. */
+  commenters: Person[];
   viewer: {
     login: string;
     permission: "admin" | "maintain" | "write" | "triage" | "read" | null;
@@ -597,6 +601,8 @@ export interface Api {
   prOverview(id: number, refresh: boolean): Promise<PrOverview | null>;
   /** Turns auto-merge on with `method`, or off with null; returns the fresh overview. */
   setAutoMerge(id: number, method: MergeMethod | null): Promise<PrOverview>;
+  /** Converts to a draft (`true`) or marks ready for review (`false`); returns the fresh overview. */
+  setPrDraft(id: number, draft: boolean): Promise<PrOverview>;
   prSlackContext(prId: number, refresh: boolean): Promise<ContextThread[]>;
   prSlackMentions(prId: number): Promise<MentionGroup[]>;
   saveSlackMentions(scope: MentionsScope): Promise<void>;
@@ -686,6 +692,7 @@ export const tauriApi: Api = {
   prDetail: (id) => invoke("pr_detail", { id }),
   prOverview: (id, refresh) => invoke("pr_overview", { id, refresh }),
   setAutoMerge: (id, method) => invoke("set_auto_merge", { id, method }),
+  setPrDraft: (id, draft) => invoke("set_pr_draft", { id, draft }),
   prSlackContext: (prId, refresh) => invoke("pr_slack_context", { prId, refresh }),
   prSlackMentions: (prId) => invoke("pr_slack_mentions", { prId }),
   saveSlackMentions: (scope) => invoke("save_slack_mentions", { scope }),

@@ -311,13 +311,6 @@ impl DemoProvider {
             .iter()
             .filter(|seat| seat.state == ReviewState::Approved)
             .count() as u32;
-        let mut participants = vec![person(&pr.author_login)];
-        participants.extend(
-            reviewers
-                .iter()
-                .filter(|seat| seat.person.kind == PersonKind::User)
-                .map(|seat| seat.person.clone()),
-        );
         PrOverview {
             state: pr.state.as_str().into(),
             is_draft: pr.is_draft,
@@ -333,8 +326,9 @@ impl DemoProvider {
             approvals,
             required_approvals: Some(1),
             reviewers,
-            participants_total: participants.len() as u32,
-            participants,
+            author: Some(person(&pr.author_login)),
+            assignees: vec![person(&pr.author_login)],
+            commenters: Vec::new(),
             viewer: ViewerAccess {
                 login: "ada".into(),
                 permission: Some("write".into()),
@@ -360,6 +354,10 @@ impl VcsProvider for DemoProvider {
         pr: &PullRequest,
     ) -> Result<pr_nexus_core::overview::PrOverview, ProviderError> {
         Ok(Self::overview(pr))
+    }
+    /// Demo drafts flip locally; the stored row carries the new flag.
+    fn set_draft(&self, _pr: &PullRequest, _draft: bool) -> Result<(), ProviderError> {
+        Ok(())
     }
     fn kind(&self) -> VcsKind {
         VcsKind::GitHub

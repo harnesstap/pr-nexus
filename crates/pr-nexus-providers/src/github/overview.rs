@@ -15,6 +15,8 @@ use super::parse::data;
 const OVERVIEW: &str = include_str!("graphql/pr_overview.graphql");
 const ENABLE: &str = include_str!("graphql/enable_auto_merge.graphql");
 const DISABLE: &str = include_str!("graphql/disable_auto_merge.graphql");
+const TO_DRAFT: &str = include_str!("graphql/convert_to_draft.graphql");
+const MARK_READY: &str = include_str!("graphql/mark_ready.graphql");
 
 pub(crate) fn fetch(client: &GithubClient, pr: &PullRequest) -> Result<PrOverview, ProviderError> {
     let body = client.graphql(
@@ -46,6 +48,28 @@ pub(crate) fn set_auto_merge(
     };
     data(&body)?;
     Ok(())
+}
+
+/// Converts to a draft or marks ready for review. Free private repositories
+/// cannot hold drafts; GitHub's error for that becomes a plain `Unsupported`.
+pub(crate) fn set_draft(
+    client: &GithubClient,
+    pr: &PullRequest,
+    draft: bool,
+) -> Result<(), ProviderError> {
+    let query = if draft { TO_DRAFT } else { MARK_READY };
+    match client.graphql(query, json!({ "id": pr.remote.id })) {
+        Ok(body) => data(&body).map(|_| ()),
+        Err(err) if drafts_unsupported(&err) => Err(ProviderError::Unsupported(
+            "draft pull requests aren't available on this repository's plan".into(),
+        )),
+        Err(err) => Err(err),
+    }
+}
+
+fn drafts_unsupported(err: &ProviderError) -> bool {
+    let text = err.to_string().to_ascii_lowercase();
+    text.contains("draft") && (text.contains("not supported") || text.contains("not available"))
 }
 
 /// Rulesets and classic protection can both ask for approvals; the stricter
@@ -93,14 +117,9 @@ pub(crate) fn parse(body: &Value, fetched_at: String) -> Result<PrOverview, Prov
         .filter(|reviewer| reviewer.state == ReviewState::Approved)
         .count() as u32;
 
-    let participants: Vec<Person> = nodes(node.get("participants"))
-        .iter()
-        .filter_map(user_person)
-        .collect();
-    let participants_total = node
-        .pointer("/participants/totalCount")
-        .and_then(Value::as_u64)
-        .map_or(participants.len() as u32, |count| count as u32);
+    let author = node.get("author").and_then(actor_person);
+    let assignees = dedupe(nodes(node.get("assignees")).iter().filter_map(user_person));
+    let commenters = commenters(node);
 
     let auto_merge = node
         .get("autoMergeRequest")
@@ -135,8 +154,9 @@ pub(crate) fn parse(body: &Value, fetched_at: String) -> Result<PrOverview, Prov
         approvals,
         required_approvals: None,
         reviewers,
-        participants,
-        participants_total,
+        author,
+        assignees,
+        commenters,
         viewer: ViewerAccess {
             login: opt_str(root.pointer("/viewer/login")).unwrap_or_default(),
             permission: lower(repo.get("viewerPermission")),
@@ -168,7 +188,7 @@ fn reviewers(node: &Value) -> Vec<Reviewer> {
             // A draft review only its author can see.
             _ => continue,
         };
-        if let Some(person) = review.get("author").and_then(user_person) {
+        if let Some(person) = review.get("author").and_then(actor_person) {
             out.push(Reviewer { person, state });
         }
     }
@@ -209,6 +229,44 @@ fn reviewers(node: &Value) -> Vec<Reviewer> {
         }
     }
     out
+}
+
+/// People in first-seen order, each login once (case-insensitive).
+fn dedupe(people: impl IntoIterator<Item = Person>) -> Vec<Person> {
+    let mut out: Vec<Person> = Vec::new();
+    for person in people {
+        if !out
+            .iter()
+            .any(|known| known.login.eq_ignore_ascii_case(&person.login))
+        {
+            out.push(person);
+        }
+    }
+    out
+}
+
+/// Authors of PR comments, then review-thread comments, deduped. Bots are
+/// kept and marked `Bot`; the panel drops the viewer, author and reviewers.
+fn commenters(node: &Value) -> Vec<Person> {
+    let threads = nodes(node.get("reviewThreads"))
+        .iter()
+        .flat_map(|thread| nodes(thread.get("comments")));
+    dedupe(
+        nodes(node.get("comments"))
+            .iter()
+            .chain(threads)
+            .filter_map(|comment| comment.get("author").and_then(actor_person)),
+    )
+}
+
+/// A comment or review author: a user, or a bot marked as one. Deleted
+/// accounts come back as `null` and are skipped.
+fn actor_person(node: &Value) -> Option<Person> {
+    let mut person = user_person(node)?;
+    if node.get("__typename").and_then(Value::as_str) == Some("Bot") {
+        person.kind = PersonKind::Bot;
+    }
+    Some(person)
 }
 
 fn check(node: &Value) -> Option<CheckItem> {
@@ -375,5 +433,51 @@ mod tests {
             ]
         );
         assert_eq!(reviewers[2].person.kind, PersonKind::Team);
+    }
+
+    #[test]
+    fn commenters_and_assignees_are_deduped_and_keep_bots() {
+        let node = json!({
+            "author": {"__typename": "Bot", "login": "deps-bot", "avatarUrl": "https://example.test/d"},
+            "assignees": {"nodes": [{"login": "noor", "name": "Noor"}, {"login": "NOOR"}]},
+            "comments": {"totalCount": 2, "nodes": [
+                {"author": {"__typename": "Bot", "login": "ci-bot"}},
+                {"author": {"__typename": "User", "login": "kim", "name": "Kim"}},
+                {"author": null}
+            ]},
+            "reviewThreads": {"nodes": [
+                {"comments": {"totalCount": 1, "nodes": [{"author": {"__typename": "User", "login": "KIM"}}]}}
+            ]}
+        });
+        let people: Vec<_> = commenters(&node)
+            .into_iter()
+            .map(|person| (person.login, person.kind))
+            .collect();
+        assert_eq!(
+            people,
+            [
+                ("ci-bot".to_string(), PersonKind::Bot),
+                ("kim".to_string(), PersonKind::User),
+            ]
+        );
+        let assignees = dedupe(nodes(node.get("assignees")).iter().filter_map(user_person));
+        assert_eq!(assignees.len(), 1);
+        assert_eq!(assignees[0].name.as_deref(), Some("Noor"));
+        assert_eq!(
+            node.get("author").and_then(actor_person).map(|p| p.kind),
+            Some(PersonKind::Bot)
+        );
+    }
+
+    #[test]
+    fn draft_plan_error_is_recognised() {
+        let plan = ProviderError::Api {
+            code: "UNPROCESSABLE".into(),
+            message: "Draft pull requests are not supported in this repository.".into(),
+        };
+        assert!(drafts_unsupported(&plan));
+        assert!(!drafts_unsupported(&ProviderError::Forbidden(
+            "nope".into()
+        )));
     }
 }

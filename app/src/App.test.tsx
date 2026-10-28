@@ -109,6 +109,7 @@ function api(): Api {
     prDetail: () => Promise.reject(new Error("unused")),
     prOverview: () => Promise.resolve(null),
     setAutoMerge: () => Promise.reject(new Error("unused")),
+    setPrDraft: () => Promise.reject(new Error("unused")),
     prSlackContext: () => Promise.resolve([]),
     prSlackMentions: () => Promise.resolve([]),
     saveSlackMentions: () => Promise.resolve(),
