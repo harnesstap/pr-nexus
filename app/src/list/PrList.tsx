@@ -102,6 +102,19 @@ export interface ListActions {
   selectedCount: number;
 }
 
+/** Controls inside a row that keep their own click behaviour. */
+const ROW_CONTROLS = "a, button, input, select, textarea, label, summary, [role='button'], [role='menu'], [role='menuitem'], [role='checkbox'], [tabindex]";
+
+/** Whether a click on a row should open its detail panel: not on a control, not ending a text selection. */
+export function rowClickOpens(target: EventTarget, row: Element): boolean {
+  const control = target instanceof Element ? target.closest(ROW_CONTROLS) : null;
+  if (control && control !== row && row.contains(control)) {
+    return false;
+  }
+  const selection = window.getSelection();
+  return !selection || selection.isCollapsed;
+}
+
 /** Below this list width rows switch to the compact two-line layout. */
 const COMPACT_LIST_PX = 820;
 
@@ -675,17 +688,17 @@ export function PrList({
                         setDragBadge(event.dataTransfer, ids.length);
                       }}
                       onDragEnd={() => setDropTarget(null)}
-                      onMouseDown={() => {
-                        setFocusIndex(index);
-                        // With the panel open, clicking a row shows that PR.
-                        if (detailId !== null && detailId !== row.id) {
+                      onMouseDown={() => setFocusIndex(index)}
+                      onClick={(event) => {
+                        // The whole row opens (or switches) the panel; its own controls keep their behaviour.
+                        if (rowClickOpens(event.target, event.currentTarget) && detailId !== row.id) {
                           onDetails(row);
                         }
                       }}
                       aria-label={`#${row.number} ${row.title}`}
                       aria-current={index === focus ? "true" : undefined}
                       data-focused={index === focus ? "true" : undefined}
-                      className={`flex ${compact ? "items-start" : "items-center"} gap-3 border-t border-l-2 border-t-slate-800 px-2 py-1.5 ${index === focus ? "border-l-violet-400 bg-slate-900" : "border-l-transparent"}`}
+                      className={`flex ${compact ? "items-start" : "items-center"} cursor-pointer gap-3 border-t border-l-2 border-t-slate-800 px-2 py-1.5 ${index === focus ? "border-l-violet-400 bg-slate-900" : "border-l-transparent hover:bg-slate-900/60"}`}
                     >
                       <TriCheckbox
                         label={`Select ${row.title}`}

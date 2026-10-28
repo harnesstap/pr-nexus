@@ -375,6 +375,29 @@ test("the title button and Enter open a row's details", async () => {
   expect(onDetails).toHaveBeenCalledTimes(2);
 });
 
+test("clicking anywhere on a row opens it, but not its controls or a text selection", async () => {
+  const onDetails = vi.fn();
+  await show(<Harness rows={rows} onDetails={onDetails} />);
+  const article = screen.getByRole("article", { name: /Fix tax rounding/ });
+  fireEvent.click(article);
+  expect(onDetails).toHaveBeenLastCalledWith(expect.objectContaining({ id: 3 }));
+  expect(onDetails).toHaveBeenCalledTimes(1);
+  fireEvent.click(within(article).getByRole("checkbox"));
+  expect(onDetails).toHaveBeenCalledTimes(1);
+  for (const link of within(article).queryAllByRole("link")) {
+    link.addEventListener("click", (event) => event.preventDefault());
+    fireEvent.click(link);
+  }
+  expect(onDetails).toHaveBeenCalledTimes(1);
+  const text = within(article).getByText(/acme\//);
+  const selecting = vi.spyOn(window, "getSelection").mockReturnValue({ isCollapsed: false } as Selection);
+  fireEvent.click(text);
+  expect(onDetails).toHaveBeenCalledTimes(1);
+  selecting.mockRestore();
+  fireEvent.click(text);
+  expect(onDetails).toHaveBeenCalledTimes(2);
+});
+
 test("with the detail panel open, arrows and clicks switch the PR it shows", async () => {
   const onDetails = vi.fn();
   const { rerender } = await show(<Harness rows={rows} onDetails={onDetails} />);
@@ -392,6 +415,7 @@ test("with the detail panel open, arrows and clicks switch the PR it shows", asy
   fireEvent.keyDown(window, { key: "k" });
   expect(focused()).toBe(order[0].getAttribute("aria-label"));
   fireEvent.mouseDown(order[2]);
+  fireEvent.click(order[2]);
   expect(onDetails).toHaveBeenLastCalledWith(expect.objectContaining({ id: idOf(order[2]) }));
   expect(onDetails).toHaveBeenCalledTimes(3);
 });
