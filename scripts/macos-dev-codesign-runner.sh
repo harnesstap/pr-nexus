@@ -16,6 +16,9 @@ if [ "$(basename -- "$bin")" = "pr-nexus" ] && [ "$(uname -s)" = "Darwin" ] \
       printf 'warning: dev codesign with "%s" failed, running unsigned-stable binary:\n%s\n' \
         "$identity" "$out" >&2
     fi
+  else
+    printf 'note: no "%s" code-signing identity; macOS will ask for keychain access on every rebuild. Run scripts/macos-dev-signing-setup.sh once (or PR_NEXUS_DEV_SIGN=0 to silence).\n' \
+      "$identity" >&2
   fi
 fi
 
