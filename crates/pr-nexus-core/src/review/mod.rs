@@ -11,3 +11,4 @@ pub mod message;
 pub mod owners;
 pub mod permalink;
 pub mod readiness;
+pub mod route;

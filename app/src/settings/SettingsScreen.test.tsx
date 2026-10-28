@@ -21,8 +21,8 @@ function Harness({ api, start = "accounts", onBoot = () => undefined, onRerun = 
 
 beforeEach(() => window.localStorage.clear());
 
-const acme: SlackWorkspace = { id: 1, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false };
-const widgets: SlackWorkspace = { id: 2, team_name: "Widgets", domain: "widgets", user_name: "bob", signed_in: false, needs_sign_in: true };
+const acme: SlackWorkspace = { id: 1, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false, team_id: "T0ACME0001", enabled: true, priority: 0 };
+const widgets: SlackWorkspace = { id: 2, team_name: "Widgets", domain: "widgets", user_name: "bob", signed_in: false, needs_sign_in: true, team_id: "T0ACME0002", enabled: true, priority: 1 };
 
 const entry = (partial: Partial<MappingEntry> & { slug: string }): MappingEntry => ({
   row: {

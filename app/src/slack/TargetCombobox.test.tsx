@@ -4,8 +4,8 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { ReviewTarget, SlackWorkspace, TargetChoice, TargetMatch } from "../api";
 import { parseQuery, SEARCH_DEBOUNCE_MS, TargetCombobox } from "./TargetCombobox";
 
-const acme: SlackWorkspace = { id: 1, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false };
-const labs: SlackWorkspace = { id: 2, team_name: "Acme Labs", domain: "acme-labs", user_name: "ada", signed_in: true, needs_sign_in: false };
+const acme: SlackWorkspace = { id: 1, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false, team_id: "T0ACME0001", enabled: true, priority: 0 };
+const labs: SlackWorkspace = { id: 2, team_name: "Acme Labs", domain: "acme-labs", user_name: "ada", signed_in: true, needs_sign_in: false, team_id: "T0ACME0002", enabled: true, priority: 1 };
 const mapped: TargetChoice = {
   target: { workspace: "acme", channel_id: "C0ACME0003", channel_name: "platform" },
   teams: ["@acme/platform"],
@@ -21,11 +21,12 @@ beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
 
 function setup({ workspaces = [acme], suggestions = [mapped], fail = false } = {}) {
-  const calls: [string, string][] = [];
+  const calls: string[] = [];
   const picked: [ReviewTarget, TargetChoice | null][] = [];
   const api = {
-    searchSlackTargets: (workspace: string, query: string) => {
-      calls.push([workspace, query]);
+    // Stands in for the backend: every enabled workspace, merged and labeled.
+    searchSlackTargets: (query: string) => {
+      calls.push(query);
       if (fail) {
         return Promise.reject({ kind: "slack", message: "missing_scope" });
       }
@@ -34,7 +35,20 @@ function setup({ workspaces = [acme], suggestions = [mapped], fail = false } = {
         directory
           .filter((match) => (match.kind === "channel" ? channels : members))
           .filter((match) => match.target.channel_name.toLowerCase().includes(term.toLowerCase()))
-          .map((match) => ({ ...match, target: { ...match.target, workspace } })),
+          .flatMap((match) =>
+            workspaces
+              .filter((item) => item.enabled)
+              .map((item, index) => ({
+                ...match,
+                target: {
+                  ...match.target,
+                  channel_id: index === 0 ? match.target.channel_id : `${match.target.channel_id}L`,
+                  workspace: item.domain,
+                  team_id: item.team_id,
+                  workspace_name: item.team_name,
+                },
+              })),
+          ),
       );
     },
   };
@@ -84,7 +98,7 @@ test("search waits 250 ms after the last keystroke and asks once", async () => {
   await act(async () => {
     await vi.advanceTimersByTimeAsync(1);
   });
-  expect(calls).toEqual([["acme", "#pl"]]);
+  expect(calls).toEqual(["#pl"]);
 });
 
 test("code-owner channels come first and are not repeated by search", async () => {
@@ -106,7 +120,7 @@ test("@ lists people, who get a direct message, and the keyboard picks one", asy
   expect(option).toHaveAttribute("aria-selected", "true");
   expect(box).toHaveAttribute("aria-activedescendant", option.id);
   fireEvent.keyDown(box, { key: "Enter" });
-  expect(picked).toEqual([[{ workspace: "acme", channel_id: "U0ACME0002", channel_name: "Grace Hopper" }, null]]);
+  expect(picked).toEqual([[expect.objectContaining({ workspace: "acme", channel_id: "U0ACME0002", channel_name: "Grace Hopper" }), null]]);
   expect(box).toHaveValue("@Grace Hopper");
   expect(box).toHaveAttribute("aria-expanded", "false");
 });
@@ -118,12 +132,23 @@ test("picking a suggestion hands back the choice so its teams are recorded", asy
   expect(picked).toEqual([[mapped.target, mapped]]);
 });
 
-test("the search is scoped to the chosen workspace", async () => {
-  const { box, calls } = setup({ workspaces: [acme, labs], suggestions: [] });
-  fireEvent.change(screen.getByRole("combobox", { name: "Workspace" }), { target: { value: "acme-labs" } });
+test("one search covers every enabled workspace and labels each result", async () => {
+  const { box, calls, picked } = setup({ workspaces: [acme, labs], suggestions: [] });
+  expect(screen.queryByRole("combobox", { name: "Workspace" })).not.toBeInTheDocument();
   await type(box, "#plat");
-  expect(calls).toEqual([["acme-labs", "#plat"]]);
-  expect(within(screen.getByRole("listbox")).getAllByRole("option")).toHaveLength(2);
+  expect(calls).toEqual(["#plat"]);
+  const options = within(screen.getByRole("listbox")).getAllByRole("option");
+  expect(options).toHaveLength(4);
+  expect(options[0]).toHaveTextContent("#platformAcme");
+  expect(options[1]).toHaveTextContent("#platformAcme Labs");
+  fireEvent.click(options[1]);
+  expect(picked[0][0]).toMatchObject({ team_id: "T0ACME0002", workspace_name: "Acme Labs", channel_name: "platform" });
+});
+
+test("a single workspace leaves the label off", async () => {
+  const { box } = setup({ suggestions: [] });
+  await type(box, "#plat");
+  expect(within(screen.getByRole("listbox")).getAllByRole("option")[0]).toHaveTextContent(/^#platform$/);
 });
 
 test("a failed search says why and an ID can still be used", async () => {
@@ -131,13 +156,13 @@ test("a failed search says why and an ID can still be used", async () => {
   await type(box, "c0acme0009");
   expect(screen.getByText("Search failed: missing_scope")).toBeInTheDocument();
   fireEvent.click(screen.getByRole("option", { name: "Use C0ACME0009" }));
-  expect(picked[0][0]).toEqual({ workspace: "acme", channel_id: "C0ACME0009", channel_name: "" });
+  expect(picked[0][0]).toEqual({ workspace: "", channel_id: "C0ACME0009", channel_name: "" });
 
   fireEvent.click(screen.getByRole("button", { name: "Enter an ID" }));
   fireEvent.change(screen.getByRole("textbox", { name: "Channel, DM or member ID" }), { target: { value: "u0acme0004" } });
   fireEvent.change(screen.getByRole("textbox", { name: "Name" }), { target: { value: "Margaret" } });
   fireEvent.click(screen.getByRole("button", { name: "Preview" }));
-  expect(picked[1][0]).toEqual({ workspace: "acme", channel_id: "U0ACME0004", channel_name: "Margaret" });
+  expect(picked[1][0]).toEqual({ workspace: "", channel_id: "U0ACME0004", channel_name: "Margaret" });
 });
 
 test("Escape closes the list without reaching the dialog", async () => {

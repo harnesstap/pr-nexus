@@ -34,7 +34,7 @@ function card(single: boolean): BulkCard {
 function fake() {
   const calls = { previews: [] as BulkRequest[], sends: [] as [BulkRequest, string[]][] };
   const api = {
-    slackWorkspaces: () => Promise.resolve([{ id: 3, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false }]),
+    slackWorkspaces: () => Promise.resolve([{ id: 3, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false, team_id: "T0ACME0001", enabled: true, priority: 0 }]),
     bulkPreview: (request: BulkRequest): Promise<BulkPreview> => {
       calls.previews.push(request);
       if (request.target) {
@@ -97,8 +97,8 @@ test("all PRs can go to one typed DM channel", async () => {
   fireEvent.change(screen.getByRole("textbox", { name: "Channel, DM or member ID" }), { target: { value: "D0123456789" } });
   fireEvent.change(screen.getByRole("textbox", { name: "Name" }), { target: { value: "me" } });
   fireEvent.click(screen.getByRole("button", { name: "Preview" }));
-  expect(await screen.findByRole("region", { name: "acme DM · me" })).toBeInTheDocument();
-  expect(calls.previews.at(-1)?.target).toEqual({ workspace: "acme", channel_id: "D0123456789", channel_name: "me" });
+  expect(await screen.findByRole("region", { name: "DM · me" })).toBeInTheDocument();
+  expect(calls.previews.at(-1)?.target).toEqual({ workspace: "", channel_id: "D0123456789", channel_name: "me" });
   fireEvent.click(screen.getByRole("button", { name: "Send 1 message" }));
   await waitFor(() => expect(calls.sends[0]?.[1]).toEqual(["fp-dm"]));
 });

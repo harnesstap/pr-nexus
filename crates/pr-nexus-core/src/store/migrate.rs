@@ -15,6 +15,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../migrations/0003_reviewer_profiles.sql"),
     include_str!("../../migrations/0004_search_fold_v2.sql"),
     include_str!("../../migrations/0005_pr_overview_cache.sql"),
+    include_str!("../../migrations/0006_slack_team_ids.sql"),
 ];
 
 pub(super) fn migrate(conn: &mut Connection) -> Result<(), CoreError> {
@@ -84,5 +85,55 @@ mod tests {
         assert_eq!(login, "octo");
         assert_eq!(name, None);
         assert_eq!(avatar, None);
+    }
+
+    #[test]
+    fn team_ids_backfill_unique_domains_only() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..5] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 5_i64).unwrap();
+        conn.pragma_update(None, "foreign_keys", false).unwrap();
+        conn.execute_batch(
+            "INSERT INTO accounts (kind, display_name, host, external_id, slack_workspace, login, auth_mode, created_at) VALUES
+               ('slack', 'acme', 'acme-xyz.slack.com', 'T0ACME0001:U0ALICE', 'acme-xyz', 'U0ALICE', 'slack_mcp_oauth', 'x'),
+               ('slack', 'acme-labs', 'acme.slack.com', 'T0LABS0001:U0ALICE', 'acme', 'U0ALICE', 'slack_mcp_oauth', 'x'),
+               ('slack', 'twin', 'Acme.slack.com', 'T0TWIN0001:U0ALICE', 'Acme', 'U0ALICE', 'slack_mcp_oauth', 'x');
+             INSERT INTO review_requests (pr_id, slack_workspace, channel_id, channel_name, root_ts, requested_at, status, source) VALUES
+               (1, 'acme-xyz', 'C0TEAM0001', 'team-web', '1.1', 'x', 'active', 'app'),
+               (2, 'acme', 'C0TEAM0001', 'team-web', '1.2', 'x', 'active', 'app'),
+               (3, 'gone', 'C0TEAM0001', 'team-web', '1.3', 'x', 'active', 'app');
+             INSERT INTO team_channel_mappings (layer, github_org, team_slug, slack_workspace, updated_at) VALUES
+               ('user', 'acme', 'web', 'acme-xyz', 'x');",
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+
+        let teams: Vec<Option<String>> = conn
+            .prepare("SELECT slack_team_id FROM review_requests ORDER BY pr_id")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        // `acme` and `Acme` are two accounts: ambiguous, resolved at send time.
+        assert_eq!(teams, [Some("T0ACME0001".to_owned()), None, None]);
+        let mapping: Option<String> = conn
+            .query_row(
+                "SELECT slack_team_id FROM team_channel_mappings",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(mapping, None, "mappings resolve on their first send");
+        // Two accounts may now share a domain.
+        conn.execute(
+            "INSERT INTO accounts (kind, display_name, host, external_id, slack_workspace, login, auth_mode, created_at)
+             VALUES ('slack', 'other', 'acme.slack.com', 'T0OTHR0001:U0ALICE', 'acme', 'U0ALICE', 'slack_mcp_oauth', 'x')",
+            [],
+        )
+        .unwrap();
     }
 }

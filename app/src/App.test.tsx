@@ -59,9 +59,11 @@ function api(): Api {
     saveSlack: () => Promise.resolve(),
     slackManifestUrl: () => Promise.resolve("https://api.slack.com/apps?new_app=1"),
     slackConnect: () =>
-      Promise.resolve({ id: 9, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false }),
+      Promise.resolve({ id: 9, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false, team_id: "T0ACME0001", enabled: true, priority: 0 }),
     slackCancelConnect: () => Promise.resolve(),
     slackRemoveWorkspace: () => Promise.resolve(),
+    slackSetWorkspaceEnabled: () => Promise.resolve([]),
+    slackSetWorkspaceOrder: () => Promise.resolve([]),
     reviewTargets: () => Promise.resolve([]),
     searchSlackTargets: () => Promise.resolve([]),
     reviewPreview: (_prId: number, target: ReviewTarget) =>

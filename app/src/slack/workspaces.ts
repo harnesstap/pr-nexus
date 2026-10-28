@@ -8,12 +8,25 @@ const LAST_KEY = "pr-nexus.mapping-workspace";
  * which is what review targets match against. Older rows may hold the host.
  */
 export function workspaceDomain(value: string): string {
+  if (isTeamId(value)) {
+    return value.trim().toUpperCase();
+  }
   return value
     .trim()
     .replace(/^https?:\/\//i, "")
     .replace(/\/.*$/, "")
     .replace(/\.slack\.com$/i, "")
     .toLowerCase();
+}
+
+/** A Slack team ID (`T…`, or `E…` for a grid), which routes exactly. */
+export function isTeamId(value: string): boolean {
+  return /^[TE][A-Z0-9]{8,}$/.test(value.trim().toUpperCase()) && !/[.:/]/.test(value);
+}
+
+/** The name shown for a target or request: the team name, else the domain. */
+export function targetWorkspaceName(target: { workspace: string; workspace_name?: string }): string {
+  return target.workspace_name || target.workspace;
 }
 
 export function workspaceLabel(workspace: SlackWorkspace): string {
@@ -24,6 +37,10 @@ export function workspaceLabel(workspace: SlackWorkspace): string {
 
 /** The connected workspace whose domain matches `value`, if any. */
 export function findWorkspace(workspaces: SlackWorkspace[], value: string): SlackWorkspace | undefined {
+  if (isTeamId(value)) {
+    const team = value.trim().toUpperCase();
+    return workspaces.find((item) => item.team_id === team);
+  }
   const domain = workspaceDomain(value);
   return domain ? workspaces.find((item) => item.domain.toLowerCase() === domain) : undefined;
 }

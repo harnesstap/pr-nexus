@@ -348,7 +348,7 @@ pub fn send_batch(
             );
             continue;
         }
-        let chat = match chat_for(&card.target.workspace) {
+        let chat = match chat_for(card.target.route_key()) {
             Ok(chat) => chat,
             Err(err) => {
                 outcome_for_all(SendOutcome::Failed, &err.to_string(), &mut results);
@@ -566,6 +566,7 @@ fn record(
                         id: format!("{}:{}", card.target.channel_id, posted.ts),
                     },
                     workspace: card.target.workspace.clone(),
+                    team_id: card.target.team_id.clone(),
                     channel_id: card.target.channel_id.clone(),
                     channel_name: card.target.channel_name.clone(),
                     root_ts: posted.ts.clone(),
@@ -825,6 +826,7 @@ mod tests {
 
     fn target(workspace: &str, channel: &str) -> Target {
         Target {
+            team_id: None,
             workspace: workspace.into(),
             channel_id: channel.into(),
             channel_name: channel.to_ascii_lowercase(),
@@ -841,6 +843,7 @@ mod tests {
         world
             .store
             .insert_review_request(ReviewRequest {
+                team_id: None,
                 id: ReviewRequestId(0),
                 pr: pr.id,
                 root: ProviderRef {

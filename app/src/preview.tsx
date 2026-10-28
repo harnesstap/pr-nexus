@@ -198,11 +198,14 @@ const api: Api = {
   saveSlack: () => Promise.resolve(),
   slackManifestUrl: () => Promise.resolve("https://api.slack.com/apps?new_app=1"),
   slackConnect: () =>
-    Promise.resolve({ id: 9, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false }),
+    Promise.resolve({ id: 9, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false, team_id: "T0ACME0001", enabled: true, priority: 0 }),
   slackCancelConnect: () => Promise.resolve(),
   slackRemoveWorkspace: () => Promise.resolve(),
+  slackSetWorkspaceEnabled: () => Promise.resolve([]),
+  slackSetWorkspaceOrder: () => Promise.resolve([]),
   reviewTargets: () => Promise.resolve([]),
-  searchSlackTargets: (workspace: string, query: string) => {
+  searchSlackTargets: (query: string) => {
+    const workspace = "acme";
     const term = query.replace(/^[#@]/, "").trim().toLowerCase();
     const people = query.startsWith("#") ? [] : [{ id: "U0ACME0002", name: "Grace Hopper" }];
     const channels = query.startsWith("@") ? [] : [{ id: "C0ACME0001", name: "team-reviews" }];

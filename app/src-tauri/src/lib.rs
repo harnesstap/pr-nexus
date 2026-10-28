@@ -82,6 +82,8 @@ pub fn run() {
             slack::review_targets,
             slack::review_preview,
             slack::slack_search_targets,
+            slack::slack_set_workspace_enabled,
+            slack::slack_set_workspace_order,
             slack::send_review,
             bulk::bulk_preview,
             bulk::send_bulk,

@@ -16,6 +16,7 @@ use pr_nexus_core::review::batch::{
     self, BatchInput, BatchOptions, BatchPlan, MessagePlanKind, Pace, Route, Skip,
 };
 use pr_nexus_core::review::lifecycle::Target;
+use pr_nexus_core::review::route::{self, Workspace};
 use pr_nexus_core::settings;
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -23,7 +24,8 @@ use tauri::State;
 use crate::commands::{SlackIndicator, indicator, pr_detail_blocking};
 use crate::error::AppError;
 use crate::slack::{
-    ReviewTarget, chat_for, load_pr, mark_rejected, signed_in_account, targets_for, validate_target,
+    ReviewTarget, any_usable, chat_for, load_pr, mark_rejected, signed_in_account, targets_for,
+    validate_target,
 };
 use crate::state::AppState;
 
@@ -139,7 +141,7 @@ fn send_blocking(
     request: &BulkRequest,
     fingerprints: &[String],
 ) -> Result<BulkResult, AppError> {
-    let (plan, prs) = plan_request(state, request)?;
+    let (mut plan, prs) = plan_request(state, request)?;
     let stale: BTreeSet<(String, String)> = plan
         .cards
         .iter()
@@ -151,6 +153,8 @@ fn send_blocking(
             )
         })
         .collect();
+    let workspaces = route::workspaces(&state.store)?;
+    let routed = route_cards(state, &workspaces, &mut plan, fingerprints);
     let batch_id = format!("bulk-{}", Utc::now().format("%Y%m%dT%H%M%S%.3fZ"));
     let mut chat = |workspace: &str| {
         chat_for(state, workspace).map_err(|err| CoreError::Validation(err.message))
@@ -159,9 +163,27 @@ fn send_blocking(
     for result in &results {
         if result.detail.starts_with("Slack sign-in expired")
             && let Some(target) = &result.target
-            && let Some(account) = signed_in_account(state, &target.workspace)?
+            && let Ok(Some(account)) = signed_in_account(state, target.route_key())
         {
             mark_rejected(state, account.id.0);
+        }
+    }
+    for (from, ws) in &routed {
+        let sent_here = results.iter().any(|result| {
+            result.outcome == SendOutcome::Sent
+                && result
+                    .target
+                    .as_ref()
+                    .is_some_and(|target| target.channel_id == from.channel_id)
+        });
+        if sent_here {
+            state.store.pin_mapping_team(
+                from.channel_id.clone(),
+                from.team_id.clone(),
+                from.workspace.clone(),
+                ws.team_id.clone(),
+                ws.domain().to_owned(),
+            )?;
         }
     }
     let mut sent: Vec<PrId> = Vec::new();
@@ -178,7 +200,7 @@ fn send_blocking(
             .into_iter()
             .filter(|request| request.status == RequestStatus::Active)
             .max_by_key(|request| request.last_bumped_at.unwrap_or(request.requested_at))
-            .map(indicator);
+            .map(|request| indicator(request, &workspaces));
         indicators.push(PrIndicator {
             pr_id: pr.0,
             indicator: active,
@@ -190,7 +212,7 @@ fn send_blocking(
             .into_iter()
             .map(|result| BulkOutcome {
                 pr: pr_dto_by_id(&prs, result.pr, &result.title),
-                target: result.target.map(target_dto),
+                target: result.target.map(|target| target_dto(&workspaces, target)),
                 outcome: result.outcome.as_str().to_owned(),
                 detail: result.detail,
                 permalink: result.permalink,
@@ -338,11 +360,24 @@ fn preview_dto(
     plan: &BatchPlan,
     prs: &[PullRequest],
 ) -> Result<BulkPreview, AppError> {
+    let workspaces = route::workspaces(&state.store)?;
     let mut cards = Vec::new();
     for card in &plan.cards {
-        let signed_in = state.demo || signed_in_account(state, &card.target.workspace)?.is_some();
+        let posts_request = card
+            .messages
+            .iter()
+            .any(|message| matches!(message.kind, MessagePlanKind::Request));
+        let signed_in = state.demo
+            || if posts_request {
+                any_usable(state, &workspaces, &card.target)?
+            } else {
+                signed_in_account(state, card.target.route_key())
+                    .ok()
+                    .flatten()
+                    .is_some()
+            };
         cards.push(BulkCard {
-            target: target_dto(card.target.clone()),
+            target: target_dto(&workspaces, card.target.clone()),
             messages: card
                 .messages
                 .iter()
@@ -384,20 +419,42 @@ fn preview_dto(
     })
 }
 
-fn core_target(target: &ReviewTarget) -> Target {
-    Target {
-        workspace: target.workspace.clone(),
-        channel_id: target.channel_id.clone(),
-        channel_name: target.channel_name.clone(),
+/// Point every fresh card that posts a new request at the first enabled
+/// workspace that can see its channel (read-only probe, §7.11). Returns
+/// the original targets with the workspace chosen, for mapping pins.
+/// A card no workspace can see is left as is and fails in the batch.
+fn route_cards(
+    state: &AppState,
+    workspaces: &[Workspace],
+    plan: &mut BatchPlan,
+    fingerprints: &[String],
+) -> Vec<(Target, Workspace)> {
+    let mut chat = |ws: &Workspace| {
+        chat_for(state, &ws.team_id).map_err(|err| CoreError::Validation(err.message))
+    };
+    let mut routed = Vec::new();
+    for card in &mut plan.cards {
+        let posts_request = card
+            .messages
+            .iter()
+            .any(|message| matches!(message.kind, MessagePlanKind::Request));
+        if !posts_request || !fingerprints.contains(&card.fingerprint()) {
+            continue;
+        }
+        if let Ok(ws) = route::resolve(workspaces, &card.target, &mut chat) {
+            routed.push((card.target.clone(), ws.clone()));
+            card.target = ws.stamp(&card.target);
+        }
     }
+    routed
 }
 
-fn target_dto(target: Target) -> ReviewTarget {
-    ReviewTarget {
-        workspace: target.workspace,
-        channel_id: target.channel_id,
-        channel_name: target.channel_name,
-    }
+fn core_target(target: &ReviewTarget) -> Target {
+    crate::slack::to_core(target)
+}
+
+fn target_dto(workspaces: &[Workspace], target: Target) -> ReviewTarget {
+    crate::slack::from_core(workspaces, target)
 }
 
 fn pr_dto(pr: &PullRequest) -> BulkPr {

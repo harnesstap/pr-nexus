@@ -941,6 +941,8 @@ function SlackMark({
     <span className="flex items-center gap-1.5 text-xs text-slate-300" title={status.title}>
       <SlackIcon />
       {status.label}
+      {row.slack?.workspace_name && <span className="text-slate-500">· {row.slack.workspace_name}</span>}
+      {status.disabled && <span className="text-slate-500">· workspace disabled</span>}
       {link && (
         <Tooltip label="Open in Slack" shortcut="s" detail="Jump to the review request thread" align="end">
           <button

@@ -307,8 +307,9 @@ fn insert_request(conn: &Connection, request: &ReviewRequest) -> Result<ReviewRe
         .query_row(
             "INSERT INTO review_requests (
                 pr_id, slack_workspace, channel_id, channel_name, root_ts, permalink,
-                requested_at, last_bumped_at, bump_count, status, close_reason, closed_at, source
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                requested_at, last_bumped_at, bump_count, status, close_reason, closed_at, source,
+                slack_team_id
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
              RETURNING id",
             params![
                 request.pr.0,
@@ -324,6 +325,7 @@ fn insert_request(conn: &Connection, request: &ReviewRequest) -> Result<ReviewRe
                 reason,
                 closed_at,
                 request.source.as_str(),
+                request.team_id,
             ],
             |row| row.get(0),
         )
@@ -364,7 +366,8 @@ fn load_request(
     else {
         return Ok(None);
     };
-    request.root.account = slack_account(conn, &request.workspace).map_err(db)?;
+    request.root.account =
+        slack_account(conn, request.team_id.as_deref(), &request.workspace).map_err(db)?;
     Ok(Some(request))
 }
 
@@ -398,6 +401,7 @@ pub(super) fn map_request(row: &rusqlite::Row<'_>) -> rusqlite::Result<ReviewReq
             id: format!("{channel_id}:{root_ts}"),
         },
         workspace,
+        team_id: row.get("slack_team_id")?,
         channel_id,
         channel_name: row.get("channel_name")?,
         root_ts,
@@ -411,15 +415,34 @@ pub(super) fn map_request(row: &rusqlite::Row<'_>) -> rusqlite::Result<ReviewReq
     })
 }
 
-pub(super) fn slack_account(conn: &Connection, workspace: &str) -> rusqlite::Result<AccountId> {
-    let id = conn
-        .query_row(
-            "SELECT id FROM accounts WHERE slack_workspace = ?1",
-            [workspace],
-            |row| row.get::<_, i64>(0),
-        )
-        .optional()?;
-    Ok(AccountId(id.unwrap_or(0)))
+/// The Slack account behind a request: by team when known, else by a domain
+/// only one account holds. `0` when none (or several) match.
+pub(super) fn slack_account(
+    conn: &Connection,
+    team_id: Option<&str>,
+    workspace: &str,
+) -> rusqlite::Result<AccountId> {
+    let ids: Vec<i64> = match team_id {
+        Some(team) => {
+            let mut stmt = conn.prepare(
+                "SELECT id FROM accounts WHERE kind = 'slack'
+                 AND substr(external_id, 1, instr(external_id, ':') - 1) = ?1",
+            )?;
+            stmt.query_map([team], |row| row.get(0))?
+                .collect::<rusqlite::Result<_>>()?
+        }
+        None => {
+            let mut stmt = conn.prepare(
+                "SELECT id FROM accounts WHERE kind = 'slack' AND lower(slack_workspace) = lower(?1)",
+            )?;
+            stmt.query_map([workspace], |row| row.get(0))?
+                .collect::<rusqlite::Result<_>>()?
+        }
+    };
+    Ok(AccountId(match ids.as_slice() {
+        [one] => *one,
+        _ => 0,
+    }))
 }
 
 fn map_discovery(row: &rusqlite::Row<'_>) -> rusqlite::Result<DiscoveryRun> {

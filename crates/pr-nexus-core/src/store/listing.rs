@@ -52,7 +52,9 @@ impl Store {
                 let account = match accounts.get(&request.workspace) {
                     Some(account) => *account,
                     None => {
-                        let account = slack_account(conn, &request.workspace).map_err(db)?;
+                        let account =
+                            slack_account(conn, request.team_id.as_deref(), &request.workspace)
+                                .map_err(db)?;
                         accounts.insert(request.workspace.clone(), account);
                         account
                     }

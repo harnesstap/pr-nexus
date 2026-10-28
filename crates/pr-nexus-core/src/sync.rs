@@ -1186,6 +1186,7 @@ mod tests {
         assert_eq!(tracked.state, PrState::Open);
         let request = store
             .insert_review_request(crate::domain::ReviewRequest {
+                team_id: None,
                 id: crate::domain::ReviewRequestId(0),
                 pr: tracked.id,
                 root: ProviderRef {

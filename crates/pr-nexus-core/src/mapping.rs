@@ -2,7 +2,8 @@
 //!
 //! The mapping starts empty. A file uses the fixed header
 //! `github_org,github_team_slug,github_team_name,slack_channel_name,slack_channel_id`
-//! and may add `slack_workspace`. Rows are quoted with RFC 4180 rules and
+//! and may add `slack_workspace` (a domain or a team ID such as `T0ACME0001`)
+//! and `slack_team_id`. Rows are quoted with RFC 4180 rules and
 //! exports are sorted by `(org, slug)`.
 
 use std::collections::BTreeMap;
@@ -21,6 +22,31 @@ const HEADER: [&str; 5] = [
     "slack_channel_id",
 ];
 const WORKSPACE: &str = "slack_workspace";
+const TEAM: &str = "slack_team_id";
+
+/// Fill the display domain from the team ID when the team is connected.
+/// A domain alone never picks a team: in a grid a pasted channel link carries
+/// the org host, which can be another workspace's domain. Such rows resolve
+/// at send time (§7.11) and keep the team that worked.
+pub fn resolve_workspace(row: &mut CsvRow, accounts: &[crate::domain::Account]) {
+    use crate::domain::{SlackMatch, unique_slack_account};
+    if row.slack_workspace.is_empty()
+        && !row.slack_team_id.is_empty()
+        && let SlackMatch::One(account) = unique_slack_account(accounts, &row.slack_team_id)
+    {
+        row.slack_workspace = account.slack_workspace.clone().unwrap_or_default();
+    }
+}
+
+/// `(domain, team)` for a workspace cell: a team ID goes to the team.
+fn split_workspace(value: &str) -> (String, String) {
+    let value = value.trim();
+    if crate::domain::is_slack_team_id(value) {
+        (String::new(), value.to_owned())
+    } else {
+        (workspace_domain(value), String::new())
+    }
+}
 
 /// Mappings store a workspace as its domain (`acme` for acme.slack.com),
 /// which is what review targets match connected accounts on. A pasted host
@@ -60,6 +86,8 @@ pub struct CsvRow {
     pub slack_channel_name: String,
     pub slack_channel_id: String,
     pub slack_workspace: String,
+    /// Slack team ID (`T…`); empty until known.
+    pub slack_team_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,15 +140,18 @@ pub fn parse_csv(text: &str, default_workspace: Option<&str>) -> Result<Vec<CsvR
         seen.push(key);
         rows.push(row);
     }
-    if rows.iter().any(|row| row.slack_workspace.is_empty()) {
+    if rows
+        .iter()
+        .any(|row| row.slack_workspace.is_empty() && row.slack_team_id.is_empty())
+    {
         let Some(workspace) = default_workspace.filter(|workspace| !workspace.is_empty()) else {
             return Err(CoreError::Validation(
                 "target workspace is required when a row omits slack_workspace".into(),
             ));
         };
         for row in &mut rows {
-            if row.slack_workspace.is_empty() {
-                row.slack_workspace = workspace_domain(workspace);
+            if row.slack_workspace.is_empty() && row.slack_team_id.is_empty() {
+                (row.slack_workspace, row.slack_team_id) = split_workspace(workspace);
             }
         }
     }
@@ -177,6 +208,16 @@ pub fn apply_import(
     mode: ImportMode,
     now: DateTime<Utc>,
 ) -> Result<(), CoreError> {
+    let accounts = store.list_accounts()?;
+    let resolved: Vec<CsvRow> = incoming
+        .iter()
+        .cloned()
+        .map(|mut row| {
+            resolve_workspace(&mut row, &accounts);
+            row
+        })
+        .collect();
+    let incoming = resolved.as_slice();
     match mode {
         ImportMode::Replace => {
             let rows = incoming
@@ -210,9 +251,13 @@ pub fn apply_import(
 pub fn export_csv(rows: &[TeamChannelMapping], mode: ExportMode) -> Result<String, CoreError> {
     let selected = select_rows(rows, mode);
     let include_workspace = selected.iter().any(|row| !row.slack_workspace.is_empty());
+    let include_team = selected.iter().any(|row| !row.slack_team_id.is_empty());
     let mut header: Vec<&str> = HEADER.to_vec();
     if include_workspace {
         header.push(WORKSPACE);
+    }
+    if include_team {
+        header.push(TEAM);
     }
     let mut writer = csv::WriterBuilder::new().from_writer(Vec::new());
     writer
@@ -228,6 +273,9 @@ pub fn export_csv(rows: &[TeamChannelMapping], mode: ExportMode) -> Result<Strin
         ];
         if include_workspace {
             record.push(row.slack_workspace);
+        }
+        if include_team {
+            record.push(row.slack_team_id);
         }
         writer
             .write_record(&record)
@@ -280,6 +328,8 @@ pub fn save_user_mapping(
     disabled: bool,
     now: DateTime<Utc>,
 ) -> Result<(), CoreError> {
+    let raw_workspace = row.slack_workspace.clone();
+    let raw_team = row.slack_team_id.trim().to_owned();
     let row = CsvRow {
         github_org: row.github_org.trim().to_owned(),
         team_slug: row.team_slug.trim().to_owned(),
@@ -290,8 +340,14 @@ pub fn save_user_mapping(
             .trim_start_matches('#')
             .to_owned(),
         slack_channel_id: row.slack_channel_id.trim().to_owned(),
-        slack_workspace: workspace_domain(&row.slack_workspace),
+        slack_workspace: String::new(),
+        slack_team_id: String::new(),
     };
+    let mut row = row;
+    let (domain, team) = split_workspace(&raw_workspace);
+    row.slack_workspace = domain;
+    row.slack_team_id = if team.is_empty() { raw_team } else { team };
+    resolve_workspace(&mut row, &store.list_accounts()?);
     if row.github_org.is_empty() || row.team_slug.is_empty() {
         return Err(CoreError::Validation(
             "github_org and github_team_slug are required".into(),
@@ -487,6 +543,9 @@ fn merge_user(
     if !incoming.slack_workspace.is_empty() {
         row.slack_workspace = incoming.slack_workspace.clone();
     }
+    if !incoming.slack_team_id.is_empty() {
+        row.slack_team_id = Some(incoming.slack_team_id.clone());
+    }
     row.updated_at = now;
     row
 }
@@ -505,6 +564,7 @@ fn to_stored(
         team_slug: row.team_slug.clone(),
         team_name: row.team_name.clone(),
         slack_workspace: row.slack_workspace.clone(),
+        slack_team_id: (!row.slack_team_id.is_empty()).then(|| row.slack_team_id.clone()),
         slack_channel_id: row.slack_channel_id.clone(),
         slack_channel_name: row.slack_channel_name.clone(),
         disabled,
@@ -521,6 +581,7 @@ fn from_stored(row: &TeamChannelMapping) -> CsvRow {
         slack_channel_name: row.slack_channel_name.clone(),
         slack_channel_id: row.slack_channel_id.clone(),
         slack_workspace: row.slack_workspace.clone(),
+        slack_team_id: row.slack_team_id.clone().unwrap_or_default(),
     }
 }
 
@@ -532,7 +593,7 @@ fn validate_headers(headers: &csv::StringRecord) -> Result<(), CoreError> {
         ));
     }
     for name in &names {
-        if !HEADER.contains(name) && *name != WORKSPACE {
+        if !HEADER.contains(name) && *name != WORKSPACE && *name != TEAM {
             return Err(CoreError::Validation(format!(
                 "unknown mapping column: {name}"
             )));
@@ -575,18 +636,23 @@ fn row_from_record(
             "mapping csv line {line}: slack_channel_id must look like C… or G…"
         )));
     }
+    let (domain, mut team) = split_workspace(values.get(WORKSPACE).map_or("", String::as_str));
+    if let Some(column) = values.get(TEAM).filter(|value| !value.is_empty()) {
+        if !crate::domain::is_slack_team_id(column) {
+            return Err(CoreError::Validation(format!(
+                "mapping csv line {line}: slack_team_id must look like T…"
+            )));
+        }
+        team.clone_from(column);
+    }
     Ok(CsvRow {
         github_org: org,
         team_slug: slug,
         team_name: values.get("github_team_name").cloned().unwrap_or_default(),
         slack_channel_name: channel_name,
         slack_channel_id: channel_id,
-        slack_workspace: workspace_domain(
-            values
-                .get(WORKSPACE)
-                .map(String::as_str)
-                .unwrap_or_default(),
-        ),
+        slack_workspace: domain,
+        slack_team_id: team,
     })
 }
 
@@ -621,6 +687,7 @@ mod tests {
         disabled: bool,
     ) -> TeamChannelMapping {
         TeamChannelMapping {
+            slack_team_id: None,
             id: 0,
             layer,
             github_org: org.into(),
@@ -818,6 +885,7 @@ acme,team-b,Team B,team-b-reviews,C0123456789,
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path().join("nexus.sqlite")).unwrap();
         let row = CsvRow {
+            slack_team_id: String::new(),
             github_org: "acme".into(),
             team_slug: "team-a".into(),
             team_name: String::new(),
@@ -1001,6 +1069,7 @@ acme,team-b,Team B,team-b-reviews,C0123456789,
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path().join("nexus.sqlite")).unwrap();
         let row = |slug: &str, name: &str| CsvRow {
+            slack_team_id: String::new(),
             github_org: "acme".into(),
             team_slug: slug.into(),
             team_name: name.into(),
