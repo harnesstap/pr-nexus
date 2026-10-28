@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import type { ListRow, ProjectDto } from "../api";
-import { AlertIcon, ChevronDownIcon, ChevronRightIcon, ClockIcon, CloseIcon, CommentIcon, DraftIcon, ExternalIcon, FolderPlusIcon, FunnelIcon, MoreIcon, SearchIcon, SlackIcon } from "../icons";
+import { AlertIcon, ChevronDownIcon, ChevronRightIcon, ClockIcon, CloseIcon, CommentIcon, DraftIcon, FolderPlusIcon, FunnelIcon, MoreIcon, SearchIcon, SlackLogo } from "../icons";
 import { Tooltip } from "../Tooltip";
 import { ReviewerAvatars } from "./ReviewerAvatars";
 import { QuickFilters } from "./QuickFilters";
@@ -23,7 +23,6 @@ import {
   resetFilters,
   reviewLabel,
   reviewTone,
-  slackStatus,
   threadsLabel,
   toggleParent,
   type CheckState,
@@ -734,8 +733,8 @@ export function PrList({
                               <Threads row={row} />
                             </div>
                           )}
-                          <div className="hidden w-44 shrink-0 items-center justify-end @min-[56rem]:flex">
-                            <SlackMark row={row} now={now} showMissing={view.show.notRequested} onOpen={onOpen} />
+                          <div className="hidden w-20 shrink-0 items-center justify-end @min-[56rem]:flex">
+                            <SlackCell row={row} now={now} showMissing={view.show.notRequested} onOpen={onOpen} />
                           </div>
                         </>
                       )}
@@ -787,7 +786,7 @@ export function PrList({
                 disabled={bulkIds(selected).length === 0}
                 onClick={requestSelection}
               >
-                <SlackIcon size={16} />
+                <SlackLogo size={16} />
                 Request / bump on Slack
               </button>
             </Tooltip>
@@ -1010,48 +1009,43 @@ function RenameField({
   );
 }
 
-function SlackMark({
-  row,
-  now,
-  showMissing,
-  onOpen,
-}: {
-  row: ListRow;
-  now: Date;
-  showMissing: boolean;
-  onOpen: (url: string) => void;
-}) {
-  const status = slackStatus(row.slack, now);
-  if (!status) {
-    if (!showMissing) {
-      return null;
-    }
+/**
+ * The Slack cell of a list row: the coloured logo plus "6h ago" once a request
+ * was sent (a link to the message when there is one), a grey logo otherwise.
+ * Workspace, channel and action live in the tooltip and the aria-label.
+ */
+function SlackCell({ row, now, showMissing, onOpen }: { row: ListRow; now: Date; showMissing: boolean; onOpen: (url: string) => void }) {
+  const slack = compactSlack(row.slack, now);
+  if (!slack.sent && !showMissing) {
+    return null;
+  }
+  const permalink = row.slack?.permalink;
+  const content = (
+    <>
+      <SlackLogo variant={slack.sent ? "color" : "mono"} size={14} />
+      {slack.time}
+    </>
+  );
+  const look = "flex items-center gap-1 whitespace-nowrap text-xs tabular-nums";
+  if (slack.sent && permalink) {
     return (
-      <span className="flex items-center gap-1.5 text-xs text-slate-600">
-        <SlackIcon active={false} />
-        Not requested
-      </span>
+      <button
+        type="button"
+        aria-label={`Open Slack request for ${row.title}: ${slack.title}`}
+        title={slack.title}
+        className={`${look} rounded text-slate-300 hover:text-slate-100`}
+        onClick={(event) => {
+          event.stopPropagation();
+          onOpen(permalink);
+        }}
+      >
+        {content}
+      </button>
     );
   }
-  const link = row.slack?.permalink;
   return (
-    <span className="flex items-center gap-1.5 text-xs text-slate-300" title={status.title}>
-      <SlackIcon />
-      {status.label}
-      {row.slack?.workspace_name && <span className="text-slate-500">· {row.slack.workspace_name}</span>}
-      {status.disabled && <span className="text-slate-500">· workspace disabled</span>}
-      {link && (
-        <Tooltip label="Open in Slack" shortcut={hint("slack")} detail="Jump to the review request thread" align="end">
-          <button
-            type="button"
-            aria-label={`Open Slack request for ${row.title}`}
-            className="rounded p-0.5 text-slate-400 hover:text-slate-100"
-            onClick={() => onOpen(link)}
-          >
-            <ExternalIcon size={12} />
-          </button>
-        </Tooltip>
-      )}
+    <span title={slack.title} aria-label={slack.title} role="img" className={`${look} ${slack.sent ? "text-slate-300" : "text-slate-600"}`}>
+      {content}
     </span>
   );
 }
@@ -1191,8 +1185,6 @@ function CiStatus({ checks }: { checks: string }) {
  */
 function CompactRow({ row, view, now, onDetails, onOpen }: { row: ListRow; view: SavedView; now: Date; onDetails: (row: ListRow) => void; onOpen: (url: string) => void }) {
   const review = view.show.review ? reviewLabel(row.review_decision) : null;
-  const slack = compactSlack(row.slack, now);
-  const permalink = row.slack?.permalink ?? null;
   const fullTitle = `#${row.number} ${row.title}`;
   return (
     <div className="flex min-w-0 flex-1 items-start gap-2">
@@ -1229,18 +1221,7 @@ function CompactRow({ row, view, now, onDetails, onOpen }: { row: ListRow; view:
           </span>
         )}
         {view.show.threads && <Threads row={row} />}
-        {(slack.sent || view.show.notRequested) &&
-          (slack.sent && permalink ? (
-            <button type="button" aria-label={`Open Slack request for ${row.title}`} title={slack.title} className="flex items-center gap-0.5 tabular-nums hover:text-slate-200" onClick={() => onOpen(permalink)}>
-              <SlackIcon size={12} />
-              {slack.time}
-            </button>
-          ) : (
-            <span title={slack.title} aria-label={slack.title} role="img" className={`flex items-center gap-0.5 tabular-nums ${slack.sent ? "" : "text-slate-600"}`}>
-              <SlackIcon size={12} />
-              {slack.time}
-            </span>
-          ))}
+        <SlackCell row={row} now={now} showMissing={view.show.notRequested} onOpen={onOpen} />
       </div>
     </div>
   );

@@ -1,0 +1,3 @@
+kind: Changed
+body: "List rows show the Slack request as the Slack logo plus the time of the last send (\"6h ago\"), in normal and compact rows: full colour when a review was requested, grey when not. Workspace, channel and action move to the tooltip, and the logo links to the Slack message. The app now uses the official Slack logo everywhere."
+time: 2026-10-27T22:30:00.000000Z

@@ -1,4 +1,4 @@
-import type { ListRow } from "../api";
+import { channelLabel, type ListRow } from "../api";
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
@@ -119,16 +119,18 @@ export function shortAgo(iso: string, now: Date): string {
 }
 
 /**
- * The Slack cell of a compact row: a gray icon alone when nothing was sent,
- * else the icon plus the time of the last send or bump. The full detail goes
- * in the tooltip.
+ * The Slack cell of a list row (normal and compact): a grey icon alone when
+ * nothing was sent, else the coloured icon plus the time of the last send or
+ * bump. Workspace, channel and action go in the tooltip.
  */
 export function compactSlack(slack: ListRow["slack"], now: Date): { sent: boolean; time: string | null; title: string } {
   if (!slack) {
     return { sent: false, time: null, title: "Not requested on Slack" };
   }
   const last = slack.last_bumped_at ?? slack.requested_at;
-  const verb = slack.last_bumped_at ? "Bumped" : "Requested";
+  const verb = slack.last_bumped_at ? "bumped" : "requested";
+  const time = `${shortAgo(last, now)} ago`;
   const workspace = slack.workspace_name ?? slack.workspace;
-  return { sent: true, time: shortAgo(last, now), title: [`${verb} ${shortAgo(last, now)} ago`, workspace].filter(Boolean).join(" · ") };
+  const disabled = slack.workspace_disabled ? "workspace disabled in Settings → Slack" : "";
+  return { sent: true, time, title: [workspace, channelLabel(slack), `${verb} ${time}`, disabled].filter(Boolean).join(" · ") };
 }

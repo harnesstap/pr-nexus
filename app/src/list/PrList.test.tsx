@@ -265,20 +265,26 @@ test("rows show labelled threads, a review pill, and the Slack request status", 
       ]}
     />,
   );
-  expect(screen.getByText("Requested · 2d ago")).toBeInTheDocument();
-  expect(screen.getByText("Bumped · 5h ago")).toBeInTheDocument();
-  expect(screen.getByText("· Acme Labs")).toBeInTheDocument();
-  expect(screen.getByText("· workspace disabled")).toBeInTheDocument();
-  expect(screen.getAllByText("· workspace disabled")).toHaveLength(1);
-  expect(screen.getByText("Not requested")).toBeInTheDocument();
+  const requested = screen.getByRole("button", { name: /^Open Slack request for Requested one/ });
+  expect(requested).toHaveTextContent(/^2d ago$/);
+  expect(requested).toHaveAttribute("title", "acme-team · #reviews · requested 2d ago");
+  expect(requested.querySelector("svg")).toHaveAttribute("data-variant", "color");
+  expect(screen.getByRole("button", { name: /^Open Slack request for Bumped one/ })).toHaveTextContent(/^5h ago$/);
+  const labs = screen.getByRole("button", { name: /^Open Slack request for Labs one/ });
+  expect(labs).toHaveAttribute("title", "Acme Labs · #reviews · requested 1d ago · workspace disabled in Settings → Slack");
+  expect(labs).toHaveAccessibleName("Open Slack request for Labs one: Acme Labs · #reviews · requested 1d ago · workspace disabled in Settings → Slack");
+  expect(screen.queryByText(/Requested ·|Not requested$|· Acme Labs/)).not.toBeInTheDocument();
+  const missing = screen.getByRole("img", { name: "Not requested on Slack" });
+  expect(missing).toHaveTextContent("");
+  expect(missing.querySelector("svg")).toHaveAttribute("data-variant", "mono");
   expect(screen.getByLabelText("1 unresolved of 3 review threads")).toBeInTheDocument();
   expect(screen.queryByLabelText("0 unresolved of 0 review threads")).not.toBeInTheDocument();
   expect(screen.queryByText("0/0")).not.toBeInTheDocument();
   expect(screen.getByText("Approved")).toBeInTheDocument();
   expect(screen.getByText("Changes requested")).toBeInTheDocument();
-  fireEvent.click(screen.getByRole("button", { name: "Open Slack request for Requested one" }));
+  fireEvent.click(requested);
   expect(onOpen).toHaveBeenCalledWith(slack.permalink);
-  expect(screen.queryByRole("button", { name: "Open Slack request for Quiet one" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /^Open Slack request for Quiet one/ })).not.toBeInTheDocument();
 });
 
 function dataTransfer() {
