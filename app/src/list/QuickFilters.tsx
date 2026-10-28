@@ -37,7 +37,7 @@ interface Props {
  */
 export function QuickFilters({ active, counts, onChange }: Props) {
   return (
-    <div role="group" aria-label="Quick filters" className="flex items-center gap-1">
+    <div role="group" aria-label="Quick filters" className="flex shrink-0 items-center gap-1">
       {QUICK_FILTERS.map((key) => {
         const spec = QUICK_SPECS[key];
         const on = active === key;
@@ -48,13 +48,13 @@ export function QuickFilters({ active, counts, onChange }: Props) {
               type="button"
               aria-label={count === undefined ? spec.label : `${spec.label} (${count})`}
               aria-pressed={on}
-              className={`flex h-7 items-center gap-1 rounded-md border px-1.5 text-xs ${
+              className={`flex h-8 items-center gap-1 rounded-md border px-1.5 text-xs ${
                 on ? `border-violet-400 bg-slate-800 ${spec.tone}` : "border-slate-700 bg-slate-900 text-slate-400 hover:text-white"
               }`}
               onClick={() => onChange(on ? null : key)}
             >
               {spec.icon}
-              {on && <span className="whitespace-nowrap">{spec.label}</span>}
+              {on && <span className="hidden whitespace-nowrap @4xl:inline">{spec.label}</span>}
               {count !== undefined && (
                 <span aria-hidden="true" className={`min-w-4 tabular-nums ${count === 0 && !on ? "text-slate-600" : ""}`}>
                   {count}

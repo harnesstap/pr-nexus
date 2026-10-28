@@ -895,3 +895,20 @@ test("with the panel open, rows go compact: wrapped title, status dot and Slack 
   expect(screen.queryByText("Not requested")).not.toBeInTheDocument();
   expect(document.querySelector("[data-testid='reviewer-avatars']")).toBeNull();
 });
+
+test("every list command sits on the one toolbar row, the header keeps only the title", async () => {
+  const { container } = await show(<Harness rows={rows} />);
+  const toolbar = screen.getByRole("toolbar", { name: "List toolbar" });
+  const inToolbar = within(toolbar);
+  expect(inToolbar.getByRole("checkbox", { name: "Select all" })).toBeInTheDocument();
+  expect(inToolbar.getByText("3 open PRs")).toBeInTheDocument();
+  expect(inToolbar.getByRole("textbox", { name: "Search" })).toBeInTheDocument();
+  expect(inToolbar.getByRole("combobox", { name: "Sort by" })).toBeInTheDocument();
+  expect(inToolbar.getByRole("group", { name: "Quick filters" })).toBeInTheDocument();
+  expect(inToolbar.getByRole("button", { name: "Filter menu" })).toBeInTheDocument();
+  expect(toolbar.className).toContain("flex-nowrap");
+  const header = container.querySelector("header") as HTMLElement;
+  expect(within(header).getByRole("heading", { name: "My PRs" })).toBeInTheDocument();
+  expect(within(header).queryByRole("textbox")).toBeNull();
+  expect(within(header).queryByRole("button")).toBeNull();
+});

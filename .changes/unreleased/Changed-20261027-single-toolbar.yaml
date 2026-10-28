@@ -1,0 +1,3 @@
+kind: Changed
+body: "The list screen puts every command on one toolbar row: search and the filter menu moved next to the select-all checkbox, sort and quick filters, all at one 32px height. The header keeps the title and summary. At narrow widths or with the detail panel open the search shrinks and text labels and the plain PR count drop out so the row never wraps."
+time: 2026-10-27T22:30:00.000000Z
