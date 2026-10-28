@@ -150,8 +150,11 @@ pub struct PrOverview {
     /// Approvals the base branch requires, when the token can see its rules.
     pub required_approvals: Option<u32>,
     pub reviewers: Vec<Reviewer>,
-    pub participants: Vec<Person>,
-    pub participants_total: u32,
+    /// Who opened the pull request; `None` for a deleted account.
+    pub author: Option<Person>,
+    pub assignees: Vec<Person>,
+    /// Authors of PR and review-thread comments, deduped, bots included.
+    pub commenters: Vec<Person>,
     pub viewer: ViewerAccess,
     pub merge_settings: MergeSettings,
     pub auto_merge: Option<AutoMergeState>,

@@ -22,7 +22,7 @@ query PullRequestOverview($owner: String!, $name: String!, $number: Int!) {
       author { __typename login avatarUrl(size: 64) ... on User { name } }
       comments(last: 50) { totalCount nodes { author { __typename login avatarUrl(size: 64) ... on User { name } } } }
       reviewThreads(first: 100) { nodes { comments(first: 20) { totalCount nodes { author { __typename login avatarUrl(size: 64) ... on User { name } } } } } }
-      participants(first: 30) { totalCount nodes { login name avatarUrl(size: 64) } }
+      assignees(first: 20) { nodes { login name avatarUrl(size: 64) } }
       reviewRequests(first: 30) {
         nodes {
           requestedReviewer {

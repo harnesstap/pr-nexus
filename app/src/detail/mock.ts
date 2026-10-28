@@ -26,12 +26,12 @@ export function mockOverview(overrides: Partial<PrOverview> = {}): PrOverview {
       { kind: "user", login: "sam", name: "Sam Park", avatar_url: null, state: "changes_requested" },
       { kind: "team", login: "acme/web", name: "Web", avatar_url: null, state: "pending" },
     ],
-    participants: [
-      { kind: "user", login: "ada", name: "Ada Acme", avatar_url: null },
+    author: { kind: "user", login: "ada", name: "Ada Acme", avatar_url: null },
+    assignees: [{ kind: "user", login: "ada", name: "Ada Acme", avatar_url: null }],
+    commenters: [
       { kind: "user", login: "kim", name: "Kim Lee", avatar_url: null },
-      { kind: "user", login: "sam", name: "Sam Park", avatar_url: null },
+      { kind: "user", login: "lee", name: "Lee Ng", avatar_url: null },
     ],
-    participants_total: 3,
     viewer: { login: "ada", permission: "write", can_merge_as_admin: false, can_enable_auto_merge: true, can_disable_auto_merge: false },
     merge_settings: { auto_merge_allowed: true, squash: true, merge: true, rebase: false },
     auto_merge: null,

@@ -10,7 +10,7 @@ import { Tooltip } from "../Tooltip";
 import { AutoMerge } from "./AutoMerge";
 import { Expander } from "./Expander";
 import { draftView, type DraftView } from "./draft";
-import { Participants, requiredSeats, Reviewers } from "./People";
+import { peopleGroups, PeopleRow, requiredSeats } from "./People";
 import { SlackLine } from "./SlackLine";
 import { StatCards, VerdictIcon } from "./StatCards";
 import { mergeVerdict, TONE_TEXT } from "./status";
@@ -248,16 +248,10 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
             {/* The one primary action, right under "can I merge": asking for review is what unblocks it. */}
             <SlackLine api={api} prId={row.id} onOpen={onOpen} onRequest={onRequestReview} />
             {overviewError && <p className="text-xs text-amber-200">Showing the copy from {ago(overview.fetched_at, new Date())}; refreshing failed: {overviewError}</p>}
-            <Section title="Reviewers">
-              <Reviewers
-                reviewers={overview.reviewers}
-                required={detail ? requiredSeats(overview.reviewers, detail.mandatory_teams, detail.approved_teams) : []}
-                missing={overview.required_approvals === null ? 0 : Math.max(0, overview.required_approvals - overview.approvals)}
-              />
-            </Section>
-            <Section title="Participants">
-              <Participants participants={overview.participants} total={overview.participants_total} />
-            </Section>
+            <PeopleRow
+              groups={peopleGroups(overview, detail ? requiredSeats(overview.reviewers, detail.mandatory_teams, detail.approved_teams) : [])}
+              missing={overview.required_approvals === null ? 0 : Math.max(0, overview.required_approvals - overview.approvals)}
+            />
           </>
         )}
         {!overview && <SlackLine api={api} prId={row.id} onOpen={onOpen} onRequest={onRequestReview} />}
@@ -354,15 +348,6 @@ function IconButton({ label, detail, shortcut, onClick, children }: { label: str
         {children}
       </button>
     </Tooltip>
-  );
-}
-
-function Section({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <section>
-      <h3 className="mb-2 text-[11px] font-medium uppercase tracking-wide text-slate-500">{title}</h3>
-      {children}
-    </section>
   );
 }
 

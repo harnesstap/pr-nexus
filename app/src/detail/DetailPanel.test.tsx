@@ -5,7 +5,7 @@ import { DetailPanel, WIDTH_KEY, clampWidth } from "./DetailPanel";
 import { mockDetail, mockOverview } from "./mock";
 import { latestThread } from "./SlackLine";
 import { draftView } from "./draft";
-import { participantStack, Participants, Reviewers, requiredSeats } from "./People";
+import { peopleGroups, PeopleRow, personLine, requiredSeats } from "./People";
 
 afterEach(() => window.localStorage.clear());
 
@@ -81,10 +81,13 @@ test("shows a skeleton, then the cards, verdict and people from the overview", a
   const verdict = screen.getByTestId("merge-verdict");
   expect(within(verdict).getByText("You can't merge")).toBeTruthy();
   expect(within(verdict).getByText("A reviewer requested changes.")).toBeTruthy();
-  const reviewers = screen.getByRole("list", { name: "Reviewers" });
-  expect(within(reviewers).getAllByRole("listitem")).toHaveLength(3);
-  expect(reviewers.querySelector('[data-state="changes_requested"]')?.textContent).toContain("sam");
-  expect(screen.getByRole("group", { name: "3 participants" })).toBeTruthy();
+  const reviewers = screen.getByRole("group", { name: "Reviewers" });
+  expect(reviewers.querySelectorAll("[data-login]")).toHaveLength(3);
+  expect(reviewers.querySelector('[data-state="changes_requested"]')?.getAttribute("data-login")).toBe("sam");
+  // The viewer (ada) wrote it, so no Author group; order is fixed.
+  const groups = [...screen.getByTestId("people-row").querySelectorAll("[data-group]")].map((group) => group.getAttribute("data-group"));
+  expect(groups).toEqual(["reviewers", "assignees", "commenters"]);
+  expect(screen.queryByText("Participants")).toBeNull();
 });
 
 test("the checks card lists the checks that need attention", async () => {
@@ -282,12 +285,9 @@ test("the width is a remembered share of the window, within limits", async () =>
   await screen.findByTestId("merge-verdict");
 });
 
-test("helpers: newest Slack thread and the participant stack", () => {
+test("helpers: newest Slack thread", () => {
   expect(latestThread([])).toBeNull();
   expect(latestThread([{ ...thread, requested_at: null, root_ts: "9" }, thread])?.root_ts).toBe(thread.root_ts);
-  const people = Array.from({ length: 8 }, (_, index) => ({ kind: "user" as const, login: `u${index}`, name: null, avatar_url: null }));
-  expect(participantStack(people, 10)).toMatchObject({ more: 4 });
-  expect(participantStack(people.slice(0, 2), 2)).toMatchObject({ more: 0 });
 });
 
 test("draftView: authors and writers may flip; closed, merged and readers may not", () => {
@@ -302,19 +302,53 @@ test("draftView: authors and writers may flip; closed, merged and readers may no
   expect(draftView(open, null).available).toBe(false);
 });
 
-test("code-owner teams not yet requested show as pending; an empty list says what's needed", () => {
+const user = (login: string) => ({ kind: "user" as const, login, name: null, avatar_url: null });
+
+test("code-owner teams not yet requested show as pending reviewers", () => {
   const seats = requiredSeats([{ kind: "team", login: "acme/web", name: null, avatar_url: null, state: "pending" }], ["@acme/web", "@acme/api", "acme/api", "@acme/docs"], ["acme/docs"]);
   expect(seats.map((seat) => seat.login)).toEqual(["acme/api"]);
-  render(<Reviewers reviewers={[]} required={seats} missing={1} />);
-  expect(screen.getByText("Code owner · waiting")).toBeTruthy();
+  const groups = peopleGroups(mockOverview({ reviewers: [] }), seats);
+  expect(groups[0]).toMatchObject({ key: "reviewers" });
+  expect(personLine(groups[0].people[0])).toBe("acme/api · Code owner · waiting");
 });
 
-test("with no one listed, the reviewers section says how many approvals are missing", () => {
-  render(<Reviewers reviewers={[]} missing={1} />);
+test("people groups: author hidden for the viewer, shown otherwise, in a fixed order", () => {
+  const mine = mockOverview({ viewer: { ...mockOverview().viewer, login: "ADA" } });
+  expect(peopleGroups(mine).map((group) => group.key)).toEqual(["reviewers", "assignees", "commenters"]);
+  const theirs = mockOverview({ author: user("grace") });
+  expect(peopleGroups(theirs).map((group) => group.key)).toEqual(["author", "reviewers", "assignees", "commenters"]);
+});
+
+test("people groups: empty groups are dropped and the row disappears when all are", () => {
+  const none = mockOverview({ author: null, reviewers: [], assignees: [], commenters: [] });
+  expect(peopleGroups(none)).toEqual([]);
+  const { container } = render(<PeopleRow groups={[]} />);
+  expect(container.innerHTML).toBe("");
+  render(<PeopleRow groups={peopleGroups(mockOverview({ reviewers: [], assignees: [], commenters: [] }))} />);
+  expect(screen.queryByRole("group", { name: "Reviewers" })).toBeNull();
+  expect(screen.queryByRole("group", { name: "Assignees" })).toBeNull();
+  expect(screen.queryByRole("group", { name: "Commenters" })).toBeNull();
+});
+
+test("with no reviewers, the row says how many approvals are missing", () => {
+  render(<PeopleRow groups={[]} missing={1} />);
   expect(screen.getByText(/1 approval needed/)).toBeTruthy();
 });
 
-test("bot participants are kept and marked", () => {
-  render(<Participants participants={[{ kind: "bot", login: "deps-bot", name: null, avatar_url: null }]} total={1} />);
-  expect(screen.getByRole("group", { name: "1 participant" })).toBeTruthy();
+test("people groups dedupe within a group; commenters skip the viewer, author and reviewers", () => {
+  const overview = mockOverview({
+    author: user("grace"),
+    assignees: [user("noor"), user("NOOR")],
+    commenters: [user("ada"), user("grace"), user("Kim"), user("lee"), user("LEE"), { kind: "bot", login: "ci-bot", name: null, avatar_url: null }],
+  });
+  const byKey = Object.fromEntries(peopleGroups(overview).map((group) => [group.key, group.people.map((person) => person.login)]));
+  expect(byKey.assignees).toEqual(["noor"]);
+  expect(byKey.commenters).toEqual(["lee", "ci-bot"]);
+});
+
+test("bots keep their marker; groups past four avatars fold into +N", () => {
+  const many = Array.from({ length: 6 }, (_, index) => user(`u${index}`));
+  render(<PeopleRow groups={[{ key: "commenters", label: "Commenters", people: [{ kind: "bot", login: "ci-bot", name: null, avatar_url: null }, ...many] }]} />);
+  expect(screen.getByTestId("commenters-more").textContent).toBe("+3");
+  expect(personLine({ kind: "bot", login: "ci-bot", name: null, avatar_url: null })).toBe("@ci-bot · bot");
 });

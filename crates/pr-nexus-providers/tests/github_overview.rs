@@ -67,8 +67,8 @@ const OVERVIEW: &str = r#"{"data":{
       "autoMergeRequest":null,
       "comments":{"totalCount":3},
       "reviewThreads":{"nodes":[{"comments":{"totalCount":2}},{"comments":{"totalCount":1}}]},
-      "participants":{"totalCount":4,"nodes":[
-        {"login":"alice","name":"Alice","avatarUrl":"https://example.test/a"},
+      "author":{"__typename":"User","login":"alice","name":"Alice","avatarUrl":"https://example.test/a"},
+      "assignees":{"nodes":[
         {"login":"bob","name":"","avatarUrl":"https://example.test/b"}
       ]},
       "reviewRequests":{"nodes":[
@@ -164,8 +164,13 @@ fn overview_reads_checks_comments_people_and_merge_rights() {
     assert_eq!(overview.reviewers[1].person.kind, PersonKind::Team);
     assert_eq!(overview.reviewers[1].person.login, "acme/core");
     assert_eq!(overview.reviewers[1].state, ReviewState::Pending);
-    assert_eq!(overview.participants_total, 4);
-    assert_eq!(overview.participants[1].name, None);
+    assert_eq!(
+        overview.author.as_ref().map(|a| a.login.as_str()),
+        Some("alice")
+    );
+    assert_eq!(overview.assignees.len(), 1);
+    assert_eq!(overview.assignees[0].login, "bob");
+    assert_eq!(overview.assignees[0].name, None);
     assert_eq!(overview.viewer.login, "alice");
     assert_eq!(overview.viewer.permission.as_deref(), Some("write"));
     assert!(overview.viewer.can_enable_auto_merge);

@@ -137,8 +137,9 @@ export const overview: PrOverview = mockOverview({
     { ...people.sam, state: "changes_requested" },
     { ...people.web, state: "pending" },
   ],
-  participants: [ada, people.kim, people.sam, grace, people.noor, people.theo],
-  participants_total: 8,
+  author: ada,
+  assignees: [ada],
+  commenters: [people.kim, grace, people.noor, people.theo],
   viewer: { login: "ada", permission: "write", can_merge_as_admin: false, can_enable_auto_merge: true, can_disable_auto_merge: false },
   merge_settings: { auto_merge_allowed: true, squash: true, merge: true, rebase: true },
 });
@@ -152,13 +153,17 @@ export const draftOverview: PrOverview = {
   merge_state: "draft",
   head_ref: "feature/488",
   review_decision: null,
-  issue_comments: 2,
-  review_comments: 0,
-  approvals: 0,
-  required_approvals: 1,
-  reviewers: [],
-  participants: [ada, grace],
-  participants_total: 2,
+  issue_comments: 3,
+  review_comments: 1,
+  approvals: 1,
+  required_approvals: 2,
+  author: grace,
+  reviewers: [
+    { ...people.kim, state: "approved" },
+    { ...people.web, state: "pending" },
+  ],
+  assignees: [ada],
+  commenters: [people.noor, { kind: "bot", login: "ci-bot", name: null, avatar_url: avatar("CI", 180) }, people.kim, ada],
 };
 
 export const detail = mockDetail(detailRowId, {

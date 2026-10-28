@@ -117,13 +117,9 @@ pub(crate) fn parse(body: &Value, fetched_at: String) -> Result<PrOverview, Prov
         .filter(|reviewer| reviewer.state == ReviewState::Approved)
         .count() as u32;
 
-    let participants = participants(node, &reviewers);
-    // GitHub's own count leaves out bots and the people merged in above.
-    let participants_total = node
-        .pointer("/participants/totalCount")
-        .and_then(Value::as_u64)
-        .map_or(0, |count| count as u32)
-        .max(participants.len() as u32);
+    let author = node.get("author").and_then(actor_person);
+    let assignees = dedupe(nodes(node.get("assignees")).iter().filter_map(user_person));
+    let commenters = commenters(node);
 
     let auto_merge = node
         .get("autoMergeRequest")
@@ -158,8 +154,9 @@ pub(crate) fn parse(body: &Value, fetched_at: String) -> Result<PrOverview, Prov
         approvals,
         required_approvals: None,
         reviewers,
-        participants,
-        participants_total,
+        author,
+        assignees,
+        commenters,
         viewer: ViewerAccess {
             login: opt_str(root.pointer("/viewer/login")).unwrap_or_default(),
             permission: lower(repo.get("viewerPermission")),
@@ -234,44 +231,32 @@ fn reviewers(node: &Value) -> Vec<Reviewer> {
     out
 }
 
-/// Everyone on the pull request: author first, then GitHub's `participants`,
-/// reviewers (submitted or requested), and comment authors, deduped by login.
-/// GitHub's `participants` is a `UserConnection`, so it never lists bots;
-/// bots are kept here and marked `Bot` so a bot-authored PR is not empty.
-/// Requested teams are reviewers, not participants.
-fn participants(node: &Value, reviewers: &[Reviewer]) -> Vec<Person> {
+/// People in first-seen order, each login once (case-insensitive).
+fn dedupe(people: impl IntoIterator<Item = Person>) -> Vec<Person> {
     let mut out: Vec<Person> = Vec::new();
-    let mut add = |person: Person| {
+    for person in people {
         if !out
             .iter()
             .any(|known| known.login.eq_ignore_ascii_case(&person.login))
         {
             out.push(person);
         }
-    };
-    if let Some(person) = node.get("author").and_then(actor_person) {
-        add(person);
     }
-    for person in nodes(node.get("participants"))
-        .iter()
-        .filter_map(user_person)
-    {
-        add(person);
-    }
-    for reviewer in reviewers {
-        if reviewer.person.kind != PersonKind::Team {
-            add(reviewer.person.clone());
-        }
-    }
+    out
+}
+
+/// Authors of PR comments, then review-thread comments, deduped. Bots are
+/// kept and marked `Bot`; the panel drops the viewer, author and reviewers.
+fn commenters(node: &Value) -> Vec<Person> {
     let threads = nodes(node.get("reviewThreads"))
         .iter()
         .flat_map(|thread| nodes(thread.get("comments")));
-    for comment in nodes(node.get("comments")).iter().chain(threads) {
-        if let Some(person) = comment.get("author").and_then(actor_person) {
-            add(person);
-        }
-    }
-    out
+    dedupe(
+        nodes(node.get("comments"))
+            .iter()
+            .chain(threads)
+            .filter_map(|comment| comment.get("author").and_then(actor_person)),
+    )
 }
 
 /// A comment or review author: a user, or a bot marked as one. Deleted
@@ -451,12 +436,10 @@ mod tests {
     }
 
     #[test]
-    fn participants_include_author_bots_reviewers_and_commenters_once() {
-        // A bot-authored PR: GitHub's `participants` lists users only, so it
-        // came back empty while the comments card counted two.
+    fn commenters_and_assignees_are_deduped_and_keep_bots() {
         let node = json!({
             "author": {"__typename": "Bot", "login": "deps-bot", "avatarUrl": "https://example.test/d"},
-            "participants": {"totalCount": 0, "nodes": []},
+            "assignees": {"nodes": [{"login": "noor", "name": "Noor"}, {"login": "NOOR"}]},
             "comments": {"totalCount": 2, "nodes": [
                 {"author": {"__typename": "Bot", "login": "ci-bot"}},
                 {"author": {"__typename": "User", "login": "kim", "name": "Kim"}},
@@ -464,25 +447,25 @@ mod tests {
             ]},
             "reviewThreads": {"nodes": [
                 {"comments": {"totalCount": 1, "nodes": [{"author": {"__typename": "User", "login": "KIM"}}]}}
-            ]},
-            "reviewRequests": {"nodes": [
-                {"requestedReviewer": {"__typename": "User", "login": "sam"}},
-                {"requestedReviewer": {"__typename": "Team", "slug": "web", "organization": {"login": "acme"}}}
             ]}
         });
-        let people = participants(&node, &reviewers(&node));
-        let summary: Vec<_> = people
-            .iter()
-            .map(|person| (person.login.as_str(), person.kind))
+        let people: Vec<_> = commenters(&node)
+            .into_iter()
+            .map(|person| (person.login, person.kind))
             .collect();
         assert_eq!(
-            summary,
+            people,
             [
-                ("deps-bot", PersonKind::Bot),
-                ("sam", PersonKind::User),
-                ("ci-bot", PersonKind::Bot),
-                ("kim", PersonKind::User),
+                ("ci-bot".to_string(), PersonKind::Bot),
+                ("kim".to_string(), PersonKind::User),
             ]
+        );
+        let assignees = dedupe(nodes(node.get("assignees")).iter().filter_map(user_person));
+        assert_eq!(assignees.len(), 1);
+        assert_eq!(assignees[0].name.as_deref(), Some("Noor"));
+        assert_eq!(
+            node.get("author").and_then(actor_person).map(|p| p.kind),
+            Some(PersonKind::Bot)
         );
     }
 

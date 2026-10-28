@@ -483,8 +483,11 @@ export interface PrOverview {
   /** Null when the token cannot see the branch rules. */
   required_approvals: number | null;
   reviewers: OverviewReviewer[];
-  participants: Person[];
-  participants_total: number;
+  /** Null for a deleted account. */
+  author: Person | null;
+  assignees: Person[];
+  /** Authors of PR and review-thread comments, deduped; bots included. */
+  commenters: Person[];
   viewer: {
     login: string;
     permission: "admin" | "maintain" | "write" | "triage" | "read" | null;
