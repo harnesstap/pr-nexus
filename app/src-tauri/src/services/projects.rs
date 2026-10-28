@@ -350,3 +350,54 @@ pub fn restore_pr(state: &AppState, project_id: i64, pr_id: i64) -> Result<(), A
     state.store.restore_pr(ProjectId(project_id), PrId(pr_id))?;
     relink_all(state)
 }
+
+/// A project with how many visible PRs it has, for callers that list
+/// projects without loading the list (an MCP client).
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectSummary {
+    #[serde(flatten)]
+    pub project: ProjectDto,
+    /// Linked PRs that are not hidden, any state.
+    pub pr_count: usize,
+    /// Of those, the open ones.
+    pub open_pr_count: usize,
+}
+
+/// Every project in display order with its PR counts. Archived projects
+/// only when `include_archived`.
+pub fn project_summaries(
+    state: &AppState,
+    include_archived: bool,
+) -> Result<Vec<ProjectSummary>, AppError> {
+    let items = list_items(state)?;
+    Ok(all_projects(state)?
+        .into_iter()
+        .filter(|project| include_archived || !project.archived)
+        .map(|project| summarize(project, &items))
+        .collect())
+}
+
+/// One project with its PR counts.
+pub fn project_summary(state: &AppState, id: i64) -> Result<ProjectSummary, AppError> {
+    let project = all_projects(state)?
+        .into_iter()
+        .find(|project| project.id == id)
+        .ok_or_else(|| AppError::new("not_found", format!("No project with id {id}")))?;
+    Ok(summarize(project, &list_items(state)?))
+}
+
+fn summarize(project: ProjectDto, items: &[listing::Item]) -> ProjectSummary {
+    let linked = items
+        .iter()
+        .filter(|item| !item.row.hidden && item.row.project_ids.contains(&project.id));
+    let (mut pr_count, mut open_pr_count) = (0, 0);
+    for item in linked {
+        pr_count += 1;
+        open_pr_count += usize::from(item.row.state == "open");
+    }
+    ProjectSummary {
+        project,
+        pr_count,
+        open_pr_count,
+    }
+}

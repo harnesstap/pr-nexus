@@ -12,17 +12,45 @@ const boot = {
   onboarding: { mapping_skipped: true },
 } as unknown as Bootstrap;
 
-function Harness({ api, start = "accounts", onBoot = () => undefined, onRerun = () => undefined }: { api: Api; start?: SettingsTab; onBoot?: (boot: Bootstrap) => void; onRerun?: () => void }) {
+function Harness({
+  api,
+  start = "accounts",
+  onBoot = () => undefined,
+  onRerun = () => undefined,
+}: {
+  api: Api;
+  start?: SettingsTab;
+  onBoot?: (boot: Bootstrap) => void;
+  onRerun?: () => void;
+}) {
   const [tab, setTab] = useState<SettingsTab>(start);
-  return (
-    <SettingsScreen api={api} boot={boot} onBoot={onBoot} accounts={<p>Accounts body</p>} tab={tab} onTabChange={setTab} onRerunSetup={onRerun} />
-  );
+  return <SettingsScreen api={api} boot={boot} onBoot={onBoot} accounts={<p>Accounts body</p>} tab={tab} onTabChange={setTab} onRerunSetup={onRerun} />;
 }
 
 beforeEach(() => window.localStorage.clear());
 
-const acme: SlackWorkspace = { id: 1, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false, team_id: "T0ACME0001", enabled: true, priority: 0 };
-const widgets: SlackWorkspace = { id: 2, team_name: "Widgets", domain: "widgets", user_name: "bob", signed_in: false, needs_sign_in: true, team_id: "T0ACME0002", enabled: true, priority: 1 };
+const acme: SlackWorkspace = {
+  id: 1,
+  team_name: "Acme",
+  domain: "acme",
+  user_name: "ada",
+  signed_in: true,
+  needs_sign_in: false,
+  team_id: "T0ACME0001",
+  enabled: true,
+  priority: 0,
+};
+const widgets: SlackWorkspace = {
+  id: 2,
+  team_name: "Widgets",
+  domain: "widgets",
+  user_name: "bob",
+  signed_in: false,
+  needs_sign_in: true,
+  team_id: "T0ACME0002",
+  enabled: true,
+  priority: 1,
+};
 
 const entry = (partial: Partial<MappingEntry> & { slug: string }): MappingEntry => ({
   row: {
@@ -97,7 +125,11 @@ test("Mappings: empty state names the skipped setup step", async () => {
 });
 
 test("Mappings: badges, filter, inline edit and reset to imported", async () => {
-  let entries = [entry({ slug: "web" }), entry({ slug: "api", source: "user", has_imported: true }), entry({ slug: "ops", source: "user", has_imported: false, disabled: true })];
+  let entries = [
+    entry({ slug: "web" }),
+    entry({ slug: "api", source: "user", has_imported: true }),
+    entry({ slug: "ops", source: "user", has_imported: false, disabled: true }),
+  ];
   const calls: string[] = [];
   const counts: number[] = [];
   const api = fakeSettingsApi({
@@ -199,7 +231,9 @@ test("Import: Choose file loads the picked CSV for the same preview", async () =
   render(<Harness api={api} start="mappings" />);
   await screen.findByRole("option", { name: "Acme (acme.slack.com)" });
   fireEvent.click(screen.getByRole("button", { name: "Choose file…" }));
-  expect(await screen.findByText((_, element) => element?.className === "truncate" && element.textContent === "Loaded teams.csv")).toHaveAccessibleDescription("/home/ada/teams.csv");
+  expect(await screen.findByText((_, element) => element?.className === "truncate" && element.textContent === "Loaded teams.csv")).toHaveAccessibleDescription(
+    "/home/ada/teams.csv",
+  );
   expect(screen.getByRole("textbox", { name: "Mapping CSV" })).toHaveValue("github_org,github_team_slug\nacme,web");
   fireEvent.click(screen.getByRole("button", { name: "Preview changes" }));
   expect(await screen.findByRole("alert")).toHaveTextContent("mapping csv: missing column slack_channel_id");
@@ -252,7 +286,8 @@ test("Import: several workspaces without a stored one preselect the first", asyn
 test("Editing a row picks the workspace from the connected list and keeps an unlisted one", async () => {
   const saved: string[] = [];
   const api = fakeSettingsApi({
-    listMappings: () => Promise.resolve([entry({ slug: "web" }), { ...entry({ slug: "ops" }), row: { ...entry({ slug: "ops" }).row, slack_workspace: "gone" } }]),
+    listMappings: () =>
+      Promise.resolve([entry({ slug: "web" }), { ...entry({ slug: "ops" }), row: { ...entry({ slug: "ops" }).row, slack_workspace: "gone" } }]),
     slackWorkspaces: () => Promise.resolve([acme, widgets]),
     saveMapping: (row) => {
       saved.push(`${row.team_slug} ${row.slack_workspace}`);
@@ -278,7 +313,8 @@ test("Editing a row picks the workspace from the connected list and keeps an unl
 test("About shows paths, the keychain explainer, update check and Re-run setup", async () => {
   let reruns = 0;
   const api = fakeSettingsApi({
-    checkUpdate: () => Promise.resolve({ version: "0.2.0", url: "https://github.com/acme/pr-nexus/releases/tag/v0.2.0", command: "gh release download v0.2.0" }),
+    checkUpdate: () =>
+      Promise.resolve({ version: "0.2.0", url: "https://github.com/acme/pr-nexus/releases/tag/v0.2.0", command: "gh release download v0.2.0" }),
   }) as Api;
   render(<Harness api={api} start="about" onRerun={() => (reruns += 1)} />);
   expect(await screen.findByRole("heading", { name: "PR Nexus 0.1.0" })).toBeInTheDocument();
@@ -334,4 +370,21 @@ test("Sync has a Live updates toggle, on by default, that saves off", async () =
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
   expect(await screen.findByText("Saved")).toBeInTheDocument();
   expect(saved).toEqual([{ ...DEFAULT_PREFERENCES, live_updates: false }]);
+});
+
+test("the tab row scrolls at narrow widths and brings the active tab into view", () => {
+  const scrolled: string[] = [];
+  const original = HTMLElement.prototype.scrollIntoView;
+  HTMLElement.prototype.scrollIntoView = function (this: HTMLElement) {
+    scrolled.push(this.textContent ?? "");
+  };
+  try {
+    render(<Harness api={fakeSettingsApi() as Api} start="agents" />);
+    expect(screen.getByRole("tablist")).toHaveClass("overflow-x-auto");
+    expect(scrolled).toContain("Agents (MCP)");
+    fireEvent.click(screen.getByRole("tab", { name: "Mappings" }));
+    expect(scrolled.at(-1)).toBe("Mappings");
+  } finally {
+    HTMLElement.prototype.scrollIntoView = original;
+  }
 });

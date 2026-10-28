@@ -36,6 +36,27 @@ pub fn branch_status_cached(state: &AppState, id: i64) -> Result<BranchStatus, A
     })
 }
 
+/// The Branch card only when an overview is cached: never fetches the
+/// overview, so non-UI readers stay cheap. `None` until the detail panel
+/// (or a sync) has loaded the PR once.
+pub fn branch_status_if_cached(
+    state: &AppState,
+    id: i64,
+) -> Result<Option<BranchStatus>, AppError> {
+    let pr = stored_pr(state, PrId(id))?;
+    let Some(cached) = overview::cached(&state.store, pr.id)? else {
+        return Ok(None);
+    };
+    with_vcs(state, |provider| {
+        Ok(Some(branch::status_from(
+            provider,
+            &state.branch_cache,
+            &pr,
+            &cached,
+        )))
+    })
+}
+
 /// Brings the base into the pull request's branch with `method` (`merge` or
 /// `rebase`), guarded by the head SHA last shown. Callers confirm a rebase.
 pub fn update_branch(state: &AppState, id: i64, method: &str) -> Result<BranchUpdate, AppError> {
