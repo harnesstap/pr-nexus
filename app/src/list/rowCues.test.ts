@@ -36,7 +36,7 @@ function row(partial: Partial<ListRow>): ListRow {
 }
 
 function slack(requested_at: string, last_bumped_at: string | null = null): ListRow["slack"] {
-  return { requested_at, last_bumped_at, permalink: "https://acme.slack.example/x" } as unknown as ListRow["slack"];
+  return { requested_at, last_bumped_at, channel_id: "C1", channel_name: "ask-devx", permalink: "https://acme.slack.example/x" } as unknown as ListRow["slack"];
 }
 
 test("pills show draft then conflicts, only on open PRs", () => {
@@ -90,7 +90,9 @@ test("compact rows shrink times and keep the Slack detail in the tooltip", () =>
   expect(shortAgo("2026-09-26T12:00:00Z", now)).toBe("4w");
   expect(compactSlack(null, now)).toEqual({ sent: false, time: null, title: "Not requested on Slack" });
   const bumped = { ...slack("2026-10-24T12:00:00Z", "2026-10-26T10:00:00Z"), workspace: "acme" } as ListRow["slack"];
-  expect(compactSlack(bumped, now)).toEqual({ sent: true, time: "2h", title: "Bumped 2h ago · acme" });
+  expect(compactSlack(bumped, now)).toEqual({ sent: true, time: "2h ago", title: "acme · #ask-devx · bumped 2h ago" });
   const requested = { ...slack("2026-10-25T12:00:00Z"), workspace: "acme" } as ListRow["slack"];
-  expect(compactSlack(requested, now).title).toBe("Requested 1d ago · acme");
+  expect(compactSlack(requested, now).title).toBe("acme · #ask-devx · requested 1d ago");
+  const named = { ...requested, workspace_name: "Acme", workspace_disabled: true } as ListRow["slack"];
+  expect(compactSlack(named, now).title).toBe("Acme · #ask-devx · requested 1d ago · workspace disabled in Settings → Slack");
 });

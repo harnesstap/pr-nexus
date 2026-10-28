@@ -162,15 +162,21 @@ export function LogoIcon({ size = 16, ...props }: IconProps) {
   );
 }
 
-/** Slack-style mark: four colored bars when `active`, a single muted outline otherwise. */
-export function SlackIcon({ active = true, size = 14 }: { active?: boolean; size?: number }) {
-  const colors = active ? ["#36c5f0", "#2eb67d", "#ecb22e", "#e01e5a"] : ["#475569", "#475569", "#475569", "#475569"];
+// Slack logo path data from Slack's brand assets (the official four-colour mark).
+const SLACK_PATHS: [string, string][] = [
+  ["#E01E5A", "M26.4 78.6c0 7.1-5.8 12.9-12.9 12.9S.6 85.7.6 78.6s5.8-12.9 12.9-12.9h12.9v12.9zm6.5 0c0-7.1 5.8-12.9 12.9-12.9s12.9 5.8 12.9 12.9v32.3c0 7.1-5.8 12.9-12.9 12.9s-12.9-5.8-12.9-12.9V78.6z"],
+  ["#36C5F0", "M45.8 26.8c-7.1 0-12.9-5.8-12.9-12.9S38.7 1 45.8 1s12.9 5.8 12.9 12.9v12.9H45.8zm0 6.5c7.1 0 12.9 5.8 12.9 12.9s-5.8 12.9-12.9 12.9H13.5C6.4 59.1.6 53.3.6 46.2s5.8-12.9 12.9-12.9h32.3z"],
+  ["#2EB67D", "M97.6 46.2c0-7.1 5.8-12.9 12.9-12.9s12.9 5.8 12.9 12.9-5.8 12.9-12.9 12.9H97.6V46.2zm-6.5 0c0 7.1-5.8 12.9-12.9 12.9s-12.9-5.8-12.9-12.9V13.9C65.3 6.8 71.1 1 78.2 1s12.9 5.8 12.9 12.9v32.3z"],
+  ["#ECB22E", "M78.2 98c7.1 0 12.9 5.8 12.9 12.9s-5.8 12.9-12.9 12.9-12.9-5.8-12.9-12.9V98h12.9zm0-6.5c-7.1 0-12.9-5.8-12.9-12.9s5.8-12.9 12.9-12.9h32.3c7.1 0 12.9 5.8 12.9 12.9s-5.8 12.9-12.9 12.9H78.2z"],
+];
+
+/** The Slack logo: four colours, or `mono` in `currentColor` (e.g. grey when nothing was sent). */
+export function SlackLogo({ variant = "color", size = 14 }: { variant?: "color" | "mono"; size?: number }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <rect x="9" y="2" width="4" height="12" rx="2" fill={colors[0]} />
-      <rect x="10" y="9" width="12" height="4" rx="2" fill={colors[1]} />
-      <rect x="11" y="10" width="4" height="12" rx="2" fill={colors[2]} />
-      <rect x="2" y="11" width="12" height="4" rx="2" fill={colors[3]} />
+    <svg width={size} height={size} viewBox="0 0 124 124" aria-hidden="true" focusable="false" data-variant={variant} className="shrink-0">
+      {SLACK_PATHS.map(([fill, d]) => (
+        <path key={fill} d={d} fill={variant === "color" ? fill : "currentColor"} />
+      ))}
     </svg>
   );
 }

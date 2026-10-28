@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Api, ContextThread, SlackWorkspace } from "../api";
 import { channelLabel, errorMessage } from "../api";
-import { SlackIcon } from "../icons";
+import { SlackLogo } from "../icons";
 import { ago } from "../list/model";
 import { shortTime, slackText } from "../list/slackText";
 import { slackActionBlock } from "../list/SyncBanners";
@@ -92,7 +92,7 @@ export function SlackLine({ api, prId, minBumpHours = 0, onOpen, onRequest, work
               disabled={blocked !== null}
               className="flex w-full items-center justify-center gap-2 rounded-lg bg-violet-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-300"
             >
-              <SlackIcon size={16} />
+              <SlackLogo size={16} />
               Request review on Slack
             </button>
           </Tooltip>
@@ -115,7 +115,7 @@ export function SlackLine({ api, prId, minBumpHours = 0, onOpen, onRequest, work
       onClick={onRequest}
       className="flex items-center gap-1.5 rounded-md bg-violet-600 px-2.5 py-1 font-medium text-white enabled:hover:bg-violet-500 disabled:bg-slate-800 disabled:text-slate-500"
     >
-      <SlackIcon size={12} />
+      <SlackLogo size={12} />
       {bumpLabel}
     </button>
   );
@@ -124,7 +124,7 @@ export function SlackLine({ api, prId, minBumpHours = 0, onOpen, onRequest, work
   return (
     <section aria-label="Slack request" className="rounded-lg border border-slate-800 bg-slate-900/50 p-3 text-xs">
       <header className="flex items-center gap-2">
-        <SlackIcon size={13} />
+        <SlackLogo size={13} />
         <span className="font-medium text-slate-200">{channelLabel(thread)}</span>
         <span className="min-w-0 truncate text-slate-500">
           · requested {shortTime(thread.requested_at)}
