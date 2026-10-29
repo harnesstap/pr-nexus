@@ -211,7 +211,7 @@ fn nothing_whitelisted_means_no_workspace() {
 }
 
 #[test]
-fn search_all_fans_out_marks_untrusted_and_masks() {
+fn search_all_fans_out_and_marks_untrusted() {
     let env = both();
     let reply = call(
         &env,
@@ -232,7 +232,7 @@ fn search_all_fans_out_marks_untrusted_and_masks() {
     let text = serde_json::to_string(results).unwrap();
     assert!(text.contains("T0ACME0001/C0ACME0001"));
     assert!(text.contains("E0ACMELAB1/C0ACMELAB0001"));
-    assert!(!text.contains("@acme.example"), "{text}");
+    assert!(text.contains("@acme.example"), "{text}");
     assert!(reply["next_cursor"].is_string());
 }
 
