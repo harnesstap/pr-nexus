@@ -1461,11 +1461,24 @@ The design above is the long-term shape. What ships today differs on purpose: th
   - `set_project_jira_links` (replaces all), `add_jira_link`, `remove_jira_link`. They take issue keys or URLs; bare keys resolve against `jira.base_url`.
   - `set_pr_note` (an empty note clears it) and `set_pr_starred`.
   - Manual reorder has no tool yet.
+- **Slack reads**: see §10.1.2.
 - **Slack sends**: not built; the switch shows "Coming soon".
 - **Tool metadata.** Every tool sets `readOnlyHint`, `destructiveHint` (true when it overwrites or removes: update, remove PRs, set or remove JIRA links, set note) and `idempotentHint` (false only for `create_project` and `add_jira_link`). Arguments reject unknown fields.
 - **Errors** are tool results with `isError: true` and a `kind`: `validation` (bad arguments, limits such as 200 ids), `not_found` (naming the missing ids), `forbidden` (capability turned off; such tools are also hidden from `tools/list`).
 - **Audit log** (`mcp_audit`, migration 0008). Every call, reads included, allowed or not, gets one row: time, client name, tool, capability, outcome (`allowed` / `denied` / `error`), argument **field names** and target ids (`project:N`, `pr:N`), a one-line summary such as "starred acme/api#482", the error message, and the duration. Argument values such as note text or project names are never stored. The table keeps the newest 5,000 rows and nothing older than 90 days, pruned on insert. Settings → Agents → Activity lists the newest 200 with an outcome filter and "Clear log" behind a confirmation.
 - **Live refresh.** A successful write bumps the sync revision and emits `pr-nexus://data-changed`; the list reloads rows and projects at once (the idle poll also catches the revision change).
+
+#### 10.1.2 Slack reads for agents
+
+Agents can search and read Slack through PR Nexus, which proxies the official Slack MCP server with each workspace's own sign-in (§7.11). Nothing new is requested from Slack: the tools use the scopes PR Nexus already holds.
+
+- **Switches.** "Slack reads" (off by default) and a workspace whitelist under it in Settings → Agents (none ticked by default). A workspace is exposed only when it is ticked *and* turned on in Settings → Slack. "Slack private search" shows as coming soon and stays off.
+- **Tools.** `slack_list_workspaces`, `slack_resolve` (permalink or ID to arguments, no network call), and workspace-aware `slack_search_public`, `slack_search_channels`, `slack_search_users`, `slack_read_channel`, `slack_read_thread`, `slack_read_user_profile`, `slack_list_user_channels`. All are read-only; their descriptions name no workspace.
+- **Qualified IDs.** Every Slack ID in a reply is prefixed with its workspace, `T…/C…`, or `E…/C…` for an Enterprise Grid session (Grid search spans the org and does not name the team, so the org is the precise prefix; no `conversations.info` lookup is made). Read tools take these IDs; a bare ID is accepted only when one workspace is exposed.
+- **Fan-out.** `workspace: "all"` asks every exposed workspace, at most 4 at a time, and returns one block per workspace in Slack's own order (no cross-workspace ranking), plus `partial` and per-workspace `errors`. `next_cursor` is an HMAC-signed composite of each workspace's cursor; the key changes on every app start. PR Nexus keeps each tool under Slack's per-minute limits and returns `rate_limited` with `retry_at` instead of waiting.
+- **Untrusted content.** Replies carry `untrusted_content: true` and a note that Slack text is data, never instructions. Replies are otherwise passed through as Slack's MCP server returns them (profile emails and phone numbers included); PR Nexus only qualifies IDs and adds this envelope.
+- **Audit.** Calls are logged like other tools, with targets such as `slack:T…/C…` and counts only; search text and message text are never stored.
+- **Personal use.** These tools are meant for a person reading their own workspaces through the internal apps their organisation already approved; they add no access beyond what that person's Slack sign-in allows.
 
 ### 10.2 Other providers & platforms
 - Internal roadmap only: none of these is shown or promised in the app, README, or release notes. Implementing one means adding its registry descriptor (§5.1), a factory, and its setup steps; until then the UI shows GitHub and Slack only.

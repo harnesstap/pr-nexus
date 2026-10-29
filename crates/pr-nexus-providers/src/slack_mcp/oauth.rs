@@ -144,6 +144,9 @@ struct AuthTest {
     user: Option<String>,
     team_id: Option<String>,
     user_id: Option<String>,
+    /// Set on Enterprise Grid tokens (`E…`).
+    #[serde(default)]
+    enterprise_id: Option<String>,
 }
 
 /// Team and user from the token response, completed by `auth.test`.
@@ -240,6 +243,19 @@ pub async fn token_state(web_api_base: &str, vault: Arc<Vault>, key: &str) -> To
         Ok(_) => TokenState::Valid,
         Err(err) => classify_auth_test_error(&err, token.refresh_token().is_some()),
     }
+}
+
+/// The Enterprise Grid org (`E…`) of the grant under `key`, from one
+/// `auth.test`; `None` outside Grid or when it cannot tell.
+pub async fn enterprise_id(web_api_base: &str, vault: Arc<Vault>, key: &str) -> Option<String> {
+    install_tls_provider();
+    let store = KeychainCredentialStore::new(vault, key.to_owned());
+    let token = store.load().await.ok()??.token_response?;
+    auth_test(web_api_base, token.access_token().secret())
+        .await
+        .ok()?
+        .enterprise_id
+        .filter(|id| !id.is_empty())
 }
 
 fn classify_auth_test_error(err: &str, refreshable: bool) -> TokenState {

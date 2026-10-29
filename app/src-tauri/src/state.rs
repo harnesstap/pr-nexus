@@ -67,6 +67,8 @@ pub struct AppState {
     pub slack_cancel: Mutex<Option<CancelHandle>>,
     /// Startup `auth.test` result per Slack account (§7.11).
     pub slack_tokens: Mutex<HashMap<i64, TokenState>>,
+    /// Upstream sessions behind the Slack tools of the local MCP server.
+    pub slack_proxy: crate::mcp::slack::SlackProxy,
     pub sync: Mutex<SyncStatus>,
     /// Held while a sync runs, so overlapping requests join it (see [`run_sync`]).
     pub sync_gate: Mutex<()>,
@@ -95,6 +97,7 @@ impl AppState {
             chats: Mutex::new(HashMap::new()),
             slack_cancel: Mutex::new(None),
             slack_tokens: Mutex::new(HashMap::new()),
+            slack_proxy: crate::mcp::slack::SlackProxy::default(),
             sync: Mutex::new(if demo {
                 SyncStatus::demo()
             } else {
@@ -121,6 +124,7 @@ impl AppState {
             chats: Mutex::new(HashMap::new()),
             slack_cancel: Mutex::new(None),
             slack_tokens: Mutex::new(HashMap::new()),
+            slack_proxy: crate::mcp::slack::SlackProxy::default(),
             sync: Mutex::new(SyncStatus::demo()),
             sync_gate: Mutex::new(()),
             device: Mutex::new(None),
@@ -441,6 +445,7 @@ mod tests {
             chats: Mutex::new(HashMap::new()),
             slack_cancel: Mutex::new(None),
             slack_tokens: Mutex::new(HashMap::new()),
+            slack_proxy: crate::mcp::slack::SlackProxy::default(),
             sync: Mutex::new(SyncStatus::demo()),
             sync_gate: Mutex::new(()),
             device: Mutex::new(None),

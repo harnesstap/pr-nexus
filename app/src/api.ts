@@ -584,12 +584,17 @@ export interface PrDetail {
   from_cache: boolean;
 }
 
-/** Settings → Agents (MCP). `slack_sends` is not built yet and stays false. */
+/** Settings → Agents (MCP). `slack_sends` and `slack_private_search` are not built yet and stay false. */
 export interface McpSettings {
   enabled: boolean;
   reads: boolean;
   local_writes: boolean;
   slack_sends: boolean;
+  /** Search and read Slack in the workspaces listed in `slack_workspaces`. */
+  slack_reads: boolean;
+  slack_private_search: boolean;
+  /** Team IDs (`T…`) agents may see. Empty: none. */
+  slack_workspaces: string[];
   /** null: any free port, picked at each start. */
   port: number | null;
 }

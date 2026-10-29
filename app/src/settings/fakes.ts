@@ -1,4 +1,4 @@
-import type { Api, McpActivityEntry, McpOutcome, McpSettings, McpView, Preferences } from "../api";
+import type { Api, McpActivityEntry, McpOutcome, McpSettings, McpView, Preferences, SlackWorkspace } from "../api";
 
 /** The §7.12 defaults, as the backend returns them on a fresh database. */
 export const DEFAULT_PREFERENCES: Preferences = {
@@ -40,7 +40,16 @@ type SettingsApi = Pick<
 export const FAKE_MCP_TOKEN = "pnx_0123456789abcdef0123456789abcdef0123456789abcdef0123456789ab7f3e";
 
 /** An in-memory MCP server: enabling it "runs" on port 43117 unless a port is set. */
-type FakeMcp = Pick<SettingsApi, "mcpSettings" | "saveMcpSettings" | "mcpToken" | "regenerateMcpToken" | "mcpActivity" | "clearMcpActivity">;
+type FakeMcp = Pick<
+  SettingsApi,
+  "mcpSettings" | "saveMcpSettings" | "mcpToken" | "regenerateMcpToken" | "mcpActivity" | "clearMcpActivity" | "slackWorkspaces"
+>;
+
+/** Two made-up workspaces: `acme`, and `acme-labs` on an Enterprise Grid. */
+export const FAKE_SLACK_WORKSPACES: SlackWorkspace[] = [
+  { id: 1, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false, team_id: "T0ACME0001", enabled: true, priority: 0 },
+  { id: 2, team_name: "Acme Labs", domain: "acme-labs", user_name: "ada", signed_in: true, needs_sign_in: false, team_id: "T0ACMELAB1", enabled: true, priority: 1 },
+];
 
 /** A few minutes of an agent tidying up, newest first, relative to `now`. */
 export function sampleActivity(now = new Date()): McpActivityEntry[] {
@@ -50,7 +59,7 @@ export function sampleActivity(now = new Date()): McpActivityEntry[] {
     at: at(minutes),
     client: "claude-code",
     tool,
-    capability: tool.startsWith("list") || tool.startsWith("get") ? "reads" : "local_writes",
+    capability: tool.startsWith("slack_") ? "slack_reads" : tool.startsWith("list") || tool.startsWith("get") ? "reads" : "local_writes",
     outcome,
     summary,
     error,
@@ -66,9 +75,19 @@ export function sampleActivity(now = new Date()): McpActivityEntry[] {
   ];
 }
 
-export function fakeMcp(initial: Partial<McpSettings> = {}, activity: McpActivityEntry[] = []): FakeMcp {
+export function fakeMcp(initial: Partial<McpSettings> = {}, activity: McpActivityEntry[] = [], workspaces: SlackWorkspace[] = []): FakeMcp {
   let log = [...activity];
-  let settings: McpSettings = { enabled: false, reads: true, local_writes: false, slack_sends: false, port: null, ...initial };
+  let settings: McpSettings = {
+    enabled: false,
+    reads: true,
+    local_writes: false,
+    slack_sends: false,
+    slack_reads: false,
+    slack_private_search: false,
+    slack_workspaces: [],
+    port: null,
+    ...initial,
+  };
   let token: string | null = settings.enabled ? FAKE_MCP_TOKEN : null;
   const view = (): McpView => {
     const port = settings.port ?? 43117;
@@ -82,8 +101,9 @@ export function fakeMcp(initial: Partial<McpSettings> = {}, activity: McpActivit
   };
   return {
     mcpSettings: () => Promise.resolve(view()),
+    slackWorkspaces: () => Promise.resolve(workspaces),
     saveMcpSettings: (next) => {
-      settings = { ...next, slack_sends: false };
+      settings = { ...next, slack_sends: false, slack_private_search: false };
       token ??= settings.enabled ? FAKE_MCP_TOKEN : null;
       return Promise.resolve(view());
     },
@@ -125,9 +145,9 @@ export function fakeSettingsApi(overrides: Partial<SettingsApi> = {}): SettingsA
         os: "macos",
       }),
     checkUpdate: () => Promise.resolve(null),
-    slackWorkspaces: () => Promise.resolve([]),
     pickMappingFile: () => Promise.resolve(null),
     ...fakeMcp(),
+    slackWorkspaces: () => Promise.resolve([]),
     ...overrides,
   };
 }

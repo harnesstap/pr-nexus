@@ -66,7 +66,37 @@ impl AuditEvent {
                     .map(|id| format!("pr:{id}")),
             );
         }
+        for key in ["channel_id", "user_id", "reference"] {
+            if let Some(id) = self.arguments.get(key).and_then(Value::as_str)
+                && let Some(id) = super::slack::ids::parse(id)
+            {
+                out.push(match id.qualifier {
+                    Some(q) => format!("slack:{q}/{}", id.id),
+                    None => format!("slack:{}", id.id),
+                });
+            }
+        }
+        if let Some(ws) = self.arguments.get("workspace").and_then(Value::as_str) {
+            out.push(format!("slack:{}", ws.trim()));
+        }
         out.join(",")
+    }
+}
+
+/// "searched 2 Slack workspaces (1 failed)": counts only, never the query.
+fn slack_summary(verb: &str, result: Option<&Value>) -> String {
+    let count = |key: &str| {
+        result
+            .and_then(|value| value.get(key))
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len)
+    };
+    let (ok, failed) = (count("results"), count("errors"));
+    let n = ok + failed;
+    let plural = if n == 1 { "" } else { "s" };
+    match failed {
+        0 => format!("{verb} {n} Slack workspace{plural}"),
+        _ => format!("{verb} {n} Slack workspace{plural} ({failed} failed)"),
     }
 }
 
@@ -109,6 +139,15 @@ pub fn summarize(tool: &str, arguments: &Map<String, Value>, result: Option<&Val
             .join(", ")
     };
     match tool {
+        "slack_list_workspaces" => "listed Slack workspaces".to_owned(),
+        "slack_resolve" => "resolved a Slack reference".to_owned(),
+        "slack_search_public" => slack_summary("searched messages in", result),
+        "slack_search_channels" => slack_summary("searched channels in", result),
+        "slack_search_users" => slack_summary("searched people in", result),
+        "slack_list_user_channels" => slack_summary("listed channels in", result),
+        "slack_read_channel" => "read a Slack channel".to_owned(),
+        "slack_read_thread" => "read a Slack thread".to_owned(),
+        "slack_read_user_profile" => "read a Slack profile".to_owned(),
         "list_projects" => "listed projects".to_owned(),
         "get_project" => format!("read {}", project()),
         "list_prs" => "listed pull requests".to_owned(),

@@ -36,7 +36,10 @@ pub struct ToolSpec {
 
 impl ToolSpec {
     pub fn tool(&self) -> Tool {
-        let read_only = self.capability == Capability::Reads;
+        let read_only = matches!(
+            self.capability,
+            Capability::Reads | Capability::SlackReads | Capability::SlackPrivateSearch
+        );
         debug_assert!(!read_only || (!self.destructive && self.idempotent));
         Tool::new(self.name, self.description, (self.input_schema)())
             .with_title(self.title)
@@ -45,7 +48,10 @@ impl ToolSpec {
                     .read_only(read_only)
                     .destructive(self.destructive)
                     .idempotent(self.idempotent)
-                    .open_world(self.capability == Capability::SlackSends),
+                    .open_world(!matches!(
+                        self.capability,
+                        Capability::Reads | Capability::LocalWrites
+                    )),
             )
     }
 }
@@ -54,6 +60,7 @@ impl ToolSpec {
 pub fn registry() -> Vec<ToolSpec> {
     let mut tools = read_tools();
     tools.extend(super::writes::write_tools());
+    tools.extend(super::slack::slack_tools());
     tools
 }
 

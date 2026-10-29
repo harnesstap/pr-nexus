@@ -764,7 +764,7 @@ pub(crate) fn signed_in_account(state: &AppState, key: &str) -> Result<Option<Ac
 }
 
 /// Refuse a workspace turned off in Settings → Slack.
-fn ensure_enabled(state: &AppState, account: &Account) -> Result<(), AppError> {
+pub(crate) fn ensure_enabled(state: &AppState, account: &Account) -> Result<(), AppError> {
     let disabled = settings::slack_disabled_workspaces(&state.store)?;
     match account.slack_team_id() {
         Some(team) if disabled.iter().any(|off| off == team) => Err(AppError::new(
@@ -818,12 +818,6 @@ pub(crate) fn chat_for(
     if let Some(chat) = chats.get(&account.id.0) {
         return Ok(chat.clone());
     }
-    let client_id = settings::slack_client_id(&state.store)?.trim().to_owned();
-    let client_secret = if client_id.is_empty() {
-        None
-    } else {
-        state.vault.get(&slack_mcp::client_secret_key(&client_id))?
-    };
     let user_id = account
         .external_id
         .split_once(':')
@@ -836,17 +830,31 @@ pub(crate) fn chat_for(
             id: user_id,
             name: account.login.clone(),
         },
-        SessionConfig {
-            mcp_url: settings::slack_mcp_url(&state.store)?,
-            client_id,
-            client_secret,
-            redirect_uri: settings::slack_redirect_uri(&state.store)?,
-            keychain_key: account.keychain_key.clone().unwrap_or_default(),
-        },
+        session_config(state, &account)?,
         state.vault.clone(),
     )?);
     chats.insert(account.id.0, chat.clone());
     Ok(chat)
+}
+
+/// How to reopen the MCP session of a signed-in account.
+pub(crate) fn session_config(
+    state: &AppState,
+    account: &Account,
+) -> Result<SessionConfig, AppError> {
+    let client_id = settings::slack_client_id(&state.store)?.trim().to_owned();
+    let client_secret = if client_id.is_empty() {
+        None
+    } else {
+        state.vault.get(&slack_mcp::client_secret_key(&client_id))?
+    };
+    Ok(SessionConfig {
+        mcp_url: settings::slack_mcp_url(&state.store)?,
+        client_id,
+        client_secret,
+        redirect_uri: settings::slack_redirect_uri(&state.store)?,
+        keychain_key: account.keychain_key.clone().unwrap_or_default(),
+    })
 }
 
 /// Opens the authorize URL in the system browser. On Linux that is

@@ -18,8 +18,8 @@ pub mod oauth;
 pub mod schema;
 
 pub use loopback::CancelHandle;
-pub use mcp::{SessionConfig, SlackMcpChatProvider};
-pub use oauth::{ConnectConfig, Connected, TokenState, connect, token_state};
+pub use mcp::{RmcpSession, SessionConfig, SlackMcpChatProvider, ToolCaller};
+pub use oauth::{ConnectConfig, Connected, TokenState, connect, enterprise_id, token_state};
 
 /// `slack.mcp.url` default.
 pub const SLACK_MCP_URL: &str = "https://mcp.slack.com/mcp";

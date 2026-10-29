@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { Api, McpSettings, McpView } from "../api";
+import type { Api, McpSettings, McpView, SlackWorkspace } from "../api";
 import { errorMessage } from "../api";
 import { Switch } from "../Switch";
 import { Tooltip } from "../Tooltip";
@@ -8,7 +8,7 @@ import { plainText } from "../textInput";
 import { mcpConfigSnippet, parsePort } from "./tabs";
 
 interface Props {
-  api: Pick<Api, "mcpSettings" | "saveMcpSettings" | "mcpToken" | "regenerateMcpToken" | "mcpActivity" | "clearMcpActivity">;
+  api: Pick<Api, "mcpSettings" | "saveMcpSettings" | "mcpToken" | "regenerateMcpToken" | "mcpActivity" | "clearMcpActivity" | "slackWorkspaces">;
 }
 
 const button = "rounded border border-slate-700 px-3 py-1.5 text-sm hover:bg-slate-800 disabled:opacity-50";
@@ -23,6 +23,7 @@ export function AgentsSettings({ api }: Props) {
   const [portError, setPortError] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
+  const [workspaces, setWorkspaces] = useState<SlackWorkspace[]>([]);
 
   useEffect(() => {
     let cancel = false;
@@ -35,6 +36,10 @@ export function AgentsSettings({ api }: Props) {
         }
       })
       .catch((err: unknown) => !cancel && setError(errorMessage(err)));
+    api
+      .slackWorkspaces()
+      .then((list) => !cancel && setWorkspaces(list))
+      .catch(() => undefined);
     return () => {
       cancel = true;
     };
@@ -159,6 +164,36 @@ export function AgentsSettings({ api }: Props) {
             )}
           </li>
           <li>
+            <Switch
+              label="Slack reads"
+              checked={settings.slack_reads}
+              disabled={busy}
+              aria-describedby="agents-slack-note"
+              onChange={(slack_reads) => save({ slack_reads })}
+            >
+              Slack reads <span className="text-slate-400">— search and read public channels and your channels in the workspaces ticked below</span>
+            </Switch>
+            <p id="agents-slack-note" className="mt-1 max-w-prose text-xs text-slate-400">
+              Each workspace answers through its own Slack sign-in. Slack replies reach agents as Slack returns them, marked as
+              untrusted content.
+            </p>
+            {settings.slack_reads && (
+              <SlackWorkspacePicker
+                workspaces={workspaces}
+                selected={settings.slack_workspaces}
+                disabled={busy}
+                onChange={(slack_workspaces) => save({ slack_workspaces })}
+              />
+            )}
+          </li>
+          <li>
+            <Tooltip label={SOON} detail="Search private channels and direct messages too." align="start">
+              <Switch label="Slack private search" checked={false} disabled onChange={() => undefined}>
+                Slack private search <span className="text-slate-500">— coming soon</span>
+              </Switch>
+            </Tooltip>
+          </li>
+          <li>
             <Tooltip label={SOON} detail="Send Slack review requests after you approve a preview." align="start">
               <Switch label="Slack sends" checked={false} disabled onChange={() => undefined}>
                 Slack sends <span className="text-slate-500">— coming soon</span>
@@ -274,5 +309,47 @@ export function AgentsSettings({ api }: Props) {
 
       <McpActivity api={api} />
     </div>
+  );
+}
+
+interface PickerProps {
+  workspaces: SlackWorkspace[];
+  selected: string[];
+  disabled: boolean;
+  onChange: (teamIds: string[]) => void;
+}
+
+/** The Slack workspaces agents may see. None is ticked until the user picks. */
+function SlackWorkspacePicker({ workspaces, selected, disabled, onChange }: PickerProps) {
+  if (workspaces.length === 0) {
+    return <p className="ml-11 mt-2 text-xs text-slate-400">No Slack workspace connected yet. Connect one in Settings → Slack.</p>;
+  }
+  const toggle = (teamId: string, on: boolean) =>
+    onChange(on ? [...selected.filter((id) => id !== teamId), teamId] : selected.filter((id) => id !== teamId));
+  return (
+    <fieldset className="ml-11 mt-2">
+      <legend className="text-xs text-slate-400">Workspaces agents may read</legend>
+      <ul className="mt-1 space-y-1">
+        {workspaces.map((ws) => {
+          const unavailable = !ws.enabled ? "turned off in Settings → Slack" : ws.needs_sign_in ? "needs signing in again" : null;
+          return (
+            <li key={ws.team_id}>
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  className="accent-sky-500"
+                  checked={selected.includes(ws.team_id)}
+                  disabled={disabled}
+                  onChange={(event) => toggle(ws.team_id, event.target.checked)}
+                />
+                <span>{ws.team_name}</span>
+                <span className="text-xs text-slate-500">{ws.domain}.slack.com</span>
+                {unavailable && <span className="text-xs text-amber-300">— {unavailable}</span>}
+              </label>
+            </li>
+          );
+        })}
+      </ul>
+    </fieldset>
   );
 }
