@@ -10,7 +10,7 @@ description: >-
   Only directories this action created are ever removed.
 inputs:
   root:
-    description: Cache root. It must survive between jobs (a mounted volume). Empty means <runner work dir>/_ci-cache.
+    description: Cache root. It must survive between jobs (a mounted volume). Empty means <runner work dir>/_ci-cache. It is never created here.
     default: ""
   max-gb:
     description: Size cap for one target dir, in GB. Empty means 8.
@@ -18,10 +18,15 @@ inputs:
   rust:
     description: Set CARGO_TARGET_DIR too (needs rustc on PATH).
     default: "true"
+outputs:
+  enabled:
+    description: true when the cache directory was usable and the env is set.
+    value: ${{ steps.select.outputs.enabled }}
 runs:
   using: composite
   steps:
     - name: Select cache directories
+      id: select
       shell: bash
       env:
         ROOT: ${{ inputs.root }}
@@ -31,6 +36,14 @@ runs:
       run: |
         set -euo pipefail
         root="${ROOT:-$(dirname "$RUNNER_WORKSPACE")/_ci-cache}"
+        # The root must already exist (a mounted volume): never create it, so
+        # a missing mount falls back to the GitHub cache instead of filling
+        # the container's disk.
+        if [ ! -d "$root" ] || [ ! -w "$root" ]; then
+          echo "::warning::Cache root $root is missing or not writable; falling back"
+          echo "enabled=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
         base="$root/pr-nexus/${RUNNER_KEY//[^A-Za-z0-9._-]/_}"
         mkdir -p "$base/bun"
         echo "BUN_INSTALL_CACHE_DIR=$base/bun" >> "$GITHUB_ENV"
@@ -39,7 +52,10 @@ runs:
           echo "bun cache over 1 GB, emptying it"
           find "$base/bun" -mindepth 1 -delete
         fi
-        [ "$WITH_RUST" = "true" ] || exit 0
+        if [ "$WITH_RUST" != "true" ]; then
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
         hash="$(rustc -vV | sha256sum | cut -c1-12)"
         target="$base/target-$hash"
         for old in "$base"/target-*; do
@@ -56,4 +72,10 @@ runs:
           echo "Over the cap, emptying it"
           find "$target" -mindepth 1 -delete
         fi
-        echo "CARGO_TARGET_DIR=$target" >> "$GITHUB_ENV"
+        # Persistent target dir: incremental compilation pays off for the
+        # workspace crates, whose sources get fresh mtimes on every checkout.
+        {
+          echo "CARGO_TARGET_DIR=$target"
+          echo "CARGO_INCREMENTAL=1"
+        } >> "$GITHUB_ENV"
+        echo "enabled=true" >> "$GITHUB_OUTPUT"

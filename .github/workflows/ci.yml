@@ -144,25 +144,39 @@ jobs:
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
       # Web-only changes skip lint and tests; they only need the app build.
-      RUST_CHANGED: ${{ needs.changes.outputs.rust == 'true' || needs.changes.outputs.ci == 'true' }}
+      # Not named CARGO_* or RUST_*: rust-cache hashes those into its key, and
+      # a per-PR value would split the cache.
+      LINT_AND_TEST: ${{ needs.changes.outputs.rust == 'true' || needs.changes.outputs.ci == 'true' }}
       # Smaller debug info: faster compile and link, panics keep line numbers.
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/linux-tauri-deps
       - uses: dtolnay/rust-toolchain@stable
+      - name: Runner resources
+        run: |
+          echo "nproc=$(nproc) load=$(cut -d' ' -f1-3 /proc/loadavg)"
+          echo "cpu.max=$(cat /sys/fs/cgroup/cpu.max 2>/dev/null || echo n/a) memory.max=$(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo n/a)"
+          free -m | sed -n 2p
+          df -h "$GITHUB_WORKSPACE" | tail -1
+          for l in mold ld.lld clang; do printf '%s: %s\n' "$l" "$(command -v "$l" || echo missing)"; done
       - name: Persistent build cache (CI_CACHE_DIR)
+        id: pcache
         if: runner.environment != 'github-hosted' && vars.CI_CACHE_DIR != ''
         uses: ./.github/actions/persistent-cache
         with:
           root: ${{ vars.CI_CACHE_DIR }}
           max-gb: ${{ vars.CI_CACHE_MAX_GB }}
+      # Fallback when no persistent volume is usable. Only main saves: PR runs
+      # can read main's cache, but a cache saved by a PR is only visible to
+      # that PR and pushes others out of the repository's 10 GB quota.
       - name: GitHub cache
-        if: runner.environment == 'github-hosted' || vars.CI_CACHE_DIR == ''
+        if: steps.pcache.outputs.enabled != 'true'
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: "."
           shared-key: linux-rust
+          save-if: ${{ github.ref == 'refs/heads/main' || github.head_ref == 'ci/cache-tuning' }}
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.14"
@@ -171,7 +185,7 @@ jobs:
         with:
           node-version: "22"
       - uses: taiki-e/install-action@v2
-        if: env.RUST_CHANGED == 'true'
+        if: env.LINT_AND_TEST == 'true'
         with:
           tool: cargo-nextest
       # tauri-build embeds app/dist. Cargo does not run the frontend build.
@@ -182,17 +196,17 @@ jobs:
           bun install --frozen-lockfile
           bun run build
       - name: Format
-        if: env.RUST_CHANGED == 'true'
+        if: env.LINT_AND_TEST == 'true'
         run: cargo fmt --all --check
       - name: Lockfile is current
-        if: env.RUST_CHANGED == 'true'
+        if: env.LINT_AND_TEST == 'true'
         run: cargo update --workspace --locked
       - name: Clippy
-        if: env.RUST_CHANGED == 'true'
+        if: env.LINT_AND_TEST == 'true'
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       # nextest runs each test binary in parallel; it does not run doctests.
       - name: Test
-        if: env.RUST_CHANGED == 'true'
+        if: env.LINT_AND_TEST == 'true'
         run: |
           set -euo pipefail
           cargo nextest run --workspace --locked --no-fail-fast
@@ -204,7 +218,7 @@ jobs:
         working-directory: app
         run: bun run tauri build --debug --no-bundle
       - name: Cache size
-        if: always() && runner.environment != 'github-hosted' && vars.CI_CACHE_DIR != ''
+        if: always() && steps.pcache.outputs.enabled == 'true'
         run: du -sh "$CARGO_TARGET_DIR" "$BUN_INSTALL_CACHE_DIR" || true
 
   # GitHub-hosted macOS and Windows: release tags and manual runs only. macOS
