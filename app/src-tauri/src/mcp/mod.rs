@@ -16,6 +16,7 @@ pub mod audit;
 pub mod config;
 pub mod control;
 pub mod server;
+pub mod slack;
 pub mod token;
 pub mod tools;
 mod writes;

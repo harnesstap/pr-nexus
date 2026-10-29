@@ -19,13 +19,21 @@ pub enum Capability {
     LocalWrites,
     /// Post to Slack, always behind a preview (phase 5).
     SlackSends,
+    /// Search and read Slack through each exposed workspace's official
+    /// MCP session (public channels and the user's own channels).
+    SlackReads,
+    /// Search private channels and DMs too (not built yet).
+    SlackPrivateSearch,
 }
 
 impl Capability {
     /// Whether this build has any tool for it. The UI shows the others as
     /// "coming soon" and the server refuses them whatever is saved.
     pub fn available(self) -> bool {
-        matches!(self, Capability::Reads | Capability::LocalWrites)
+        matches!(
+            self,
+            Capability::Reads | Capability::LocalWrites | Capability::SlackReads
+        )
     }
 }
 
@@ -37,6 +45,11 @@ pub struct McpSettings {
     pub reads: bool,
     pub local_writes: bool,
     pub slack_sends: bool,
+    pub slack_reads: bool,
+    pub slack_private_search: bool,
+    /// Team IDs (`T…`) of the Slack workspaces agents may see. Empty by
+    /// default: turning Slack reads on exposes nothing until one is ticked.
+    pub slack_workspaces: Vec<String>,
     /// Fixed port on 127.0.0.1; `None` picks a free one at each start.
     pub port: Option<u16>,
 }
@@ -48,6 +61,9 @@ impl Default for McpSettings {
             reads: true,
             local_writes: false,
             slack_sends: false,
+            slack_reads: false,
+            slack_private_search: false,
+            slack_workspaces: Vec::new(),
             port: None,
         }
     }
@@ -61,6 +77,8 @@ impl McpSettings {
                 Capability::Reads => self.reads,
                 Capability::LocalWrites => self.local_writes,
                 Capability::SlackSends => self.slack_sends,
+                Capability::SlackReads => self.slack_reads,
+                Capability::SlackPrivateSearch => self.slack_private_search,
             }
     }
 
@@ -69,6 +87,10 @@ impl McpSettings {
     pub fn normalized(mut self) -> Self {
         self.local_writes &= Capability::LocalWrites.available();
         self.slack_sends &= Capability::SlackSends.available();
+        self.slack_private_search &= Capability::SlackPrivateSearch.available();
+        self.slack_workspaces.retain(|team| !team.trim().is_empty());
+        self.slack_workspaces.sort();
+        self.slack_workspaces.dedup();
         if self.port == Some(0) {
             self.port = None;
         }

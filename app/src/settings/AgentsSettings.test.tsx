@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { AgentsSettings } from "./AgentsSettings";
-import { FAKE_MCP_TOKEN, fakeMcp, sampleActivity } from "./fakes";
+import { FAKE_MCP_TOKEN, FAKE_SLACK_WORKSPACES, fakeMcp, sampleActivity } from "./fakes";
 import { mcpConfigSnippet, parsePort } from "./tabs";
 
 const writeText = vi.fn(() => Promise.resolve());
@@ -25,7 +25,7 @@ test("is off by default and starts the server when enabled", async () => {
 
   fireEvent.click(master);
   expect(await screen.findByText("● Running on port 43117")).toBeInTheDocument();
-  expect(save).toHaveBeenCalledWith({ enabled: true, reads: true, local_writes: false, slack_sends: false, port: null });
+  expect(save).toHaveBeenCalledWith({ enabled: true, reads: true, local_writes: false, slack_sends: false, slack_reads: false, slack_private_search: false, slack_workspaces: [], port: null });
   expect(screen.getByText("http://127.0.0.1:43117/mcp")).toBeInTheDocument();
   expect(screen.getByLabelText("Token, masked")).toHaveTextContent("pnx_••••••••••••7f3e");
   expect(document.body.textContent).not.toContain(FAKE_MCP_TOKEN);
@@ -49,6 +49,27 @@ test("local writes can be turned on; Slack sends stays disabled and explained", 
   expect(slack).toHaveAttribute("aria-checked", "false");
   expect(slack).toHaveAccessibleDescription(/Coming soon/);
   expect(screen.getByRole("switch", { name: "Reads" })).toBeEnabled();
+});
+
+test("Slack reads is off by default and exposes only the workspaces ticked", async () => {
+  const api = fakeMcp({ enabled: true }, [], FAKE_SLACK_WORKSPACES);
+  const save = vi.spyOn(api, "saveMcpSettings");
+  render(<AgentsSettings api={api} />);
+  const reads = await screen.findByRole("switch", { name: "Slack reads" });
+  expect(reads).toHaveAttribute("aria-checked", "false");
+  expect(screen.queryByRole("group", { name: "Workspaces agents may read" })).toBeNull();
+  expect(screen.getByRole("switch", { name: "Slack private search" })).toBeDisabled();
+
+  fireEvent.click(reads);
+  const picker = await screen.findByRole("group", { name: "Workspaces agents may read" });
+  const boxes = within(picker).getAllByRole("checkbox");
+  expect(boxes).toHaveLength(2);
+  boxes.forEach((box) => expect(box).not.toBeChecked());
+
+  fireEvent.click(within(picker).getByRole("checkbox", { name: /Acme Labs/ }));
+  await vi.waitFor(() => expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ slack_reads: true, slack_workspaces: ["T0ACMELAB1"] })));
+  await vi.waitFor(() => expect(within(picker).getByRole("checkbox", { name: /Acme Labs/ })).toBeChecked());
+  expect(within(picker).getByRole("checkbox", { name: /^Acmeacme\.slack/ })).not.toBeChecked();
 });
 
 test("activity lists calls newest first with time, client, tool, summary and outcome", async () => {
@@ -136,7 +157,7 @@ test("a bad port is refused before saving; a server error is shown", async () =>
   expect(save).not.toHaveBeenCalled();
 
   save.mockResolvedValueOnce({
-    settings: { enabled: true, reads: true, local_writes: false, slack_sends: false, port: 40100 },
+    settings: { enabled: true, reads: true, local_writes: false, slack_sends: false, slack_reads: false, slack_private_search: false, slack_workspaces: [], port: 40100 },
     status: { state: "error", url: null, port: 40100, error: "Port 40100 is already in use on 127.0.0.1." },
     token_masked: "pnx_••••••••••••7f3e",
   });

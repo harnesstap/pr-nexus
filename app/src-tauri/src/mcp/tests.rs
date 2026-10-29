@@ -964,3 +964,93 @@ async fn the_audit_is_bounded_through_the_server() {
         "the oldest row makes room"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn slack_reads_are_off_by_default_then_audited_without_text() {
+    use pr_nexus_core::domain::{Account, AccountId, AccountKind, AuthMode};
+    let h = harness().await;
+    h.store()
+        .insert_account(Account {
+            id: AccountId(0),
+            kind: AccountKind::Slack,
+            display_name: "Acme".into(),
+            host: "acme.slack.com".into(),
+            external_id: "T0ACME0001:U0ALICE01".into(),
+            slack_workspace: Some("acme".into()),
+            login: "alice".into(),
+            auth_mode: AuthMode::SlackMcpOauth,
+            keychain_key: Some("slack-acme".into()),
+            created_at: chrono::Utc::now(),
+        })
+        .unwrap();
+    let session = h.session().await;
+    let reply = h.rpc(&session, 2, "tools/list", json!({})).await;
+    let names: Vec<&str> = reply["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|tool| tool["name"].as_str())
+        .collect();
+    assert!(
+        !names.iter().any(|name| name.starts_with("slack_")),
+        "{names:?}"
+    );
+    let denied = h
+        .call(
+            &session,
+            "slack_search_public",
+            json!({"query": "secret plans"}),
+        )
+        .await;
+    assert_eq!(kind(&denied), "forbidden");
+
+    h.control
+        .update(McpSettings {
+            enabled: true,
+            slack_reads: true,
+            slack_workspaces: vec!["T0ACME0001".into()],
+            ..McpSettings::default()
+        })
+        .await
+        .unwrap();
+    let reply = h.rpc(&session, 3, "tools/list", json!({})).await;
+    let tools = reply["result"]["tools"].as_array().unwrap();
+    let search = tools
+        .iter()
+        .find(|tool| tool["name"] == "slack_search_public")
+        .expect("slack tools listed once on");
+    assert_eq!(search["annotations"]["readOnlyHint"], true);
+    let found = h
+        .call(
+            &session,
+            "slack_read_channel",
+            json!({"channel_id": "C0ACME0001"}),
+        )
+        .await;
+    assert_eq!(ok(&found)["untrusted_content"], true);
+    let searched = h
+        .call(
+            &session,
+            "slack_search_public",
+            json!({"query": "secret plans"}),
+        )
+        .await;
+    ok(&searched);
+
+    let events = h.audit.0.lock().unwrap().clone();
+    let slack: Vec<_> = events
+        .iter()
+        .filter(|e| e.tool.starts_with("slack_"))
+        .collect();
+    assert_eq!(slack.len(), 3);
+    assert_eq!(slack[0].outcome, Outcome::Denied);
+    assert_eq!(slack[0].capability, Capability::SlackReads);
+    assert_eq!(slack[1].target_ids(), "slack:C0ACME0001");
+    for event in &slack {
+        assert!(!event.summary.contains("secret"), "{}", event.summary);
+    }
+    let rows = h.store().mcp_audit(None, 50).unwrap();
+    let text = format!("{rows:?}");
+    assert!(text.contains("slack:C0ACME0001"), "{text}");
+    assert!(!text.contains("secret plans"), "{text}");
+}
