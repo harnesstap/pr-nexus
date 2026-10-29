@@ -1,0 +1,3 @@
+kind: Added
+body: 'Agents can search and read Slack through the local MCP server: workspace-aware read tools with qualified IDs, a workspace whitelist in Settings → Agents, untrusted-content marking and hidden emails and phone numbers. Off by default.'
+time: 2026-10-29T05:00:00.000000Z
