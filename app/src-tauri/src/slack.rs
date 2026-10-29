@@ -51,6 +51,10 @@ pub struct SlackWorkspace {
     pub enabled: bool,
     /// 0 is tried first.
     pub priority: usize,
+    /// Scopes PR Nexus now asks for that this grant lacks: signing in again
+    /// adds them. Empty when the grant does not list its scopes.
+    #[serde(default)]
+    pub scopes_missing: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -162,7 +166,24 @@ pub fn workspace_dto(state: &AppState, account: &Account) -> SlackWorkspace {
         user_name: account.login.clone(),
         signed_in: usable,
         needs_sign_in: connected && !usable,
+        scopes_missing: if usable {
+            granted_scopes(state, account)
+                .map(|granted| slack_mcp::missing_scopes(&granted))
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        },
     }
+}
+
+/// The scopes the saved grant lists, without waiting on a keychain prompt.
+/// `None` in demo mode and for grants that do not list them.
+pub(crate) fn granted_scopes(state: &AppState, account: &Account) -> Option<Vec<String>> {
+    if state.demo {
+        return None;
+    }
+    let raw = state.vault.peek(account.keychain_key.as_ref()?).ok()??;
+    slack_mcp::granted_scopes(&raw)
 }
 
 /// The grant is in the vault and the last check did not reject it. An

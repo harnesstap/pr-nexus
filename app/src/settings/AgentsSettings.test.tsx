@@ -174,3 +174,34 @@ test("ports parse to null, a number or an error", () => {
   expect(parsePort("70000")).toHaveProperty("error");
   expect(parsePort("12a")).toHaveProperty("error");
 });
+
+test("Slack private search needs Slack reads and saves on its own", async () => {
+  const api = fakeMcp({ enabled: true }, [], FAKE_SLACK_WORKSPACES);
+  const save = vi.spyOn(api, "saveMcpSettings");
+  render(<AgentsSettings api={api} />);
+  const priv = await screen.findByRole("switch", { name: "Slack private search" });
+  expect(priv).toBeDisabled();
+  expect(priv).toHaveAccessibleDescription(/Turn on Slack reads first/);
+
+  fireEvent.click(screen.getByRole("switch", { name: "Slack reads" }));
+  await vi.waitFor(() => expect(screen.getByRole("switch", { name: "Slack private search" })).toBeEnabled());
+  fireEvent.click(screen.getByRole("switch", { name: "Slack private search" }));
+  await vi.waitFor(() =>
+    expect(screen.getByRole("switch", { name: "Slack private search" })).toHaveAttribute("aria-checked", "true"),
+  );
+  expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ slack_reads: true, slack_private_search: true, slack_sends: false }));
+});
+
+test("a workspace missing new scopes offers Sign in again, which clears the note", async () => {
+  const stale = [FAKE_SLACK_WORKSPACES[0], { ...FAKE_SLACK_WORKSPACES[1], scopes_missing: ["reactions:read", "canvases:read"] }];
+  const api = fakeMcp({ enabled: true, slack_reads: true }, [], stale);
+  const connect = vi.spyOn(api, "slackConnect");
+  render(<AgentsSettings api={api} />);
+  const again = await screen.findByRole("button", { name: "Sign in again to Acme Labs" });
+  expect(again).toHaveAccessibleDescription(/needs new Slack permissions/);
+  expect(screen.queryByRole("button", { name: "Sign in again to Acme" })).toBeNull();
+
+  fireEvent.click(again);
+  await vi.waitFor(() => expect(screen.queryByRole("button", { name: "Sign in again to Acme Labs" })).toBeNull());
+  expect(connect).toHaveBeenCalledTimes(1);
+});

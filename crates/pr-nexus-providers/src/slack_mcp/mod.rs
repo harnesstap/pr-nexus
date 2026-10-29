@@ -37,7 +37,91 @@ pub const USER_SCOPES: &[&str] = &[
     "channels:history",
     "groups:history",
     "users:read",
+    // Agent reads (§10.1.2): DMs and group DMs, reactions, emoji, files,
+    // canvases and lists.
+    "search:read.mpim",
+    "search:read.im",
+    "search:read.files",
+    "mpim:read",
+    "im:read",
+    "mpim:history",
+    "im:history",
+    "reactions:read",
+    "emoji:read",
+    "files:read",
+    "canvases:read",
+    "lists:read",
 ];
+
+/// The scopes a saved grant has, from the stored token JSON. `None` when the
+/// grant does not say (older grants), so callers never nag on a guess.
+pub fn granted_scopes(stored: &str) -> Option<Vec<String>> {
+    let value: serde_json::Value = serde_json::from_str(stored).ok()?;
+    let mut scopes: Vec<String> = value
+        .get("granted_scopes")
+        .and_then(|v| v.as_array())
+        .map(|list| {
+            list.iter()
+                .filter_map(|s| s.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    if scopes.is_empty()
+        && let Some(text) = value
+            .pointer("/token_response/scope")
+            .and_then(|v| v.as_str())
+    {
+        scopes = text
+            .split([',', ' '])
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .collect();
+    }
+    (!scopes.is_empty()).then_some(scopes)
+}
+
+/// The [`USER_SCOPES`] a grant lacks, in request order.
+pub fn missing_scopes(granted: &[String]) -> Vec<String> {
+    USER_SCOPES
+        .iter()
+        .filter(|s| !granted.iter().any(|g| g == *s))
+        .map(|s| (*s).to_owned())
+        .collect()
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::*;
+
+    #[test]
+    fn granted_scopes_read_both_shapes() {
+        let listed = r#"{"client_id":"x","granted_scopes":["chat:write","users:read"]}"#;
+        assert_eq!(
+            granted_scopes(listed).unwrap(),
+            vec!["chat:write", "users:read"]
+        );
+        let token = r#"{"client_id":"x","token_response":{"scope":"chat:write,emoji:read"}}"#;
+        assert_eq!(
+            granted_scopes(token).unwrap(),
+            vec!["chat:write", "emoji:read"]
+        );
+        assert_eq!(granted_scopes(r#"{"client_id":"x"}"#), None);
+        assert_eq!(granted_scopes("not json"), None);
+    }
+
+    #[test]
+    fn missing_scopes_keep_request_order() {
+        let all: Vec<String> = USER_SCOPES.iter().map(|s| (*s).to_owned()).collect();
+        assert!(missing_scopes(&all).is_empty());
+        let old: Vec<String> = USER_SCOPES[..9].iter().map(|s| (*s).to_owned()).collect();
+        let missing = missing_scopes(&old);
+        assert_eq!(
+            missing.first().map(String::as_str),
+            Some("search:read.mpim")
+        );
+        assert!(missing.contains(&"lists:read".to_owned()));
+    }
+}
 
 /// Keychain key of a workspace grant (§9).
 pub fn token_key(team_id: &str, user_id: &str) -> String {

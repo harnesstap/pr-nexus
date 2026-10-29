@@ -66,7 +66,14 @@ impl AuditEvent {
                     .map(|id| format!("pr:{id}")),
             );
         }
-        for key in ["channel_id", "user_id", "reference"] {
+        for key in [
+            "channel_id",
+            "user_id",
+            "reference",
+            "file_id",
+            "canvas_id",
+            "list_id",
+        ] {
             if let Some(id) = self.arguments.get(key).and_then(Value::as_str)
                 && let Some(id) = super::slack::ids::parse(id)
             {
@@ -148,6 +155,15 @@ pub fn summarize(tool: &str, arguments: &Map<String, Value>, result: Option<&Val
         "slack_read_channel" => "read a Slack channel".to_owned(),
         "slack_read_thread" => "read a Slack thread".to_owned(),
         "slack_read_user_profile" => "read a Slack profile".to_owned(),
+        "slack_search_public_and_private" => {
+            slack_summary("searched messages, private included, in", result)
+        }
+        "slack_search_emojis" => slack_summary("searched emoji in", result),
+        "slack_get_reactions" => "read a Slack message's reactions".to_owned(),
+        "slack_list_channel_members" => "listed a Slack channel's members".to_owned(),
+        "slack_read_file" => "read a Slack file".to_owned(),
+        "slack_read_canvas" => "read a Slack canvas".to_owned(),
+        "slack_read_list" => "read a Slack list".to_owned(),
         "list_projects" => "listed projects".to_owned(),
         "get_project" => format!("read {}", project()),
         "list_prs" => "listed pull requests".to_owned(),

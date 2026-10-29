@@ -9,8 +9,9 @@ use std::sync::LazyLock;
 
 use regex::{Captures, Regex};
 
-/// A Slack object ID: channel, group, DM, user, bot.
-const ID: &str = r"[CGDUWB][A-Z0-9]{8,}";
+/// A Slack object ID: channel, group, DM, user, bot, file (canvases and
+/// lists are files too).
+const ID: &str = r"[CGDUWBF][A-Z0-9]{8,}";
 
 static IN_TEXT: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(&format!(
