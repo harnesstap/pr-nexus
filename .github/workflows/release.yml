@@ -190,6 +190,8 @@ jobs:
           security import "$P12" -k "$KC" -P "$P12_PASSWORD" -T /usr/bin/codesign -f pkcs12
           rm -f "$P12"
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KC_PASS" "$KC" >/dev/null
+          # The keychain list is split into one argument per keychain on purpose.
+          # shellcheck disable=SC2046
           security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
           IDENTITY="$(security find-identity -p codesigning "$KC" | awk '/PR Nexus Release/ {print $2; exit}')"
           if [ -z "$IDENTITY" ]; then
@@ -308,6 +310,8 @@ jobs:
           security import "$P12" -k "$KC" -P "$P12_PASSWORD" -T /usr/bin/codesign -f pkcs12
           rm -f "$P12"
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KC_PASS" "$KC" >/dev/null
+          # The keychain list is split into one argument per keychain on purpose.
+          # shellcheck disable=SC2046
           security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
           IDENTITY="$(security find-identity -p codesigning "$KC" | awk '/PR Nexus Release/ {print $2; exit}')"
           if [ -z "$IDENTITY" ]; then

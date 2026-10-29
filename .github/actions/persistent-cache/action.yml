@@ -6,22 +6,28 @@ description: >-
   Layout: <root>/pr-nexus/<runner name>/{target-<rustc hash>,bun}. Each runner
   runs one job at a time and gets its own directory, so jobs never share one.
   Bounded: target dirs built by another rustc are removed, and a target dir
-  over max-gb is emptied before the build (it then rebuilds from scratch).
+  over max-gb first loses incremental/deps files older than 7 days, and is
+  emptied before the build only if still over (it then rebuilds from scratch).
   Only directories this action created are ever removed.
 inputs:
   root:
-    description: Cache root. It must survive between jobs (a mounted volume). Empty means <runner work dir>/_ci-cache.
+    description: Cache root. It must survive between jobs (a mounted volume). Empty means <runner work dir>/_ci-cache. It is never created here.
     default: ""
   max-gb:
-    description: Size cap for one target dir, in GB. Empty means 8.
+    description: Size cap for one target dir, in GB. Empty means 14.
     default: ""
   rust:
     description: Set CARGO_TARGET_DIR too (needs rustc on PATH).
     default: "true"
+outputs:
+  enabled:
+    description: true when the cache directory was usable and the env is set.
+    value: ${{ steps.select.outputs.enabled }}
 runs:
   using: composite
   steps:
     - name: Select cache directories
+      id: select
       shell: bash
       env:
         ROOT: ${{ inputs.root }}
@@ -31,6 +37,14 @@ runs:
       run: |
         set -euo pipefail
         root="${ROOT:-$(dirname "$RUNNER_WORKSPACE")/_ci-cache}"
+        # The root must already exist (a mounted volume): never create it, so
+        # a missing mount falls back to the GitHub cache instead of filling
+        # the container's disk.
+        if [ ! -d "$root" ] || [ ! -w "$root" ]; then
+          echo "::warning::Cache root $root is missing or not writable; falling back"
+          echo "enabled=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
         base="$root/pr-nexus/${RUNNER_KEY//[^A-Za-z0-9._-]/_}"
         mkdir -p "$base/bun"
         echo "BUN_INSTALL_CACHE_DIR=$base/bun" >> "$GITHUB_ENV"
@@ -39,7 +53,10 @@ runs:
           echo "bun cache over 1 GB, emptying it"
           find "$base/bun" -mindepth 1 -delete
         fi
-        [ "$WITH_RUST" = "true" ] || exit 0
+        if [ "$WITH_RUST" != "true" ]; then
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
         hash="$(rustc -vV | sha256sum | cut -c1-12)"
         target="$base/target-$hash"
         for old in "$base"/target-*; do
@@ -49,11 +66,25 @@ runs:
           fi
         done
         mkdir -p "$target"
-        max_mb=$(( ${MAX_GB:-8} * 1024 ))
+        max_mb=$(( ${MAX_GB:-14} * 1024 ))
         size_mb="$(du -sm "$target" | cut -f1)"
         echo "Target dir $target: ${size_mb} MB (cap ${max_mb} MB)"
         if [ "$size_mb" -gt "$max_mb" ]; then
-          echo "Over the cap, emptying it"
+          # Stale build outputs first. Cargo rebuilds any missing output.
+          echo "Over the cap, removing incremental/deps files older than 7 days"
+          find "$target" -type f -mtime +7 \( -path '*/incremental/*' -o -path '*/deps/*' \) -delete
+          find "$target" -mindepth 1 -type d -path '*/incremental/*' -empty -delete
+          size_mb="$(du -sm "$target" | cut -f1)"
+          echo "Target dir after purge: ${size_mb} MB"
+        fi
+        if [ "$size_mb" -gt "$max_mb" ]; then
+          echo "Still over the cap, emptying it"
           find "$target" -mindepth 1 -delete
         fi
-        echo "CARGO_TARGET_DIR=$target" >> "$GITHUB_ENV"
+        # Persistent target dir: incremental compilation pays off for the
+        # workspace crates, whose sources get fresh mtimes on every checkout.
+        {
+          echo "CARGO_TARGET_DIR=$target"
+          echo "CARGO_INCREMENTAL=1"
+        } >> "$GITHUB_ENV"
+        echo "enabled=true" >> "$GITHUB_OUTPUT"

@@ -3,11 +3,12 @@ import type { Api, McpSettings, McpView } from "../api";
 import { errorMessage } from "../api";
 import { Switch } from "../Switch";
 import { Tooltip } from "../Tooltip";
+import { McpActivity } from "./McpActivity";
 import { plainText } from "../textInput";
 import { mcpConfigSnippet, parsePort } from "./tabs";
 
 interface Props {
-  api: Pick<Api, "mcpSettings" | "saveMcpSettings" | "mcpToken" | "regenerateMcpToken">;
+  api: Pick<Api, "mcpSettings" | "saveMcpSettings" | "mcpToken" | "regenerateMcpToken" | "mcpActivity" | "clearMcpActivity">;
 }
 
 const button = "rounded border border-slate-700 px-3 py-1.5 text-sm hover:bg-slate-800 disabled:opacity-50";
@@ -92,8 +93,8 @@ export function AgentsSettings({ api }: Props) {
           Local MCP server
         </h2>
         <p className="mt-2 max-w-prose text-slate-300">
-          Lets AI agents on this computer (Claude Code, Cursor, any MCP client) read your projects and pull requests. It listens on 127.0.0.1 only and every
-          request needs the token below.
+          Lets AI agents on this computer (Claude Code, Cursor, any MCP client) read and, if you allow it, organize your projects and pull requests. It listens
+          on 127.0.0.1 only and every request needs the token below.
         </p>
         <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2">
           <Switch label="Enable MCP server" checked={settings.enabled} disabled={busy} onChange={(enabled) => save({ enabled })}>
@@ -142,11 +143,20 @@ export function AgentsSettings({ api }: Props) {
             </Switch>
           </li>
           <li>
-            <Tooltip label={SOON} detail="Edit projects, notes and stars from an agent." align="start">
-              <Switch label="Local writes" checked={false} disabled onChange={() => undefined}>
-                Local writes <span className="text-slate-500">— coming soon</span>
-              </Switch>
-            </Tooltip>
+            <Switch
+              label="Local writes"
+              checked={settings.local_writes}
+              disabled={busy}
+              aria-describedby={settings.local_writes ? "agents-writes-note" : undefined}
+              onChange={(local_writes) => save({ local_writes })}
+            >
+              Local writes <span className="text-slate-400">— create, edit and archive projects, link PRs and JIRA issues, set notes and stars</span>
+            </Switch>
+            {settings.local_writes && (
+              <p id="agents-writes-note" className="mt-1 text-xs text-slate-400">
+                Agents cannot delete projects. Every call shows under Activity below.
+              </p>
+            )}
           </li>
           <li>
             <Tooltip label={SOON} detail="Send Slack review requests after you approve a preview." align="start">
@@ -261,6 +271,8 @@ export function AgentsSettings({ api }: Props) {
           </p>
         )}
       </section>
+
+      <McpActivity api={api} />
     </div>
   );
 }

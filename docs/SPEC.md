@@ -1450,6 +1450,23 @@ Detect `X-GitHub-SSO: required; url=…` and show the authorization link.
 - **Write-tool rules.** Writes go through the exact same core pipeline: gate, refresh-before-write, one message per channel. They are allowed only to channels on a **channel allowlist** (empty by default). `dry_run` defaults to true and returns the preview text. Every call is logged to `send_attempts` with `origin='mcp'`.
 - **Prompt-injection safeguards.** PR titles and Slack replies are untrusted content. Tool results wrap them as data. The server never follows instructions from that content, and no tool can post free-form text (only the templates).
 
+#### 10.1.1 What is built: in-app server, reads and local writes
+
+The design above is the long-term shape. What ships today differs on purpose: the server runs **inside the app** (no sidecar), over Streamable HTTP on `127.0.0.1` only, with a bearer token kept in the keychain. Settings → Agents (MCP) turns it on and has one switch per capability.
+
+- **Reads** (on by default once the server is enabled): projects and pull requests, statuses, notes, stars, Slack requests.
+- **Local writes** (off by default). Tools, all on local data only, none posting anywhere:
+  - `create_project`, `update_project`, `archive_project`, `unarchive_project`. There is **no delete tool**; archiving is reversible.
+  - `add_prs_to_project`, `remove_prs_from_project`. Removal uses the same service as unlinking in the UI, so a PR matched by a project rule stays out (excluded) instead of coming back on the next sync.
+  - `set_project_jira_links` (replaces all), `add_jira_link`, `remove_jira_link`. They take issue keys or URLs; bare keys resolve against `jira.base_url`.
+  - `set_pr_note` (an empty note clears it) and `set_pr_starred`.
+  - Manual reorder has no tool yet.
+- **Slack sends**: not built; the switch shows "Coming soon".
+- **Tool metadata.** Every tool sets `readOnlyHint`, `destructiveHint` (true when it overwrites or removes: update, remove PRs, set or remove JIRA links, set note) and `idempotentHint` (false only for `create_project` and `add_jira_link`). Arguments reject unknown fields.
+- **Errors** are tool results with `isError: true` and a `kind`: `validation` (bad arguments, limits such as 200 ids), `not_found` (naming the missing ids), `forbidden` (capability turned off; such tools are also hidden from `tools/list`).
+- **Audit log** (`mcp_audit`, migration 0008). Every call, reads included, allowed or not, gets one row: time, client name, tool, capability, outcome (`allowed` / `denied` / `error`), argument **field names** and target ids (`project:N`, `pr:N`), a one-line summary such as "starred acme/api#482", the error message, and the duration. Argument values such as note text or project names are never stored. The table keeps the newest 5,000 rows and nothing older than 90 days, pruned on insert. Settings → Agents → Activity lists the newest 200 with an outcome filter and "Clear log" behind a confirmation.
+- **Live refresh.** A successful write bumps the sync revision and emits `pr-nexus://data-changed`; the list reloads rows and projects at once (the idle poll also catches the revision change).
+
 ### 10.2 Other providers & platforms
 - Internal roadmap only: none of these is shown or promised in the app, README, or release notes. Implementing one means adding its registry descriptor (§5.1), a factory, and its setup steps; until then the UI shows GitHub and Slack only.
 - GitLab and Gitea (`VcsProvider`): CODEOWNERS equivalents exist (GitLab `CODEOWNERS` with sections), so `decide_owners` stays as is, and new inputs go through `OwnershipInputs`.
@@ -1526,13 +1543,13 @@ harnesstap is a Bun/TypeScript CLI plus a Tauri v2 desktop app in `apps/desktop`
 
 | Job | Runner | Steps |
 |---|---|---|
-| `changes` | self-hosted Linux | `dorny/paths-filter`: outputs `rust` (`crates/**`, `app/src-tauri/**`, `Cargo.*`), `web` (`app/**` excl. src-tauri), `ci` (`.github/**`) |
-| `rust` | self-hosted Linux | webkit deps check; `cargo fmt --all --check`; `cargo update --workspace --locked`; `cargo clippy --workspace --all-targets --locked -- -D warnings`; `cargo nextest run --workspace` + doctests; `bun run tauri build --debug --no-bundle`. Dependencies from rust-cache; with `CI_CACHE_DIR` set, a persistent per-runner target dir (`.github/actions/persistent-cache`, capped by `CI_CACHE_MAX_GB`, default 8) |
+| `changes` | ubuntu-latest (GitHub-hosted) | `dorny/paths-filter`: outputs `rust` (`crates/**`, `app/src-tauri/**`, `Cargo.*`), `web` (`app/**` excl. src-tauri), `ci` (`.github/**`) |
+| `rust` | self-hosted Linux | webkit deps check; `cargo fmt --all --check`; `cargo update --workspace --locked`; `cargo clippy --workspace --all-targets --locked -- -D warnings`; `cargo nextest run --workspace` + doctests; `bun run tauri build --debug --no-bundle`. Dependencies from rust-cache; with `CI_CACHE_DIR` set, a persistent per-runner target dir (`.github/actions/persistent-cache`, capped by `CI_CACHE_MAX_GB`, default 14 GB; stale incremental/deps files go first) |
 | `web` | self-hosted Linux | `bun install --frozen-lockfile`; `bun run lint`; `bun run typecheck`; `bun run test` |
 | `desktop` | macos-latest, windows-latest (GitHub-hosted) | **Release tags `v*` and dispatch only.** macOS runs `cargo test` and builds the `.app` (7-day artifact); Windows runs `tauri build --no-bundle` |
-| `deny` | self-hosted Linux | `cargo deny --all-features check` (prebuilt binary via `taiki-e/install-action`; no Docker needed) |
-| `guards` | self-hosted Linux | actionlint (prebuilt binary; the runner runs in a container, so Docker actions cannot see the workspace); Changie fragment present unless the PR has the `no-changelog` label |
-| `validate` | self-hosted Linux, `if: always()` | fail if any needed job is `failure` or `cancelled` (skipped is fine); `desktop` is required on tags and dispatch |
+| `deny` | ubuntu-latest (GitHub-hosted) | `cargo deny --all-features check` (prebuilt binary via `taiki-e/install-action`; no Docker needed) |
+| `guards` | ubuntu-latest (GitHub-hosted) | actionlint (prebuilt binary; the runner runs in a container, so Docker actions cannot see the workspace); Changie fragment present unless the PR has the `no-changelog` label |
+| `validate` | ubuntu-latest (GitHub-hosted), `if: always()` | fail if any needed job is `failure` or `cancelled` (skipped is fine); `desktop` is required on tags and dispatch |
 
 **Runners.** Linux jobs run on the org's self-hosted runners: `runs-on: ${{ fromJSON(vars.LINUX_RUNNER_LABELS || '["self-hosted","Linux"]') }}`. The repository variable overrides the labels without a code change. The runners are shared, so `.github/actions/linux-tauri-deps` only **checks** the WebKitGTK headers there and fails with the `apt-get` command for a runner admin; it installs packages only on GitHub-hosted runners. Rust, Bun, Node 22 (`actions/setup-node`; the runner image ships an older Node), actionlint, and cargo-deny are installed per user by their setup actions, at pinned versions. `actions/checkout` cleans the workspace (`git clean -ffdx`) at the start of every job, so `target/` and `node_modules/` never leak between runs; Rust build caches come only from `Swatinem/rust-cache`.
 

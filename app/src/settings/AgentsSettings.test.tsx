@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { AgentsSettings } from "./AgentsSettings";
-import { FAKE_MCP_TOKEN, fakeMcp } from "./fakes";
+import { FAKE_MCP_TOKEN, fakeMcp, sampleActivity } from "./fakes";
 import { mcpConfigSnippet, parsePort } from "./tabs";
 
 const writeText = vi.fn(() => Promise.resolve());
@@ -31,15 +31,70 @@ test("is off by default and starts the server when enabled", async () => {
   expect(document.body.textContent).not.toContain(FAKE_MCP_TOKEN);
 });
 
-test("local writes and Slack sends are disabled and explained", async () => {
-  render(<AgentsSettings api={fakeMcp({ enabled: true })} />);
-  for (const name of ["Local writes", "Slack sends"]) {
-    const toggle = await screen.findByRole("switch", { name });
-    expect(toggle).toBeDisabled();
-    expect(toggle).toHaveAttribute("aria-checked", "false");
-    expect(toggle).toHaveAccessibleDescription(/Coming soon/);
-  }
+test("local writes can be turned on; Slack sends stays disabled and explained", async () => {
+  const api = fakeMcp({ enabled: true });
+  const save = vi.spyOn(api, "saveMcpSettings");
+  render(<AgentsSettings api={api} />);
+  const writes = await screen.findByRole("switch", { name: "Local writes" });
+  expect(writes).toBeEnabled();
+  expect(writes).toHaveAttribute("aria-checked", "false");
+
+  fireEvent.click(writes);
+  await screen.findByText(/Agents cannot delete projects/);
+  expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ local_writes: true, slack_sends: false }));
+  expect(screen.getByRole("switch", { name: "Local writes" })).toHaveAttribute("aria-checked", "true");
+
+  const slack = screen.getByRole("switch", { name: "Slack sends" });
+  expect(slack).toBeDisabled();
+  expect(slack).toHaveAttribute("aria-checked", "false");
+  expect(slack).toHaveAccessibleDescription(/Coming soon/);
   expect(screen.getByRole("switch", { name: "Reads" })).toBeEnabled();
+});
+
+test("activity lists calls newest first with time, client, tool, summary and outcome", async () => {
+  const now = new Date();
+  render(<AgentsSettings api={fakeMcp({ enabled: true, local_writes: true }, sampleActivity(now))} />);
+  const list = await screen.findByRole("list", { name: "Agent activity" });
+  const items = within(list).getAllByRole("listitem");
+  expect(items).toHaveLength(7);
+  expect(items[0]).toHaveTextContent("set_pr_note");
+  expect(items[0]).toHaveTextContent("set note on acme/api#482");
+  expect(items[0]).toHaveTextContent("claude-code");
+  expect(items[0]).toHaveTextContent("allowed");
+  expect(items[4]).toHaveTextContent("denied");
+  expect(items[6]).toHaveTextContent("listed projects");
+});
+
+test("activity filters by outcome", async () => {
+  const api = fakeMcp({ enabled: true }, sampleActivity());
+  const read = vi.spyOn(api, "mcpActivity");
+  render(<AgentsSettings api={api} />);
+  await screen.findByRole("list", { name: "Agent activity" });
+  fireEvent.change(screen.getByRole("combobox", { name: "Filter by outcome" }), { target: { value: "denied" } });
+  await vi.waitFor(() => expect(within(screen.getByRole("list", { name: "Agent activity" })).getAllByRole("listitem")).toHaveLength(1));
+  expect(read).toHaveBeenLastCalledWith("denied");
+  expect(screen.getByRole("list", { name: "Agent activity" })).toHaveTextContent("set_pr_starred");
+
+  fireEvent.change(screen.getByRole("combobox", { name: "Filter by outcome" }), { target: { value: "all" } });
+  await vi.waitFor(() => expect(within(screen.getByRole("list", { name: "Agent activity" })).getAllByRole("listitem")).toHaveLength(7));
+  expect(read).toHaveBeenLastCalledWith(undefined);
+});
+
+test("clearing the log asks first", async () => {
+  const api = fakeMcp({ enabled: true }, sampleActivity());
+  const clear = vi.spyOn(api, "clearMcpActivity");
+  render(<AgentsSettings api={api} />);
+  await screen.findByRole("list", { name: "Agent activity" });
+  fireEvent.click(screen.getByRole("button", { name: "Clear log…" }));
+  fireEvent.click(within(screen.getByRole("group", { name: "Confirm clear log" })).getByRole("button", { name: "Cancel" }));
+  expect(clear).not.toHaveBeenCalled();
+  expect(screen.getByRole("list", { name: "Agent activity" })).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("button", { name: "Clear log…" }));
+  fireEvent.click(within(screen.getByRole("group", { name: "Confirm clear log" })).getByRole("button", { name: "Clear log" }));
+  expect(await screen.findByText("No agent has called a tool yet.")).toBeInTheDocument();
+  expect(clear).toHaveBeenCalledOnce();
+  expect(screen.queryByRole("list", { name: "Agent activity" })).toBeNull();
 });
 
 test("copies the real token and a config snippet with it", async () => {

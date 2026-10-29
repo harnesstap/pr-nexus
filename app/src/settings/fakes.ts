@@ -1,4 +1,4 @@
-import type { Api, McpSettings, McpView, Preferences } from "../api";
+import type { Api, McpActivityEntry, McpOutcome, McpSettings, McpView, Preferences } from "../api";
 
 /** The §7.12 defaults, as the backend returns them on a fresh database. */
 export const DEFAULT_PREFERENCES: Preferences = {
@@ -33,12 +33,41 @@ type SettingsApi = Pick<
   | "saveMcpSettings"
   | "mcpToken"
   | "regenerateMcpToken"
+  | "mcpActivity"
+  | "clearMcpActivity"
 >;
 
 export const FAKE_MCP_TOKEN = "pnx_0123456789abcdef0123456789abcdef0123456789abcdef0123456789ab7f3e";
 
 /** An in-memory MCP server: enabling it "runs" on port 43117 unless a port is set. */
-export function fakeMcp(initial: Partial<McpSettings> = {}): Pick<SettingsApi, "mcpSettings" | "saveMcpSettings" | "mcpToken" | "regenerateMcpToken"> {
+type FakeMcp = Pick<SettingsApi, "mcpSettings" | "saveMcpSettings" | "mcpToken" | "regenerateMcpToken" | "mcpActivity" | "clearMcpActivity">;
+
+/** A few minutes of an agent tidying up, newest first, relative to `now`. */
+export function sampleActivity(now = new Date()): McpActivityEntry[] {
+  const at = (minutes: number) => new Date(now.getTime() - minutes * 60_000).toISOString();
+  const row = (id: number, minutes: number, tool: string, outcome: McpOutcome, summary: string, error: string | null = null): McpActivityEntry => ({
+    id,
+    at: at(minutes),
+    client: "claude-code",
+    tool,
+    capability: tool.startsWith("list") || tool.startsWith("get") ? "reads" : "local_writes",
+    outcome,
+    summary,
+    error,
+  });
+  return [
+    row(7, 0, "set_pr_note", "allowed", "set note on acme/api#482"),
+    row(6, 1, "set_pr_starred", "allowed", "starred acme/api#482"),
+    row(5, 2, "add_prs_to_project", "allowed", "added 3 PRs to project 2"),
+    row(4, 3, "remove_jira_link", "error", "removed a JIRA link from project 2", "Project 2 has no JIRA link ACME-9"),
+    row(3, 26, "set_pr_starred", "denied", "starred PR id 482", "set_pr_starred is turned off in PR Nexus Settings → Agents (MCP)."),
+    row(2, 27, "list_prs", "allowed", "listed pull requests"),
+    row(1, 95, "list_projects", "allowed", "listed projects"),
+  ];
+}
+
+export function fakeMcp(initial: Partial<McpSettings> = {}, activity: McpActivityEntry[] = []): FakeMcp {
+  let log = [...activity];
   let settings: McpSettings = { enabled: false, reads: true, local_writes: false, slack_sends: false, port: null, ...initial };
   let token: string | null = settings.enabled ? FAKE_MCP_TOKEN : null;
   const view = (): McpView => {
@@ -54,7 +83,7 @@ export function fakeMcp(initial: Partial<McpSettings> = {}): Pick<SettingsApi, "
   return {
     mcpSettings: () => Promise.resolve(view()),
     saveMcpSettings: (next) => {
-      settings = { ...next, local_writes: false, slack_sends: false };
+      settings = { ...next, slack_sends: false };
       token ??= settings.enabled ? FAKE_MCP_TOKEN : null;
       return Promise.resolve(view());
     },
@@ -65,6 +94,12 @@ export function fakeMcp(initial: Partial<McpSettings> = {}): Pick<SettingsApi, "
     regenerateMcpToken: () => {
       token = FAKE_MCP_TOKEN.slice(0, -4) + "c0de";
       return Promise.resolve(view());
+    },
+    mcpActivity: (outcome) => Promise.resolve(log.filter((entry) => !outcome || entry.outcome === outcome)),
+    clearMcpActivity: () => {
+      const removed = log.length;
+      log = [];
+      return Promise.resolve(removed);
     },
   };
 }

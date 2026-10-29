@@ -1,15 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { PageDto, PageRequest } from "./list/paging";
 
-export type StepId =
-  | "choose_vcs"
-  | "choose_chat"
-  | "connect_vcs"
-  | "choose_vcs_scope"
-  | "connect_chat"
-  | "chat_mapping"
-  | "done";
+export type StepId = "choose_vcs" | "choose_chat" | "connect_vcs" | "choose_vcs_scope" | "connect_chat" | "chat_mapping" | "done";
 
 export interface OnboardingState {
   step: StepId;
@@ -434,12 +428,7 @@ export interface PrNoteDto {
   updated_at: string | null;
 }
 
-export type RuleKind =
-  | "ticket_key_in_branch"
-  | "branch_regex"
-  | "label"
-  | "repo"
-  | "title_regex";
+export type RuleKind = "ticket_key_in_branch" | "branch_regex" | "label" | "repo" | "title_regex";
 
 export interface ProjectRuleDto {
   id: number | null;
@@ -595,7 +584,7 @@ export interface PrDetail {
   from_cache: boolean;
 }
 
-/** Settings → Agents (MCP). Only `reads` works so far; the others stay false. */
+/** Settings → Agents (MCP). `slack_sends` is not built yet and stays false. */
 export interface McpSettings {
   enabled: boolean;
   reads: boolean;
@@ -618,6 +607,25 @@ export interface McpView {
   /** `pnx_••••…abcd`, null until the token exists. */
   token_masked: string | null;
 }
+
+export type McpOutcome = "allowed" | "denied" | "error";
+
+/** One agent tool call in Settings → Agents → Activity. Never holds argument text. */
+export interface McpActivityEntry {
+  id: number;
+  at: string;
+  /** `clientInfo.name` the agent sent; empty when none. */
+  client: string;
+  tool: string;
+  capability: string;
+  outcome: McpOutcome;
+  /** "starred acme/api#482". */
+  summary: string;
+  error: string | null;
+}
+
+/** Emitted after an agent changed local data, so the list reloads at once. */
+export const DATA_CHANGED_EVENT = "pr-nexus://data-changed";
 
 export interface Api {
   bootstrap(): Promise<Bootstrap>;
@@ -733,6 +741,12 @@ export interface Api {
   /** The full bearer token, for copying. Created on first use. */
   mcpToken(): Promise<string>;
   regenerateMcpToken(): Promise<McpView>;
+  /** Newest first, at most 200; `outcome` narrows to one kind. */
+  mcpActivity(outcome?: McpOutcome): Promise<McpActivityEntry[]>;
+  /** Empties the Activity log; resolves to how many rows went. */
+  clearMcpActivity(): Promise<number>;
+  /** Calls `onChange` after an agent write; returns the unsubscribe. Absent in fakes without a backend. */
+  onDataChanged?(onChange: () => void): () => void;
 }
 
 export const tauriApi: Api = {
@@ -744,8 +758,7 @@ export const tauriApi: Api = {
   connectGithub: (mode, pat) => invoke("connect_github", { mode, pat }),
   startDevice: () => invoke("start_device_flow"),
   pollDevice: () => invoke("poll_device_flow"),
-  saveOrgs: (orgs, includePersonal) =>
-    invoke("save_orgs", { orgs, includePersonal }),
+  saveOrgs: (orgs, includePersonal) => invoke("save_orgs", { orgs, includePersonal }),
   saveSlack: (clientId, clientSecret, redirectUri) =>
     invoke("save_slack_settings", {
       clientId,
@@ -836,6 +849,12 @@ export const tauriApi: Api = {
   saveMcpSettings: (settings) => invoke("save_mcp_settings", { settings }),
   mcpToken: () => invoke("mcp_token"),
   regenerateMcpToken: () => invoke("regenerate_mcp_token"),
+  mcpActivity: (outcome) => invoke("mcp_activity", { outcome: outcome ?? null }),
+  clearMcpActivity: () => invoke("clear_mcp_activity"),
+  onDataChanged: (onChange) => {
+    const stop = listen(DATA_CHANGED_EVENT, () => onChange());
+    return () => void stop.then((unlisten) => unlisten());
+  },
 };
 
 /**

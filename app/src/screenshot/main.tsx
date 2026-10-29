@@ -1,11 +1,13 @@
+import { emit } from "@tauri-apps/api/event";
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "../App";
 import "../index.css";
 import { pageFromRows, type PageRequest } from "../list/paging";
-import type { BulkRequest, JiraLinkDto, JiraLinkInput, ListRow, McpSettings, PrWarning, ReviewTarget } from "../api";
-import { fakeMcp } from "../settings/fakes";
+import { DATA_CHANGED_EVENT } from "../api";
+import type { BulkRequest, JiraLinkDto, JiraLinkInput, ListRow, McpOutcome, McpSettings, PrWarning, ReviewTarget } from "../api";
+import { fakeMcp, sampleActivity } from "../settings/fakes";
 import {
   boot,
   branchFixtures,
@@ -48,13 +50,15 @@ function jiraLink(input: JiraLinkInput): JiraLinkDto {
   return { id: nextLink, key: text.toUpperCase(), url: "", href: `${jiraBaseUrl}/browse/${text.toUpperCase()}` };
 }
 
-const mcp = fakeMcp();
+const mcp = fakeMcp({ enabled: true, local_writes: true }, sampleActivity());
 
 const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   mcp_settings: () => mcp.mcpSettings(),
   save_mcp_settings: (args) => mcp.saveMcpSettings(args.settings as McpSettings),
   mcp_token: () => mcp.mcpToken(),
   regenerate_mcp_token: () => mcp.regenerateMcpToken(),
+  mcp_activity: (args) => mcp.mcpActivity((args.outcome as McpOutcome | null) ?? undefined),
+  clear_mcp_activity: () => mcp.clearMcpActivity(),
   bootstrap: () => boot,
   sync_status: () => boot.sync,
   list_projects: () => projects,
@@ -165,10 +169,10 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
       row.is_draft = args.draft === true;
     }
     return {
-    ...draftOverview,
-    is_draft: args.draft === true,
-    merge_state: args.draft === true ? "draft" : "blocked",
-    fetched_at: new Date().toISOString(),
+      ...draftOverview,
+      is_draft: args.draft === true,
+      merge_state: args.draft === true ? "draft" : "blocked",
+      fetched_at: new Date().toISOString(),
     };
   },
   pr_slack_context: (args) =>
@@ -193,8 +197,19 @@ for (const id of (window as { __extraDrafts?: number[] }).__extraDrafts ?? []) {
   }
 }
 
+/** Plays an agent's MCP `set_pr_starred` + `set_pr_note` from the page, for the live-refresh screenshot. */
+(window as { __agentStarAndNote?: (id: number, note: string) => Promise<void> }).__agentStarAndNote = async (id, note) => {
+  const row = rows.find((item) => item.id === id);
+  if (row) {
+    row.starred = true;
+  }
+  notes[id] = note;
+  boot.sync.revision += 1; // the backend bumps it on every agent write
+  await emit(DATA_CHANGED_EVENT);
+};
+
 mockWindows("main");
-mockIPC((cmd, args) => handlers[cmd]?.((args ?? {}) as Record<string, unknown>) ?? null);
+mockIPC((cmd, args) => handlers[cmd]?.((args ?? {}) as Record<string, unknown>) ?? null, { shouldMockEvents: true });
 
 const root = document.getElementById("root");
 if (!root) {
