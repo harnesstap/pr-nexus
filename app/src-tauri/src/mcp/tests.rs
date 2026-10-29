@@ -923,7 +923,6 @@ async fn the_audit_keeps_ids_and_summaries_never_note_text() {
 async fn the_audit_is_bounded_through_the_server() {
     use pr_nexus_core::store::{AUDIT_KEEP_ROWS, AuditEntry};
     let h = harness().await;
-    let session = h.session().await;
     let old = chrono::Utc::now() - chrono::Duration::days(91);
     for index in 0..AUDIT_KEEP_ROWS {
         h.store()
@@ -942,6 +941,8 @@ async fn the_audit_is_bounded_through_the_server() {
             })
             .unwrap();
     }
+    // Open the session after the slow fill so it cannot idle out on a slow runner.
+    let session = h.session().await;
     h.call(&session, "list_projects", json!({})).await;
     let rows = h.store().mcp_audit(None, 10_000).unwrap();
     assert_eq!(rows.len() as i64, AUDIT_KEEP_ROWS);
