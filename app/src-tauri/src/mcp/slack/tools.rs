@@ -109,7 +109,111 @@ pub fn slack_tools() -> Vec<ToolSpec> {
             schema_for_type::<ProfileArgs>,
             read_user_profile,
         ),
+        spec(
+            "slack_get_reactions",
+            "Read a message's reactions",
+            "The emoji reactions on one message and who added them. `channel_id` is qualified; \
+                `message_ts` is the message's timestamp.",
+            schema_for_type::<MessageArgs>,
+            get_reactions,
+        ),
+        spec(
+            "slack_list_channel_members",
+            "List a channel's members",
+            "Who is in one channel, private channel or group DM, with their titles. `channel_id` is \
+                qualified. Page with `next_cursor`. Email addresses and phone numbers are hidden.",
+            schema_for_type::<MembersArgs>,
+            list_channel_members,
+        ),
+        spec(
+            "slack_search_emojis",
+            "Search custom emoji",
+            "The workspace's custom emoji whose name matches `query`. Same `workspace` choice as \
+                `slack_search_public`.",
+            schema_for_type::<SearchArgs>,
+            |state, args| search(state, args, "slack_search_emojis"),
+        ),
+        spec(
+            "slack_read_file",
+            "Read a Slack file",
+            "The text of one file shared in Slack. `file_id` is a qualified `F…` ID from another \
+                slack_* tool.",
+            schema_for_type::<FileArgs>,
+            read_file,
+        ),
+        spec(
+            "slack_read_canvas",
+            "Read a Slack canvas",
+            "One canvas as Markdown, with its section IDs. `canvas_id` is a qualified `F…` ID.",
+            schema_for_type::<CanvasArgs>,
+            read_canvas,
+        ),
+        spec(
+            "slack_read_list",
+            "Read a Slack list",
+            "The items of one Slack list. `list_id` is a qualified `F…` ID.",
+            schema_for_type::<ListIdArgs>,
+            read_list,
+        ),
+        ToolSpec {
+            name: "slack_search_public_and_private",
+            title: "Search Slack, private included",
+            description: "Like `slack_search_public`, but also private channels, DMs and group DMs the \
+                user is in. Only listed when the user turned on Slack private search.",
+            capability: Capability::SlackPrivateSearch,
+            destructive: false,
+            idempotent: true,
+            input_schema: schema_for_type::<SearchArgs>,
+            handler: |state, args| search(state, args, "slack_search_public_and_private"),
+        },
     ]
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MessageArgs {
+    /// Qualified channel ID.
+    pub channel_id: String,
+    /// Timestamp of the message.
+    pub message_ts: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MembersArgs {
+    /// Qualified channel ID.
+    pub channel_id: String,
+    /// Members per page, 1 to 100.
+    #[serde(default)]
+    #[schemars(range(min = 1, max = 100))]
+    pub limit: Option<u32>,
+    /// `next_cursor` of the previous page.
+    #[serde(default)]
+    pub cursor: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FileArgs {
+    /// Qualified file ID (`T…/F…` or `E…/F…`).
+    pub file_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CanvasArgs {
+    /// Qualified canvas ID (`T…/F…` or `E…/F…`).
+    pub canvas_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ListIdArgs {
+    /// Qualified list ID (`T…/F…` or `E…/F…`).
+    pub list_id: String,
+    /// `next_cursor` of the previous page.
+    #[serde(default)]
+    pub cursor: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -224,7 +328,9 @@ pub fn exposed(state: &AppState) -> Result<(Vec<Exposed>, usize), AppError> {
             continue;
         };
         let enterprise_id = state.slack_proxy.enterprise(state, &account);
+        let scopes_missing = state.slack_proxy.scopes_missing(state, &account);
         shown.push(Exposed {
+            scopes_missing,
             account,
             team_id: ws.team_id,
             domain: ws.domain,
@@ -478,9 +584,14 @@ fn list_workspaces(state: &AppState, arguments: JsonObject) -> Result<Value, App
                 "is_default": i == 0,
                 "capabilities": {
                     "reads": true,
-                    "private_search": settings.slack_private_search,
+                    "private_search": settings.slack_private_search
+                        && !ws.scopes_missing.iter().any(|s| s == "search:read.private"),
                 },
-                "scopes_missing": Vec::<String>::new(),
+                "scopes_missing": ws.scopes_missing,
+                "reauth_hint": (!ws.scopes_missing.is_empty()).then_some(
+                    "Some slack_* tools need permissions this sign-in lacks. Ask the user to click \
+                     Sign in again next to this workspace in PR Nexus → Settings → Agents.",
+                ),
             })
         })
         .collect();
@@ -544,6 +655,7 @@ fn resolve(state: &AppState, arguments: JsonObject) -> Result<Value, AppError> {
         b'C' | b'G' => "channel",
         b'D' => "direct_message",
         b'U' | b'W' => "user",
+        b'F' => "file",
         _ => "bot",
     };
     Ok(json!({
@@ -660,4 +772,76 @@ fn read_user_profile(state: &AppState, arguments: JsonObject) -> Result<Value, A
     run(state, "slack_read_user_profile", vec![ws], None, |_| {
         object([("user_id", user.clone().map(Value::String))])
     })
+}
+
+fn get_reactions(state: &AppState, arguments: JsonObject) -> Result<Value, AppError> {
+    let args: MessageArgs = parse(arguments)?;
+    let (all, _) = exposed(state)?;
+    let (ws, channel) = owner_of(all, &args.channel_id, "channel_id")?;
+    run(state, "slack_get_reactions", vec![ws], None, |_| {
+        object([
+            ("channel_id", Some(json!(channel))),
+            ("message_ts", Some(json!(args.message_ts))),
+        ])
+    })
+}
+
+fn list_channel_members(state: &AppState, arguments: JsonObject) -> Result<Value, AppError> {
+    let args: MembersArgs = parse(arguments)?;
+    if args.limit.is_some_and(|l| !(1..=100).contains(&l)) {
+        return Err(validation("limit must be 1 to 100"));
+    }
+    let (all, _) = exposed(state)?;
+    let (ws, channel) = owner_of(all, &args.channel_id, "channel_id")?;
+    run(
+        state,
+        "slack_list_channel_members",
+        vec![ws],
+        args.cursor.as_deref(),
+        |_| {
+            object([
+                ("channel_id", Some(json!(channel))),
+                ("limit", args.limit.map(|l| json!(l))),
+            ])
+        },
+    )
+}
+
+/// Files, canvases and lists: one qualified `F…` ID sent as `field`.
+fn read_file_like(
+    state: &AppState,
+    tool: &str,
+    field: &'static str,
+    value: &str,
+    cursor: Option<&str>,
+) -> Result<Value, AppError> {
+    let (all, _) = exposed(state)?;
+    let (ws, id) = owner_of(all, value, field)?;
+    if !id.starts_with('F') {
+        return Err(validation(format!("{field} must be a file ID (`F…`)")));
+    }
+    run(state, tool, vec![ws], cursor, |_| {
+        object([(field, Some(json!(id)))])
+    })
+}
+
+fn read_file(state: &AppState, arguments: JsonObject) -> Result<Value, AppError> {
+    let FileArgs { file_id } = parse(arguments)?;
+    read_file_like(state, "slack_read_file", "file_id", &file_id, None)
+}
+
+fn read_canvas(state: &AppState, arguments: JsonObject) -> Result<Value, AppError> {
+    let CanvasArgs { canvas_id } = parse(arguments)?;
+    read_file_like(state, "slack_read_canvas", "canvas_id", &canvas_id, None)
+}
+
+fn read_list(state: &AppState, arguments: JsonObject) -> Result<Value, AppError> {
+    let ListIdArgs { list_id, cursor } = parse(arguments)?;
+    read_file_like(
+        state,
+        "slack_read_list",
+        "list_id",
+        &list_id,
+        cursor.as_deref(),
+    )
 }

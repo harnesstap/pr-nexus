@@ -214,6 +214,8 @@ export interface SlackWorkspace {
   team_id: string;
   /** Off: the grant stays, but nothing searches, sends, bumps or reads here. */
   enabled: boolean;
+  /** Scopes PR Nexus now asks for that this grant lacks; signing in again adds them. */
+  scopes_missing?: string[];
   /** 0 is tried first. */
   priority: number;
 }
@@ -584,7 +586,7 @@ export interface PrDetail {
   from_cache: boolean;
 }
 
-/** Settings → Agents (MCP). `slack_sends` and `slack_private_search` are not built yet and stay false. */
+/** Settings → Agents (MCP). `slack_sends` is not built yet and stays false. */
 export interface McpSettings {
   enabled: boolean;
   reads: boolean;

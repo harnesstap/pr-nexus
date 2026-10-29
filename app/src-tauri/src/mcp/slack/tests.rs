@@ -96,6 +96,29 @@ impl Upstream for LabsDown {
     fn enterprise(&self, state: &AppState, account: &Account) -> Option<String> {
         Fixtures.enterprise(state, account)
     }
+    fn granted_scopes(&self, _state: &AppState, _account: &Account) -> Option<Vec<String>> {
+        None
+    }
+}
+
+/// Fixtures, but `acme-labs` signed in before the agent-read scopes.
+struct LabsOldGrant;
+
+impl Upstream for LabsOldGrant {
+    fn caller(&self, state: &AppState, ws: &Exposed) -> Result<Arc<dyn ToolCaller>, AppError> {
+        Fixtures.caller(state, ws)
+    }
+    fn enterprise(&self, state: &AppState, account: &Account) -> Option<String> {
+        Fixtures.enterprise(state, account)
+    }
+    fn granted_scopes(&self, _state: &AppState, account: &Account) -> Option<Vec<String>> {
+        let all = pr_nexus_providers::slack_mcp::USER_SCOPES.iter();
+        Some(if account.slack_team_id() == Some(GRID_TEAM) {
+            all.take(9).map(|s| (*s).to_owned()).collect()
+        } else {
+            all.map(|s| (*s).to_owned()).collect()
+        })
+    }
 }
 
 struct Failing;
@@ -390,4 +413,128 @@ fn descriptions_name_no_account() {
         assert!(!text.contains("acme"), "{}", spec.name);
         assert!(!text.contains("enterprise.slack.com"), "{}", spec.name);
     }
+}
+
+fn content(reply: &Value) -> &str {
+    reply["results"][0]["content"].as_str().unwrap()
+}
+
+#[test]
+fn reactions_members_and_emoji_are_qualified_and_masked() {
+    let env = both();
+    let reactions = call(
+        &env,
+        "slack_get_reactions",
+        json!({ "channel_id": format!("{ACME}/C0ACME0001"), "message_ts": "1761055380.000100" }),
+    )
+    .unwrap();
+    assert!(content(&reactions).contains(&format!("{ACME}/U0ACME0002")));
+    assert_eq!(reactions["untrusted_content"], true);
+
+    let members = call(
+        &env,
+        "slack_list_channel_members",
+        json!({ "channel_id": format!("{GRID_ORG}/C0ACMELAB0001") }),
+    )
+    .unwrap();
+    let text = content(&members);
+    assert!(text.contains(&format!("(ID: {GRID_ORG}/U0ACMELAB0001)")));
+    assert!(!text.contains("@acme-labs.example"), "{text}");
+    let next = members["next_cursor"].as_str().unwrap().to_owned();
+    let page2 = call(
+        &env,
+        "slack_list_channel_members",
+        json!({ "channel_id": format!("{GRID_ORG}/C0ACMELAB0001"), "cursor": next }),
+    )
+    .unwrap();
+    assert!(content(&page2).contains("U0ACMELAB0003"));
+
+    let emoji = call(
+        &env,
+        "slack_search_emojis",
+        json!({ "query": "ship", "workspace": "all" }),
+    )
+    .unwrap();
+    assert_eq!(emoji["results"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn files_canvases_and_lists_take_qualified_file_ids() {
+    let env = both();
+    for (tool, field, id) in [
+        ("slack_read_file", "file_id", "F0ACME0001"),
+        ("slack_read_canvas", "canvas_id", "F0ACME0002"),
+        ("slack_read_list", "list_id", "F0ACME0003"),
+    ] {
+        let reply = call(&env, tool, json!({ field: format!("{ACME}/{id}") })).unwrap();
+        assert!(
+            content(&reply).contains(&format!("(ID: {ACME}/{id})")),
+            "{tool}: {reply}"
+        );
+        let bare = call(&env, tool, json!({ field: id })).unwrap_err();
+        assert_eq!(bare.kind, "validation", "{tool}");
+        let channel = call(&env, tool, json!({ field: format!("{ACME}/C0ACME0001") })).unwrap_err();
+        assert!(
+            channel.message.contains("file ID"),
+            "{tool}: {}",
+            channel.message
+        );
+    }
+}
+
+#[test]
+fn private_search_is_its_own_capability() {
+    let spec = super::slack_tools()
+        .into_iter()
+        .find(|s| s.name == "slack_search_public_and_private")
+        .unwrap();
+    assert_eq!(spec.capability, crate::mcp::Capability::SlackPrivateSearch);
+    assert!(crate::mcp::Capability::SlackPrivateSearch.available());
+    let reply = call(
+        &both(),
+        "slack_search_public_and_private",
+        json!({ "query": "agenda" }),
+    )
+    .unwrap();
+    assert!(content(&reply).contains(&format!("{ACME}/G0ACME0001")));
+}
+
+#[test]
+fn an_old_grant_lists_missing_scopes_and_is_refused_before_slack() {
+    let env = env(&[ACME, GRID_TEAM], Arc::new(LabsOldGrant));
+    let list = call(&env, "slack_list_workspaces", json!({})).unwrap();
+    let rows = list["workspaces"].as_array().unwrap();
+    let labs = rows.iter().find(|w| w["domain"] == "acme-labs").unwrap();
+    let missing: Vec<&str> = labs["scopes_missing"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s.as_str().unwrap())
+        .collect();
+    assert!(missing.contains(&"reactions:read") && missing.contains(&"canvases:read"));
+    assert!(
+        labs["reauth_hint"]
+            .as_str()
+            .unwrap()
+            .contains("Sign in again")
+    );
+    let acme = rows.iter().find(|w| w["domain"] == "acme").unwrap();
+    assert_eq!(acme["scopes_missing"], json!([]));
+    assert_eq!(acme["reauth_hint"], Value::Null);
+
+    let err = call(
+        &env,
+        "slack_read_canvas",
+        json!({ "canvas_id": format!("{GRID_ORG}/F0ACMELAB0002") }),
+    )
+    .unwrap_err();
+    assert_eq!(err.kind, "forbidden");
+    assert!(err.message.contains("canvases:read"), "{}", err.message);
+    // Tools whose scopes the old grant had still work.
+    call(
+        &env,
+        "slack_read_channel",
+        json!({ "channel_id": format!("{GRID_ORG}/C0ACMELAB0001") }),
+    )
+    .unwrap();
 }

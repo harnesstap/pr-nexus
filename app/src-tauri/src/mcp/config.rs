@@ -22,7 +22,7 @@ pub enum Capability {
     /// Search and read Slack through each exposed workspace's official
     /// MCP session (public channels and the user's own channels).
     SlackReads,
-    /// Search private channels and DMs too (not built yet).
+    /// Search private channels and DMs too (`slack_search_public_and_private`).
     SlackPrivateSearch,
 }
 
@@ -32,7 +32,10 @@ impl Capability {
     pub fn available(self) -> bool {
         matches!(
             self,
-            Capability::Reads | Capability::LocalWrites | Capability::SlackReads
+            Capability::Reads
+                | Capability::LocalWrites
+                | Capability::SlackReads
+                | Capability::SlackPrivateSearch
         )
     }
 }

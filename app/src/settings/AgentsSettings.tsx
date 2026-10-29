@@ -8,7 +8,7 @@ import { plainText } from "../textInput";
 import { mcpConfigSnippet, parsePort } from "./tabs";
 
 interface Props {
-  api: Pick<Api, "mcpSettings" | "saveMcpSettings" | "mcpToken" | "regenerateMcpToken" | "mcpActivity" | "clearMcpActivity" | "slackWorkspaces">;
+  api: Pick<Api, "mcpSettings" | "saveMcpSettings" | "mcpToken" | "regenerateMcpToken" | "mcpActivity" | "clearMcpActivity" | "slackWorkspaces" | "slackConnect">;
 }
 
 const button = "rounded border border-slate-700 px-3 py-1.5 text-sm hover:bg-slate-800 disabled:opacity-50";
@@ -24,6 +24,7 @@ export function AgentsSettings({ api }: Props) {
   const [copied, setCopied] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [workspaces, setWorkspaces] = useState<SlackWorkspace[]>([]);
+  const [reauthing, setReauthing] = useState<string | null>(null);
 
   useEffect(() => {
     let cancel = false;
@@ -70,6 +71,21 @@ export function AgentsSettings({ api }: Props) {
     if (parsed.port !== view?.settings.port) {
       save({ port: parsed.port });
     }
+  }
+
+  function reauth(teamId: string) {
+    setBusy(true);
+    setError(null);
+    setReauthing(teamId);
+    api
+      .slackConnect()
+      .then(() => api.slackWorkspaces())
+      .then((list) => setWorkspaces(list))
+      .catch((err: unknown) => setError(errorMessage(err)))
+      .finally(() => {
+        setBusy(false);
+        setReauthing(null);
+      });
   }
 
   function copy(label: string, text: Promise<string> | string) {
@@ -182,16 +198,25 @@ export function AgentsSettings({ api }: Props) {
                 workspaces={workspaces}
                 selected={settings.slack_workspaces}
                 disabled={busy}
+                reauthing={reauthing}
                 onChange={(slack_workspaces) => save({ slack_workspaces })}
+                onReauth={reauth}
               />
             )}
           </li>
           <li>
-            <Tooltip label={SOON} detail="Search private channels and direct messages too." align="start">
-              <Switch label="Slack private search" checked={false} disabled onChange={() => undefined}>
-                Slack private search <span className="text-slate-500">— coming soon</span>
-              </Switch>
-            </Tooltip>
+            <Switch
+              label="Slack private search"
+              checked={settings.slack_reads && settings.slack_private_search}
+              disabled={busy || !settings.slack_reads}
+              aria-describedby="agents-private-note"
+              onChange={(slack_private_search) => save({ slack_private_search })}
+            >
+              Slack private search <span className="text-slate-400">— also search private channels, DMs and group DMs you are in</span>
+            </Switch>
+            <p id="agents-private-note" className="mt-1 max-w-prose text-xs text-slate-400">
+              {settings.slack_reads ? "Off by default. Applies to the same ticked workspaces." : "Turn on Slack reads first."}
+            </p>
           </li>
           <li>
             <Tooltip label={SOON} detail="Send Slack review requests after you approve a preview." align="start">
@@ -316,11 +341,14 @@ interface PickerProps {
   workspaces: SlackWorkspace[];
   selected: string[];
   disabled: boolean;
+  /** Team being signed in again, if any. */
+  reauthing: string | null;
   onChange: (teamIds: string[]) => void;
+  onReauth: (teamId: string) => void;
 }
 
 /** The Slack workspaces agents may see. None is ticked until the user picks. */
-function SlackWorkspacePicker({ workspaces, selected, disabled, onChange }: PickerProps) {
+function SlackWorkspacePicker({ workspaces, selected, disabled, reauthing, onChange, onReauth }: PickerProps) {
   if (workspaces.length === 0) {
     return <p className="ml-11 mt-2 text-xs text-slate-400">No Slack workspace connected yet. Connect one in Settings → Slack.</p>;
   }
@@ -332,8 +360,10 @@ function SlackWorkspacePicker({ workspaces, selected, disabled, onChange }: Pick
       <ul className="mt-1 space-y-1">
         {workspaces.map((ws) => {
           const unavailable = !ws.enabled ? "turned off in Settings → Slack" : ws.needs_sign_in ? "needs signing in again" : null;
+          const missing = ws.scopes_missing ?? [];
+          const noteId = `agents-scopes-${ws.team_id}`;
           return (
-            <li key={ws.team_id}>
+            <li key={ws.team_id} className="flex flex-wrap items-center gap-x-3">
               <label className="flex items-center gap-2">
                 <input
                   type="checkbox"
@@ -346,6 +376,25 @@ function SlackWorkspacePicker({ workspaces, selected, disabled, onChange }: Pick
                 <span className="text-xs text-slate-500">{ws.domain}.slack.com</span>
                 {unavailable && <span className="text-xs text-amber-300">— {unavailable}</span>}
               </label>
+              {!unavailable && missing.length > 0 && (
+                <>
+                  <Tooltip label="Missing permissions" detail={missing.join(", ")} align="start">
+                    <span id={noteId} className="text-xs text-amber-300">
+                      — needs new Slack permissions for reactions, files, canvases and lists
+                    </span>
+                  </Tooltip>
+                  <button
+                    type="button"
+                    className="rounded px-2 py-0.5 text-xs text-sky-300 hover:bg-slate-800 disabled:opacity-50"
+                    aria-label={`Sign in again to ${ws.team_name}`}
+                    aria-describedby={noteId}
+                    disabled={disabled}
+                    onClick={() => onReauth(ws.team_id)}
+                  >
+                    {reauthing === ws.team_id ? "Waiting for Slack…" : "Sign in again"}
+                  </button>
+                </>
+              )}
             </li>
           );
         })}

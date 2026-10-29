@@ -24,6 +24,8 @@ pub struct Exposed {
     pub signed_in: bool,
     /// The Grid org, when the session belongs to one.
     pub enterprise_id: Option<String>,
+    /// Requested scopes the grant lacks; signing in again adds them.
+    pub scopes_missing: Vec<String>,
 }
 
 impl Exposed {
@@ -38,6 +40,8 @@ pub trait Upstream: Send + Sync {
     fn caller(&self, state: &AppState, ws: &Exposed) -> Result<Arc<dyn ToolCaller>, AppError>;
     /// The Grid org of the workspace's token, if any.
     fn enterprise(&self, state: &AppState, account: &Account) -> Option<String>;
+    /// The scopes the grant lists; `None` when unknown.
+    fn granted_scopes(&self, state: &AppState, account: &Account) -> Option<Vec<String>>;
 }
 
 /// The official Slack MCP server, one session per account.
@@ -66,6 +70,23 @@ impl Upstream for Official {
             &key,
         ))
     }
+
+    fn granted_scopes(&self, state: &AppState, account: &Account) -> Option<Vec<String>> {
+        crate::slack::granted_scopes(state, account)
+    }
+}
+
+/// The scope a tool cannot run without, when the grant may lack it.
+pub fn required_scope(tool: &str) -> Option<&'static str> {
+    Some(match tool {
+        "slack_search_public_and_private" => "search:read.private",
+        "slack_get_reactions" => "reactions:read",
+        "slack_search_emojis" => "emoji:read",
+        "slack_read_file" => "files:read",
+        "slack_read_canvas" => "canvases:read",
+        "slack_read_list" => "lists:read",
+        _ => return None,
+    })
 }
 
 /// Requests per minute Slack allows a tool, per user and workspace.
@@ -73,7 +94,11 @@ pub fn per_minute(tool: &str) -> usize {
     match tool {
         "slack_search_users" | "slack_search_channels" | "slack_list_user_channels" => 20,
         // Slack documents "special" limits for message search; stay well under.
-        "slack_search_public" => 20,
+        "slack_search_public" | "slack_search_public_and_private" => 20,
+        // Tier 2.
+        "slack_search_emojis" | "slack_read_list" => 20,
+        // Tier 3.
+        "slack_get_reactions" | "slack_read_canvas" => 50,
         "slack_read_channel" | "slack_read_thread" => 50,
         _ => 100,
     }
@@ -127,6 +152,14 @@ impl SlackProxy {
         found
     }
 
+    /// Requested scopes `account`'s grant lacks (empty when unknown).
+    pub fn scopes_missing(&self, state: &AppState, account: &Account) -> Vec<String> {
+        self.upstream(state)
+            .granted_scopes(state, account)
+            .map(|granted| slack_mcp::missing_scopes(&granted))
+            .unwrap_or_default()
+    }
+
     /// Take one call of `tool`'s per-minute budget, or say when one frees up.
     fn take(&self, account: i64, tool: &str) -> Result<(), Duration> {
         let now = Instant::now();
@@ -162,6 +195,17 @@ impl SlackProxy {
             ));
         }
         crate::slack::ensure_enabled(state, &ws.account)?;
+        if let Some(scope) = required_scope(tool)
+            && ws.scopes_missing.iter().any(|s| s == scope)
+        {
+            return Err(AppError::new(
+                "forbidden",
+                format!(
+                    "missing_scope: this workspace's Slack sign-in predates the `{scope}` permission. \
+                     The user can add it in PR Nexus → Settings → Agents (Sign in again)."
+                ),
+            ));
+        }
         if let Err(wait) = self.take(ws.account.id.0, tool) {
             let mut err = AppError::new(
                 "rate_limited",

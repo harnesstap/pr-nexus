@@ -41,8 +41,8 @@ export const FAKE_MCP_TOKEN = "pnx_0123456789abcdef0123456789abcdef0123456789abc
 
 /** An in-memory MCP server: enabling it "runs" on port 43117 unless a port is set. */
 type FakeMcp = Pick<
-  SettingsApi,
-  "mcpSettings" | "saveMcpSettings" | "mcpToken" | "regenerateMcpToken" | "mcpActivity" | "clearMcpActivity" | "slackWorkspaces"
+  Api,
+  "mcpSettings" | "saveMcpSettings" | "mcpToken" | "regenerateMcpToken" | "mcpActivity" | "clearMcpActivity" | "slackWorkspaces" | "slackConnect"
 >;
 
 /** Two made-up workspaces: `acme`, and `acme-labs` on an Enterprise Grid. */
@@ -50,6 +50,13 @@ export const FAKE_SLACK_WORKSPACES: SlackWorkspace[] = [
   { id: 1, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false, team_id: "T0ACME0001", enabled: true, priority: 0 },
   { id: 2, team_name: "Acme Labs", domain: "acme-labs", user_name: "ada", signed_in: true, needs_sign_in: false, team_id: "T0ACMELAB1", enabled: true, priority: 1 },
 ];
+
+/** Settings screens other than Agents bring their own Slack sign-in fake. */
+function withoutConnect(mcp: FakeMcp): Omit<FakeMcp, "slackConnect"> {
+  const rest: Partial<FakeMcp> = { ...mcp };
+  delete rest.slackConnect;
+  return rest as Omit<FakeMcp, "slackConnect">;
+}
 
 /** A few minutes of an agent tidying up, newest first, relative to `now`. */
 export function sampleActivity(now = new Date()): McpActivityEntry[] {
@@ -75,8 +82,9 @@ export function sampleActivity(now = new Date()): McpActivityEntry[] {
   ];
 }
 
-export function fakeMcp(initial: Partial<McpSettings> = {}, activity: McpActivityEntry[] = [], workspaces: SlackWorkspace[] = []): FakeMcp {
+export function fakeMcp(initial: Partial<McpSettings> = {}, activity: McpActivityEntry[] = [], initialWorkspaces: SlackWorkspace[] = []): FakeMcp {
   let log = [...activity];
+  let workspaces = [...initialWorkspaces];
   let settings: McpSettings = {
     enabled: false,
     reads: true,
@@ -102,8 +110,18 @@ export function fakeMcp(initial: Partial<McpSettings> = {}, activity: McpActivit
   return {
     mcpSettings: () => Promise.resolve(view()),
     slackWorkspaces: () => Promise.resolve(workspaces),
+    // Signing in again grants every scope to the first workspace missing some.
+    slackConnect: () => {
+      const stale = workspaces.find((ws) => (ws.scopes_missing ?? []).length > 0) ?? workspaces[0];
+      if (!stale) {
+        return Promise.reject(new Error("No workspace"));
+      }
+      const fresh = { ...stale, scopes_missing: [] };
+      workspaces = workspaces.map((ws) => (ws.team_id === fresh.team_id ? fresh : ws));
+      return Promise.resolve(fresh);
+    },
     saveMcpSettings: (next) => {
-      settings = { ...next, slack_sends: false, slack_private_search: false };
+      settings = { ...next, slack_sends: false };
       token ??= settings.enabled ? FAKE_MCP_TOKEN : null;
       return Promise.resolve(view());
     },
@@ -146,7 +164,7 @@ export function fakeSettingsApi(overrides: Partial<SettingsApi> = {}): SettingsA
       }),
     checkUpdate: () => Promise.resolve(null),
     pickMappingFile: () => Promise.resolve(null),
-    ...fakeMcp(),
+    ...withoutConnect(fakeMcp()),
     slackWorkspaces: () => Promise.resolve([]),
     ...overrides,
   };
