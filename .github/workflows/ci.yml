@@ -67,6 +67,7 @@ jobs:
               - 'app/**'
               - '!app/src-tauri/**'
               - 'scripts/**'
+              - 'package.json'
             ci:
               - '.github/**'
               - 'scripts/**'

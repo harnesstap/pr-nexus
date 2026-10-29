@@ -9,10 +9,11 @@ PR Nexus is a private desktop app. Do not commit company names, organization nam
 - On Linux, the WebKitGTK packages listed in `.github/actions/linux-tauri-deps`.
 
 ```bash
-cd app
-bun install
+bun install --cwd app
 bun run tauri dev
 ```
+
+Run these from the repo root: the root `package.json` only forwards `dev`, `build`, `test`, `lint`, `typecheck` and `tauri` (with their arguments) to `app/`; running them inside `app/` still works. The root file has no dependencies; install them in `app/` (`bun install --cwd app`), and do not run `bun install` at the root.
 
 `bun run build` writes `app/dist`. `cargo test` and `cargo clippy` need that directory because `tauri-build` embeds it.
 
@@ -21,8 +22,7 @@ bun run tauri dev
 Install the WebKitGTK packages listed in `.github/actions/linux-tauri-deps/action.yml` (`libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, `patchelf`, and the rest of that list). Then, from the repo root:
 
 ```bash
-cd app
-bun install
+bun install --cwd app
 bun run build
 bun run tauri dev
 ```
@@ -58,7 +58,6 @@ PR_NEXUS_DISABLE_KEYRING=1 \
 A static render of the wizard and the list, with invented data and no GitHub calls:
 
 ```bash
-cd app
 bun run dev
 # http://127.0.0.1:1420/preview.html?screen=wizard
 # http://127.0.0.1:1420/preview.html?screen=slack

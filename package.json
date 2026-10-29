@@ -1,0 +1,13 @@
+{
+  "name": "pr-nexus-root",
+  "private": true,
+  "license": "MIT",
+  "scripts": {
+    "dev": "cd app && bun run dev",
+    "build": "cd app && bun run build",
+    "test": "cd app && bun run test",
+    "lint": "cd app && bun run lint",
+    "typecheck": "cd app && bun run typecheck",
+    "tauri": "cd app && bun run tauri"
+  }
+}

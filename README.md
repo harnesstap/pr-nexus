@@ -41,8 +41,7 @@ Each new version asks once for permission to use the keychain item `dev.pr-nexus
 - Bun 1.3.14
 
 ```bash
-cd app
-bun install
+bun install --cwd app
 bun run tauri dev
 ```
 
