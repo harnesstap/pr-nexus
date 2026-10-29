@@ -1526,13 +1526,13 @@ harnesstap is a Bun/TypeScript CLI plus a Tauri v2 desktop app in `apps/desktop`
 
 | Job | Runner | Steps |
 |---|---|---|
-| `changes` | self-hosted Linux | `dorny/paths-filter`: outputs `rust` (`crates/**`, `app/src-tauri/**`, `Cargo.*`), `web` (`app/**` excl. src-tauri), `ci` (`.github/**`) |
-| `rust` | self-hosted Linux | webkit deps check; `cargo fmt --all --check`; `cargo update --workspace --locked`; `cargo clippy --workspace --all-targets --locked -- -D warnings`; `cargo nextest run --workspace` + doctests; `bun run tauri build --debug --no-bundle`. Dependencies from rust-cache; with `CI_CACHE_DIR` set, a persistent per-runner target dir (`.github/actions/persistent-cache`, capped by `CI_CACHE_MAX_GB`, default 8) |
+| `changes` | ubuntu-latest (GitHub-hosted) | `dorny/paths-filter`: outputs `rust` (`crates/**`, `app/src-tauri/**`, `Cargo.*`), `web` (`app/**` excl. src-tauri), `ci` (`.github/**`) |
+| `rust` | self-hosted Linux | webkit deps check; `cargo fmt --all --check`; `cargo update --workspace --locked`; `cargo clippy --workspace --all-targets --locked -- -D warnings`; `cargo nextest run --workspace` + doctests; `bun run tauri build --debug --no-bundle`. Dependencies from rust-cache; with `CI_CACHE_DIR` set, a persistent per-runner target dir (`.github/actions/persistent-cache`, capped by `CI_CACHE_MAX_GB`, default 14 GB; stale incremental/deps files go first) |
 | `web` | self-hosted Linux | `bun install --frozen-lockfile`; `bun run lint`; `bun run typecheck`; `bun run test` |
 | `desktop` | macos-latest, windows-latest (GitHub-hosted) | **Release tags `v*` and dispatch only.** macOS runs `cargo test` and builds the `.app` (7-day artifact); Windows runs `tauri build --no-bundle` |
-| `deny` | self-hosted Linux | `cargo deny --all-features check` (prebuilt binary via `taiki-e/install-action`; no Docker needed) |
-| `guards` | self-hosted Linux | actionlint (prebuilt binary; the runner runs in a container, so Docker actions cannot see the workspace); Changie fragment present unless the PR has the `no-changelog` label |
-| `validate` | self-hosted Linux, `if: always()` | fail if any needed job is `failure` or `cancelled` (skipped is fine); `desktop` is required on tags and dispatch |
+| `deny` | ubuntu-latest (GitHub-hosted) | `cargo deny --all-features check` (prebuilt binary via `taiki-e/install-action`; no Docker needed) |
+| `guards` | ubuntu-latest (GitHub-hosted) | actionlint (prebuilt binary; the runner runs in a container, so Docker actions cannot see the workspace); Changie fragment present unless the PR has the `no-changelog` label |
+| `validate` | ubuntu-latest (GitHub-hosted), `if: always()` | fail if any needed job is `failure` or `cancelled` (skipped is fine); `desktop` is required on tags and dispatch |
 
 **Runners.** Linux jobs run on the org's self-hosted runners: `runs-on: ${{ fromJSON(vars.LINUX_RUNNER_LABELS || '["self-hosted","Linux"]') }}`. The repository variable overrides the labels without a code change. The runners are shared, so `.github/actions/linux-tauri-deps` only **checks** the WebKitGTK headers there and fails with the `apt-get` command for a runner admin; it installs packages only on GitHub-hosted runners. Rust, Bun, Node 22 (`actions/setup-node`; the runner image ships an older Node), actionlint, and cargo-deny are installed per user by their setup actions, at pinned versions. `actions/checkout` cleans the workspace (`git clean -ffdx`) at the start of every job, so `target/` and `node_modules/` never leak between runs; Rust build caches come only from `Swatinem/rust-cache`.
 

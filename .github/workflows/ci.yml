@@ -169,6 +169,7 @@ jobs:
         uses: ./.github/actions/persistent-cache
         with:
           root: ${{ vars.CI_CACHE_DIR }}
+          # Per-runner target-dir cap in GB; empty means the action default (14).
           max-gb: ${{ vars.CI_CACHE_MAX_GB }}
       # Fallback when no persistent volume is usable. Only main saves: PR runs
       # can read main's cache, but a cache saved by a PR is only visible to
