@@ -21,7 +21,10 @@ permissions:
   contents: read
   pull-requests: read
 
-# Linux jobs run on the org's self-hosted runners. Set the repository variable
+# The Rust and web jobs run on the org's self-hosted runners. The light jobs
+# (changes, guards, deny, validate) run on GitHub-hosted ubuntu-latest, which
+# is free for public repositories and keeps self-hosted slots for builds.
+# Set the repository variable
 # LINUX_RUNNER_LABELS to a JSON array (for example ["self-hosted","Linux","X64"])
 # to target other labels without editing this file. macOS and Windows jobs use
 # GitHub-hosted runners and only run for release tags and manual dispatch.
@@ -36,7 +39,7 @@ concurrency:
 
 jobs:
   changes:
-    runs-on: ${{ fromJSON((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && '["ubuntu-latest"]' || vars.LINUX_RUNNER_LABELS || '["self-hosted","Linux"]') }}
+    runs-on: ubuntu-latest
     outputs:
       rust: ${{ steps.resolve.outputs.rust }}
       web: ${{ steps.resolve.outputs.web }}
@@ -176,7 +179,7 @@ jobs:
         with:
           workspaces: "."
           shared-key: linux-rust
-          save-if: ${{ github.ref == 'refs/heads/main' || github.head_ref == 'ci/cache-tuning' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.14"
@@ -282,7 +285,7 @@ jobs:
   deny:
     needs: changes
     if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.ci == 'true'
-    runs-on: ${{ fromJSON((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && '["ubuntu-latest"]' || vars.LINUX_RUNNER_LABELS || '["self-hosted","Linux"]') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
@@ -298,7 +301,7 @@ jobs:
         run: cargo deny --all-features check
 
   guards:
-    runs-on: ${{ fromJSON((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && '["ubuntu-latest"]' || vars.LINUX_RUNNER_LABELS || '["self-hosted","Linux"]') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Check out repository
@@ -332,7 +335,7 @@ jobs:
           exit 1
 
   validate:
-    runs-on: ${{ fromJSON((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && '["ubuntu-latest"]' || vars.LINUX_RUNNER_LABELS || '["self-hosted","Linux"]') }}
+    runs-on: ubuntu-latest
     needs:
       - changes
       - rust
