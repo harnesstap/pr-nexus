@@ -6,14 +6,15 @@ description: >-
   Layout: <root>/pr-nexus/<runner name>/{target-<rustc hash>,bun}. Each runner
   runs one job at a time and gets its own directory, so jobs never share one.
   Bounded: target dirs built by another rustc are removed, and a target dir
-  over max-gb is emptied before the build (it then rebuilds from scratch).
+  over max-gb first loses incremental/deps files older than 7 days, and is
+  emptied before the build only if still over (it then rebuilds from scratch).
   Only directories this action created are ever removed.
 inputs:
   root:
     description: Cache root. It must survive between jobs (a mounted volume). Empty means <runner work dir>/_ci-cache. It is never created here.
     default: ""
   max-gb:
-    description: Size cap for one target dir, in GB. Empty means 8.
+    description: Size cap for one target dir, in GB. Empty means 14.
     default: ""
   rust:
     description: Set CARGO_TARGET_DIR too (needs rustc on PATH).
@@ -65,11 +66,19 @@ runs:
           fi
         done
         mkdir -p "$target"
-        max_mb=$(( ${MAX_GB:-8} * 1024 ))
+        max_mb=$(( ${MAX_GB:-14} * 1024 ))
         size_mb="$(du -sm "$target" | cut -f1)"
         echo "Target dir $target: ${size_mb} MB (cap ${max_mb} MB)"
         if [ "$size_mb" -gt "$max_mb" ]; then
-          echo "Over the cap, emptying it"
+          # Stale build outputs first. Cargo rebuilds any missing output.
+          echo "Over the cap, removing incremental/deps files older than 7 days"
+          find "$target" -type f -mtime +7 \( -path '*/incremental/*' -o -path '*/deps/*' \) -delete
+          find "$target" -mindepth 1 -type d -path '*/incremental/*' -empty -delete
+          size_mb="$(du -sm "$target" | cut -f1)"
+          echo "Target dir after purge: ${size_mb} MB"
+        fi
+        if [ "$size_mb" -gt "$max_mb" ]; then
+          echo "Still over the cap, emptying it"
           find "$target" -mindepth 1 -delete
         fi
         # Persistent target dir: incremental compilation pays off for the
