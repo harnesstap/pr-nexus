@@ -76,19 +76,6 @@ impl Upstream for Official {
     }
 }
 
-/// The scope a tool cannot run without, when the grant may lack it.
-pub fn required_scope(tool: &str) -> Option<&'static str> {
-    Some(match tool {
-        "slack_search_public_and_private" => "search:read.private",
-        "slack_get_reactions" => "reactions:read",
-        "slack_search_emojis" => "emoji:read",
-        "slack_read_file" => "files:read",
-        "slack_read_canvas" => "canvases:read",
-        "slack_read_list" => "lists:read",
-        _ => return None,
-    })
-}
-
 /// Requests per minute Slack allows a tool, per user and workspace.
 pub fn per_minute(tool: &str) -> usize {
     match tool {
@@ -195,17 +182,6 @@ impl SlackProxy {
             ));
         }
         crate::slack::ensure_enabled(state, &ws.account)?;
-        if let Some(scope) = required_scope(tool)
-            && ws.scopes_missing.iter().any(|s| s == scope)
-        {
-            return Err(AppError::new(
-                "forbidden",
-                format!(
-                    "missing_scope: this workspace's Slack sign-in predates the `{scope}` permission. \
-                     The user can add it in PR Nexus → Settings → Agents (Sign in again)."
-                ),
-            ));
-        }
         if let Err(wait) = self.take(ws.account.id.0, tool) {
             let mut err = AppError::new(
                 "rate_limited",

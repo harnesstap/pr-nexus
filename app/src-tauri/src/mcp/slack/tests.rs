@@ -104,9 +104,26 @@ impl Upstream for LabsDown {
 /// Fixtures, but `acme-labs` signed in before the agent-read scopes.
 struct LabsOldGrant;
 
+/// Slack's own answer when a grant lacks `canvases:read`.
+struct NoCanvasScope(Arc<dyn ToolCaller>);
+
+impl ToolCaller for NoCanvasScope {
+    fn call(&self, tool: &str, arguments: JsonObject) -> Result<ToolOutput, ProviderError> {
+        if tool == "slack_read_canvas" {
+            return Err(ProviderError::Forbidden("missing_scope".into()));
+        }
+        self.0.call(tool, arguments)
+    }
+}
+
 impl Upstream for LabsOldGrant {
     fn caller(&self, state: &AppState, ws: &Exposed) -> Result<Arc<dyn ToolCaller>, AppError> {
-        Fixtures.caller(state, ws)
+        let inner = Fixtures.caller(state, ws)?;
+        Ok(if ws.account.slack_team_id() == Some(GRID_TEAM) {
+            Arc::new(NoCanvasScope(inner))
+        } else {
+            inner
+        })
     }
     fn enterprise(&self, state: &AppState, account: &Account) -> Option<String> {
         Fixtures.enterprise(state, account)
@@ -500,7 +517,7 @@ fn private_search_is_its_own_capability() {
 }
 
 #[test]
-fn an_old_grant_lists_missing_scopes_and_is_refused_before_slack() {
+fn an_old_grant_lists_missing_scopes_and_slack_answers_for_itself() {
     let env = env(&[ACME, GRID_TEAM], Arc::new(LabsOldGrant));
     let list = call(&env, "slack_list_workspaces", json!({})).unwrap();
     let rows = list["workspaces"].as_array().unwrap();
@@ -528,9 +545,10 @@ fn an_old_grant_lists_missing_scopes_and_is_refused_before_slack() {
         json!({ "canvas_id": format!("{GRID_ORG}/F0ACMELAB0002") }),
     )
     .unwrap_err();
+    // The call reached Slack; its error comes back as Slack sent it.
     assert_eq!(err.kind, "forbidden");
-    assert!(err.message.contains("canvases:read"), "{}", err.message);
-    // Tools whose scopes the old grant had still work.
+    assert!(err.message.contains("missing_scope"), "{}", err.message);
+    assert!(!err.message.contains("Sign in again"), "{}", err.message);
     call(
         &env,
         "slack_read_channel",

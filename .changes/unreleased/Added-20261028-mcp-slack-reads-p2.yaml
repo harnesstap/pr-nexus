@@ -1,3 +1,3 @@
 kind: Added
-body: 'Agents (MCP): Slack private search (off by default) and new read tools for reactions, channel members, emoji, files, canvases and lists. Workspaces signed in before these scopes existed show "needs new Slack permissions" with a Sign in again button; tools needing a missing scope are refused before Slack is called.'
+body: 'Agents (MCP): Slack private search (off by default) and new read tools for reactions, channel members, emoji, files, canvases and lists. Workspaces signed in before these scopes existed show "needs new Slack permissions" with a Sign in again button; calls still go to Slack, which answers for itself.'
 time: 2026-10-28T19:30:00.000000Z

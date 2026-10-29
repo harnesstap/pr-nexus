@@ -584,12 +584,11 @@ fn list_workspaces(state: &AppState, arguments: JsonObject) -> Result<Value, App
                 "is_default": i == 0,
                 "capabilities": {
                     "reads": true,
-                    "private_search": settings.slack_private_search
-                        && !ws.scopes_missing.iter().any(|s| s == "search:read.private"),
+                    "private_search": settings.slack_private_search,
                 },
                 "scopes_missing": ws.scopes_missing,
                 "reauth_hint": (!ws.scopes_missing.is_empty()).then_some(
-                    "Some slack_* tools need permissions this sign-in lacks. Ask the user to click \
+                    "Some slack_* tools may fail with Slack's missing_scope error. To fix it, ask the user to click \
                      Sign in again next to this workspace in PR Nexus → Settings → Agents.",
                 ),
             })
