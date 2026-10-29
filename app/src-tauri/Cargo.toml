@@ -39,4 +39,5 @@ tokio = { version = "1", features = ["net", "rt-multi-thread", "macros", "sync",
 tokio-util = "0.7"
 
 [dev-dependencies]
+pr-nexus-core = { path = "../../crates/pr-nexus-core", features = ["test-support"] }
 tempfile = "3"

@@ -4,7 +4,19 @@ import { errorMessage } from "../api";
 import { ClockIcon, CloseIcon, FolderIcon, GearIcon, HomeIcon, LogoIcon, PlusIcon, RefreshIcon } from "../icons";
 import { Tooltip } from "../Tooltip";
 import { OrgOption } from "../orgs";
-import { DRAG_MIME, TOAST_MS, bulkToast, defaultView, parseDragIds, parseViewState, renameError, sentToast, syncLabel, type SavedView, type Toast } from "./model";
+import {
+  DRAG_MIME,
+  TOAST_MS,
+  bulkToast,
+  defaultView,
+  parseDragIds,
+  parseViewState,
+  renameError,
+  sentToast,
+  syncLabel,
+  type SavedView,
+  type Toast,
+} from "./model";
 import { PrList, type ListActions } from "./PrList";
 import { GlobalCommands } from "./GlobalCommands";
 import type { PageRequest } from "./paging";
@@ -142,10 +154,15 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
         if (cancel) {
           return;
         }
-        if (status.phase === "syncing" || status.revision !== revision.current) {
+        const changed = status.revision !== revision.current;
+        if (status.phase === "syncing" || changed) {
           setSync(status);
         }
         noteRevision(status.revision);
+        if (changed) {
+          // An agent may have renamed, archived or filled a project.
+          void api.listProjects().then((next) => !cancel && setProjects(next));
+        }
       });
     }, IDLE_POLL_MS);
     return () => {
@@ -153,6 +170,19 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
       window.clearInterval(timer);
     };
   }, [api, syncing, noteRevision]);
+
+  // An agent write (MCP Local writes) reloads rows and projects at once.
+  useEffect(() => {
+    let cancel = false;
+    const stop = api.onDataChanged?.(() => {
+      void api.syncStatus().then((status) => !cancel && noteRevision(status.revision));
+      void api.listProjects().then((next) => !cancel && setProjects(next));
+    });
+    return () => {
+      cancel = true;
+      stop?.();
+    };
+  }, [api, noteRevision]);
 
   const [openCount, setOpenCount] = useState<number | null>(null);
   const loadPage = useCallback(
@@ -332,7 +362,14 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
 
   const activeProjects = projects.filter((project) => !project.archived);
   const dialogProject = projects.find((project) => project.id === editingProject) ?? null;
-  const syncTone = sync.phase === "error" ? "bg-rose-400" : sync.paused || sync.phase === "paused" ? "bg-amber-400" : sync.phase === "syncing" ? "bg-sky-400" : "bg-emerald-400";
+  const syncTone =
+    sync.phase === "error"
+      ? "bg-rose-400"
+      : sync.paused || sync.phase === "paused"
+        ? "bg-amber-400"
+        : sync.phase === "syncing"
+          ? "bg-sky-400"
+          : "bg-emerald-400";
 
   const orgPicker = () => (
     <div>
@@ -347,9 +384,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
               org={org}
               checked={orgs.includes(org)}
               needsSso={boot.orgs_needing_sso.includes(org)}
-              onToggle={() =>
-                setOrgs((current) => (current.includes(org) ? current.filter((item) => item !== org) : [...current, org]))
-              }
+              onToggle={() => setOrgs((current) => (current.includes(org) ? current.filter((item) => item !== org) : [...current, org]))}
               onOpen={(url) => void api.openExternal(url)}
             />
           </li>
@@ -431,7 +466,8 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
                 void createProject();
               }}
             >
-              <input {...plainText}
+              <input
+                {...plainText}
                 aria-label="Project name"
                 autoFocus
                 className="w-full rounded border border-slate-600 bg-slate-900 px-2 py-1 text-sm"
@@ -446,11 +482,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
               />
               {selection.length > 0 && (
                 <label className="mt-1 flex items-center gap-2 text-xs text-slate-300">
-                  <input
-                    type="checkbox"
-                    checked={draft.withSelection}
-                    onChange={(event) => setDraft({ ...draft, withSelection: event.target.checked })}
-                  />
+                  <input type="checkbox" checked={draft.withSelection} onChange={(event) => setDraft({ ...draft, withSelection: event.target.checked })} />
                   Add {selection.length} selected {selection.length === 1 ? "PR" : "PRs"}
                 </label>
               )}
@@ -584,44 +616,44 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
         ) : (
           <div className="flex min-h-0 flex-1">
             <div className="flex min-w-0 flex-1 flex-col">
-            <PrList
-              loadPage={loadPage}
-              version={version}
-              syncProgress={syncing ? syncLabel(sync, now) : null}
-              projects={projects}
-              viewKey={viewKey}
-              view={view}
-              now={now}
-              onViewChange={(next) => setViews((current) => ({ ...current, [viewKey]: next }))}
-              onShowView={setViewKey}
-              onOpenSettings={() => {
-                setSettingsTab("accounts");
-                setViewKey("settings");
-              }}
-              onOpen={(url) => void api.openExternal(url)}
-              onRename={async (id, name) => {
-                await api.renameProject(id, name);
-                await reload();
-              }}
-              onArchive={(id) => {
-                const project = projects.find((item) => item.id === id);
-                void api.archiveProject(id, !(project?.archived ?? false)).then(reload);
-              }}
-              onDelete={(id) => {
-                void api.deleteProject(id).then(reload);
-              }}
-              onEditProject={setEditingProject}
-              onLinkPrs={(projectId, ids) => void linkPrs(projectId, ids)}
-              onCreateProjectWithPrs={createProjectWithPrs}
-              onSelectionChange={setSelection}
-              detailId={detailRow?.id ?? null}
-              onDetails={setDetailRow}
-              onRequestReview={setReviewRow}
-              onToggleStar={(row) => void toggleStar(row)}
-              onBulkReview={setBulkIds}
-              draftPatches={shownDraftPatches}
-              actionsRef={listActions}
-            />
+              <PrList
+                loadPage={loadPage}
+                version={version}
+                syncProgress={syncing ? syncLabel(sync, now) : null}
+                projects={projects}
+                viewKey={viewKey}
+                view={view}
+                now={now}
+                onViewChange={(next) => setViews((current) => ({ ...current, [viewKey]: next }))}
+                onShowView={setViewKey}
+                onOpenSettings={() => {
+                  setSettingsTab("accounts");
+                  setViewKey("settings");
+                }}
+                onOpen={(url) => void api.openExternal(url)}
+                onRename={async (id, name) => {
+                  await api.renameProject(id, name);
+                  await reload();
+                }}
+                onArchive={(id) => {
+                  const project = projects.find((item) => item.id === id);
+                  void api.archiveProject(id, !(project?.archived ?? false)).then(reload);
+                }}
+                onDelete={(id) => {
+                  void api.deleteProject(id).then(reload);
+                }}
+                onEditProject={setEditingProject}
+                onLinkPrs={(projectId, ids) => void linkPrs(projectId, ids)}
+                onCreateProjectWithPrs={createProjectWithPrs}
+                onSelectionChange={setSelection}
+                detailId={detailRow?.id ?? null}
+                onDetails={setDetailRow}
+                onRequestReview={setReviewRow}
+                onToggleStar={(row) => void toggleStar(row)}
+                onBulkReview={setBulkIds}
+                draftPatches={shownDraftPatches}
+                actionsRef={listActions}
+              />
             </div>
             {detailRow && (
               <DetailPanel
@@ -657,7 +689,12 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
               </button>
             )}
             <Tooltip label="Dismiss" side="top" align="end">
-              <button type="button" aria-label="Dismiss" className="rounded p-0.5 text-slate-500 hover:bg-slate-800 hover:text-slate-200" onClick={() => setNotice(null)}>
+              <button
+                type="button"
+                aria-label="Dismiss"
+                className="rounded p-0.5 text-slate-500 hover:bg-slate-800 hover:text-slate-200"
+                onClick={() => setNotice(null)}
+              >
                 <CloseIcon />
               </button>
             </Tooltip>
@@ -714,9 +751,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
           onSync={(full) => void refresh(full)}
           syncing={syncing}
         />
-        {dialogProject && (
-          <ProjectDialog api={api} project={dialogProject} onClose={() => setEditingProject(null)} onChanged={reload} />
-        )}
+        {dialogProject && <ProjectDialog api={api} project={dialogProject} onClose={() => setEditingProject(null)} onChanged={reload} />}
       </main>
     </div>
   );
@@ -746,7 +781,8 @@ function NavButton({
 }) {
   const [over, setOver] = useState(false);
   const selected = current === id;
-  const tone = over || flash ? "bg-violet-500/20 text-white ring-1 ring-violet-400" : selected ? "bg-slate-800 text-white" : "text-slate-300 hover:bg-slate-900";
+  const tone =
+    over || flash ? "bg-violet-500/20 text-white ring-1 ring-violet-400" : selected ? "bg-slate-800 text-white" : "text-slate-300 hover:bg-slate-900";
   return (
     <button
       type="button"

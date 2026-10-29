@@ -21,6 +21,10 @@ serde_json = "1"
 thiserror.workspace = true
 unicode-normalization = "0.1.25"
 
+[features]
+# Test fixtures (such as `Store::seed_mcp_audit`) for the app crate's tests.
+test-support = []
+
 [dev-dependencies]
 insta = { version = "1.49.0", features = ["json"] }
 proptest = "1.12.0"
