@@ -62,25 +62,7 @@ impl Store {
     pub fn append_mcp_audit(&self, entry: AuditEntry) -> Result<i64, CoreError> {
         self.write(move |conn| {
             let tx = conn.transaction().map_err(db)?;
-            tx.execute(
-                "INSERT INTO mcp_audit (at, client_name, tool, capability, outcome, fields, \
-                 target_ids, summary, error, duration_ms) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-                params![
-                    format_ts(entry.at),
-                    entry.client_name,
-                    entry.tool,
-                    entry.capability,
-                    entry.outcome.as_str(),
-                    entry.fields,
-                    entry.target_ids,
-                    entry.summary,
-                    entry.error,
-                    entry.duration_ms,
-                ],
-            )
-            .map_err(db)?;
-            let id = tx.last_insert_rowid();
+            let id = insert(&tx, &entry)?;
             let cutoff = format_ts(entry.at - Duration::days(AUDIT_KEEP_DAYS));
             tx.execute("DELETE FROM mcp_audit WHERE at < ?1", [cutoff])
                 .map_err(db)?;
@@ -92,6 +74,19 @@ impl Store {
             .map_err(db)?;
             tx.commit().map_err(db)?;
             Ok(id)
+        })
+    }
+
+    /// Test fixture: inserts `entries` in one transaction, without trimming,
+    /// so a test can fill the log to its bound without one commit per row.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn seed_mcp_audit(&self, entries: Vec<AuditEntry>) -> Result<(), CoreError> {
+        self.write(move |conn| {
+            let tx = conn.transaction().map_err(db)?;
+            for entry in &entries {
+                insert(&tx, entry)?;
+            }
+            tx.commit().map_err(db)
         })
     }
 
@@ -136,6 +131,28 @@ impl Store {
     pub fn clear_mcp_audit(&self) -> Result<usize, CoreError> {
         self.write(|conn| conn.execute("DELETE FROM mcp_audit", []).map_err(db))
     }
+}
+
+fn insert(conn: &rusqlite::Connection, entry: &AuditEntry) -> Result<i64, CoreError> {
+    conn.execute(
+        "INSERT INTO mcp_audit (at, client_name, tool, capability, outcome, fields, \
+         target_ids, summary, error, duration_ms) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        params![
+            format_ts(entry.at),
+            entry.client_name,
+            entry.tool,
+            entry.capability,
+            entry.outcome.as_str(),
+            entry.fields,
+            entry.target_ids,
+            entry.summary,
+            entry.error,
+            entry.duration_ms,
+        ],
+    )
+    .map_err(db)?;
+    Ok(conn.last_insert_rowid())
 }
 
 #[cfg(test)]
@@ -186,7 +203,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path().join("t.db")).unwrap();
         let now = Utc::now();
-        for index in 0..(AUDIT_KEEP_ROWS + 3) {
+        // Fill to the bound in one commit; the next appends go through trimming.
+        store
+            .seed_mcp_audit(
+                (0..AUDIT_KEEP_ROWS)
+                    .map(|index| entry(now, &format!("t{index}")))
+                    .collect(),
+            )
+            .unwrap();
+        for index in AUDIT_KEEP_ROWS..(AUDIT_KEEP_ROWS + 3) {
             store
                 .append_mcp_audit(entry(now, &format!("t{index}")))
                 .unwrap();
@@ -194,5 +219,6 @@ mod tests {
         let rows = store.mcp_audit(None, 10_000).unwrap();
         assert_eq!(rows.len() as i64, AUDIT_KEEP_ROWS);
         assert_eq!(rows[0].tool, format!("t{}", AUDIT_KEEP_ROWS + 2));
+        assert_eq!(rows.last().unwrap().tool, "t3", "the three oldest went");
     }
 }

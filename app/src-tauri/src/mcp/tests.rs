@@ -924,24 +924,27 @@ async fn the_audit_is_bounded_through_the_server() {
     use pr_nexus_core::store::{AUDIT_KEEP_ROWS, AuditEntry};
     let h = harness().await;
     let old = chrono::Utc::now() - chrono::Duration::days(91);
-    for index in 0..AUDIT_KEEP_ROWS {
-        h.store()
-            .append_mcp_audit(AuditEntry {
-                id: 0,
-                at: if index == 0 { old } else { chrono::Utc::now() },
-                client_name: "acme-agent".into(),
-                tool: format!("filler{index}"),
-                capability: "reads".into(),
-                outcome: AuditOutcome::Allowed,
-                fields: String::new(),
-                target_ids: String::new(),
-                summary: String::new(),
-                error: None,
-                duration_ms: 0,
-            })
-            .unwrap();
-    }
-    // Open the session after the slow fill so it cannot idle out on a slow runner.
+    // One commit for the fill; the call below appends through the real trimming path.
+    h.store()
+        .seed_mcp_audit(
+            (0..AUDIT_KEEP_ROWS)
+                .map(|index| AuditEntry {
+                    id: 0,
+                    at: if index == 0 { old } else { chrono::Utc::now() },
+                    client_name: "acme-agent".into(),
+                    tool: format!("filler{index}"),
+                    capability: "reads".into(),
+                    outcome: AuditOutcome::Allowed,
+                    fields: String::new(),
+                    target_ids: String::new(),
+                    summary: String::new(),
+                    error: None,
+                    duration_ms: 0,
+                })
+                .collect(),
+        )
+        .unwrap();
+    // Opened after the fill, so a slow runner cannot idle the session out.
     let session = h.session().await;
     h.call(&session, "list_projects", json!({})).await;
     let rows = h.store().mcp_audit(None, 10_000).unwrap();
