@@ -121,7 +121,7 @@ pub fn slack_tools() -> Vec<ToolSpec> {
             "slack_list_channel_members",
             "List a channel's members",
             "Who is in one channel, private channel or group DM, with their titles. `channel_id` is \
-                qualified. Page with `next_cursor`. Email addresses and phone numbers are hidden.",
+                qualified. Page with `next_cursor`.",
             schema_for_type::<MembersArgs>,
             list_channel_members,
         ),

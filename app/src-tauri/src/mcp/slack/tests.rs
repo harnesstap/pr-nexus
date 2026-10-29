@@ -420,7 +420,7 @@ fn content(reply: &Value) -> &str {
 }
 
 #[test]
-fn reactions_members_and_emoji_are_qualified_and_masked() {
+fn reactions_members_and_emoji_are_qualified_and_unfiltered() {
     let env = both();
     let reactions = call(
         &env,
@@ -439,7 +439,7 @@ fn reactions_members_and_emoji_are_qualified_and_masked() {
     .unwrap();
     let text = content(&members);
     assert!(text.contains(&format!("(ID: {GRID_ORG}/U0ACMELAB0001)")));
-    assert!(!text.contains("@acme-labs.example"), "{text}");
+    assert!(text.contains("@acme-labs.example"), "{text}");
     let next = members["next_cursor"].as_str().unwrap().to_owned();
     let page2 = call(
         &env,
