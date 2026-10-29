@@ -27,7 +27,7 @@ jobs:
         with:
           bun-version: "1.3.14"
       # Vite and vitest run on Node. Pin it: a self-hosted image may ship an old one.
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
       - name: Build frontend
@@ -62,7 +62,7 @@ jobs:
         with:
           bun-version: "1.3.14"
       # Vite and vitest run on Node. Pin it: a self-hosted image may ship an old one.
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
       - run: bun install --frozen-lockfile
@@ -83,7 +83,7 @@ jobs:
         with:
           bun-version: "1.3.14"
       # Vite and vitest run on Node. Pin it: a self-hosted image may ship an old one.
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
       - name: Install frontend dependencies
@@ -115,7 +115,7 @@ jobs:
         with:
           bun-version: "1.3.14"
       # Vite and vitest run on Node. Pin it: a self-hosted image may ship an old one.
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
       - name: Install frontend dependencies
