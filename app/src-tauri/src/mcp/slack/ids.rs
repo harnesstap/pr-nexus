@@ -22,10 +22,6 @@ static QUALIFIED: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(&format!(r"^(?P<q>[TE][A-Z0-9]{{6,}})/(?P<id>{ID})$")).expect("qualified")
 });
 static BARE: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!("^{ID}$")).expect("bare"));
-static EMAIL_IN_ANGLES: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"<[^<>@\s|]+@[^<>\s|]+>").expect("email"));
-static CONTACT_LINE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?m)^(?P<field>Email|Phone): *\S.*$").expect("contact"));
 
 /// `text` with every Slack ID it names prefixed with `qualifier/`. Only IDs
 /// in the places the official server prints them are touched, so words in
@@ -36,13 +32,6 @@ pub fn qualify_text(qualifier: &str, text: &str) -> String {
             format!("{}{qualifier}/{}", &caps["pre"], &caps["id"])
         })
         .into_owned()
-}
-
-/// Email addresses and phone numbers out of a reply: profile `Email:` and
-/// `Phone:` lines, and the `<name@host>` after author names.
-pub fn mask_contacts(text: &str) -> String {
-    let text = CONTACT_LINE.replace_all(text, "${field}: [hidden by PR Nexus]");
-    EMAIL_IN_ANGLES.replace_all(&text, "").into_owned()
 }
 
 /// An ID argument split into its qualifier (if any) and the bare ID.

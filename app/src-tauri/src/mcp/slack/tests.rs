@@ -145,16 +145,6 @@ fn permalinks_give_channel_message_and_thread() {
 }
 
 #[test]
-fn contacts_are_masked() {
-    let text = "From: Ada (ID: U0ACME0001) <ada@acme.example>\nEmail: ada@acme.example\nPhone: +1 555 0100\nTitle: Staff";
-    let out = ids::mask_contacts(text);
-    assert!(!out.contains("ada@acme.example"), "{out}");
-    assert!(!out.contains("555"), "{out}");
-    assert!(out.contains("Email: [hidden by PR Nexus]"));
-    assert!(out.contains("Title: Staff"));
-}
-
-#[test]
 fn cursors_are_signed_and_bound_to_their_tool() {
     let key = [7u8; 32];
     let composite = Composite {
@@ -342,7 +332,7 @@ fn reads_need_a_qualified_id_when_several_are_exposed() {
 }
 
 #[test]
-fn profiles_hide_email_and_phone() {
+fn profiles_pass_slack_fields_through_unfiltered() {
     let env = both();
     let reply = call(
         &env,
@@ -351,9 +341,12 @@ fn profiles_hide_email_and_phone() {
     )
     .unwrap();
     let content = reply["results"][0]["content"].as_str().unwrap();
-    assert!(content.contains("Email: [hidden by PR Nexus]"));
-    assert!(content.contains("Phone: [hidden by PR Nexus]"));
-    assert!(!content.contains("555"));
+    assert!(content.contains("Email: ada@acme.example"), "{content}");
+    assert!(content.contains("Phone: +1 555 0100"), "{content}");
+    assert!(
+        content.contains("User ID: T0ACME0001/U0ACME0001"),
+        "{content}"
+    );
 }
 
 #[test]

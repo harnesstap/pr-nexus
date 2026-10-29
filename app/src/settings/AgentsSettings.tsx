@@ -174,8 +174,8 @@ export function AgentsSettings({ api }: Props) {
               Slack reads <span className="text-slate-400">— search and read public channels and your channels in the workspaces ticked below</span>
             </Switch>
             <p id="agents-slack-note" className="mt-1 max-w-prose text-xs text-slate-400">
-              Each workspace answers through its own Slack sign-in. Slack messages reach agents marked as untrusted content; email addresses and phone
-              numbers are hidden.
+              Each workspace answers through its own Slack sign-in. Slack replies reach agents as Slack returns them, marked as
+              untrusted content.
             </p>
             {settings.slack_reads && (
               <SlackWorkspacePicker

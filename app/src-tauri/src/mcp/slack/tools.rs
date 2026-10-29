@@ -74,7 +74,7 @@ pub fn slack_tools() -> Vec<ToolSpec> {
             "slack_search_users",
             "Search Slack people",
             "Find people by name, title or handle. Same `workspace` choice and paging as \
-                `slack_search_public`. Email addresses and phone numbers are hidden.",
+                `slack_search_public`.",
             schema_for_type::<SearchArgs>,
             |state, args| search(state, args, "slack_search_users"),
         ),
@@ -105,7 +105,7 @@ pub fn slack_tools() -> Vec<ToolSpec> {
             "slack_read_user_profile",
             "Read a Slack profile",
             "One person's name, title, time zone and status. `user_id` is qualified; leave it out for the \
-                user themself (then `workspace` picks whose). Email addresses and phone numbers are hidden.",
+                user themself (then `workspace` picks whose).",
             schema_for_type::<ProfileArgs>,
             read_user_profile,
         ),
@@ -404,7 +404,7 @@ fn run(
         match outcome {
             Ok(text) => {
                 let (content, next) = unwrap_reply(&text);
-                let content = ids::mask_contacts(&ids::qualify_text(ws.qualifier(), &content));
+                let content = ids::qualify_text(ws.qualifier(), &content);
                 pages.insert(ws.qualifier().to_owned(), next);
                 results.push(json!({ "workspace": workspace_ref(&ws), "content": content }));
             }
