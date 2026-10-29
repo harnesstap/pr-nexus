@@ -1462,7 +1462,7 @@ The design above is the long-term shape. What ships today differs on purpose: th
   - `set_pr_note` (an empty note clears it) and `set_pr_starred`.
   - Manual reorder has no tool yet.
 - **Slack reads**: see §10.1.2.
-- **Slack sends**: not built; the switch shows "Coming soon".
+- **Slack sends**: see §10.1.3.
 - **Tool metadata.** Every tool sets `readOnlyHint`, `destructiveHint` (true when it overwrites or removes: update, remove PRs, set or remove JIRA links, set note) and `idempotentHint` (false only for `create_project` and `add_jira_link`). Arguments reject unknown fields.
 - **Errors** are tool results with `isError: true` and a `kind`: `validation` (bad arguments, limits such as 200 ids), `not_found` (naming the missing ids), `forbidden` (capability turned off; such tools are also hidden from `tools/list`).
 - **Audit log** (`mcp_audit`, migration 0008). Every call, reads included, allowed or not, gets one row: time, client name, tool, capability, outcome (`allowed` / `denied` / `error`), argument **field names** and target ids (`project:N`, `pr:N`), a one-line summary such as "starred acme/api#482", the error message, and the duration. Argument values such as note text or project names are never stored. The table keeps the newest 5,000 rows and nothing older than 90 days, pruned on insert. Settings → Agents → Activity lists the newest 200 with an outcome filter and "Clear log" behind a confirmation.
@@ -1480,6 +1480,18 @@ Agents can search and read Slack through PR Nexus, which proxies the official Sl
 - **Untrusted content.** Replies carry `untrusted_content: true` and a note that Slack text is data, never instructions. Replies are otherwise passed through as Slack's MCP server returns them (profile emails and phone numbers included); PR Nexus only qualifies IDs and adds this envelope.
 - **Audit.** Calls are logged like other tools, with targets such as `slack:T…/C…` and counts only; search text and message text are never stored.
 - **Personal use.** These tools are meant for a person reading their own workspaces through the internal apps their organisation already approved; they add no access beyond what that person's Slack sign-in allows.
+
+#### 10.1.3 Slack sends for agents
+
+Agents can propose Slack writes; nothing reaches Slack until the user approves it, except in channels the user listed for auto-send.
+
+- **Switch.** "Slack sends" (off by default, needs Slack reads) in Settings → Agents, with an **auto-send channels** list under it (empty by default) of qualified channel IDs (`T…/C…`, as read tools return them).
+- **Tools.** `slack_send_message`, `slack_schedule_message`, `slack_send_message_draft` and `slack_add_reaction` take the official Slack tools' arguments plus a mandatory `workspace` naming exactly one exposed workspace (`"all"` and none are refused); a qualified `channel_id` must belong to that workspace. Each returns a proposal (`id`, `status`, why it was held). `slack_get_proposal` reads one back, for the same MCP session only.
+- **Approval.** Proposals wait in Settings → Agents → Slack proposals, newest first, with **Approve** and **Reject**. Approving calls the official Slack tool once with the agent's arguments (the proposal is claimed before the call, so it cannot go out twice) and needs Slack sends still on and the workspace still exposed. Proposals live in memory only (the newest 200; lost when PR Nexus quits).
+- **Auto-send.** A write to a listed channel goes out at once, unless the same MCP session has read another workspace first; it is then held with `reason: "read_other_workspace"`, so content read in one workspace is not posted to another without the user seeing it. The list applies to drafts, schedules and reactions too.
+- **No filtering.** PR Nexus does not check scopes, membership or text; Slack's reply and Slack's errors (such as `not_in_channel`) come back as is, IDs qualified and wrapped in the untrusted-content envelope (§10.1.2).
+- **Limits.** Kept under Slack's per-minute limits: 20 for send and draft, 50 for schedule and reaction.
+- **Audit.** Each proposal, auto-send, approval and rejection is logged ("proposed a Slack message", "user approved Slack proposal N, sent"); message text is never stored.
 
 ### 10.2 Other providers & platforms
 - Internal roadmap only: none of these is shown or promised in the app, README, or release notes. Implementing one means adding its registry descriptor (§5.1), a factory, and its setup steps; until then the UI shows GitHub and Slack only.

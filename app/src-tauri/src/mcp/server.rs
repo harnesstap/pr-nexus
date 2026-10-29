@@ -146,9 +146,20 @@ impl ServerHandler for NexusMcp {
         let state = Arc::clone(&self.shared.state);
         let handler = spec.handler;
         let input = arguments.clone();
-        let result = tokio::task::spawn_blocking(move || handler(&state, input))
-            .await
-            .map_err(|err| ErrorData::internal_error(err.to_string(), None))?;
+        let caller = super::slack::session::Caller {
+            session: context
+                .extensions
+                .get::<axum::http::request::Parts>()
+                .and_then(|parts| parts.headers.get("mcp-session-id"))
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned),
+            client: client.clone(),
+        };
+        let result = tokio::task::spawn_blocking(move || {
+            super::slack::session::with(caller, || handler(&state, input))
+        })
+        .await
+        .map_err(|err| ErrorData::internal_error(err.to_string(), None))?;
         Ok(match result {
             Ok(value) => {
                 audit(Outcome::Ok, Some(&value), None);

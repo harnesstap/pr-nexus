@@ -17,7 +17,9 @@ pub enum Capability {
     Reads,
     /// Change local data: projects, links, notes, stars.
     LocalWrites,
-    /// Post to Slack, always behind a preview (phase 5).
+    /// Send, schedule or draft Slack messages and add reactions: each one
+    /// waits for the user's approval in the app unless its channel is on
+    /// `slack_auto_send_channels`.
     SlackSends,
     /// Search and read Slack through each exposed workspace's official
     /// MCP session (public channels and the user's own channels).
@@ -34,6 +36,7 @@ impl Capability {
             self,
             Capability::Reads
                 | Capability::LocalWrites
+                | Capability::SlackSends
                 | Capability::SlackReads
                 | Capability::SlackPrivateSearch
         )
@@ -53,6 +56,10 @@ pub struct McpSettings {
     /// Team IDs (`T…`) of the Slack workspaces agents may see. Empty by
     /// default: turning Slack reads on exposes nothing until one is ticked.
     pub slack_workspaces: Vec<String>,
+    /// Qualified channel IDs (`T…/C…`, `E…/C…`) where Slack sends go out
+    /// without asking, unless the session read another workspace. Empty
+    /// by default: every send waits for approval.
+    pub slack_auto_send_channels: Vec<String>,
     /// Fixed port on 127.0.0.1; `None` picks a free one at each start.
     pub port: Option<u16>,
 }
@@ -67,6 +74,7 @@ impl Default for McpSettings {
             slack_reads: false,
             slack_private_search: false,
             slack_workspaces: Vec::new(),
+            slack_auto_send_channels: Vec::new(),
             port: None,
         }
     }
@@ -94,6 +102,14 @@ impl McpSettings {
         self.slack_workspaces.retain(|team| !team.trim().is_empty());
         self.slack_workspaces.sort();
         self.slack_workspaces.dedup();
+        for channel in &mut self.slack_auto_send_channels {
+            *channel = channel.trim().to_owned();
+        }
+        self.slack_auto_send_channels.retain(|channel| {
+            super::slack::ids::parse(channel).is_some_and(|id| id.qualifier.is_some())
+        });
+        self.slack_auto_send_channels.sort();
+        self.slack_auto_send_channels.dedup();
         if self.port == Some(0) {
             self.port = None;
         }

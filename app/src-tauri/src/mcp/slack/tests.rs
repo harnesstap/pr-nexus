@@ -75,6 +75,7 @@ fn both() -> Env {
 fn call(env: &Env, tool: &str, arguments: Value) -> Result<Value, AppError> {
     let spec = super::slack_tools()
         .into_iter()
+        .chain(super::sends::send_tools())
         .find(|spec| spec.name == tool)
         .unwrap_or_else(|| panic!("no tool {tool}"));
     let Value::Object(arguments) = arguments else {
@@ -503,6 +504,7 @@ fn files_canvases_and_lists_take_qualified_file_ids() {
 fn private_search_is_its_own_capability() {
     let spec = super::slack_tools()
         .into_iter()
+        .chain(super::sends::send_tools())
         .find(|s| s.name == "slack_search_public_and_private")
         .unwrap();
     assert_eq!(spec.capability, crate::mcp::Capability::SlackPrivateSearch);
@@ -555,4 +557,332 @@ fn an_old_grant_lists_missing_scopes_and_slack_answers_for_itself() {
         json!({ "channel_id": format!("{GRID_ORG}/C0ACMELAB0001") }),
     )
     .unwrap();
+}
+
+// Slack sends: proposals, the auto-send list and the leak guard. The
+// recorder stands in for Slack; nothing here reaches a real workspace.
+
+type Calls = Arc<std::sync::Mutex<Vec<(String, String, JsonObject)>>>;
+
+/// Fixtures that remember every call: (domain, tool, arguments).
+struct Recording {
+    calls: Calls,
+    refuse_sends: bool,
+}
+
+struct RecordingCaller {
+    domain: String,
+    inner: Arc<dyn ToolCaller>,
+    calls: Calls,
+    refuse_sends: bool,
+}
+
+impl ToolCaller for RecordingCaller {
+    fn call(&self, tool: &str, arguments: JsonObject) -> Result<ToolOutput, ProviderError> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push((self.domain.clone(), tool.to_owned(), arguments.clone()));
+        if self.refuse_sends && tool == "slack_send_message" {
+            return Ok(ToolOutput {
+                text: "not_in_channel".into(),
+                structured: None,
+                is_error: true,
+            });
+        }
+        self.inner.call(tool, arguments)
+    }
+}
+
+impl Upstream for Recording {
+    fn caller(&self, state: &AppState, ws: &Exposed) -> Result<Arc<dyn ToolCaller>, AppError> {
+        Ok(Arc::new(RecordingCaller {
+            domain: ws.domain.clone(),
+            inner: Fixtures.caller(state, ws)?,
+            calls: self.calls.clone(),
+            refuse_sends: self.refuse_sends,
+        }))
+    }
+    fn enterprise(&self, state: &AppState, account: &Account) -> Option<String> {
+        Fixtures.enterprise(state, account)
+    }
+    fn granted_scopes(&self, _state: &AppState, _account: &Account) -> Option<Vec<String>> {
+        None
+    }
+}
+
+const ACME_CHANNEL: &str = "T0ACME0001/C0ACME0001";
+const LABS_CHANNEL: &str = "E0ACMELAB1/C0ACMELAB0001";
+
+/// Both workspaces, Slack sends on, `auto` on the auto-send list.
+fn sending(auto: &[&str], refuse_sends: bool) -> (Env, Calls) {
+    let calls = Calls::default();
+    let env = env(
+        &[ACME, GRID_TEAM],
+        Arc::new(Recording {
+            calls: calls.clone(),
+            refuse_sends,
+        }),
+    );
+    let mut settings = config::load(&env.state.store).unwrap();
+    settings.slack_sends = true;
+    settings.slack_auto_send_channels = auto.iter().map(|s| (*s).to_owned()).collect();
+    config::save(&env.state.store, &settings).unwrap();
+    (env, calls)
+}
+
+fn writes(calls: &Calls) -> Vec<(String, String, JsonObject)> {
+    calls
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(_, tool, _)| !tool.contains("read") && !tool.contains("search"))
+        .cloned()
+        .collect()
+}
+
+fn as_session<T>(id: &str, f: impl FnOnce() -> T) -> T {
+    super::session::with(
+        super::session::Caller {
+            session: Some(id.into()),
+            client: Some("test-agent".into()),
+        },
+        f,
+    )
+}
+
+#[test]
+fn a_send_waits_for_approval_then_slack_answers_as_is() {
+    let (env, calls) = sending(&[], false);
+    let out = call(
+        &env,
+        "slack_send_message",
+        json!({ "workspace": "acme", "channel_id": ACME_CHANNEL, "message": "Ship it", "thread_ts": "1761055380.000100" }),
+    )
+    .unwrap();
+    assert_eq!(out["status"], "pending");
+    assert_eq!(out["held"]["reason"], "not_listed");
+    assert!(
+        writes(&calls).is_empty(),
+        "nothing reaches Slack before approval"
+    );
+
+    let id = out["proposal_id"].as_u64().unwrap();
+    let listed = super::sends::list(&env.state);
+    assert_eq!(listed[0].channel_id, ACME_CHANNEL);
+    assert_eq!(listed[0].arguments["message"], "Ship it");
+
+    let sent = super::sends::decide(&env.state, id, true).unwrap();
+    assert_eq!(sent.status, super::sends::Status::Sent);
+    let made = writes(&calls);
+    assert_eq!(made.len(), 1);
+    let (domain, tool, args) = &made[0];
+    assert_eq!(
+        (domain.as_str(), tool.as_str()),
+        ("acme", "slack_send_message")
+    );
+    assert_eq!(args["channel_id"], "C0ACME0001");
+    assert_eq!(args["message"], "Ship it");
+    assert_eq!(args["thread_ts"], "1761055380.000100");
+    let content = sent.result.unwrap()["results"][0]["content"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        content.contains("Message sent to <#T0ACME0001/C0ACME0001>"),
+        "{content}"
+    );
+
+    // A second approval does not send twice.
+    assert_eq!(
+        super::sends::decide(&env.state, id, true).unwrap_err().kind,
+        "conflict"
+    );
+    assert_eq!(writes(&calls).len(), 1);
+}
+
+#[test]
+fn every_write_needs_one_named_workspace_that_owns_the_channel() {
+    let (env, calls) = sending(&[ACME_CHANNEL], false);
+    let missing = call(
+        &env,
+        "slack_add_reaction",
+        json!({ "channel_id": ACME_CHANNEL, "message_ts": "1.2", "emoji": "eyes" }),
+    )
+    .unwrap_err();
+    assert_eq!(missing.kind, "validation");
+    let all = call(
+        &env,
+        "slack_send_message",
+        json!({ "workspace": "all", "channel_id": ACME_CHANNEL, "message": "x" }),
+    )
+    .unwrap_err();
+    assert_eq!(all.kind, "validation");
+    let crossed = call(
+        &env,
+        "slack_send_message_draft",
+        json!({ "workspace": "acme", "channel_id": LABS_CHANNEL, "message": "x" }),
+    )
+    .unwrap_err();
+    assert!(
+        crossed.message.contains("belongs to workspace E0ACMELAB1"),
+        "{}",
+        crossed.message
+    );
+    assert!(writes(&calls).is_empty());
+}
+
+#[test]
+fn a_listed_channel_sends_at_once_with_slacks_arguments() {
+    let (env, calls) = sending(&[ACME_CHANNEL], false);
+    for (tool, args) in [
+        ("slack_send_message", json!({ "message": "Done" })),
+        (
+            "slack_schedule_message",
+            json!({ "message": "Later", "post_at": 1_800_000_000 }),
+        ),
+        ("slack_send_message_draft", json!({ "message": "Draft" })),
+        (
+            "slack_add_reaction",
+            json!({ "message_ts": "1761055380.000100", "emoji": "eyes" }),
+        ),
+    ] {
+        let mut args = args;
+        args["workspace"] = json!("T0ACME0001");
+        args["channel_id"] = json!(ACME_CHANNEL);
+        let out = call(&env, tool, args).unwrap();
+        assert_eq!(out["status"], "sent", "{tool}: {out}");
+        assert_eq!(out["auto_sent"], true);
+    }
+    let made = writes(&calls);
+    let tools: Vec<&str> = made.iter().map(|(_, tool, _)| tool.as_str()).collect();
+    assert_eq!(
+        tools,
+        [
+            "slack_send_message",
+            "slack_schedule_message",
+            "slack_send_message_draft",
+            "slack_add_reaction"
+        ]
+    );
+    assert_eq!(made[1].2["post_at"], 1_800_000_000);
+    assert_eq!(made[3].2["emoji"], "eyes");
+    assert!(
+        made.iter()
+            .all(|(_, _, a)| a["channel_id"] == "C0ACME0001" && !a.contains_key("workspace"))
+    );
+}
+
+#[test]
+fn reading_another_workspace_blocks_auto_send_for_that_session() {
+    let (env, calls) = sending(&[ACME_CHANNEL], false);
+    let held = as_session("s1", || {
+        call(
+            &env,
+            "slack_read_channel",
+            json!({ "channel_id": LABS_CHANNEL }),
+        )
+        .unwrap();
+        call(
+            &env,
+            "slack_send_message",
+            json!({ "workspace": "acme", "channel_id": ACME_CHANNEL, "message": "Summary" }),
+        )
+        .unwrap()
+    });
+    assert_eq!(held["status"], "pending");
+    assert_eq!(held["held"]["reason"], "read_other_workspace");
+    assert_eq!(held["held"]["workspaces"], json!([GRID_ORG]));
+    assert!(writes(&calls).is_empty());
+
+    // Another session that read only acme still auto-sends.
+    let fresh = as_session("s2", || {
+        call(
+            &env,
+            "slack_read_channel",
+            json!({ "channel_id": ACME_CHANNEL }),
+        )
+        .unwrap();
+        call(
+            &env,
+            "slack_send_message",
+            json!({ "workspace": "acme", "channel_id": ACME_CHANNEL, "message": "Hi" }),
+        )
+        .unwrap()
+    });
+    assert_eq!(fresh["status"], "sent");
+
+    // The first session only sees its own proposal.
+    let id = held["proposal_id"].clone();
+    assert!(
+        as_session("s2", || call(
+            &env,
+            "slack_get_proposal",
+            json!({ "proposal_id": id })
+        ))
+        .is_err()
+    );
+    let mine = as_session("s1", || {
+        call(
+            &env,
+            "slack_get_proposal",
+            json!({ "proposal_id": held["proposal_id"] }),
+        )
+    })
+    .unwrap();
+    assert_eq!(mine["status"], "pending");
+    assert_eq!(
+        super::sends::list(&env.state)[1].client.as_deref(),
+        Some("test-agent")
+    );
+}
+
+#[test]
+fn rejected_proposals_never_reach_slack_and_slack_errors_come_back_as_is() {
+    let (env, calls) = sending(&[], true);
+    let first = call(
+        &env,
+        "slack_send_message",
+        json!({ "workspace": "acme", "channel_id": ACME_CHANNEL, "message": "No" }),
+    )
+    .unwrap();
+    let id = first["proposal_id"].as_u64().unwrap();
+    let rejected = super::sends::decide(&env.state, id, false).unwrap();
+    assert_eq!(rejected.status, super::sends::Status::Rejected);
+    assert!(super::sends::decide(&env.state, id, true).is_err());
+    assert!(writes(&calls).is_empty());
+
+    let second = call(
+        &env,
+        "slack_send_message",
+        json!({ "workspace": "acme", "channel_id": ACME_CHANNEL, "message": "Yes" }),
+    )
+    .unwrap();
+    let failed =
+        super::sends::decide(&env.state, second["proposal_id"].as_u64().unwrap(), true).unwrap();
+    assert_eq!(failed.status, super::sends::Status::Failed);
+    assert!(
+        failed.error.unwrap()["message"]
+            .as_str()
+            .unwrap()
+            .contains("not_in_channel")
+    );
+}
+
+#[test]
+fn approval_needs_slack_sends_still_on() {
+    let (env, calls) = sending(&[], false);
+    let out = call(
+        &env,
+        "slack_send_message",
+        json!({ "workspace": "acme", "channel_id": ACME_CHANNEL, "message": "x" }),
+    )
+    .unwrap();
+    let mut settings = config::load(&env.state.store).unwrap();
+    settings.slack_sends = false;
+    config::save(&env.state.store, &settings).unwrap();
+    let err =
+        super::sends::decide(&env.state, out["proposal_id"].as_u64().unwrap(), true).unwrap_err();
+    assert_eq!(err.kind, "forbidden");
+    assert!(writes(&calls).is_empty());
 }

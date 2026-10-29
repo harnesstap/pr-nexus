@@ -586,19 +586,44 @@ export interface PrDetail {
   from_cache: boolean;
 }
 
-/** Settings → Agents (MCP). `slack_sends` is not built yet and stays false. */
+/** Settings → Agents (MCP). */
 export interface McpSettings {
   enabled: boolean;
   reads: boolean;
   local_writes: boolean;
+  /** Agents propose Slack sends, drafts, schedules and reactions; you approve each one. */
   slack_sends: boolean;
   /** Search and read Slack in the workspaces listed in `slack_workspaces`. */
   slack_reads: boolean;
   slack_private_search: boolean;
   /** Team IDs (`T…`) agents may see. Empty: none. */
   slack_workspaces: string[];
+  /** Qualified channel IDs (`<workspace>/C…`) where writes go out without approval. */
+  slack_auto_send_channels: string[];
   /** null: any free port, picked at each start. */
   port: number | null;
+}
+
+export type SlackProposalStatus = "pending" | "sent" | "failed" | "rejected";
+
+/** Why a proposal waited for approval. */
+export type SlackProposalHeld = { reason: "not_listed" } | { reason: "read_other_workspace"; workspaces: string[] };
+
+/** One Slack write an agent proposed. */
+export interface SlackProposal {
+  id: number;
+  created_at: string;
+  client: string | null;
+  tool: string;
+  workspace: unknown;
+  channel_id: string;
+  arguments: Record<string, unknown>;
+  status: SlackProposalStatus;
+  held: SlackProposalHeld | null;
+  auto_sent: boolean;
+  result: unknown;
+  error: unknown;
+  decided_at: string | null;
 }
 
 export interface McpStatus {
@@ -752,6 +777,10 @@ export interface Api {
   mcpActivity(outcome?: McpOutcome): Promise<McpActivityEntry[]>;
   /** Empties the Activity log; resolves to how many rows went. */
   clearMcpActivity(): Promise<number>;
+  /** Slack writes agents proposed this run, newest first. */
+  mcpSlackProposals(): Promise<SlackProposal[]>;
+  /** Approve (send now) or reject one pending proposal. */
+  decideMcpSlackProposal(id: number, approve: boolean): Promise<SlackProposal>;
   /** Calls `onChange` after an agent write; returns the unsubscribe. Absent in fakes without a backend. */
   onDataChanged?(onChange: () => void): () => void;
 }
@@ -858,6 +887,8 @@ export const tauriApi: Api = {
   regenerateMcpToken: () => invoke("regenerate_mcp_token"),
   mcpActivity: (outcome) => invoke("mcp_activity", { outcome: outcome ?? null }),
   clearMcpActivity: () => invoke("clear_mcp_activity"),
+  mcpSlackProposals: () => invoke("mcp_slack_proposals"),
+  decideMcpSlackProposal: (id, approve) => invoke("decide_mcp_slack_proposal", { id, approve }),
   onDataChanged: (onChange) => {
     const stop = listen(DATA_CHANGED_EVENT, () => onChange());
     return () => void stop.then((unlisten) => unlisten());

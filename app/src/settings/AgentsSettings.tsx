@@ -4,15 +4,15 @@ import { errorMessage } from "../api";
 import { Switch } from "../Switch";
 import { Tooltip } from "../Tooltip";
 import { McpActivity } from "./McpActivity";
+import { SlackProposals } from "./SlackProposals";
 import { plainText } from "../textInput";
 import { mcpConfigSnippet, parsePort } from "./tabs";
 
 interface Props {
-  api: Pick<Api, "mcpSettings" | "saveMcpSettings" | "mcpToken" | "regenerateMcpToken" | "mcpActivity" | "clearMcpActivity" | "slackWorkspaces" | "slackConnect">;
+  api: Pick<Api, "mcpSettings" | "saveMcpSettings" | "mcpToken" | "regenerateMcpToken" | "mcpActivity" | "clearMcpActivity" | "slackWorkspaces" | "slackConnect" | "mcpSlackProposals" | "decideMcpSlackProposal">;
 }
 
 const button = "rounded border border-slate-700 px-3 py-1.5 text-sm hover:bg-slate-800 disabled:opacity-50";
-const SOON = "Coming soon";
 
 /** Settings → Agents (MCP): the local server local AI agents connect to. */
 export function AgentsSettings({ api }: Props) {
@@ -219,11 +219,23 @@ export function AgentsSettings({ api }: Props) {
             </p>
           </li>
           <li>
-            <Tooltip label={SOON} detail="Send Slack review requests after you approve a preview." align="start">
-              <Switch label="Slack sends" checked={false} disabled onChange={() => undefined}>
-                Slack sends <span className="text-slate-500">— coming soon</span>
-              </Switch>
-            </Tooltip>
+            <Switch
+              label="Slack sends"
+              checked={settings.slack_reads && settings.slack_sends}
+              disabled={busy || !settings.slack_reads}
+              aria-describedby="agents-sends-note"
+              onChange={(slack_sends) => save({ slack_sends })}
+            >
+              Slack sends <span className="text-slate-400">— agents propose messages, drafts, schedules and reactions; you approve each one</span>
+            </Switch>
+            <p id="agents-sends-note" className="mt-1 max-w-prose text-xs text-slate-400">
+              {settings.slack_reads
+                ? "Each write names one workspace. Channels listed below go out without approval, unless the agent read another workspace first."
+                : "Turn on Slack reads first."}
+            </p>
+            {settings.slack_reads && settings.slack_sends && (
+              <AutoSendChannels channels={settings.slack_auto_send_channels} disabled={busy} onChange={(slack_auto_send_channels) => save({ slack_auto_send_channels })} />
+            )}
           </li>
         </ul>
       </section>
@@ -332,6 +344,8 @@ export function AgentsSettings({ api }: Props) {
         )}
       </section>
 
+      {settings.slack_reads && <SlackProposals api={api} canSend={settings.slack_sends} />}
+
       <McpActivity api={api} />
     </div>
   );
@@ -400,5 +414,62 @@ function SlackWorkspacePicker({ workspaces, selected, disabled, reauthing, onCha
         })}
       </ul>
     </fieldset>
+  );
+}
+
+const CHANNEL = /^[^\s/]+\/[CDG][A-Z0-9]+$/;
+
+/** Channels where Slack writes go out without approval. */
+function AutoSendChannels({ channels, disabled, onChange }: { channels: string[]; disabled: boolean; onChange: (next: string[]) => void }) {
+  const [draft, setDraft] = useState("");
+  const [invalid, setInvalid] = useState(false);
+  function add() {
+    const id = draft.trim();
+    if (!CHANNEL.test(id)) {
+      setInvalid(true);
+      return;
+    }
+    setInvalid(false);
+    setDraft("");
+    if (!channels.includes(id)) {
+      onChange([...channels, id]);
+    }
+  }
+  return (
+    <div className="mt-2 ml-1 space-y-1">
+      <p className="text-xs text-slate-400">Auto-send channels {channels.length === 0 && "— none: every write waits for you"}</p>
+      <ul aria-label="Auto-send channels" className="space-y-1">
+        {channels.map((id) => (
+          <li key={id} className="flex items-center gap-2">
+            <span className="font-mono text-xs">{id}</span>
+            <button type="button" disabled={disabled} aria-label={`Remove ${id}`} className="rounded px-1.5 text-xs hover:bg-slate-800" onClick={() => onChange(channels.filter((c) => c !== id))}>
+              Remove
+            </button>
+          </li>
+        ))}
+      </ul>
+      <form
+        className="flex items-center gap-2"
+        onSubmit={(event) => {
+          event.preventDefault();
+          add();
+        }}
+      >
+        <input
+          aria-label="Add auto-send channel"
+          aria-invalid={invalid}
+          placeholder="workspace/C0123456789"
+          value={draft}
+          disabled={disabled}
+          {...plainText}
+          onChange={(event) => setDraft(event.target.value)}
+          className="w-64 rounded border border-slate-700 bg-slate-900 px-2 py-1 font-mono text-xs"
+        />
+        <button type="submit" disabled={disabled || draft.trim() === ""} className={button}>
+          Add
+        </button>
+      </form>
+      {invalid && <p role="alert" className="text-xs text-rose-300">Use a qualified channel ID, as Slack tools return it: workspace/C…</p>}
+    </div>
   );
 }

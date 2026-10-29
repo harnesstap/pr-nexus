@@ -8,8 +8,10 @@ use serde::Serialize;
 use tauri::State;
 use tokio::sync::Mutex;
 
-use super::audit::{AuditSink, Fanout, LogAudit, StoreAudit};
+use super::Capability;
+use super::audit::{AuditEvent, AuditSink, Fanout, LogAudit, Outcome, StoreAudit};
 use super::server::{self, Running, Shared};
+use super::slack::sends::{self, Proposal, Status};
 use super::{McpSettings, config, token};
 use crate::blocking;
 use crate::error::AppError;
@@ -180,6 +182,63 @@ impl McpControl {
         }
     }
 
+    /// The user approves (Slack is called now) or rejects proposal `id`.
+    /// Either way it lands in Activity.
+    pub async fn decide(&self, id: u64, approve: bool) -> Result<Proposal, AppError> {
+        let state = Arc::clone(&self.shared.state);
+        let started = std::time::Instant::now();
+        let decided = blocking::run(move || sends::decide(&state, id, approve)).await;
+        let verb = if approve { "approved" } else { "rejected" };
+        let (tool, arguments, outcome, summary, error) = match &decided {
+            Ok(proposal) => {
+                let mut arguments = serde_json::Map::new();
+                arguments.insert("channel_id".into(), proposal.channel_id.clone().into());
+                let (outcome, error, done) = match proposal.status {
+                    Status::Failed => {
+                        let kind = proposal.error.as_ref().and_then(|e| e["kind"].as_str());
+                        let message = proposal.error.as_ref().and_then(|e| e["message"].as_str());
+                        (
+                            Outcome::Failed {
+                                kind: kind.unwrap_or("api").to_owned(),
+                            },
+                            message.map(str::to_owned),
+                            ", Slack refused it",
+                        )
+                    }
+                    Status::Sent => (Outcome::Ok, None, ", sent"),
+                    _ => (Outcome::Ok, None, ""),
+                };
+                (
+                    proposal.tool.clone(),
+                    arguments,
+                    outcome,
+                    format!("user {verb} Slack proposal {id}{done}"),
+                    error,
+                )
+            }
+            Err(err) => (
+                "slack_proposal".to_owned(),
+                serde_json::Map::new(),
+                Outcome::Failed {
+                    kind: err.kind.clone(),
+                },
+                format!("user {verb} Slack proposal {id}"),
+                Some(err.message.clone()),
+            ),
+        };
+        self.shared.audit.record(&AuditEvent {
+            tool,
+            capability: Capability::SlackSends,
+            arguments,
+            outcome,
+            duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            client: Some("PR Nexus".to_owned()),
+            summary,
+            error,
+        });
+        decided
+    }
+
     fn set_status(&self, status: McpStatus) {
         *self.status.write().expect("mcp status") = status;
     }
@@ -271,4 +330,22 @@ pub async fn mcp_activity(
 pub async fn clear_mcp_activity(app: State<'_, Arc<AppState>>) -> Result<usize, AppError> {
     let state = Arc::clone(&app);
     blocking::run(move || Ok(state.store.clear_mcp_audit()?)).await
+}
+
+/// Slack sends agents asked for, newest first.
+#[tauri::command]
+pub async fn mcp_slack_proposals(app: State<'_, Arc<AppState>>) -> Result<Vec<Proposal>, AppError> {
+    let state = Arc::clone(&app);
+    blocking::run(move || Ok(sends::list(&state))).await
+}
+
+/// Approve (send now) or reject one Slack proposal.
+#[tauri::command]
+pub async fn decide_mcp_slack_proposal(
+    mcp: State<'_, Arc<McpControl>>,
+    id: u64,
+    approve: bool,
+) -> Result<Proposal, AppError> {
+    let mcp = Arc::clone(&mcp);
+    mcp.decide(id, approve).await
 }

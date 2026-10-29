@@ -1,7 +1,7 @@
 //! Who answers a Slack tool for one workspace: the official Slack MCP
 //! server through that workspace's own session, or demo fixtures.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
@@ -87,6 +87,9 @@ pub fn per_minute(tool: &str) -> usize {
         // Tier 3.
         "slack_get_reactions" | "slack_read_canvas" => 50,
         "slack_read_channel" | "slack_read_thread" => 50,
+        "slack_schedule_message" | "slack_add_reaction" => 50,
+        // Slack documents "special" limits for sends; one a second at most.
+        "slack_send_message" | "slack_send_message_draft" => 20,
         _ => 100,
     }
 }
@@ -97,6 +100,10 @@ pub struct SlackProxy {
     official: Arc<Official>,
     enterprises: Mutex<HashMap<i64, Option<String>>>,
     calls: Mutex<HashMap<(i64, String), VecDeque<Instant>>>,
+    /// Workspaces (qualifiers) each MCP session has read from.
+    reads: Mutex<HashMap<String, BTreeSet<String>>>,
+    /// Slack writes agents asked for (see [`super::sends`]).
+    pub(crate) proposals: Mutex<super::sends::Proposals>,
     /// Signs page cursors; new on every run, so old cursors expire.
     pub(crate) key: [u8; 32],
 }
@@ -108,6 +115,8 @@ impl Default for SlackProxy {
             official: Arc::default(),
             enterprises: Mutex::default(),
             calls: Mutex::default(),
+            reads: Mutex::default(),
+            proposals: Mutex::default(),
             key: rand::random(),
         }
     }
@@ -144,6 +153,30 @@ impl SlackProxy {
         self.upstream(state)
             .granted_scopes(state, account)
             .map(|granted| slack_mcp::missing_scopes(&granted))
+            .unwrap_or_default()
+    }
+
+    /// Sessions remembered at most; past it, one is forgotten per new one.
+    const SESSIONS_KEPT: usize = 1024;
+
+    /// `session` got Slack content from the workspace `qualifier`.
+    pub fn note_read(&self, session: Option<&str>, qualifier: &str) {
+        let mut reads = lock(&self.reads);
+        let key = session.unwrap_or_default().to_owned();
+        if !reads.contains_key(&key)
+            && reads.len() >= Self::SESSIONS_KEPT
+            && let Some(any) = reads.keys().next().cloned()
+        {
+            reads.remove(&any);
+        }
+        reads.entry(key).or_default().insert(qualifier.to_owned());
+    }
+
+    /// Workspaces other than `qualifier` that `session` has read from.
+    pub fn read_elsewhere(&self, session: Option<&str>, qualifier: &str) -> Vec<String> {
+        lock(&self.reads)
+            .get(session.unwrap_or_default())
+            .map(|read| read.iter().filter(|q| *q != qualifier).cloned().collect())
             .unwrap_or_default()
     }
 
