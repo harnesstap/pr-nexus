@@ -26,7 +26,7 @@ test("is off by default and starts the server when enabled", async () => {
 
   fireEvent.click(master);
   expect(await screen.findByText("● Running on port 43117")).toBeInTheDocument();
-  expect(save).toHaveBeenCalledWith({ enabled: true, reads: true, local_writes: false, slack_sends: false, slack_reads: false, slack_private_search: false, slack_workspaces: [], slack_auto_send_channels: [], port: null });
+  expect(save).toHaveBeenCalledWith({ enabled: true, reads: true, local_writes: false, slack_sends: false, slack_reads: false, slack_private_search: false, slack_workspaces: [], slack_auto_send_channels: [], slack_send_mode: "allowlist", port: null });
   expect(screen.getByText("http://127.0.0.1:43117/mcp")).toBeInTheDocument();
   expect(screen.getByLabelText("Token, masked")).toHaveTextContent("pnx_••••••••••••7f3e");
   expect(document.body.textContent).not.toContain(FAKE_MCP_TOKEN);
@@ -158,7 +158,7 @@ test("a bad port is refused before saving; a server error is shown", async () =>
   expect(save).not.toHaveBeenCalled();
 
   save.mockResolvedValueOnce({
-    settings: { enabled: true, reads: true, local_writes: false, slack_sends: false, slack_reads: false, slack_private_search: false, slack_workspaces: [], slack_auto_send_channels: [], port: 40100 },
+    settings: { enabled: true, reads: true, local_writes: false, slack_sends: false, slack_reads: false, slack_private_search: false, slack_workspaces: [], slack_auto_send_channels: [], slack_send_mode: "allowlist", port: 40100 },
     status: { state: "error", url: null, port: 40100, error: "Port 40100 is already in use on 127.0.0.1." },
     token_masked: "pnx_••••••••••••7f3e",
   });
@@ -278,4 +278,29 @@ test("approving needs Slack sends on; rejecting does not", async () => {
   expect(await screen.findByRole("button", { name: "Approve proposal 1" })).toBeDisabled();
   expect(screen.getByRole("button", { name: "Reject proposal 1" })).toBeEnabled();
   expect(screen.getByText("Turn on Slack sends to approve.")).toBeInTheDocument();
+});
+
+test("Slack send modes show the allowlist only in allowlist mode and warn in automatic mode", async () => {
+  const api = fakeMcp({ enabled: true, slack_reads: true, slack_sends: true, slack_auto_send_channels: ["T0ACME0001/C0123456789"] }, [], FAKE_SLACK_WORKSPACES);
+  const save = vi.spyOn(api, "saveMcpSettings");
+  render(<AgentsSettings api={api} />);
+  const allowlist = await screen.findByRole("radio", { name: /Channel allowlist/ });
+  expect(allowlist).toBeChecked();
+  expect(screen.getByRole("textbox", { name: "Add auto-send channel" })).toBeInTheDocument();
+  expect(screen.queryByRole("note")).toBeNull();
+
+  fireEvent.click(screen.getByRole("radio", { name: /Fully automatic/ }));
+  expect(await screen.findByRole("note")).toHaveTextContent("sent immediately as you");
+  expect(screen.queryByRole("textbox", { name: "Add auto-send channel" })).toBeNull();
+  expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ slack_send_mode: "automatic", slack_auto_send_channels: ["T0ACME0001/C0123456789"] }));
+
+  fireEvent.click(screen.getByRole("radio", { name: /Approve everything/ }));
+  await vi.waitFor(() => expect(screen.getByRole("radio", { name: /Approve everything/ })).toBeChecked());
+  expect(screen.queryByRole("note")).toBeNull();
+  expect(screen.queryByRole("textbox", { name: "Add auto-send channel" })).toBeNull();
+  expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ slack_send_mode: "approve_all" }));
+
+  fireEvent.click(allowlist);
+  // The saved allowlist survives the round trip through other modes.
+  await screen.findByRole("button", { name: "Remove T0ACME0001/C0123456789" });
 });

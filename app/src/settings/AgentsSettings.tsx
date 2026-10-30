@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { Api, McpSettings, McpView, SlackWorkspace } from "../api";
+import type { Api, McpSettings, McpView, SlackSendMode, SlackWorkspace } from "../api";
 import { errorMessage } from "../api";
 import { Switch } from "../Switch";
 import { Tooltip } from "../Tooltip";
@@ -226,15 +226,25 @@ export function AgentsSettings({ api }: Props) {
               aria-describedby="agents-sends-note"
               onChange={(slack_sends) => save({ slack_sends })}
             >
-              Slack sends <span className="text-slate-400">— agents propose messages, drafts, schedules and reactions; you approve each one</span>
+              Slack sends <span className="text-slate-400">— agents send messages, drafts, schedules and reactions as you</span>
             </Switch>
             <p id="agents-sends-note" className="mt-1 max-w-prose text-xs text-slate-400">
               {settings.slack_reads
-                ? "Each write names one workspace. Channels listed below go out without approval, unless the agent read another workspace first."
+                ? "Each write names one workspace."
                 : "Turn on Slack reads first."}
             </p>
             {settings.slack_reads && settings.slack_sends && (
-              <AutoSendChannels channels={settings.slack_auto_send_channels} disabled={busy} onChange={(slack_auto_send_channels) => save({ slack_auto_send_channels })} />
+              <>
+                <SendModes mode={settings.slack_send_mode} disabled={busy} onChange={(slack_send_mode) => save({ slack_send_mode })} />
+                {settings.slack_send_mode === "automatic" && (
+                  <p role="note" className="mt-1 ml-1 max-w-prose text-xs text-amber-300">
+                    Agents&apos; messages are sent immediately as you, with no approval.
+                  </p>
+                )}
+                {settings.slack_send_mode === "allowlist" && (
+                  <AutoSendChannels channels={settings.slack_auto_send_channels} disabled={busy} onChange={(slack_auto_send_channels) => save({ slack_auto_send_channels })} />
+                )}
+              </>
             )}
           </li>
         </ul>
@@ -471,5 +481,27 @@ function AutoSendChannels({ channels, disabled, onChange }: { channels: string[]
       </form>
       {invalid && <p role="alert" className="text-xs text-rose-300">Use a qualified channel ID, as Slack tools return it: workspace/C…</p>}
     </div>
+  );
+}
+
+const SEND_MODES: { mode: SlackSendMode; label: string; hint: string }[] = [
+  { mode: "approve_all", label: "Approve everything", hint: "every write waits for you in the app" },
+  { mode: "allowlist", label: "Channel allowlist", hint: "listed channels go out at once, unless the agent read another workspace first; others wait" },
+  { mode: "automatic", label: "Fully automatic", hint: "every write goes out at once" },
+];
+
+function SendModes({ mode, disabled, onChange }: { mode: SlackSendMode; disabled: boolean; onChange: (mode: SlackSendMode) => void }) {
+  return (
+    <fieldset className="mt-2 ml-1 space-y-1 text-sm">
+      <legend className="text-xs text-slate-400">Approval</legend>
+      {SEND_MODES.map((m) => (
+        <label key={m.mode} className="flex items-baseline gap-2">
+          <input type="radio" name="slack-send-mode" value={m.mode} checked={mode === m.mode} disabled={disabled} onChange={() => onChange(m.mode)} />
+          <span>
+            {m.label} <span className="text-xs text-slate-400">— {m.hint}</span>
+          </span>
+        </label>
+      ))}
+    </fieldset>
   );
 }

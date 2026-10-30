@@ -600,14 +600,18 @@ export interface McpSettings {
   slack_workspaces: string[];
   /** Qualified channel IDs (`<workspace>/C…`) where writes go out without approval. */
   slack_auto_send_channels: string[];
+  /** approve_all: every write waits; automatic: every write goes out at once; allowlist: only `slack_auto_send_channels`. */
+  slack_send_mode: SlackSendMode;
   /** null: any free port, picked at each start. */
   port: number | null;
 }
 
+export type SlackSendMode = "approve_all" | "automatic" | "allowlist";
+
 export type SlackProposalStatus = "pending" | "sent" | "failed" | "rejected";
 
 /** Why a proposal waited for approval. */
-export type SlackProposalHeld = { reason: "not_listed" } | { reason: "read_other_workspace"; workspaces: string[] };
+export type SlackProposalHeld = { reason: "approve_all" } | { reason: "not_listed" } | { reason: "read_other_workspace"; workspaces: string[] };
 
 /** One Slack write an agent proposed. */
 export interface SlackProposal {
