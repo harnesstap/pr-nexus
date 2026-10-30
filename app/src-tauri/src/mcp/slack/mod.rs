@@ -11,6 +11,7 @@
 //! 127.0.0.1, for agents on the same computer.
 
 pub mod cursor;
+pub mod elicit;
 pub mod fixtures;
 pub mod ids;
 pub mod sends;

@@ -154,6 +154,7 @@ impl ServerHandler for NexusMcp {
                 .and_then(|value| value.to_str().ok())
                 .map(str::to_owned),
             client: client.clone(),
+            ask: super::slack::elicit::PeerAsk::for_peer(&context.peer),
         };
         let result = tokio::task::spawn_blocking(move || {
             super::slack::session::with(caller, || handler(&state, input))

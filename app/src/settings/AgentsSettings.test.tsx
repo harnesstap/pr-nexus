@@ -27,7 +27,7 @@ test("is off by default and starts the server when enabled", async () => {
 
   fireEvent.click(master);
   expect(await screen.findByText("● Running on port 43117")).toBeInTheDocument();
-  expect(save).toHaveBeenCalledWith({ enabled: true, reads: true, local_writes: false, slack_sends: false, slack_reads: false, slack_private_search: false, slack_workspaces: [], slack_auto_send_channels: [], slack_send_mode: "allowlist", port: null });
+  expect(save).toHaveBeenCalledWith({ enabled: true, reads: true, local_writes: false, slack_sends: false, slack_reads: false, slack_private_search: false, slack_workspaces: [], slack_auto_send_channels: [], slack_send_mode: "allowlist", slack_elicit: true, port: null });
   expect(screen.getByText("http://127.0.0.1:43117/mcp")).toBeInTheDocument();
   expect(screen.getByLabelText("Token, masked")).toHaveTextContent("pnx_••••••••••••7f3e");
   expect(document.body.textContent).not.toContain(FAKE_MCP_TOKEN);
@@ -168,7 +168,7 @@ test("a bad port is refused before saving; a server error is shown", async () =>
   expect(save).not.toHaveBeenCalled();
 
   save.mockResolvedValueOnce({
-    settings: { enabled: true, reads: true, local_writes: false, slack_sends: false, slack_reads: false, slack_private_search: false, slack_workspaces: [], slack_auto_send_channels: [], slack_send_mode: "allowlist", port: 40100 },
+    settings: { enabled: true, reads: true, local_writes: false, slack_sends: false, slack_reads: false, slack_private_search: false, slack_workspaces: [], slack_auto_send_channels: [], slack_send_mode: "allowlist", slack_elicit: true, port: 40100 },
     status: { state: "error", url: null, port: 40100, error: "Port 40100 is already in use on 127.0.0.1." },
     token_masked: "pnx_••••••••••••7f3e",
   });
@@ -340,4 +340,24 @@ test("adds pr-nexus to a client and shows its status", async () => {
   fireEvent.click(screen.getByRole("tab", { name: "OpenCode" }));
   expect(screen.getByRole("button", { name: "Add to OpenCode" })).toBeDisabled();
   window.localStorage.clear();
+});
+
+test("Ask in the agent is on by default, saves when toggled, and hides in automatic mode", async () => {
+  const api = fakeMcp({ enabled: true, slack_reads: true, slack_sends: true }, [], FAKE_SLACK_WORKSPACES);
+  const save = vi.spyOn(api, "saveMcpSettings");
+  render(<AgentsSettings api={api} />);
+  const ask = await screen.findByRole("checkbox", { name: /Ask in the agent when it supports it/ });
+  expect(ask).toBeChecked();
+  fireEvent.click(ask);
+  await vi.waitFor(() => expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ slack_elicit: false })));
+  expect(await screen.findByRole("checkbox", { name: /Ask in the agent/ })).not.toBeChecked();
+  fireEvent.click(screen.getByRole("radio", { name: /Fully automatic/ }));
+  await vi.waitFor(() => expect(screen.queryByRole("checkbox", { name: /Ask in the agent/ })).toBeNull());
+});
+
+test("a proposal confirmed in the agent says where", async () => {
+  const api = fakeMcp({ enabled: true, slack_reads: true, slack_sends: true }, [], FAKE_SLACK_WORKSPACES, [proposal(7, { status: "sent", decided_in: "claude-code", decided_at: new Date().toISOString() }), proposal(8, { status: "rejected", decided_in: "claude-code", decided_at: new Date().toISOString() })]);
+  render(<AgentsSettings api={api} />);
+  expect(await screen.findByText("Approved in claude-code")).toBeInTheDocument();
+  expect(screen.getByText("Declined in claude-code")).toBeInTheDocument();
 });

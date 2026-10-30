@@ -18,6 +18,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use super::elicit::{self, Outcome};
 use super::ids;
 use super::session;
 use super::tools::{exposed, matches, run, validation, workspace_ref};
@@ -71,6 +72,11 @@ pub struct Proposal {
     pub result: Option<Value>,
     pub error: Option<Value>,
     pub decided_at: Option<String>,
+    /// The agent (client name) where the user approved or declined it
+    /// through MCP elicitation; `None` when decided in PR Nexus.
+    pub decided_in: Option<String>,
+    /// Why asking in the agent got no answer, so it waits in PR Nexus.
+    pub unanswered: Option<String>,
     #[serde(skip)]
     session: Option<String>,
 }
@@ -419,7 +425,7 @@ fn propose<A: WriteArgs>(
     let proposal = lock(&state.slack_proxy.proposals).push(Proposal {
         id: 0,
         created_at: Utc::now().to_rfc3339(),
-        client: caller.client,
+        client: caller.client.clone(),
         tool: tool.to_owned(),
         workspace: workspace_ref(&ws),
         channel_id: format!("{}/{channel}", ws.qualifier()),
@@ -430,10 +436,19 @@ fn propose<A: WriteArgs>(
         result: None,
         error: None,
         decided_at: None,
+        decided_in: None,
+        unanswered: None,
         session: caller.session,
     });
     if proposal.held.is_some() {
-        return Ok(agent_view(&proposal));
+        return match caller.ask {
+            Some(ask)
+                if elicit::should_ask(proposal.held.as_ref(), settings.slack_elicit, true) =>
+            {
+                ask_in_agent(state, &ws, proposal, ask.as_ref(), caller.client)
+            }
+            _ => Ok(agent_view(&proposal)),
+        };
     }
     let proposal = execute(state, &ws, proposal.id)?;
     match &proposal.error {
@@ -443,6 +458,61 @@ fn propose<A: WriteArgs>(
             error["message"].as_str().unwrap_or_default(),
         )),
         None => Ok(agent_view(&proposal)),
+    }
+}
+
+/// Ask the user to confirm held `proposal` in their agent, then send it,
+/// drop it, or leave it waiting in PR Nexus.
+fn ask_in_agent(
+    state: &AppState,
+    ws: &Exposed,
+    proposal: Proposal,
+    ask: &dyn session::Ask,
+    client: Option<String>,
+) -> Result<Value, AppError> {
+    let text = elicit::message(
+        &proposal.tool,
+        &proposal.workspace,
+        &proposal.channel_id,
+        &Value::Object(proposal.arguments.clone()),
+    );
+    let agent = client.unwrap_or_else(|| "the agent".to_owned());
+    let id = proposal.id;
+    let outcome = elicit::outcome(ask.ask(&text));
+    {
+        let mut proposals = lock(&state.slack_proxy.proposals);
+        let Some(proposal) = proposals.get_mut(id) else {
+            return Err(AppError::new(
+                "not_found",
+                format!("No Slack proposal {id}"),
+            ));
+        };
+        // Decided in PR Nexus while the agent asked: that answer stands.
+        if proposal.status != Status::Pending {
+            return Ok(agent_view(proposal));
+        }
+        match &outcome {
+            Outcome::Send => proposal.decided_in = Some(agent.clone()),
+            Outcome::Drop => {
+                proposal.status = Status::Rejected;
+                proposal.decided_in = Some(agent.clone());
+                proposal.decided_at = Some(Utc::now().to_rfc3339());
+            }
+            Outcome::Wait(why) => proposal.unanswered = Some(why.clone()),
+        }
+        if outcome != Outcome::Send {
+            return Ok(agent_view(proposal));
+        }
+    }
+    match execute(state, ws, id) {
+        Ok(proposal) => Ok(agent_view(&proposal)),
+        // Approved in PR Nexus at the same moment: report where it stands.
+        Err(err) if err.kind == "conflict" => {
+            let proposals = lock(&state.slack_proxy.proposals);
+            let found = proposals.items.iter().find(|p| p.id == id);
+            found.map(agent_view).ok_or(err)
+        }
+        Err(err) => Err(err),
     }
 }
 
@@ -491,14 +561,38 @@ fn agent_view(proposal: &Proposal) -> Value {
         "held": proposal.held,
         "result": proposal.result,
         "error": proposal.error,
-        "message": match proposal.status {
-            Status::Pending => "Waiting for the user to approve it in PR Nexus.",
-            Status::Sent if proposal.auto_sent => "Sent at once, without approval, per the user's settings; `result` is Slack's reply.",
-            Status::Sent => "The user approved it and Slack accepted it; `result` is Slack's reply.",
-            Status::Failed => "Slack refused it; `error` is Slack's answer.",
-            Status::Rejected => "The user rejected it in PR Nexus. Do not retry it unasked.",
-        },
+        "decided_in": proposal.decided_in,
+        "message": agent_message(proposal),
     })
+}
+
+fn agent_message(proposal: &Proposal) -> String {
+    let place = proposal.decided_in.as_deref();
+    match (proposal.status, place) {
+        (Status::Pending, None) if proposal.unanswered.is_some() => {
+            "The user did not answer the confirmation in the agent, so it now waits for \
+                approval in PR Nexus."
+                .to_owned()
+        }
+        (Status::Pending, _) => "Waiting for the user to approve it in PR Nexus.".to_owned(),
+        (Status::Sent, _) if proposal.auto_sent => {
+            "Sent at once, without approval, per the user's settings; `result` is Slack's reply."
+                .to_owned()
+        }
+        (Status::Sent, Some(agent)) => format!(
+            "The user approved it in {agent} and Slack accepted it; `result` is Slack's reply."
+        ),
+        (Status::Sent, None) => {
+            "The user approved it and Slack accepted it; `result` is Slack's reply.".to_owned()
+        }
+        (Status::Failed, _) => "Slack refused it; `error` is Slack's answer.".to_owned(),
+        (Status::Rejected, Some(agent)) => {
+            format!("The user declined it in {agent}; it was not sent. Do not retry it unasked.")
+        }
+        (Status::Rejected, None) => {
+            "The user rejected it in PR Nexus. Do not retry it unasked.".to_owned()
+        }
+    }
 }
 
 fn get_proposal(state: &AppState, arguments: JsonObject) -> Result<Value, AppError> {

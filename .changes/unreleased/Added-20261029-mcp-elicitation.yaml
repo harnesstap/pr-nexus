@@ -1,0 +1,3 @@
+kind: Added
+body: Agents whose MCP client supports elicitation now ask you to confirm a held Slack write right in the agent, showing the workspace, channel and exact text. Accepting sends it at once (logged as approved in that agent), declining drops it, and no answer leaves it waiting in PR Nexus. A new "Ask in the agent when it supports it" setting, on by default, controls this.
+time: 2026-10-29T21:35:00.000000-10:00

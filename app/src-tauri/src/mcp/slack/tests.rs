@@ -12,9 +12,11 @@ use rmcp::model::JsonObject;
 use serde_json::{Value, json};
 
 use super::cursor::{self, Composite};
+use super::elicit::{self, Outcome};
 use super::fixtures::{Canned, Fixtures, GRID_ORG, GRID_TEAM};
 use super::ids;
 use super::sends::{Held, hold};
+use super::session::{Answer, Ask, Caller};
 use super::tools::unwrap_reply;
 use super::upstream::{Exposed, Upstream};
 use crate::error::AppError;
@@ -40,7 +42,7 @@ fn account(team: &str, domain: &str, name: &str) -> Account {
 }
 
 struct Env {
-    state: AppState,
+    state: Arc<AppState>,
     _dir: tempfile::TempDir,
 }
 
@@ -67,7 +69,10 @@ fn env(allowed: &[&str], upstream: Arc<dyn Upstream>) -> Env {
     )
     .unwrap();
     state.slack_proxy.set_upstream(upstream);
-    Env { state, _dir: dir }
+    Env {
+        state: Arc::new(state),
+        _dir: dir,
+    }
 }
 
 fn both() -> Env {
@@ -648,6 +653,7 @@ fn as_session<T>(id: &str, f: impl FnOnce() -> T) -> T {
         super::session::Caller {
             session: Some(id.into()),
             client: Some("test-agent".into()),
+            ask: None,
         },
         f,
     )
@@ -967,4 +973,285 @@ fn automatic_sends_everything_at_once_even_after_reading_elsewhere() {
             .contains("without approval")
     );
     assert_eq!(writes(&calls).len(), 1);
+}
+
+// MCP elicitation: asking in the agent (SPEC §10.1.4).
+
+/// Answers every confirmation with `answer` and keeps what it was shown.
+struct FakeAsk {
+    answer: Answer,
+    shown: std::sync::Mutex<Vec<String>>,
+}
+
+fn asking(answer: Answer) -> Arc<FakeAsk> {
+    Arc::new(FakeAsk {
+        answer,
+        shown: Default::default(),
+    })
+}
+
+impl Ask for FakeAsk {
+    fn ask(&self, message: &str) -> Answer {
+        self.shown.lock().unwrap().push(message.to_owned());
+        self.answer.clone()
+    }
+}
+
+fn send_as(env: &Env, ask: Option<Arc<FakeAsk>>, arguments: Value) -> Value {
+    super::session::with(
+        Caller {
+            session: Some("s1".into()),
+            client: Some("acme-agent".into()),
+            ask: ask.map(|a| a as Arc<dyn Ask>),
+        },
+        || call(env, "slack_send_message", arguments),
+    )
+    .unwrap()
+}
+
+fn hi() -> Value {
+    json!({ "workspace": "acme", "channel_id": ACME_CHANNEL, "message": "Ship it?" })
+}
+
+#[test]
+fn asks_only_for_held_writes_when_enabled_and_supported() {
+    let held = Some(Held::ApproveAll);
+    assert!(elicit::should_ask(held.as_ref(), true, true));
+    assert!(
+        !elicit::should_ask(held.as_ref(), true, false),
+        "no capability"
+    );
+    assert!(
+        !elicit::should_ask(held.as_ref(), false, true),
+        "turned off"
+    );
+    // Automatic mode holds nothing, so it never asks.
+    assert!(!elicit::should_ask(None, true, true));
+}
+
+#[test]
+fn each_answer_has_one_outcome() {
+    assert_eq!(elicit::outcome(Answer::Accept), Outcome::Send);
+    assert_eq!(elicit::outcome(Answer::Decline), Outcome::Drop);
+    assert_eq!(elicit::outcome(Answer::Cancel), Outcome::Drop);
+    assert_eq!(
+        elicit::outcome(Answer::Unanswered("timed out".into())),
+        Outcome::Wait("timed out".into())
+    );
+}
+
+#[test]
+fn accepted_in_the_agent_sends_now_and_says_where() {
+    let (env, calls) = sending(&[], false);
+    with_mode(&env, SlackSendMode::ApproveAll);
+    let ask = asking(Answer::Accept);
+    let out = send_as(&env, Some(ask.clone()), hi());
+    assert_eq!(out["status"], "sent");
+    assert_eq!(out["decided_in"], "acme-agent");
+    assert!(
+        out["message"]
+            .as_str()
+            .unwrap()
+            .contains("approved it in acme-agent")
+    );
+    assert_eq!(writes(&calls).len(), 1);
+    let shown = ask.shown.lock().unwrap();
+    assert_eq!(shown.len(), 1);
+    for part in [
+        "Send this Slack message",
+        "Acme",
+        "T0ACME0001",
+        "C0ACME0001",
+        "Ship it?",
+    ] {
+        assert!(shown[0].contains(part), "{part} missing from {}", shown[0]);
+    }
+    let kept = &super::sends::list(&env.state)[0];
+    assert_eq!(kept.decided_in.as_deref(), Some("acme-agent"));
+    assert!(!kept.auto_sent);
+}
+
+#[test]
+fn declined_or_cancelled_in_the_agent_is_never_sent() {
+    for answer in [Answer::Decline, Answer::Cancel] {
+        let (env, calls) = sending(&[], false);
+        let out = send_as(&env, Some(asking(answer)), hi());
+        assert_eq!(out["status"], "rejected");
+        assert_eq!(out["decided_in"], "acme-agent");
+        assert!(
+            out["message"]
+                .as_str()
+                .unwrap()
+                .contains("declined it in acme-agent")
+        );
+        assert!(writes(&calls).is_empty());
+    }
+}
+
+#[test]
+fn no_answer_falls_back_to_approval_in_the_app() {
+    let (env, calls) = sending(&[], false);
+    let out = send_as(
+        &env,
+        Some(asking(Answer::Unanswered("timed out".into()))),
+        hi(),
+    );
+    assert_eq!(out["status"], "pending");
+    assert!(out["decided_in"].is_null());
+    assert!(
+        out["message"]
+            .as_str()
+            .unwrap()
+            .contains("waits for approval in PR Nexus")
+    );
+    assert!(writes(&calls).is_empty());
+    let id = out["proposal_id"].as_u64().unwrap();
+    assert_eq!(
+        super::sends::decide(&env.state, id, true).unwrap().status,
+        super::sends::Status::Sent
+    );
+}
+
+#[test]
+fn without_the_capability_or_the_setting_nothing_is_asked() {
+    let (env, calls) = sending(&[], false);
+    let out = send_as(&env, None, hi());
+    assert_eq!(out["status"], "pending");
+
+    let mut settings = config::load(&env.state.store).unwrap();
+    settings.slack_elicit = false;
+    config::save(&env.state.store, &settings).unwrap();
+    let ask = asking(Answer::Accept);
+    let out = send_as(&env, Some(ask.clone()), hi());
+    assert_eq!(out["status"], "pending");
+    assert!(ask.shown.lock().unwrap().is_empty());
+    assert!(writes(&calls).is_empty());
+}
+
+#[test]
+fn automatic_mode_never_asks() {
+    let (env, calls) = sending(&[], false);
+    with_mode(&env, SlackSendMode::Automatic);
+    let ask = asking(Answer::Decline);
+    let out = send_as(&env, Some(ask.clone()), hi());
+    assert_eq!(out["status"], "sent");
+    assert!(ask.shown.lock().unwrap().is_empty());
+    assert_eq!(writes(&calls).len(), 1);
+}
+
+#[test]
+fn a_cross_workspace_hold_can_be_approved_in_the_agent() {
+    let (env, calls) = sending(&[ACME_CHANNEL], false);
+    let out = super::session::with(
+        Caller {
+            session: Some("s1".into()),
+            client: Some("acme-agent".into()),
+            ask: Some(asking(Answer::Accept)),
+        },
+        || {
+            call(
+                &env,
+                "slack_read_channel",
+                json!({ "channel_id": LABS_CHANNEL }),
+            )
+            .unwrap();
+            call(&env, "slack_send_message", hi()).unwrap()
+        },
+    );
+    assert_eq!(out["status"], "sent");
+    assert_eq!(out["held"]["reason"], "read_other_workspace");
+    assert_eq!(writes(&calls).len(), 1);
+}
+
+#[test]
+fn older_saves_ask_in_the_agent() {
+    let saved: McpSettings = serde_json::from_value(json!({ "enabled": true })).unwrap();
+    assert!(saved.slack_elicit);
+}
+
+/// A real MCP client over HTTP that declares form elicitation and answers
+/// every confirmation with `action`.
+struct Agent(rmcp::model::ElicitationAction);
+
+impl rmcp::ClientHandler for Agent {
+    async fn create_elicitation(
+        &self,
+        request: rmcp::model::ElicitRequestParams,
+        _context: rmcp::service::RequestContext<rmcp::RoleClient>,
+    ) -> Result<rmcp::model::ElicitResult, rmcp::ErrorData> {
+        let rmcp::model::ElicitRequestParams::FormElicitationParams { message, .. } = request
+        else {
+            panic!("expected a form elicitation");
+        };
+        assert!(message.contains("Ship it?"), "{message}");
+        let accept = self.0 == rmcp::model::ElicitationAction::Accept;
+        let result = rmcp::model::ElicitResult::new(self.0.clone());
+        Ok(if accept {
+            result.with_content(json!({}))
+        } else {
+            result
+        })
+    }
+
+    fn get_info(&self) -> rmcp::model::ClientConfig {
+        rmcp::model::ClientConfig::new(
+            rmcp::model::ClientCapabilities::builder()
+                .enable_elicitation()
+                .build(),
+            rmcp::model::Implementation::new("acme-agent", "1.0"),
+        )
+    }
+}
+
+struct NoAudit;
+
+impl crate::mcp::audit::AuditSink for NoAudit {
+    fn record(&self, _event: &crate::mcp::audit::AuditEvent) {}
+}
+
+/// Send `hi()` through the HTTP server as an agent answering `action`.
+async fn send_over_http(action: rmcp::model::ElicitationAction) -> (Value, Calls) {
+    use rmcp::ServiceExt;
+    use rmcp::transport::StreamableHttpClientTransport;
+    use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
+
+    let (env, calls) = sending(&[], false);
+    let control =
+        crate::mcp::control::McpControl::with_audit(env.state.clone(), Arc::new(NoAudit), None)
+            .unwrap();
+    let view = control
+        .update(config::load(&env.state.store).unwrap())
+        .await
+        .unwrap();
+    let url = view.status.url.unwrap();
+    let token = control.token().await.unwrap();
+    let transport = StreamableHttpClientTransport::from_config(
+        StreamableHttpClientTransportConfig::with_uri(url).auth_header(token),
+    );
+    let client = Agent(action).serve(transport).await.unwrap();
+    let mut request = rmcp::model::CallToolRequestParams::new("slack_send_message");
+    request.arguments = hi().as_object().cloned();
+    let reply = client.call_tool(request).await.unwrap();
+    let out = reply.structured_content.clone().expect("structured reply");
+    client.cancel().await.unwrap();
+    let mut off = config::load(&env.state.store).unwrap();
+    off.enabled = false;
+    control.update(off).await.unwrap();
+    drop(env);
+    (out, calls)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_with_elicitation_approves_over_http() {
+    let (out, calls) = send_over_http(rmcp::model::ElicitationAction::Accept).await;
+    assert_eq!(out["status"], "sent", "{out}");
+    assert_eq!(out["decided_in"], "acme-agent");
+    assert_eq!(writes(&calls).len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_with_elicitation_declines_over_http() {
+    let (out, calls) = send_over_http(rmcp::model::ElicitationAction::Decline).await;
+    assert_eq!(out["status"], "rejected", "{out}");
+    assert!(writes(&calls).is_empty());
 }

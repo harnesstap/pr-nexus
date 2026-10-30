@@ -237,6 +237,21 @@ export function AgentsSettings({ api }: Props) {
             {settings.slack_reads && settings.slack_sends && (
               <>
                 <SendModes mode={settings.slack_send_mode} disabled={busy} onChange={(slack_send_mode) => save({ slack_send_mode })} />
+                {settings.slack_send_mode !== "automatic" && (
+                  <label className="mt-2 ml-1 flex items-start gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      className="mt-1"
+                      checked={settings.slack_elicit}
+                      disabled={busy}
+                      onChange={(e) => save({ slack_elicit: e.target.checked })}
+                    />
+                    <span>
+                      Ask in the agent when it supports it
+                      <span className="block text-xs text-slate-400">A held write is shown in the agent to confirm; unanswered ones still wait here.</span>
+                    </span>
+                  </label>
+                )}
                 {settings.slack_send_mode === "automatic" && (
                   <p role="note" className="mt-1 ml-1 max-w-prose text-xs text-amber-300">
                     Agents&apos; messages are sent immediately as you, with no approval.

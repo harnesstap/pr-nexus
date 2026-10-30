@@ -110,6 +110,17 @@ fn slack_write_summary(noun: &str, result: Option<&Value>) -> String {
     let status = result
         .and_then(|value| value.get("status"))
         .and_then(Value::as_str);
+    let decided_in = result
+        .and_then(|value| value.get("decided_in"))
+        .and_then(Value::as_str);
+    match (status, decided_in) {
+        (Some("sent"), Some(agent)) => format!("sent {noun}, approved in {agent}"),
+        (Some("rejected"), Some(agent)) => format!("declined {noun} in {agent}; not sent"),
+        _ => slack_write_status(noun, status, result),
+    }
+}
+
+fn slack_write_status(noun: &str, status: Option<&str>, result: Option<&Value>) -> String {
     match status {
         Some("sent") => format!("sent {noun} (auto-send)"),
         Some("pending") => {

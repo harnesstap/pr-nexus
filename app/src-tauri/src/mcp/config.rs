@@ -77,6 +77,10 @@ pub struct McpSettings {
     /// How Slack writes are approved. Missing in older saves, which read
     /// as [`SlackSendMode::Allowlist`].
     pub slack_send_mode: SlackSendMode,
+    /// Ask in the agent (MCP elicitation) before holding a write for
+    /// approval in PR Nexus, when the client supports it. On by default,
+    /// older saves included.
+    pub slack_elicit: bool,
     /// Fixed port on 127.0.0.1; `None` picks a free one at each start.
     pub port: Option<u16>,
 }
@@ -93,6 +97,7 @@ impl Default for McpSettings {
             slack_workspaces: Vec::new(),
             slack_auto_send_channels: Vec::new(),
             slack_send_mode: SlackSendMode::default(),
+            slack_elicit: true,
             port: None,
         }
     }
