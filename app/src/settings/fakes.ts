@@ -102,6 +102,7 @@ export function fakeMcp(
     slack_private_search: false,
     slack_workspaces: [],
     slack_auto_send_channels: [],
+    slack_send_mode: "allowlist",
     port: null,
     ...initial,
   };

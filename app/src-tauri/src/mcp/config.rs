@@ -17,9 +17,8 @@ pub enum Capability {
     Reads,
     /// Change local data: projects, links, notes, stars.
     LocalWrites,
-    /// Send, schedule or draft Slack messages and add reactions: each one
-    /// waits for the user's approval in the app unless its channel is on
-    /// `slack_auto_send_channels`.
+    /// Send, schedule or draft Slack messages and add reactions. Whether
+    /// each one waits for the user's approval follows [`SlackSendMode`].
     SlackSends,
     /// Search and read Slack through each exposed workspace's official
     /// MCP session (public channels and the user's own channels).
@@ -43,6 +42,21 @@ impl Capability {
     }
 }
 
+/// Which Slack writes from agents wait for the user's approval.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SlackSendMode {
+    /// Every write waits for approval; the allowlist is ignored.
+    ApproveAll,
+    /// Every write goes out at once, with no proposal to approve.
+    Automatic,
+    /// Writes to `slack_auto_send_channels` go out at once unless the
+    /// session read another workspace; the rest wait. The default, so
+    /// settings saved before the modes existed keep their behavior.
+    #[default]
+    Allowlist,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct McpSettings {
@@ -60,6 +74,9 @@ pub struct McpSettings {
     /// without asking, unless the session read another workspace. Empty
     /// by default: every send waits for approval.
     pub slack_auto_send_channels: Vec<String>,
+    /// How Slack writes are approved. Missing in older saves, which read
+    /// as [`SlackSendMode::Allowlist`].
+    pub slack_send_mode: SlackSendMode,
     /// Fixed port on 127.0.0.1; `None` picks a free one at each start.
     pub port: Option<u16>,
 }
@@ -75,6 +92,7 @@ impl Default for McpSettings {
             slack_private_search: false,
             slack_workspaces: Vec::new(),
             slack_auto_send_channels: Vec::new(),
+            slack_send_mode: SlackSendMode::default(),
             port: None,
         }
     }
@@ -136,4 +154,36 @@ pub fn save(store: &Store, value: &McpSettings) -> Result<McpSettings, AppError>
     }
     settings::put_json(store, SETTINGS_KEY, &value)?;
     Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn older_saves_keep_the_allowlist_mode_and_channels() {
+        let saved: McpSettings = serde_json::from_str(
+            r#"{"enabled":true,"slack_sends":true,"slack_auto_send_channels":["T0ACME0001/C0123456789"]}"#,
+        )
+        .unwrap();
+        let saved = saved.normalized();
+        assert_eq!(saved.slack_send_mode, SlackSendMode::Allowlist);
+        assert_eq!(saved.slack_auto_send_channels, ["T0ACME0001/C0123456789"]);
+        assert_eq!(
+            McpSettings::default().slack_send_mode,
+            SlackSendMode::Allowlist
+        );
+    }
+
+    #[test]
+    fn the_mode_round_trips_in_snake_case() {
+        let value = McpSettings {
+            slack_send_mode: SlackSendMode::ApproveAll,
+            ..McpSettings::default()
+        };
+        let json = serde_json::to_value(&value).unwrap();
+        assert_eq!(json["slack_send_mode"], "approve_all");
+        let back: McpSettings = serde_json::from_value(json).unwrap();
+        assert_eq!(back, value);
+    }
 }

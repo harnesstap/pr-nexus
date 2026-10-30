@@ -14,9 +14,11 @@ use serde_json::{Value, json};
 use super::cursor::{self, Composite};
 use super::fixtures::{Canned, Fixtures, GRID_ORG, GRID_TEAM};
 use super::ids;
+use super::sends::{Held, hold};
 use super::tools::unwrap_reply;
 use super::upstream::{Exposed, Upstream};
 use crate::error::AppError;
+use crate::mcp::config::SlackSendMode;
 use crate::mcp::{McpSettings, config};
 use crate::state::AppState;
 
@@ -885,4 +887,84 @@ fn approval_needs_slack_sends_still_on() {
         super::sends::decide(&env.state, out["proposal_id"].as_u64().unwrap(), true).unwrap_err();
     assert_eq!(err.kind, "forbidden");
     assert!(writes(&calls).is_empty());
+}
+
+fn with_mode(env: &Env, mode: SlackSendMode) {
+    let mut settings = config::load(&env.state.store).unwrap();
+    settings.slack_send_mode = mode;
+    config::save(&env.state.store, &settings).unwrap();
+}
+
+#[test]
+fn hold_follows_each_send_mode() {
+    let other = || vec!["E0ACMELAB1".to_owned()];
+    // Approve everything: listed or not, read elsewhere or not.
+    assert_eq!(
+        hold(SlackSendMode::ApproveAll, vec![], || true),
+        Some(Held::ApproveAll)
+    );
+    assert_eq!(
+        hold(SlackSendMode::ApproveAll, other(), || false),
+        Some(Held::ApproveAll)
+    );
+    // Automatic: never held, even after reading another workspace.
+    assert_eq!(hold(SlackSendMode::Automatic, vec![], || false), None);
+    assert_eq!(hold(SlackSendMode::Automatic, other(), || false), None);
+    // Allowlist: listed channels only, and the cross-workspace safeguard.
+    assert_eq!(hold(SlackSendMode::Allowlist, vec![], || true), None);
+    assert_eq!(
+        hold(SlackSendMode::Allowlist, vec![], || false),
+        Some(Held::NotListed)
+    );
+    assert_eq!(
+        hold(SlackSendMode::Allowlist, other(), || true),
+        Some(Held::ReadOtherWorkspace {
+            workspaces: other()
+        })
+    );
+}
+
+#[test]
+fn approve_all_ignores_the_allowlist() {
+    let (env, calls) = sending(&[ACME_CHANNEL], false);
+    with_mode(&env, SlackSendMode::ApproveAll);
+    let out = call(
+        &env,
+        "slack_send_message",
+        json!({ "workspace": "acme", "channel_id": ACME_CHANNEL, "message": "Hi" }),
+    )
+    .unwrap();
+    assert_eq!(out["status"], "pending");
+    assert_eq!(out["held"]["reason"], "approve_all");
+    assert!(writes(&calls).is_empty());
+}
+
+#[test]
+fn automatic_sends_everything_at_once_even_after_reading_elsewhere() {
+    let (env, calls) = sending(&[], false);
+    with_mode(&env, SlackSendMode::Automatic);
+    let out = as_session("s1", || {
+        call(
+            &env,
+            "slack_read_channel",
+            json!({ "channel_id": LABS_CHANNEL }),
+        )
+        .unwrap();
+        call(
+            &env,
+            "slack_send_message",
+            json!({ "workspace": "acme", "channel_id": ACME_CHANNEL, "message": "Hi" }),
+        )
+        .unwrap()
+    });
+    assert_eq!(out["status"], "sent");
+    assert_eq!(out["auto_sent"], true);
+    assert!(out["held"].is_null());
+    assert!(
+        out["message"]
+            .as_str()
+            .unwrap()
+            .contains("without approval")
+    );
+    assert_eq!(writes(&calls).len(), 1);
 }

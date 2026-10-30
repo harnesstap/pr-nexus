@@ -30,14 +30,23 @@ const STATUS: Record<SlackProposal["status"], string> = {
 
 function why(p: SlackProposal): string | null {
   if (p.auto_sent) {
-    return "Sent at once: channel on the auto-send list";
+    return "Sent at once, without approval";
   }
   if (!p.held) {
     return null;
   }
-  return p.held.reason === "not_listed"
-    ? "Channel not on the auto-send list"
-    : `Auto-send blocked: this agent read ${p.held.workspaces.join(", ")} first`;
+  switch (p.held.reason) {
+    case "approve_all":
+      return "Every write waits for approval";
+    case "not_listed":
+      return "Channel not on the auto-send list";
+    case "read_other_workspace":
+      return `Auto-send blocked: this agent read ${p.held.workspaces.join(", ")} first`;
+    default: {
+      const never: never = p.held;
+      return never;
+    }
+  }
 }
 
 function body(p: SlackProposal): string {

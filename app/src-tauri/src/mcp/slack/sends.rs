@@ -1,10 +1,12 @@
 //! Slack writes agents ask for: send, schedule, draft, react (SPEC §10.1.2).
 //!
-//! Each call names its workspace and becomes a [`Proposal`]. The user
-//! approves or rejects it in Settings → Agents, and only then does PR
-//! Nexus call Slack. A proposal goes out at once only when its channel is
-//! on the auto-send list and the session has read no other workspace, so
-//! content read in one workspace cannot be carried to another unseen.
+//! Each call names its workspace and becomes a [`Proposal`]. Whether it
+//! waits for the user follows [`SlackSendMode`]: `approve_all` holds every
+//! write; `automatic` sends every write at once; `allowlist` sends at once
+//! only when the channel is on the auto-send list and the session has read
+//! no other workspace, so content read in one workspace cannot be carried
+//! to another unseen. A held proposal is approved or rejected in Settings
+//! → Agents, and only then does PR Nexus call Slack.
 //! Slack's reply comes back as Slack sent it.
 
 use std::collections::VecDeque;
@@ -21,7 +23,7 @@ use super::session;
 use super::tools::{exposed, matches, run, validation, workspace_ref};
 use super::upstream::Exposed;
 use crate::error::AppError;
-use crate::mcp::config::{self, Capability};
+use crate::mcp::config::{self, Capability, SlackSendMode};
 use crate::mcp::tools::{ToolSpec, parse};
 use crate::slack::lock;
 use crate::state::AppState;
@@ -41,6 +43,8 @@ pub enum Status {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case", tag = "reason")]
 pub enum Held {
+    /// The user approves every write (`approve_all` mode).
+    ApproveAll,
     /// The channel is not on the auto-send list.
     NotListed,
     /// The session read these other workspaces first.
@@ -105,9 +109,10 @@ pub fn send_tools() -> Vec<ToolSpec> {
         handler,
     };
     const AFTER: &str = " Name the workspace in `workspace` (a qualifier, team ID or domain from \
-        slack_list_workspaces). The user approves it in PR Nexus first, unless the channel is on their \
-        auto-send list and this session read no other workspace. The reply has `proposal_id` and \
-        `status`; while it is `pending`, check it with slack_get_proposal.";
+        slack_list_workspaces). Depending on the user's settings it is sent at once \
+        (`status` `sent`) or waits for their approval in PR Nexus (`status` `pending`, with `held` \
+        saying why). The reply has `proposal_id`, `status` and `message`; while it is `pending`, \
+        check it with slack_get_proposal and do not resend it.";
     vec![
         spec(
             "slack_send_message",
@@ -373,6 +378,25 @@ fn listed(list: &[String], ws: &Exposed, channel: &str) -> bool {
     })
 }
 
+/// Why a write waits for approval under `mode`, or `None` to send it now.
+/// `others` are the workspaces this session read besides the target.
+pub(crate) fn hold(
+    mode: SlackSendMode,
+    others: Vec<String>,
+    listed: impl FnOnce() -> bool,
+) -> Option<Held> {
+    match mode {
+        SlackSendMode::ApproveAll => Some(Held::ApproveAll),
+        // The user asked for no approval at all, safeguard included.
+        SlackSendMode::Automatic => None,
+        SlackSendMode::Allowlist if !others.is_empty() => {
+            Some(Held::ReadOtherWorkspace { workspaces: others })
+        }
+        SlackSendMode::Allowlist if !listed() => Some(Held::NotListed),
+        SlackSendMode::Allowlist => None,
+    }
+}
+
 fn propose<A: WriteArgs>(
     state: &AppState,
     arguments: JsonObject,
@@ -389,13 +413,9 @@ fn propose<A: WriteArgs>(
         .slack_proxy
         .read_elsewhere(caller.session.as_deref(), ws.qualifier());
     let settings = config::load(&state.store)?;
-    let held = if !others.is_empty() {
-        Some(Held::ReadOtherWorkspace { workspaces: others })
-    } else if !listed(&settings.slack_auto_send_channels, &ws, &channel) {
-        Some(Held::NotListed)
-    } else {
-        None
-    };
+    let held = hold(settings.slack_send_mode, others, || {
+        listed(&settings.slack_auto_send_channels, &ws, &channel)
+    });
     let proposal = lock(&state.slack_proxy.proposals).push(Proposal {
         id: 0,
         created_at: Utc::now().to_rfc3339(),
@@ -473,7 +493,8 @@ fn agent_view(proposal: &Proposal) -> Value {
         "error": proposal.error,
         "message": match proposal.status {
             Status::Pending => "Waiting for the user to approve it in PR Nexus.",
-            Status::Sent => "Slack accepted it; `result` is Slack's reply.",
+            Status::Sent if proposal.auto_sent => "Sent at once, without approval, per the user's settings; `result` is Slack's reply.",
+            Status::Sent => "The user approved it and Slack accepted it; `result` is Slack's reply.",
             Status::Failed => "Slack refused it; `error` is Slack's answer.",
             Status::Rejected => "The user rejected it in PR Nexus. Do not retry it unasked.",
         },
