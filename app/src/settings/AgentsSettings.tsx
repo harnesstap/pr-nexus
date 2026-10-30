@@ -10,7 +10,7 @@ import { McpClientConfig } from "./McpClientConfig";
 import { parsePort } from "./tabs";
 
 interface Props {
-  api: Pick<Api, "mcpSettings" | "saveMcpSettings" | "mcpToken" | "regenerateMcpToken" | "mcpActivity" | "clearMcpActivity" | "slackWorkspaces" | "slackConnect" | "mcpSlackProposals" | "decideMcpSlackProposal">;
+  api: Pick<Api, "mcpSettings" | "saveMcpSettings" | "mcpToken" | "regenerateMcpToken" | "mcpClientStates" | "mcpAddToClient" | "mcpOpenClientConfig" | "mcpActivity" | "clearMcpActivity" | "slackWorkspaces" | "slackConnect" | "mcpSlackProposals" | "decideMcpSlackProposal">;
 }
 
 const button = "rounded border border-slate-700 px-3 py-1.5 text-sm hover:bg-slate-800 disabled:opacity-50";
@@ -296,6 +296,8 @@ export function AgentsSettings({ api }: Props) {
             url={url}
             tokenMasked={view.token_masked}
             fixedPort={settings.port != null}
+            api={api}
+            tokenVersion={view.token_masked}
             onCopy={(label, build) => copy(label, api.mcpToken().then(build))}
           />
         )}

@@ -13,6 +13,7 @@
 //! Off by default.
 
 pub mod audit;
+pub mod clients;
 pub mod config;
 pub mod control;
 pub mod server;

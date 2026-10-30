@@ -1,4 +1,4 @@
-import type { Api, McpActivityEntry, McpOutcome, McpSettings, McpView, Preferences, SlackProposal, SlackWorkspace } from "../api";
+import type { Api, McpActivityEntry, McpClientId, McpClientState, McpOutcome, McpSettings, McpView, Preferences, SlackProposal, SlackWorkspace } from "../api";
 
 /** The §7.12 defaults, as the backend returns them on a fresh database. */
 export const DEFAULT_PREFERENCES: Preferences = {
@@ -33,6 +33,9 @@ type SettingsApi = Pick<
   | "saveMcpSettings"
   | "mcpToken"
   | "regenerateMcpToken"
+  | "mcpClientStates"
+  | "mcpAddToClient"
+  | "mcpOpenClientConfig"
   | "mcpActivity"
   | "clearMcpActivity"
   | "mcpSlackProposals"
@@ -44,8 +47,18 @@ export const FAKE_MCP_TOKEN = "pnx_0123456789abcdef0123456789abcdef0123456789abc
 /** An in-memory MCP server: enabling it "runs" on port 43117 unless a port is set. */
 type FakeMcp = Pick<
   Api,
-  "mcpSettings" | "saveMcpSettings" | "mcpToken" | "regenerateMcpToken" | "mcpActivity" | "clearMcpActivity" | "slackWorkspaces" | "slackConnect" | "mcpSlackProposals" | "decideMcpSlackProposal"
+  "mcpSettings" | "saveMcpSettings" | "mcpToken" | "regenerateMcpToken" | "mcpClientStates" | "mcpAddToClient" | "mcpOpenClientConfig" | "mcpActivity" | "clearMcpActivity" | "slackWorkspaces" | "slackConnect" | "mcpSlackProposals" | "decideMcpSlackProposal"
 >;
+
+/** Made-up config paths under a fake home, one per client. */
+export const FAKE_CLIENT_PATHS: Record<McpClientId, string> = {
+  "claude-desktop": "~/Library/Application Support/Claude/claude_desktop_config.json",
+  "claude-code": "~/.claude.json",
+  cursor: "~/.cursor/mcp.json",
+  vscode: "~/Library/Application Support/Code/User/mcp.json",
+  codex: "~/.codex/config.toml",
+  opencode: "~/.config/opencode/opencode.json",
+};
 
 /** Two made-up workspaces: `acme`, and `acme-labs` on an Enterprise Grid. */
 export const FAKE_SLACK_WORKSPACES: SlackWorkspace[] = [
@@ -89,7 +102,9 @@ export function fakeMcp(
   activity: McpActivityEntry[] = [],
   initialWorkspaces: SlackWorkspace[] = [],
   initialProposals: SlackProposal[] = [],
+  initialClients: Partial<Record<McpClientId, McpClientState["status"]>> = {},
 ): FakeMcp {
+  let clients = { ...initialClients };
   let log = [...activity];
   let proposals = [...initialProposals];
   let workspaces = [...initialWorkspaces];
@@ -117,6 +132,10 @@ export function fakeMcp(
       token_masked: token ? `pnx_••••••••••••${token.slice(-4)}` : null,
     };
   };
+  const clientState = (client: McpClientId): McpClientState => {
+    const status = clients[client] ?? "not_added";
+    return { client, status, path: FAKE_CLIENT_PATHS[client], exists: status !== "not_added" };
+  };
   return {
     mcpSettings: () => Promise.resolve(view()),
     slackWorkspaces: () => Promise.resolve(workspaces),
@@ -139,8 +158,23 @@ export function fakeMcp(
       token ??= FAKE_MCP_TOKEN;
       return Promise.resolve(token);
     },
+    mcpClientStates: () =>
+      settings.enabled
+        ? Promise.resolve(
+            (Object.keys(FAKE_CLIENT_PATHS) as McpClientId[]).map((client) => clientState(client)),
+          )
+        : Promise.reject(new Error("Turn the server on first")),
+    mcpAddToClient: (client) => {
+      if (clients[client] === "unreadable") {
+        return Promise.reject(new Error(`${FAKE_CLIENT_PATHS[client]} is not plain JSON; left unchanged.`));
+      }
+      clients = { ...clients, [client]: "added" };
+      return Promise.resolve(clientState(client));
+    },
+    mcpOpenClientConfig: () => Promise.resolve(),
     regenerateMcpToken: () => {
       token = FAKE_MCP_TOKEN.slice(0, -4) + "c0de";
+      clients = Object.fromEntries(Object.entries(clients).map(([id, status]) => [id, status === "added" ? "outdated" : status]));
       return Promise.resolve(view());
     },
     mcpActivity: (outcome) => Promise.resolve(log.filter((entry) => !outcome || entry.outcome === outcome)),
