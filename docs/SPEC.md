@@ -1435,6 +1435,13 @@ Detect `X-GitHub-SSO: required; url=…` and show the authorization link.
 
 - **Shape.** A separate sidecar binary crate, `crates/pr-nexus-mcp`, built on `rmcp` 3.x (the official Rust SDK). The Tauri app ships it as `bundle.externalBin`.
 - **Transports.** stdio, so Claude Desktop/Cursor can spawn it, and **Streamable HTTP** bound to `127.0.0.1` with a random bearer token shown in Settings. Not SSE, which the MCP spec deprecated in favour of Streamable HTTP.
+- **Client config.** Settings → Agents → Connect an agent shows one tab per client, each with the snippet in that client's own format, one line saying which file or command it goes into, and a **Copy with token** button. The shown snippet keeps the token masked; the copy has the real token. The last tab is remembered per machine (localStorage). When no fixed port is set, a hint says the config breaks if the port changes. Formats, built by `mcpClientSnippet` in `app/src/settings/mcpClients.ts`:
+  - **Claude Desktop**: `claude_desktop_config.json` only launches stdio commands, so the entry runs `npx -y mcp-remote <url> --transport http-only --header Authorization:${PR_NEXUS_AUTH}` with `PR_NEXUS_AUTH` = `Bearer <token>` in `env` (needs Node.js);
+  - **Claude Code**: `claude mcp add --transport http pr-nexus <url> --header "Authorization: Bearer <token>"`;
+  - **Cursor**: `~/.cursor/mcp.json`, `mcpServers` → `url` + `headers`;
+  - **VS Code**: `.vscode/mcp.json` or the user `mcp.json`, top-level `servers` with `type: "http"`;
+  - **Codex**: `~/.codex/config.toml`, `[mcp_servers.pr-nexus]` with `url` and `http_headers`;
+  - **OpenCode**: `opencode.json`, `mcp` → `type: "remote"`, `url`, `headers`.
 - **Data.** It opens the **same SQLite file** in WAL mode, with readers plus one short-lived writer, so it works whether or not the app is open. It reads tokens from the same `vault` keychain entry.
 - **Read tools** (enabled by default):
   - `list_prs(filter)`;

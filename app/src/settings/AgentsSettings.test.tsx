@@ -3,7 +3,8 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { AgentsSettings } from "./AgentsSettings";
 import type { SlackProposal } from "../api";
 import { FAKE_MCP_TOKEN, FAKE_SLACK_WORKSPACES, fakeMcp, sampleActivity } from "./fakes";
-import { mcpConfigSnippet, parsePort } from "./tabs";
+import { mcpClientSnippet } from "./mcpClients";
+import { parsePort } from "./tabs";
 
 const writeText = vi.fn(() => Promise.resolve());
 
@@ -126,8 +127,17 @@ test("copies the real token and a config snippet with it", async () => {
   expect(writeText).toHaveBeenLastCalledWith(FAKE_MCP_TOKEN);
 
   fireEvent.click(screen.getByRole("button", { name: "Copy client config" }));
-  await screen.findByText("Copied client config.");
-  expect(writeText).toHaveBeenLastCalledWith(mcpConfigSnippet("http://127.0.0.1:43117/mcp", FAKE_MCP_TOKEN));
+  await screen.findByText("Copied Claude Desktop config.");
+  expect(writeText).toHaveBeenLastCalledWith(mcpClientSnippet("claude-desktop", "http://127.0.0.1:43117/mcp", FAKE_MCP_TOKEN).text);
+  expect(screen.getByRole("tabpanel")).not.toHaveTextContent(FAKE_MCP_TOKEN);
+
+  fireEvent.click(screen.getByRole("tab", { name: "Codex" }));
+  expect(window.localStorage.getItem("pr-nexus.mcp-client-tab")).toBe("codex");
+  expect(screen.getByRole("tabpanel")).toHaveTextContent("~/.codex/config.toml");
+  fireEvent.click(screen.getByRole("button", { name: "Copy client config" }));
+  await screen.findByText("Copied Codex config.");
+  expect(writeText).toHaveBeenLastCalledWith(mcpClientSnippet("codex", "http://127.0.0.1:43117/mcp", FAKE_MCP_TOKEN).text);
+  window.localStorage.clear();
 });
 
 test("regenerating the token asks first", async () => {
