@@ -43,11 +43,9 @@ pub struct AuditEvent {
 impl AuditEvent {
     /// Argument names, sorted.
     pub fn fields(&self) -> String {
-        self.arguments
-            .keys()
-            .map(String::as_str)
-            .collect::<Vec<_>>()
-            .join(",")
+        let mut names: Vec<&str> = self.arguments.keys().map(String::as_str).collect();
+        names.sort_unstable();
+        names.join(",")
     }
 
     /// `project:3,pr:12,pr:13` from the id arguments; nothing else.
@@ -248,7 +246,7 @@ impl AuditSink for LogAudit {
             tool = %event.tool,
             capability = ?event.capability,
             outcome = ?event.outcome,
-            fields = ?event.arguments.keys().collect::<Vec<_>>(),
+            fields = %event.fields(),
             duration_ms = event.duration_ms,
             client = event.client.as_deref().unwrap_or("-"),
             "mcp tool call"
