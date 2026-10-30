@@ -189,6 +189,11 @@ impl McpControl {
         let started = std::time::Instant::now();
         let decided = blocking::run(move || sends::decide(&state, id, approve)).await;
         let verb = if approve { "approved" } else { "rejected" };
+        let link = decided
+            .as_ref()
+            .ok()
+            .filter(|proposal| proposal.status == Status::Sent)
+            .and_then(|proposal| proposal.link.clone());
         let (tool, arguments, outcome, summary, error) = match &decided {
             Ok(proposal) => {
                 let mut arguments = serde_json::Map::new();
@@ -202,11 +207,26 @@ impl McpControl {
                                 kind: kind.unwrap_or("api").to_owned(),
                             },
                             message.map(str::to_owned),
-                            ", Slack refused it",
+                            ", Slack refused it".to_owned(),
                         )
                     }
-                    Status::Sent => (Outcome::Ok, None, ", sent"),
-                    _ => (Outcome::Ok, None, ""),
+                    Status::Sent => {
+                        let label = super::audit::channel_label(
+                            proposal.channel_name.as_deref(),
+                            &proposal.channel_id,
+                        );
+                        let thread = proposal
+                            .arguments
+                            .get("thread_ts")
+                            .is_some_and(|ts| !ts.is_null());
+                        let done = if thread {
+                            format!(", replied in a thread in {label}")
+                        } else {
+                            format!(", sent in {label}")
+                        };
+                        (Outcome::Ok, None, done)
+                    }
+                    _ => (Outcome::Ok, None, String::new()),
                 };
                 (
                     proposal.tool.clone(),
@@ -235,6 +255,7 @@ impl McpControl {
             client: Some("PR Nexus".to_owned()),
             summary,
             error,
+            link,
         });
         decided
     }
@@ -285,6 +306,8 @@ pub struct AuditRow {
     pub outcome: String,
     pub summary: String,
     pub error: Option<String>,
+    /// The Slack message a successful write touched; `None` for older rows.
+    pub link: Option<String>,
 }
 
 /// Rows the Activity list loads at once.
@@ -319,6 +342,7 @@ pub async fn mcp_activity(
                 outcome: entry.outcome.as_str().to_owned(),
                 summary: entry.summary,
                 error: entry.error,
+                link: entry.link,
             })
             .collect())
     })

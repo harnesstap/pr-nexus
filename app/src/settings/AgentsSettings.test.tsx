@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { AgentsSettings } from "./AgentsSettings";
 import type { SlackProposal } from "../api";
-import { FAKE_MCP_TOKEN, FAKE_SLACK_WORKSPACES, fakeMcp, sampleActivity } from "./fakes";
+import { FAKE_MCP_TOKEN, FAKE_SLACK_WORKSPACES, fakeMcp, sampleActivity, sampleSlackActivity } from "./fakes";
 import { mcpClientSnippet } from "./mcpClients";
 import { parsePort } from "./tabs";
 
@@ -360,4 +360,19 @@ test("a proposal confirmed in the agent says where", async () => {
   render(<AgentsSettings api={api} />);
   expect(await screen.findByText("Approved in claude-code")).toBeInTheDocument();
   expect(screen.getByText("Declined in claude-code")).toBeInTheDocument();
+});
+
+test("activity links Slack writes to the message and opens it in the browser", async () => {
+  const api = fakeMcp({ enabled: true, slack_sends: true }, sampleSlackActivity());
+  const open = vi.spyOn(api, "openExternal");
+  render(<AgentsSettings api={api} />);
+  const list = await screen.findByRole("list", { name: "Agent activity" });
+  const [reply, sent, read] = within(list).getAllByRole("listitem");
+  expect(reply).toHaveTextContent("replied in a thread in #release");
+  expect(sent).toHaveTextContent("sent a message in #release");
+  fireEvent.click(within(reply).getByRole("button", { name: "↗ Open in Slack" }));
+  expect(open).toHaveBeenCalledWith("https://acme.slack.com/archives/C0123456789/p1700000500000200?thread_ts=1700000000.000100&cid=C0123456789");
+  fireEvent.click(within(sent).getByRole("button", { name: "↗ Open in Slack" }));
+  expect(open).toHaveBeenLastCalledWith("https://acme.slack.com/archives/C0123456789/p1700000000000100");
+  expect(within(read).queryByRole("button", { name: "↗ Open in Slack" })).toBeNull();
 });

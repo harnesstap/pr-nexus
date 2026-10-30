@@ -129,6 +129,9 @@ impl ServerHandler for NexusMcp {
                     duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
                     client: client.clone(),
                     error,
+                    link: (spec.capability == Capability::SlackSends)
+                        .then(|| super::audit::write_link(result))
+                        .flatten(),
                 });
             };
         if !self.shared.settings().allows(spec.capability) {

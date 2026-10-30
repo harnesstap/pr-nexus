@@ -692,6 +692,18 @@ fn a_send_waits_for_approval_then_slack_answers_as_is() {
     assert_eq!(args["channel_id"], "C0ACME0001");
     assert_eq!(args["message"], "Ship it");
     assert_eq!(args["thread_ts"], "1761055380.000100");
+    let link = sent
+        .link
+        .clone()
+        .expect("a sent reply keeps its Slack link");
+    assert!(
+        link.starts_with("https://acme.slack.com/archives/C0ACME0001/p"),
+        "{link}"
+    );
+    assert!(
+        link.ends_with("?thread_ts=1761055380.000100&cid=C0ACME0001"),
+        "{link}"
+    );
     let content = sent.result.unwrap()["results"][0]["content"]
         .as_str()
         .unwrap()
@@ -967,6 +979,13 @@ fn automatic_sends_everything_at_once_even_after_reading_elsewhere() {
     assert_eq!(out["auto_sent"], true);
     assert!(out["held"].is_null());
     assert!(
+        out["link"]
+            .as_str()
+            .unwrap()
+            .starts_with("https://acme.slack.com/archives/C0ACME0001/p"),
+        "{out}"
+    );
+    assert!(
         out["message"]
             .as_str()
             .unwrap()
@@ -1203,22 +1222,27 @@ impl rmcp::ClientHandler for Agent {
     }
 }
 
-struct NoAudit;
+#[derive(Default)]
+struct Kept(std::sync::Mutex<Vec<crate::mcp::audit::AuditEvent>>);
 
-impl crate::mcp::audit::AuditSink for NoAudit {
-    fn record(&self, _event: &crate::mcp::audit::AuditEvent) {}
+impl crate::mcp::audit::AuditSink for Kept {
+    fn record(&self, event: &crate::mcp::audit::AuditEvent) {
+        self.0.lock().unwrap().push(event.clone());
+    }
 }
 
 /// Send `hi()` through the HTTP server as an agent answering `action`.
-async fn send_over_http(action: rmcp::model::ElicitationAction) -> (Value, Calls) {
+async fn send_over_http(
+    action: rmcp::model::ElicitationAction,
+) -> (Value, Calls, Vec<crate::mcp::audit::AuditEvent>) {
     use rmcp::ServiceExt;
     use rmcp::transport::StreamableHttpClientTransport;
     use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 
     let (env, calls) = sending(&[], false);
+    let kept = Arc::new(Kept::default());
     let control =
-        crate::mcp::control::McpControl::with_audit(env.state.clone(), Arc::new(NoAudit), None)
-            .unwrap();
+        crate::mcp::control::McpControl::with_audit(env.state.clone(), kept.clone(), None).unwrap();
     let view = control
         .update(config::load(&env.state.store).unwrap())
         .await
@@ -1238,20 +1262,75 @@ async fn send_over_http(action: rmcp::model::ElicitationAction) -> (Value, Calls
     off.enabled = false;
     control.update(off).await.unwrap();
     drop(env);
-    (out, calls)
+    let events = kept.0.lock().unwrap().clone();
+    (out, calls, events)
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn an_agent_with_elicitation_approves_over_http() {
-    let (out, calls) = send_over_http(rmcp::model::ElicitationAction::Accept).await;
+    let (out, calls, events) = send_over_http(rmcp::model::ElicitationAction::Accept).await;
+    let event = events
+        .iter()
+        .find(|event| event.tool == "slack_send_message")
+        .unwrap();
+    assert_eq!(event.link.as_deref(), out["link"].as_str());
     assert_eq!(out["status"], "sent", "{out}");
     assert_eq!(out["decided_in"], "acme-agent");
+    assert!(
+        out["link"]
+            .as_str()
+            .unwrap()
+            .starts_with("https://acme.slack.com/archives/"),
+        "{out}"
+    );
     assert_eq!(writes(&calls).len(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn an_agent_with_elicitation_declines_over_http() {
-    let (out, calls) = send_over_http(rmcp::model::ElicitationAction::Decline).await;
+    let (out, calls, events) = send_over_http(rmcp::model::ElicitationAction::Decline).await;
+    assert!(events.iter().all(|event| event.link.is_none()));
     assert_eq!(out["status"], "rejected", "{out}");
     assert!(writes(&calls).is_empty());
+}
+
+/// The in-app approval line names the channel, cached name first.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_in_app_approval_says_where_it_went() {
+    let (env, _calls) = sending(&[], false);
+    env.state
+        .store
+        .upsert_slack_channel(pr_nexus_core::domain::SlackChannel {
+            slack_workspace: "acme".into(),
+            channel_id: "C0ACME0001".into(),
+            name: "release".into(),
+            is_private: false,
+            is_archived: false,
+            is_member: true,
+            fetched_at: chrono::Utc::now(),
+        })
+        .unwrap();
+    let kept = Arc::new(Kept::default());
+    let control =
+        crate::mcp::control::McpControl::with_audit(env.state.clone(), kept.clone(), None).unwrap();
+    let approve = async |arguments: Value| {
+        let out = call(&env, "slack_send_message", arguments).unwrap();
+        let id = out["proposal_id"].as_u64().unwrap();
+        control.decide(id, true).await.unwrap();
+        let summary = kept.0.lock().unwrap().last().unwrap().summary.clone();
+        (id, summary)
+    };
+    let (id, summary) = approve(hi()).await;
+    assert_eq!(
+        summary,
+        format!("user approved Slack proposal {id}, sent in #release")
+    );
+    let (id, summary) = approve(
+        json!({ "workspace": "acme", "channel_id": ACME_CHANNEL, "message": "Done", "thread_ts": "1700000000.000100" }),
+    )
+    .await;
+    assert_eq!(
+        summary,
+        format!("user approved Slack proposal {id}, replied in a thread in #release")
+    );
 }

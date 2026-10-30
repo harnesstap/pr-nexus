@@ -77,6 +77,10 @@ pub struct Proposal {
     pub decided_in: Option<String>,
     /// Why asking in the agent got no answer, so it waits in PR Nexus.
     pub unanswered: Option<String>,
+    /// The Slack message once sent (see [`super::link`]).
+    pub link: Option<String>,
+    /// The channel's name when PR Nexus has it cached.
+    pub channel_name: Option<String>,
     #[serde(skip)]
     session: Option<String>,
 }
@@ -438,6 +442,13 @@ fn propose<A: WriteArgs>(
         decided_at: None,
         decided_in: None,
         unanswered: None,
+        link: None,
+        channel_name: state
+            .store
+            .get_slack_channel(ws.domain.clone(), channel.clone())
+            .ok()
+            .flatten()
+            .map(|cached| cached.name),
         session: caller.session,
     });
     if proposal.held.is_some() {
@@ -534,13 +545,20 @@ fn execute(state: &AppState, ws: &Exposed, id: u64) -> Result<Proposal, AppError
         (proposal.tool.clone(), proposal.arguments.clone())
     };
     let outcome = run(state, &tool, vec![ws.clone()], None, |_| arguments.clone());
+    let link = outcome
+        .as_ref()
+        .ok()
+        .and_then(|reply| super::link::for_write(&ws.domain, &tool, &arguments, reply));
     let mut proposals = lock(&state.slack_proxy.proposals);
     let proposal = proposals
         .get_mut(id)
         .ok_or_else(|| AppError::new("not_found", format!("No Slack proposal {id}")))?;
     proposal.decided_at = Some(Utc::now().to_rfc3339());
     match outcome {
-        Ok(value) => proposal.result = Some(value),
+        Ok(value) => {
+            proposal.result = Some(value);
+            proposal.link = link;
+        }
         Err(err) => {
             proposal.status = Status::Failed;
             proposal.error = Some(json!({ "kind": err.kind, "message": err.message }));
@@ -562,6 +580,8 @@ fn agent_view(proposal: &Proposal) -> Value {
         "result": proposal.result,
         "error": proposal.error,
         "decided_in": proposal.decided_in,
+        "link": proposal.link,
+        "channel_name": proposal.channel_name,
         "message": agent_message(proposal),
     })
 }
