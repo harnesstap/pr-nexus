@@ -1,0 +1,3 @@
+kind: Fixes
+body: 'The sidebar sync status no longer looks stuck on "Syncing… N so far" after the search ends: it shows "Syncing… checking done/total" while it reads PR status, then "Synced". A sync that fails unexpectedly now shows "Sync failed" instead of staying on "Syncing…".'
+time: 2026-10-30T11:40:00.000000Z
