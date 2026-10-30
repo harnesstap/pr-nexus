@@ -66,18 +66,24 @@ bun run dev
 
 ## macOS dev: stop keychain prompts
 
-Every `bun run tauri dev` rebuilds an ad-hoc signed binary whose code signature changes, so the keychain's "Always Allow" for the `dev.pr-nexus` item never matches and macOS asks for your password on each launch. Opt in to a stable local signing identity once:
+Every `bun run tauri dev` relinks an ad-hoc signed binary with a new code hash. The vault lives in the login keychain (service `dev.pr-nexus`, account `vault`, through the `keyring` crate), and macOS ties "Always Allow" on that item to the caller in two places: the trusted-app ACL (the designated requirement) and the partition list. The partition entry is `teamid:<TEAM>` only for an Apple-issued certificate; ad-hoc **and self-signed** binaries get `cdhash:<hash>`, which the next rebuild no longer matches. So only an Apple-issued identity makes the choice stick.
+
+`tauri dev` launches the app with `cargo run`, so `.cargo/config.toml` sets a macOS-only cargo runner (`scripts/macos-dev-codesign-runner.sh`). For the `pr-nexus` app binary it runs `codesign --force --sign <identity> --identifier dev.pr-nexus` and then executes it. The identity is `PR_NEXUS_DEV_SIGN_IDENTITY` (name or SHA-1) if set, else the first valid `Apple Development:` identity, else `PR Nexus Dev`. Tests, other binaries, Linux, Windows and CI are untouched. A missing identity or a failed signature prints one line and still launches. `PR_NEXUS_DEV_SIGN=0` skips signing.
+
+**Recommended: an Apple Development identity (free).** Xcode > Settings > Accounts > add your Apple ID > Manage Certificates > + > *Apple Development*. A free personal team is enough; no paid membership, provisioning profile or entitlement is needed to sign a local binary. Then:
 
 ```sh
-scripts/macos-dev-signing-setup.sh   # idempotent; may ask for your login password to trust the cert
-security find-identity -v -p codesigning | grep "PR Nexus Dev"
+security find-identity -v -p codesigning | grep "Apple Development"
+bun run tauri dev    # prompts once: enter your password, click Always Allow
+bun run tauri dev    # after a rebuild: no prompt
+codesign -dv app/src-tauri/target/debug/pr-nexus 2>&1 | grep -E 'Identifier|TeamIdentifier'   # dev.pr-nexus + your team ID
 ```
 
-From then on `.cargo/config.toml` sets a macOS-only cargo runner (`scripts/macos-dev-codesign-runner.sh`) that, when the identity exists, runs `codesign --force --sign "PR Nexus Dev" --identifier dev.pr-nexus` on the `pr-nexus` app binary before executing it. Test binaries and other platforms are untouched; without the identity it just runs the binary. If signing fails it prints a warning and still launches. Use another identity with `PR_NEXUS_DEV_SIGN_IDENTITY`, or skip signing with `PR_NEXUS_DEV_SIGN=0`.
+The first signed launch prompts once because the item only knows earlier binaries; Always Allow adds the team partition. Nothing has to be deleted. If it still prompts after that, delete the item once (Keychain Access, search `dev.pr-nexus`, or `security delete-generic-password -s dev.pr-nexus -a vault`) and let the next launch recreate it; this drops the stored secrets, so sign in to GitHub and Slack again and update the MCP token in your MCP clients.
 
-The existing keychain item was trusted for the old ad-hoc build, so the first signed launch prompts once: enter your password and click **Always Allow**. The designated requirement (identifier + certificate) stays the same afterwards, so the choice survives rebuilds.
+**Self-signed fallback (`PR Nexus Dev`).** `scripts/macos-dev-signing-setup.sh` creates it (idempotent; may ask for your login password to trust the cert). It keeps the designated requirement stable, which helps TCC permissions, but has no Team ID, so the keychain still asks once per rebuild. Manual creation: Keychain Access > Certificate Assistant > Create a Certificate..., name `PR Nexus Dev`, Identity Type *Self-Signed Root*, Certificate Type *Code Signing*.
 
-Manual fallback for the identity: Keychain Access > Certificate Assistant > Create a Certificate..., name `PR Nexus Dev`, Identity Type *Self-Signed Root*, Certificate Type *Code Signing*.
+Do not recreate the item with "allow all applications" (`security ... -A`): it lets any local process read every token.
 
 ## Changelog
 
