@@ -13,6 +13,7 @@ use crate::domain::{
 };
 use crate::error::CoreError;
 use crate::providers::{ChatProvider, OutgoingMessage, PostedMessage};
+use crate::settings;
 use crate::store::Store;
 
 use super::message::{self, MessageMode};
@@ -142,10 +143,12 @@ pub fn plan(
 ) -> Result<Plan, CoreError> {
     let mut warnings = Vec::new();
     let active = active_for_target(store, pr, &target)?;
+    let templates = settings::message_templates(store)?;
     let (action, text) = match active {
         None => (
             Action::Request,
-            message::build(
+            message::build_with(
+                &templates,
                 MessageMode::Request,
                 &[(&pr.title, &pr.url)],
                 requester,
@@ -164,7 +167,13 @@ pub fn plan(
                 Action::Bump {
                     request: Box::new(request),
                 },
-                message::build(MessageMode::Remind, &[(&pr.title, &pr.url)], None, None)?,
+                message::build_with(
+                    &templates,
+                    MessageMode::Remind,
+                    &[(&pr.title, &pr.url)],
+                    requester,
+                    None,
+                )?,
             )
         }
     };

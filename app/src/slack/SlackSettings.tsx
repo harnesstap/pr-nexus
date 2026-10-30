@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { Api, MentionsScope, SlackWorkspace } from "../api";
+import { MessageTemplates } from "./MessageTemplates";
 import { SlackPanel, type SlackFields } from "./SlackPanel";
 
 interface Props {
@@ -56,6 +57,7 @@ export function SlackSettings({ api, fields, onFieldsChange, mentions, onMention
           {mentions === "all" && " Results can include private channels and DMs you are in; they stay on this computer."}
         </p>
       </div>
+      <MessageTemplates api={api} onOpen={(url) => void api.openExternal(url)} />
     </section>
   );
 }

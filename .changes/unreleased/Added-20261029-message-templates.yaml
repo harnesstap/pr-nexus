@@ -1,0 +1,3 @@
+kind: Added
+body: 'Settings → Slack → Message templates: edit the single and batch review-request and reminder texts, and the batch item line, with placeholders ({title}, {url}, {who}, {requester}, {count}, {items}), a live preview, inline validation and Reset to default. The defaults are the previous texts, unchanged.'
+time: 2026-10-29T22:30:00.000000-10:00

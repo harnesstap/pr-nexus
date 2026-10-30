@@ -50,6 +50,36 @@ function jiraLink(input: JiraLinkInput): JiraLinkDto {
   return { id: nextLink, key: text.toUpperCase(), url: "", href: `${jiraBaseUrl}/browse/${text.toUpperCase()}` };
 }
 
+/** Script defaults (§7.6). The real preview comes from the Rust builder; this mock only fills the screenshot. */
+const templateDefaults: Record<string, string> = {
+  single_request: "Hello team\nCould someone please review {title}?{who}\n{url}\nThanks!",
+  batch_request: "Hello team\nCould someone please review these pull requests?{who}\n{items}\nThanks!",
+  single_remind: "Hello, I'm still looking for a review on {title} when you have a moment :pray:\n{url}\nThanks!",
+  batch_remind: "Hello, I'm still looking for a review on these pull requests when you have a moment :pray:\n{items}\nThanks!",
+  item: "- {title}\n{url}",
+};
+const samplePrs = [
+  ["`fix: handle user_id in 'parser'`", "https://github.com/acme/widgets/pull/42"],
+  ["`feat: add retry_count to the client`", "https://github.com/acme/widgets/pull/43"],
+];
+function mockTemplatePreview(kind: string, text: string): string {
+  const batch = kind.startsWith("batch_") || kind === "item";
+  const unknown = /\{(?!\{)([^}]*)\}/g;
+  for (const match of text.matchAll(unknown)) {
+    const name = match[1];
+    const allowed = batch && kind !== "item" ? ["items", "who", "requester", "count"] : ["title", "url", "who", "requester", "count"];
+    if (!allowed.includes(name)) throw { kind: "validation", message: `unknown placeholder \`{${name}}\`` };
+  }
+  const required = kind === "batch_request" || kind === "batch_remind" ? "{items}" : "{url}";
+  if (!text.includes(required)) throw { kind: "validation", message: `the template must contain \`${required}\`` };
+  const fill = (template: string, title: string, url: string, items = "") =>
+    template.replace(/\{(\w+)\}/g, (_, name: string) => ({ title, url, who: " (Ada Park)", requester: "Ada Park", count: batch ? "2" : "1", items })[name] ?? "");
+  if (!batch) return fill(text, samplePrs[0][0], samplePrs[0][1]).trimEnd() + "\n";
+  const item = kind === "item" ? text : templateDefaults.item;
+  const items = samplePrs.map(([title, url]) => fill(item, title, url)).join("\n");
+  return fill(kind === "item" ? templateDefaults.batch_request : text, "", "", items).trimEnd() + "\n";
+}
+
 const mcp = fakeMcp({ enabled: true, local_writes: true }, sampleActivity(), [], [], { codex: "added", cursor: "outdated" });
 
 const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
@@ -62,6 +92,9 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   mcp_open_client_config: (args) => mcp.mcpOpenClientConfig(args.client as McpClientId),
   mcp_activity: (args) => mcp.mcpActivity((args.outcome as McpOutcome | null) ?? undefined),
   clear_mcp_activity: () => mcp.clearMcpActivity(),
+  load_message_templates: () => Object.entries(templateDefaults).map(([kind, text]) => ({ kind, text, default_text: text })),
+  preview_message_template: (args) => mockTemplatePreview(String(args.kind), String(args.text)),
+  save_message_template: () => null,
   bootstrap: () => boot,
   sync_status: () => boot.sync,
   list_projects: () => projects,

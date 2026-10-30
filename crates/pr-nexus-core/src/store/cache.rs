@@ -237,6 +237,14 @@ impl Store {
         })
     }
 
+    pub fn delete_setting(&self, key: String) -> Result<(), CoreError> {
+        self.write(move |conn| {
+            conn.execute("DELETE FROM settings WHERE key = ?1", [key])
+                .map_err(db)?;
+            Ok(())
+        })
+    }
+
     pub fn get_setting(&self, key: String) -> Result<Option<SettingEntry>, CoreError> {
         self.read(move |conn| {
             conn.query_row("SELECT * FROM settings WHERE key = ?1", [key], map_setting)

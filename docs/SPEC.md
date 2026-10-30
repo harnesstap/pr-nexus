@@ -701,6 +701,32 @@ Thanks!
   - The preview renders the same Markdown subset that Slack shows.
 - `settings.review.requester` defaults to empty, so no requester is added, matching the skill's default.
 
+#### Customizable templates (Settings → Slack → Message templates)
+
+The four forms above are the **default** templates; with no customization the output is byte-identical to the golden fixtures. Each form, plus the batch item, can be edited in Settings → Slack → Message templates, with a **Reset to default** per template and a live preview under each editor (a sample PR titled `fix: handle user_id in `parser`` shows the code-span rules; rendered by the core builder through the `preview_message_template` command and shown with the same renderer as the preview modal).
+
+`message::build_with(templates, mode, items, requester, extra)` renders them; `build` is `build_with` with the defaults. Every message built for the preview modal, request, bump, batch request/remind, and the MCP tools that post review requests uses the saved templates.
+
+| Template | Setting key | Default |
+|---|---|---|
+| Single request | `review.templates.single_request` | `Hello team\nCould someone please review {title}?{who}\n{url}\nThanks!` |
+| Batch request | `review.templates.batch_request` | `Hello team\nCould someone please review these pull requests?{who}\n{items}\nThanks!` |
+| Single reminder | `review.templates.single_remind` | `Hello, I'm still looking for a review on {title} when you have a moment :pray:\n{url}\nThanks!` |
+| Batch reminder | `review.templates.batch_remind` | `Hello, I'm still looking for a review on these pull requests when you have a moment :pray:\n{items}\nThanks!` |
+| Batch item | `review.templates.item` | `- {title}\n{url}` |
+
+An absent key is the default; Reset deletes the key.
+
+Placeholders:
+- `{title}`: the trimmed title as an inline code span (rules above).
+- `{url}`: the trimmed URL.
+- `{who}`: `" (" + requester + ")"` or empty. `{requester}`: the raw requester or empty. Reminders receive the requester too, so a custom reminder may use `{who}`; the defaults do not, which keeps D6.
+- `{count}`: the number of PRs in the message.
+- `{items}` (batch templates only): each PR rendered with the item template, joined with `\n`.
+- `{{` and `}}` are literal braces.
+
+Validation (on save, and in the preview): an unknown placeholder, a placeholder not available in that template (`{items}` in a single or item template, `{title}`/`{url}` in a batch template), an unclosed `{` or a stray `}` is an error; single and item templates must contain `{url}`, batch templates must contain `{items}`. The error is shown inline and the save is refused. The post-processing is unchanged: trailing whitespace trimmed, exactly one trailing `\n`, the optional note after one blank line.
+
 ### 7.7 One contextual action: Request review or Bump request
 
 There is never a separate Request button and Bump button. **In the list**, rows have no action buttons; the floating bar's single **Request / bump on Slack** action applies to the selection (§7.9), and rows only show a request indicator with a link to the original message (§8.2). **In the PR detail**, one contextual button covers the single-PR case. Its label comes from `SlackAction` (§4.1):

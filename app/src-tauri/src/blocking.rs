@@ -61,6 +61,7 @@ mod tests {
         ("preferences.rs", include_str!("preferences.rs")),
         ("project_info.rs", include_str!("project_info.rs")),
         ("slack.rs", include_str!("slack.rs")),
+        ("templates.rs", include_str!("templates.rs")),
     ];
 
     /// `(line, signature)` of every command in `source`, and whether it is async.
