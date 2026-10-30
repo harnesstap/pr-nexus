@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { AgentsSettings } from "./AgentsSettings";
+import type { SlackProposal } from "../api";
 import { FAKE_MCP_TOKEN, FAKE_SLACK_WORKSPACES, fakeMcp, sampleActivity } from "./fakes";
 import { mcpConfigSnippet, parsePort } from "./tabs";
 
@@ -25,13 +26,13 @@ test("is off by default and starts the server when enabled", async () => {
 
   fireEvent.click(master);
   expect(await screen.findByText("● Running on port 43117")).toBeInTheDocument();
-  expect(save).toHaveBeenCalledWith({ enabled: true, reads: true, local_writes: false, slack_sends: false, slack_reads: false, slack_private_search: false, slack_workspaces: [], port: null });
+  expect(save).toHaveBeenCalledWith({ enabled: true, reads: true, local_writes: false, slack_sends: false, slack_reads: false, slack_private_search: false, slack_workspaces: [], slack_auto_send_channels: [], port: null });
   expect(screen.getByText("http://127.0.0.1:43117/mcp")).toBeInTheDocument();
   expect(screen.getByLabelText("Token, masked")).toHaveTextContent("pnx_••••••••••••7f3e");
   expect(document.body.textContent).not.toContain(FAKE_MCP_TOKEN);
 });
 
-test("local writes can be turned on; Slack sends stays disabled and explained", async () => {
+test("local writes can be turned on; Slack sends waits for Slack reads", async () => {
   const api = fakeMcp({ enabled: true });
   const save = vi.spyOn(api, "saveMcpSettings");
   render(<AgentsSettings api={api} />);
@@ -47,7 +48,7 @@ test("local writes can be turned on; Slack sends stays disabled and explained", 
   const slack = screen.getByRole("switch", { name: "Slack sends" });
   expect(slack).toBeDisabled();
   expect(slack).toHaveAttribute("aria-checked", "false");
-  expect(slack).toHaveAccessibleDescription(/Coming soon/);
+  expect(slack).toHaveAccessibleDescription(/Turn on Slack reads first/);
   expect(screen.getByRole("switch", { name: "Reads" })).toBeEnabled();
 });
 
@@ -157,7 +158,7 @@ test("a bad port is refused before saving; a server error is shown", async () =>
   expect(save).not.toHaveBeenCalled();
 
   save.mockResolvedValueOnce({
-    settings: { enabled: true, reads: true, local_writes: false, slack_sends: false, slack_reads: false, slack_private_search: false, slack_workspaces: [], port: 40100 },
+    settings: { enabled: true, reads: true, local_writes: false, slack_sends: false, slack_reads: false, slack_private_search: false, slack_workspaces: [], slack_auto_send_channels: [], port: 40100 },
     status: { state: "error", url: null, port: 40100, error: "Port 40100 is already in use on 127.0.0.1." },
     token_masked: "pnx_••••••••••••7f3e",
   });
@@ -204,4 +205,77 @@ test("a workspace missing new scopes offers Sign in again, which clears the note
   fireEvent.click(again);
   await vi.waitFor(() => expect(screen.queryByRole("button", { name: "Sign in again to Acme Labs" })).toBeNull());
   expect(connect).toHaveBeenCalledTimes(1);
+});
+
+function proposal(id: number, patch: Partial<SlackProposal> = {}): SlackProposal {
+  return {
+    id,
+    created_at: new Date().toISOString(),
+    client: "claude-code",
+    tool: "slack_send_message",
+    workspace: { team_id: "T0ACME0001", qualifier: "T0ACME0001" },
+    channel_id: "T0ACME0001/C0ACME00001",
+    arguments: { channel_id: "C0ACME00001", message: `Review please #${id}` },
+    status: "pending",
+    held: { reason: "not_listed" },
+    auto_sent: false,
+    result: null,
+    error: null,
+    decided_at: null,
+    ...patch,
+  };
+}
+
+test("Slack sends turns on and edits the auto-send channels", async () => {
+  const api = fakeMcp({ enabled: true, slack_reads: true }, [], FAKE_SLACK_WORKSPACES);
+  const save = vi.spyOn(api, "saveMcpSettings");
+  render(<AgentsSettings api={api} />);
+  const sends = await screen.findByRole("switch", { name: "Slack sends" });
+  expect(sends).toBeEnabled();
+  expect(screen.queryByRole("textbox", { name: "Add auto-send channel" })).toBeNull();
+  fireEvent.click(sends);
+  const input = await screen.findByRole("textbox", { name: "Add auto-send channel" });
+  expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ slack_sends: true, slack_auto_send_channels: [] }));
+
+  fireEvent.change(input, { target: { value: "C0ACME00001" } });
+  fireEvent.click(screen.getByRole("button", { name: "Add" }));
+  expect(screen.getByRole("alert")).toHaveTextContent(/qualified channel ID/);
+
+  fireEvent.change(input, { target: { value: " T0ACME0001/C0ACME00001 " } });
+  fireEvent.click(screen.getByRole("button", { name: "Add" }));
+  await screen.findByRole("button", { name: "Remove T0ACME0001/C0ACME00001" });
+  expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ slack_auto_send_channels: ["T0ACME0001/C0ACME00001"] }));
+
+  fireEvent.click(screen.getByRole("button", { name: "Remove T0ACME0001/C0ACME00001" }));
+  await vi.waitFor(() => expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ slack_auto_send_channels: [] })));
+});
+
+test("pending proposals are approved or rejected, with why each one waited", async () => {
+  const held = proposal(2, { held: { reason: "read_other_workspace", workspaces: ["acme-labs"] } });
+  const failed = proposal(3, { status: "failed", held: null, auto_sent: true, error: "not_in_channel" });
+  const api = fakeMcp({ enabled: true, slack_reads: true, slack_sends: true }, [], FAKE_SLACK_WORKSPACES, [proposal(1), held, failed]);
+  const decide = vi.spyOn(api, "decideMcpSlackProposal");
+  render(<AgentsSettings api={api} />);
+  const list = await screen.findByRole("list", { name: "Slack proposals" });
+  expect(within(list).getByText("Channel not on the auto-send list")).toBeInTheDocument();
+  expect(within(list).getByText(/this agent read acme-labs first/)).toBeInTheDocument();
+  expect(within(list).getByText("Slack: not_in_channel")).toBeInTheDocument();
+  expect(screen.getByText("(2 waiting)")).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("button", { name: "Approve proposal 1" }));
+  await vi.waitFor(() => expect(screen.queryByRole("button", { name: "Approve proposal 1" })).toBeNull());
+  expect(decide).toHaveBeenLastCalledWith(1, true);
+  fireEvent.click(screen.getByRole("button", { name: "Reject proposal 2" }));
+  await vi.waitFor(() => expect(screen.queryByRole("button", { name: "Reject proposal 2" })).toBeNull());
+  expect(decide).toHaveBeenLastCalledWith(2, false);
+  expect(within(list).getAllByText("sent")).toHaveLength(1);
+  expect(within(list).getByText("rejected")).toBeInTheDocument();
+});
+
+test("approving needs Slack sends on; rejecting does not", async () => {
+  const api = fakeMcp({ enabled: true, slack_reads: true, slack_sends: false }, [], FAKE_SLACK_WORKSPACES, [proposal(1)]);
+  render(<AgentsSettings api={api} />);
+  expect(await screen.findByRole("button", { name: "Approve proposal 1" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Reject proposal 1" })).toBeEnabled();
+  expect(screen.getByText("Turn on Slack sends to approve.")).toBeInTheDocument();
 });

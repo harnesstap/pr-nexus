@@ -167,6 +167,8 @@ pub fn run() {
             mcp::control::regenerate_mcp_token,
             mcp::control::mcp_activity,
             mcp::control::clear_mcp_activity,
+            mcp::control::mcp_slack_proposals,
+            mcp::control::decide_mcp_slack_proposal,
         ])
         .run(tauri::generate_context!())
         .expect("error while running PR Nexus");

@@ -13,6 +13,8 @@
 pub mod cursor;
 pub mod fixtures;
 pub mod ids;
+pub mod sends;
+pub mod session;
 mod tools;
 pub mod upstream;
 

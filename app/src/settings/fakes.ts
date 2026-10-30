@@ -1,4 +1,4 @@
-import type { Api, McpActivityEntry, McpOutcome, McpSettings, McpView, Preferences, SlackWorkspace } from "../api";
+import type { Api, McpActivityEntry, McpOutcome, McpSettings, McpView, Preferences, SlackProposal, SlackWorkspace } from "../api";
 
 /** The §7.12 defaults, as the backend returns them on a fresh database. */
 export const DEFAULT_PREFERENCES: Preferences = {
@@ -35,6 +35,8 @@ type SettingsApi = Pick<
   | "regenerateMcpToken"
   | "mcpActivity"
   | "clearMcpActivity"
+  | "mcpSlackProposals"
+  | "decideMcpSlackProposal"
 >;
 
 export const FAKE_MCP_TOKEN = "pnx_0123456789abcdef0123456789abcdef0123456789abcdef0123456789ab7f3e";
@@ -42,7 +44,7 @@ export const FAKE_MCP_TOKEN = "pnx_0123456789abcdef0123456789abcdef0123456789abc
 /** An in-memory MCP server: enabling it "runs" on port 43117 unless a port is set. */
 type FakeMcp = Pick<
   Api,
-  "mcpSettings" | "saveMcpSettings" | "mcpToken" | "regenerateMcpToken" | "mcpActivity" | "clearMcpActivity" | "slackWorkspaces" | "slackConnect"
+  "mcpSettings" | "saveMcpSettings" | "mcpToken" | "regenerateMcpToken" | "mcpActivity" | "clearMcpActivity" | "slackWorkspaces" | "slackConnect" | "mcpSlackProposals" | "decideMcpSlackProposal"
 >;
 
 /** Two made-up workspaces: `acme`, and `acme-labs` on an Enterprise Grid. */
@@ -82,8 +84,14 @@ export function sampleActivity(now = new Date()): McpActivityEntry[] {
   ];
 }
 
-export function fakeMcp(initial: Partial<McpSettings> = {}, activity: McpActivityEntry[] = [], initialWorkspaces: SlackWorkspace[] = []): FakeMcp {
+export function fakeMcp(
+  initial: Partial<McpSettings> = {},
+  activity: McpActivityEntry[] = [],
+  initialWorkspaces: SlackWorkspace[] = [],
+  initialProposals: SlackProposal[] = [],
+): FakeMcp {
   let log = [...activity];
+  let proposals = [...initialProposals];
   let workspaces = [...initialWorkspaces];
   let settings: McpSettings = {
     enabled: false,
@@ -93,6 +101,7 @@ export function fakeMcp(initial: Partial<McpSettings> = {}, activity: McpActivit
     slack_reads: false,
     slack_private_search: false,
     slack_workspaces: [],
+    slack_auto_send_channels: [],
     port: null,
     ...initial,
   };
@@ -121,7 +130,7 @@ export function fakeMcp(initial: Partial<McpSettings> = {}, activity: McpActivit
       return Promise.resolve(fresh);
     },
     saveMcpSettings: (next) => {
-      settings = { ...next, slack_sends: false };
+      settings = { ...next };
       token ??= settings.enabled ? FAKE_MCP_TOKEN : null;
       return Promise.resolve(view());
     },
@@ -138,6 +147,18 @@ export function fakeMcp(initial: Partial<McpSettings> = {}, activity: McpActivit
       const removed = log.length;
       log = [];
       return Promise.resolve(removed);
+    },
+    mcpSlackProposals: () => Promise.resolve([...proposals].reverse()),
+    decideMcpSlackProposal: (id, approve) => {
+      const found = proposals.find((p) => p.id === id);
+      if (!found || found.status !== "pending") {
+        return Promise.reject(new Error(`Proposal ${id} is not waiting`));
+      }
+      const decided: SlackProposal = approve
+        ? { ...found, status: "sent", result: { ok: true, ts: "1767225600.000100" }, decided_at: new Date().toISOString() }
+        : { ...found, status: "rejected", decided_at: new Date().toISOString() };
+      proposals = proposals.map((p) => (p.id === id ? decided : p));
+      return Promise.resolve(decided);
     },
   };
 }

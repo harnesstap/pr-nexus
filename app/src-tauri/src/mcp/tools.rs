@@ -61,6 +61,7 @@ pub fn registry() -> Vec<ToolSpec> {
     let mut tools = read_tools();
     tools.extend(super::writes::write_tools());
     tools.extend(super::slack::slack_tools());
+    tools.extend(super::slack::sends::send_tools());
     tools
 }
 

@@ -306,7 +306,7 @@ pub struct ProfileArgs {
     pub workspace: Option<String>,
 }
 
-fn validation(message: impl Into<String>) -> AppError {
+pub(crate) fn validation(message: impl Into<String>) -> AppError {
     AppError::new(
         "validation",
         format!("Invalid arguments: {}", message.into()),
@@ -314,7 +314,7 @@ fn validation(message: impl Into<String>) -> AppError {
 }
 
 /// The workspaces the user ticked in Settings → Agents, in priority order.
-pub fn exposed(state: &AppState) -> Result<(Vec<Exposed>, usize), AppError> {
+pub(crate) fn exposed(state: &AppState) -> Result<(Vec<Exposed>, usize), AppError> {
     let allowed = config::load(&state.store)?.slack_workspaces;
     let accounts = crate::slack::workspace_accounts(&state.store)?;
     let mut shown = Vec::new();
@@ -350,7 +350,7 @@ fn none_exposed() -> AppError {
     )
 }
 
-fn matches(ws: &Exposed, key: &str) -> bool {
+pub(crate) fn matches(ws: &Exposed, key: &str) -> bool {
     let key = key.trim();
     ws.qualifier() == key || ws.team_id == key || ws.domain.eq_ignore_ascii_case(key)
 }
@@ -452,7 +452,7 @@ pub fn unwrap_reply(text: &str) -> (String, Option<String>) {
 
 /// Run `tool` on each workspace (at most [`FANOUT`] at once) and shape the
 /// reply. `build` makes each workspace's upstream arguments.
-fn run(
+pub(crate) fn run(
     state: &AppState,
     tool: &str,
     targets: Vec<Exposed>,
@@ -506,9 +506,13 @@ fn run(
     let mut results = Vec::new();
     let mut errors = Vec::new();
     let mut pages = BTreeMap::new();
+    let caller = super::session::current();
     for (ws, outcome) in outcomes {
         match outcome {
             Ok(text) => {
+                state
+                    .slack_proxy
+                    .note_read(caller.session.as_deref(), ws.qualifier());
                 let (content, next) = unwrap_reply(&text);
                 let content = ids::qualify_text(ws.qualifier(), &content);
                 pages.insert(ws.qualifier().to_owned(), next);
@@ -549,7 +553,7 @@ fn run(
     }))
 }
 
-fn workspace_ref(ws: &Exposed) -> Value {
+pub(crate) fn workspace_ref(ws: &Exposed) -> Value {
     json!({
         "qualifier": ws.qualifier(),
         "team_id": ws.team_id,

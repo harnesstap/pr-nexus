@@ -94,6 +94,17 @@ pub fn reply(domain: &str, tool: &str, arguments: &JsonObject) -> Result<String,
         "slack_read_list" => json!({
             "result": format!("# Release checklist (ID: F0{u}0003)\n\n| Item | Owner | Done |\n|---|---|---|\n| Cut branch | <@U0{u}0002> | yes |\n| Changelog | <@U0{u}0001> | no |\n", u = up(d)),
         }),
+        // Writes: the demo and tests only, never a real workspace.
+        "slack_send_message" => json!({
+            "result": format!("Message sent to <#{c}>. Message TS: 1761200000.000500\nPermalink: https://{d}.slack.com/archives/{c}/p1761200000000500\n", c = arguments.get("channel_id").and_then(|c| c.as_str()).unwrap_or_default()),
+        }),
+        "slack_schedule_message" => json!({
+            "result": format!("Message scheduled in <#{c}>. Scheduled message ID: Q0{u}0001\n", c = arguments.get("channel_id").and_then(|c| c.as_str()).unwrap_or_default(), u = up(d)),
+        }),
+        "slack_send_message_draft" => json!({
+            "channel_link": format!("https://app.slack.com/client/T0{u}01/{c}", c = arguments.get("channel_id").and_then(|c| c.as_str()).unwrap_or_default(), u = up(d)),
+        }),
+        "slack_add_reaction" => json!({ "result": "Reaction added." }),
         other => {
             return Err(ProviderError::Unsupported(format!(
                 "{other} has no fixture"

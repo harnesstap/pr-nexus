@@ -107,6 +107,28 @@ fn slack_summary(verb: &str, result: Option<&Value>) -> String {
     }
 }
 
+/// "proposed a Slack message" / "sent a Slack message (auto-send)".
+fn slack_write_summary(noun: &str, result: Option<&Value>) -> String {
+    let status = result
+        .and_then(|value| value.get("status"))
+        .and_then(Value::as_str);
+    match status {
+        Some("sent") => format!("sent {noun} (auto-send)"),
+        Some("pending") => {
+            let held = result
+                .and_then(|value| value.pointer("/held/reason"))
+                .and_then(Value::as_str);
+            match held {
+                Some("read_other_workspace") => {
+                    format!("proposed {noun}; auto-send blocked: read another workspace")
+                }
+                _ => format!("proposed {noun}"),
+            }
+        }
+        _ => format!("send {noun}"),
+    }
+}
+
 fn int(arguments: &Map<String, Value>, key: &str) -> String {
     arguments
         .get(key)
@@ -164,6 +186,11 @@ pub fn summarize(tool: &str, arguments: &Map<String, Value>, result: Option<&Val
         "slack_read_file" => "read a Slack file".to_owned(),
         "slack_read_canvas" => "read a Slack canvas".to_owned(),
         "slack_read_list" => "read a Slack list".to_owned(),
+        "slack_send_message" => slack_write_summary("a Slack message", result),
+        "slack_schedule_message" => slack_write_summary("a scheduled Slack message", result),
+        "slack_send_message_draft" => slack_write_summary("a Slack draft", result),
+        "slack_add_reaction" => slack_write_summary("a Slack reaction", result),
+        "slack_get_proposal" => "checked a Slack proposal".to_owned(),
         "list_projects" => "listed projects".to_owned(),
         "get_project" => format!("read {}", project()),
         "list_prs" => "listed pull requests".to_owned(),
