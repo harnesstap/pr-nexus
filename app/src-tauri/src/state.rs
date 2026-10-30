@@ -245,9 +245,13 @@ pub fn run_sync(state: &AppState, kind: SyncKind) -> Result<Option<sync::SyncRep
     sync_once(state, kind).map(Some)
 }
 
-/// The sync status while search pages are still arriving: a full
-/// reconcile counts what it has seen, an incremental pass what changed.
+/// The sync status while a sync runs: during the search a full reconcile
+/// counts what it has seen, an incremental pass what changed; after it, the
+/// status pass counts the pull requests it has checked.
 pub(crate) fn progress_message(progress: sync::SyncProgress) -> String {
+    if let sync::SyncStage::Checking { done, total } = progress.stage {
+        return format!("Syncing… checking {done}/{total}");
+    }
     match (progress.full, progress.updated) {
         (true, _) => format!("Syncing… {} so far", progress.seen),
         (false, 0) => "Syncing…".into(),
@@ -255,77 +259,23 @@ pub(crate) fn progress_message(progress: sync::SyncProgress) -> String {
     }
 }
 
-fn sync_once(state: &AppState, kind: SyncKind) -> Result<sync::SyncReport, AppError> {
-    if state.demo {
-        *state.sync.lock().expect("sync status") = SyncStatus::demo();
-        return Ok(sync::SyncReport {
-            fetched: 0,
-            stored: 0,
-            refreshed: 0,
-            hidden: 0,
-            updated: 0,
-            full: false,
-            paused: false,
-            message: "Demo data · sync disabled".into(),
-        });
-    }
+/// Marks the sync running, runs `work`, and always leaves the "syncing"
+/// phase afterwards: a panic inside `work` used to skip the final update,
+/// so the sidebar said "Syncing…" for good.
+fn settle(
+    state: &AppState,
+    kind: SyncKind,
+    work: impl FnOnce() -> Result<sync::SyncReport, AppError>,
+) -> Result<sync::SyncReport, AppError> {
     {
-        let mut status = state.sync.lock().expect("sync status");
+        let mut status = lock_status(state);
         status.phase = "syncing".into();
         status.message = "Syncing…".into();
         status.paused = false;
     }
-    let outcome = (|| {
-        let account = github_account(&state.store)?
-            .ok_or_else(|| AppError::new("unauthorized", "Connect GitHub before syncing"))?;
-        let token = resolve_github_token(state, Some(&account))?;
-        let client = GithubClient::new(account.id, token)?;
-        // Each search page is stored as it arrives; the header shows the
-        // running count, updated at most every `PROGRESS_EVERY`.
-        let mut throttle = sync::Throttle::new(sync::PROGRESS_EVERY);
-        let mut shown = 0usize;
-        let report = sync::sync_account_with_progress(
-            &state.store,
-            &client,
-            account.id,
-            kind,
-            Utc::now(),
-            &mut |progress| {
-                if throttle.ready(std::time::Instant::now()) {
-                    let mut status = state.sync.lock().expect("sync status");
-                    status.message = progress_message(progress);
-                    if progress.updated != shown {
-                        shown = progress.updated;
-                        status.revision += 1;
-                    }
-                }
-            },
-        )?;
-        // §8.1: re-evaluate auto-link rules after every sync.
-        let prs = state.store.list_pull_requests_for_account(account.id)?;
-        let links = pr_nexus_core::linking::relink(&state.store, &prs)?;
-        let mut changed = report.updated > 0 || links.added + links.removed > 0;
-        // §7.1: a BLOCKED pull request with no review decision needs its
-        // code-owner status before the list can call it Ready.
-        if !report.paused {
-            let flag = settings::blocked_review_required_is_ready(&state.store)?;
-            let resolved = pr_nexus_core::ownership::resolve_unknown_code_owner_reviews(
-                &state.store,
-                &client,
-                &prs,
-                flag,
-                Utc::now(),
-                pr_nexus_core::ownership::MAX_RESOLVES_PER_SYNC,
-            )
-            .unwrap_or(0);
-            changed |= resolved > 0;
-        }
-        if changed {
-            state.sync.lock().expect("sync status").revision += 1;
-        }
-        Ok::<_, AppError>(report)
-    })();
-    let mut status = state.sync.lock().expect("sync status");
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work))
+        .unwrap_or_else(|_| Err(AppError::new("internal", "sync stopped unexpectedly")));
+    let mut status = lock_status(state);
     match &outcome {
         Ok(report) if report.paused => {
             status.phase = "paused".into();
@@ -361,6 +311,83 @@ fn sync_once(state: &AppState, kind: SyncKind) -> Result<sync::SyncReport, AppEr
         }
     }
     outcome
+}
+
+/// The sync status, even after a panic poisoned its lock.
+fn lock_status(state: &AppState) -> std::sync::MutexGuard<'_, SyncStatus> {
+    state.sync.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn sync_once(state: &AppState, kind: SyncKind) -> Result<sync::SyncReport, AppError> {
+    if state.demo {
+        *state.sync.lock().expect("sync status") = SyncStatus::demo();
+        return Ok(sync::SyncReport {
+            fetched: 0,
+            stored: 0,
+            refreshed: 0,
+            hidden: 0,
+            updated: 0,
+            full: false,
+            paused: false,
+            message: "Demo data · sync disabled".into(),
+        });
+    }
+    settle(state, kind, || {
+        let account = github_account(&state.store)?
+            .ok_or_else(|| AppError::new("unauthorized", "Connect GitHub before syncing"))?;
+        let token = resolve_github_token(state, Some(&account))?;
+        let client = GithubClient::new(account.id, token)?;
+        // Each search page is stored as it arrives; the header shows the
+        // running count, updated at most every `PROGRESS_EVERY`.
+        let mut throttle = sync::Throttle::new(sync::PROGRESS_EVERY);
+        let mut shown = 0usize;
+        let mut stage = sync::SyncStage::Searching;
+        let report = sync::sync_account_with_progress(
+            &state.store,
+            &client,
+            account.id,
+            kind,
+            Utc::now(),
+            &mut |progress| {
+                // A new stage shows at once: the search ending must not wait
+                // on the throttle.
+                let moved =
+                    std::mem::discriminant(&progress.stage) != std::mem::discriminant(&stage);
+                stage = progress.stage;
+                if throttle.ready(std::time::Instant::now()) || moved {
+                    let mut status = lock_status(state);
+                    status.message = progress_message(progress);
+                    if progress.updated != shown {
+                        shown = progress.updated;
+                        status.revision += 1;
+                    }
+                }
+            },
+        )?;
+        // §8.1: re-evaluate auto-link rules after every sync.
+        let prs = state.store.list_pull_requests_for_account(account.id)?;
+        let links = pr_nexus_core::linking::relink(&state.store, &prs)?;
+        let mut changed = report.updated > 0 || links.added + links.removed > 0;
+        // §7.1: a BLOCKED pull request with no review decision needs its
+        // code-owner status before the list can call it Ready.
+        if !report.paused {
+            let flag = settings::blocked_review_required_is_ready(&state.store)?;
+            let resolved = pr_nexus_core::ownership::resolve_unknown_code_owner_reviews(
+                &state.store,
+                &client,
+                &prs,
+                flag,
+                Utc::now(),
+                pr_nexus_core::ownership::MAX_RESOLVES_PER_SYNC,
+            )
+            .unwrap_or(0);
+            changed |= resolved > 0;
+        }
+        if changed {
+            state.sync.lock().expect("sync status").revision += 1;
+        }
+        Ok::<_, AppError>(report)
+    })
 }
 
 /// Picks the focused or unfocused poll interval (§6). Coming back after more
@@ -492,5 +519,63 @@ mod tests {
             "it joined instead of syncing again"
         );
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// Regression: a sync that panicked left the phase at "syncing" forever.
+    #[test]
+    fn a_panicking_sync_ends_in_an_error_not_syncing() {
+        let (state, path) = demo_state("panic");
+        let outcome = settle(&state, SyncKind::Manual, || panic!("boom"));
+        assert!(outcome.is_err());
+        let status = state.sync.lock().unwrap_or_else(PoisonError::into_inner);
+        assert_eq!(status.phase, "error");
+        assert!(status.message.starts_with("Sync failed"));
+        drop(status);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_finished_sync_leaves_the_syncing_phase() {
+        let (state, path) = demo_state("settled");
+        let report = settle(&state, SyncKind::Full, || {
+            assert_eq!(state.sync.lock().unwrap().phase, "syncing");
+            state.sync.lock().unwrap().message = progress_message(sync::SyncProgress {
+                full: true,
+                stage: sync::SyncStage::Searching,
+                seen: 911,
+                updated: 0,
+            });
+            Ok(sync::SyncReport {
+                fetched: 911,
+                stored: 911,
+                refreshed: 0,
+                hidden: 0,
+                updated: 0,
+                full: true,
+                paused: false,
+                message: "911 pull requests".into(),
+            })
+        });
+        assert!(report.is_ok());
+        let status = state.sync.lock().unwrap();
+        assert_eq!(status.phase, "ok");
+        assert_eq!(status.message, "Synced · 911 pull requests");
+        assert!(status.synced_at.is_some());
+        drop(status);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn the_status_pass_has_its_own_progress_line() {
+        let checking = sync::SyncProgress {
+            full: true,
+            stage: sync::SyncStage::Checking {
+                done: 400,
+                total: 911,
+            },
+            seen: 911,
+            updated: 0,
+        };
+        assert_eq!(progress_message(checking), "Syncing… checking 400/911");
     }
 }

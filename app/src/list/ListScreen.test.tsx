@@ -308,3 +308,30 @@ test("the sync details offer a full resync that calls the full command", async (
   await waitFor(() => expect(fullResync).toHaveBeenCalledTimes(1));
   expect(syncNow).not.toHaveBeenCalled();
 });
+
+test("a sync that ends while the label says Syncing… switches to Synced", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    const fake = api([]);
+    const running = { ...boot.sync, phase: "syncing", message: "Syncing… 911 so far" };
+    const done = { ...boot.sync, phase: "ok", message: "Synced · 911 pull requests", synced_at: new Date().toISOString(), revision: 1 };
+    const syncStatus = vi.fn().mockResolvedValueOnce(running).mockResolvedValue(done);
+    render(<ListScreen api={{ ...fake, syncStatus }} boot={{ ...boot, sync: running }} onBoot={() => {}} />);
+    expect(await screen.findByRole("button", { name: /Syncing… 911 so far, sync details/ })).toBeInTheDocument();
+    await vi.advanceTimersByTimeAsync(1_200);
+    expect(await screen.findByRole("button", { name: /^Synced · just now, sync details/ })).toBeInTheDocument();
+    expect(screen.queryByText(/Syncing…/)).not.toBeInTheDocument();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("a failed Sync now does not stay on the optimistic Syncing…", async () => {
+  const fake = api([]);
+  const failed = { ...boot.sync, phase: "error", message: "Sync failed · network down" };
+  const syncNow = vi.fn(() => Promise.reject(new Error("network down")));
+  const syncStatus = vi.fn(() => Promise.resolve(failed));
+  render(<ListScreen api={{ ...fake, syncNow, syncStatus }} boot={boot} onBoot={() => {}} />);
+  fireEvent.click(await screen.findByRole("button", { name: "Refresh" }));
+  expect(await screen.findByRole("button", { name: /^Sync failed · network down, sync details/ })).toBeInTheDocument();
+});
