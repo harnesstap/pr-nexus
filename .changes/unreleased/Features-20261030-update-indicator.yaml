@@ -1,0 +1,3 @@
+kind: Features
+body: An update icon appears next to Settings in the sidebar when a newer release is available (or, for dev builds, when the build is behind `main`). Click it for the release link or the update command, or skip that version.
+time: 2026-10-30T11:45:00.000000Z

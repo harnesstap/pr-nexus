@@ -101,7 +101,8 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   list_page: (args) => pageFromRows(rows, projects, args.request as PageRequest),
   load_view_state: () => null,
   slack_workspaces: () => boot.slack_workspaces,
-  check_update: () => null,
+  // `--update` scenes set the answer before the app loads.
+  check_update: () => (window as { __update?: unknown }).__update ?? null,
   pr_detail: () => detail,
   pr_overview: (args) => ({ ...overviewFor(args.id), fetched_at: new Date().toISOString() }),
   merge_pr: (args) => ({ ...overviewFor(args.id), state: "merged", fetched_at: new Date().toISOString() }),

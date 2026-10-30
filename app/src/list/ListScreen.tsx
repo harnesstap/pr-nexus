@@ -34,7 +34,9 @@ import { SettingsScreen } from "../settings/SettingsScreen";
 import type { SettingsTab } from "../settings/tabs";
 import { KeyringBanner } from "../KeyringBanner";
 import { SlackSignInBanner, SyncErrorBanner, SyncPopover } from "./SyncBanners";
-import { MappingHint, UpdateBanner } from "./Banners";
+import { MappingHint } from "./Banners";
+import { FOOTER_ICON_BUTTON, FOOTER_ROW } from "./sidebarFooter";
+import { UpdateIndicator } from "./UpdateIndicator";
 import { showMappingHint } from "./hints";
 import { plainText } from "../textInput";
 
@@ -509,10 +511,15 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
           )}
         </section>
         <footer className="relative border-t border-slate-800 px-2 py-2 text-sm">
-          <NavButton current={viewKey} id="settings" icon={<GearIcon />} onSelect={setViewKey}>
-            Settings
-          </NavButton>
-          <div className="mt-1 flex items-center justify-between gap-2 px-2 text-xs text-slate-400">
+          <div className={`${FOOTER_ROW} -ml-2`}>
+            <div className="min-w-0 flex-1">
+              <NavButton current={viewKey} id="settings" icon={<GearIcon />} onSelect={setViewKey}>
+                Settings
+              </NavButton>
+            </div>
+            <UpdateIndicator api={api} />
+          </div>
+          <div className={`${FOOTER_ROW} mt-1 justify-between text-xs text-slate-400`}>
             <button
               type="button"
               aria-expanded={detail}
@@ -525,7 +532,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
               {syncLabel(sync, now)}
             </button>
             <Tooltip label="Sync now" detail="Fetch the latest PRs, reviews and checks from GitHub" side="top" align="end">
-              <button type="button" aria-label="Refresh" className="rounded p-1 hover:bg-slate-800 hover:text-slate-200" onClick={() => void refresh()}>
+              <button type="button" aria-label="Refresh" className={`${FOOTER_ICON_BUTTON} hover:bg-slate-800 hover:text-slate-200`} onClick={() => void refresh()}>
                 <RefreshIcon />
               </button>
             </Tooltip>
@@ -543,7 +550,6 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
         </footer>
       </aside>
       <main className="relative flex min-w-0 flex-1 flex-col">
-        <UpdateBanner api={api} />
         {mappingHint && viewKey !== "settings" && (
           <MappingHint
             onOpen={() => {

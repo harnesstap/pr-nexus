@@ -74,6 +74,15 @@ export function GearIcon(props: IconProps) {
   );
 }
 
+export function ArrowUpCircleIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 16V8M8.5 11.5 12 8l3.5 3.5" />
+    </Svg>
+  );
+}
+
 export function RefreshIcon(props: IconProps) {
   return (
     <Svg {...props}>

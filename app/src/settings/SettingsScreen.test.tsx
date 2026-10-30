@@ -314,7 +314,14 @@ test("About shows paths, the keychain explainer, update check and Re-run setup",
   let reruns = 0;
   const api = fakeSettingsApi({
     checkUpdate: () =>
-      Promise.resolve({ version: "0.2.0", url: "https://github.com/acme/pr-nexus/releases/tag/v0.2.0", command: "gh release download v0.2.0" }),
+      Promise.resolve({
+        kind: "release",
+        current: "0.1.0",
+        version: "0.2.0",
+        url: "https://github.com/acme/pr-nexus/releases/tag/v0.2.0",
+        command: "gh release download v0.2.0",
+        behind_by: null,
+      }),
   }) as Api;
   render(<Harness api={api} start="about" onRerun={() => (reruns += 1)} />);
   expect(await screen.findByRole("heading", { name: "PR Nexus 0.1.0" })).toBeInTheDocument();
