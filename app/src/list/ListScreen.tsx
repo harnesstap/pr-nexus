@@ -34,7 +34,8 @@ import { SettingsScreen } from "../settings/SettingsScreen";
 import type { SettingsTab } from "../settings/tabs";
 import { KeyringBanner } from "../KeyringBanner";
 import { SlackSignInBanner, SyncErrorBanner, SyncPopover } from "./SyncBanners";
-import { MappingHint, UpdateBanner } from "./Banners";
+import { MappingHint } from "./Banners";
+import { UpdateIndicator } from "./UpdateIndicator";
 import { showMappingHint } from "./hints";
 import { plainText } from "../textInput";
 
@@ -509,9 +510,14 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
           )}
         </section>
         <footer className="relative border-t border-slate-800 px-2 py-2 text-sm">
-          <NavButton current={viewKey} id="settings" icon={<GearIcon />} onSelect={setViewKey}>
-            Settings
-          </NavButton>
+          <div className="flex items-center gap-1">
+            <div className="min-w-0 flex-1">
+              <NavButton current={viewKey} id="settings" icon={<GearIcon />} onSelect={setViewKey}>
+                Settings
+              </NavButton>
+            </div>
+            <UpdateIndicator api={api} />
+          </div>
           <div className="mt-1 flex items-center justify-between gap-2 px-2 text-xs text-slate-400">
             <button
               type="button"
@@ -543,7 +549,6 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
         </footer>
       </aside>
       <main className="relative flex min-w-0 flex-1 flex-col">
-        <UpdateBanner api={api} />
         {mappingHint && viewKey !== "settings" && (
           <MappingHint
             onOpen={() => {

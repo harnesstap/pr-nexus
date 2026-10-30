@@ -13,6 +13,8 @@
 // `--slack-draft <dir>` saves the Slack dialogs' draft warning (slack-draft-*.png):
 // the single request for draft #488 (default and narrow), after Mark ready, and
 // the bulk dialog with #488 and #58 as drafts, before and after Mark all ready.
+// `--update <dir>` saves the sidebar's update indicator (update-*.png): none,
+// the icon for a newer release, and its popover for a release and a dev build.
 // Uses an installed Chrome; set CHROME_PATH to pick another Chromium binary.
 import { mkdirSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -59,6 +61,11 @@ const slackDraftFlag = process.argv.indexOf("--slack-draft");
 const slackDraftDir = slackDraftFlag === -1 ? null : process.argv[slackDraftFlag + 1];
 if (slackDraftFlag !== -1 && !slackDraftDir) {
   throw new Error("--slack-draft needs an output directory");
+}
+const updateFlag = process.argv.indexOf("--update");
+const updateDir = updateFlag === -1 ? null : process.argv[updateFlag + 1];
+if (updateFlag !== -1 && !updateDir) {
+  throw new Error("--update needs an output directory");
 }
 /** A row's own button, not its star (both carry the title). */
 const rowButton = (title) => new RegExp(`^(?!Star |Unstar |Open ).*${title}`);
@@ -164,9 +171,74 @@ async function slackDraftShots(page, dir) {
   await save("bulk-after-mark-ready");
 }
 
+const UPDATES = {
+  release: {
+    kind: "release",
+    current: "0.1.0",
+    version: "0.2.0",
+    url: "https://github.com/harnesstap/pr-nexus/releases/tag/v0.2.0",
+    command: "gh release download v0.2.0 -R harnesstap/pr-nexus -p '*.dmg'",
+    behind_by: null,
+  },
+  dev: {
+    kind: "dev",
+    current: "1a2b3c4",
+    version: "9f8e7d6",
+    url: "https://github.com/harnesstap/pr-nexus/compare/1a2b3c4...9f8e7d6",
+    command: "git pull && bun install --cwd app && bun run tauri dev",
+    behind_by: 12,
+  },
+};
+
+/** One page per variant: the update answer is read once at startup. */
+async function updateShots(browser, dir) {
+  mkdirSync(dir, { recursive: true });
+  const scenes = [
+    ["none", null, false],
+    ["available", UPDATES.release, false],
+    ["popover-release", UPDATES.release, true],
+    ["popover-dev", UPDATES.dev, true],
+  ];
+  for (const [name, update, open] of scenes) {
+    const page = await browser.newPage({ viewport: { width, height: 900 }, deviceScaleFactor: 2, colorScheme: "dark" });
+    await page.addInitScript((value) => {
+      globalThis.__update = value;
+    }, update);
+    await page.goto(url);
+    await page.getByRole("group", { name: "Quick filters" }).waitFor();
+    if (update) {
+      const icon = page.getByRole("button", { name: /update details$/ });
+      await icon.waitFor();
+      if (open) {
+        await icon.click();
+        await page.getByRole("dialog", { name: "Update available" }).waitFor();
+      } else {
+        await icon.hover();
+        await page.waitForTimeout(800);
+      }
+    }
+    await page.waitForTimeout(300);
+    await page.screenshot({ path: resolve(dir, `update-${name}.png`) });
+    const aside = await page.locator("aside").first().boundingBox();
+    if (aside) {
+      const height = 360;
+      const clip = { x: aside.x, y: aside.y + aside.height - height, width: Math.min(aside.width + 140, width), height };
+      await page.screenshot({ path: resolve(dir, `update-${name}-sidebar.png`), clip });
+    }
+    await page.close();
+    console.log(`wrote update-${name}.png`);
+  }
+}
+
 let browser;
 try {
   browser = await chromium.launch(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: "chrome" });
+  if (updateDir) {
+    await updateShots(browser, resolve(updateDir));
+    await browser.close();
+    await vite.close();
+    process.exit(0);
+  }
   const page = await browser.newPage({ viewport: { width, height: 900 }, deviceScaleFactor: 2, colorScheme: "dark" });
   page.on("pageerror", (err) => console.error("page error:", err.message));
   if (slackDraftDir) {

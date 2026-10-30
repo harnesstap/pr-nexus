@@ -282,107 +282,72 @@ pub async fn app_info(app: Shared<'_>, paths: State<'_, AppPaths>) -> Result<App
     })
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct Release {
-    tag_name: String,
-    html_url: String,
-    #[serde(default)]
-    draft: bool,
-    #[serde(default)]
-    prerelease: bool,
-}
-
-#[derive(Debug, Serialize, PartialEq, Eq)]
-pub struct UpdateInfo {
-    pub version: String,
-    pub url: String,
-    /// The download that skips the quarantine flag on macOS (§9).
-    pub command: String,
-}
-
-fn update_from(current: &str, repo: &str, release: Release) -> Option<UpdateInfo> {
-    if release.draft || release.prerelease || !update::is_newer(current, &release.tag_name) {
-        return None;
+/// Release builds compare tags; debug builds compare their commit with `main`.
+fn channel() -> update::Channel {
+    if cfg!(debug_assertions) {
+        let sha = env!("PR_NEXUS_GIT_SHA");
+        update::Channel::Dev {
+            sha: (!sha.is_empty()).then(|| sha.to_owned()),
+        }
+    } else {
+        update::Channel::Release
     }
-    Some(UpdateInfo {
-        command: format!(
-            "gh release download {} -R {repo} -p '*.dmg'",
-            release.tag_name
-        ),
-        version: release.tag_name.trim_start_matches('v').to_owned(),
-        url: release.html_url,
-    })
 }
 
-/// Latest release on GitHub, read with the user's own token (the repo can be
-/// private). Any failure means "no banner": the check is best effort.
+/// `reqwest` behind the core's `HttpGet`; logs what the core keeps silent.
+struct GithubGet {
+    client: reqwest::blocking::Client,
+    token: Option<String>,
+}
+
+impl update::HttpGet for GithubGet {
+    fn get(&self, url: &str, accept: &str) -> Result<update::HttpResponse, String> {
+        let mut request = self
+            .client
+            .get(url)
+            .header("Accept", accept)
+            .header("X-GitHub-Api-Version", "2022-11-28");
+        if let Some(token) = &self.token {
+            request = request.bearer_auth(token);
+        }
+        let response = request.send().map_err(|err| {
+            tracing::warn!(error = %err, "update check failed");
+            err.to_string()
+        })?;
+        let status = response.status().as_u16();
+        if !response.status().is_success() {
+            tracing::info!(status, url, "update check: no answer");
+        }
+        Ok(update::HttpResponse {
+            status,
+            body: response.text().unwrap_or_default(),
+        })
+    }
+}
+
+/// Latest release (release builds) or `main` (dev builds) on GitHub, read
+/// with the user's token when one is set, anonymously otherwise. Any failure
+/// means "no update": the check is best effort.
 #[tauri::command]
-pub async fn check_update(app: Shared<'_>) -> Result<Option<UpdateInfo>, AppError> {
+pub async fn check_update(app: Shared<'_>) -> Result<Option<update::UpdateInfo>, AppError> {
     let state = app.inner().clone();
     tauri::async_runtime::spawn_blocking(move || Ok(check_update_blocking(&state)))
         .await
         .map_err(|err| AppError::new("internal", err.to_string()))?
 }
 
-fn check_update_blocking(state: &AppState) -> Option<UpdateInfo> {
+fn check_update_blocking(state: &AppState) -> Option<update::UpdateInfo> {
     if state.demo {
         return None;
     }
     let repo = update::repo_slug(env!("CARGO_PKG_REPOSITORY"))?;
-    let account = state::github_account(&state.store).ok()?;
-    let token = state::resolve_github_token(state, account.as_ref()).ok()?;
+    let account = state::github_account(&state.store).ok().flatten();
+    let token = state::resolve_github_token(state, account.as_ref()).ok();
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(10))
         .user_agent(concat!("pr-nexus/", env!("CARGO_PKG_VERSION")))
         .build()
         .ok()?;
-    let response = client
-        .get(format!(
-            "https://api.github.com/repos/{repo}/releases/latest"
-        ))
-        .bearer_auth(token)
-        .header("Accept", "application/vnd.github+json")
-        .header("X-GitHub-Api-Version", "2022-11-28")
-        .send();
-    let response = match response {
-        Ok(response) if response.status().is_success() => response,
-        Ok(response) => {
-            tracing::info!(status = %response.status(), "update check: no release");
-            return None;
-        }
-        Err(err) => {
-            tracing::warn!(error = %err, "update check failed");
-            return None;
-        }
-    };
-    let release: Release = response.json().ok()?;
-    update_from(env!("CARGO_PKG_VERSION"), &repo, release)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn release(tag: &str) -> Release {
-        Release {
-            tag_name: tag.into(),
-            html_url: format!("https://github.com/acme/widgets/releases/tag/{tag}"),
-            draft: false,
-            prerelease: false,
-        }
-    }
-
-    #[test]
-    fn a_newer_final_release_becomes_a_banner() {
-        let info = update_from("0.1.0", "acme/widgets", release("v0.2.0")).unwrap();
-        assert_eq!(info.version, "0.2.0");
-        assert_eq!(
-            info.command,
-            "gh release download v0.2.0 -R acme/widgets -p '*.dmg'"
-        );
-        assert!(update_from("0.2.0", "acme/widgets", release("v0.2.0")).is_none());
-        let mut pre = release("v0.3.0");
-        pre.prerelease = true;
-        assert!(update_from("0.2.0", "acme/widgets", pre).is_none());
-    }
+    let http = GithubGet { client, token };
+    update::check(&http, &repo, env!("CARGO_PKG_VERSION"), &channel())
 }

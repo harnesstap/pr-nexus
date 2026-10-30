@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Api, AppInfo, UpdateInfo } from "../api";
 import { errorMessage } from "../api";
+import { updateSummary } from "../list/UpdateIndicator";
 import { Tooltip } from "../Tooltip";
 
 interface Props {
@@ -103,16 +104,17 @@ export function AboutSettings({ api, onRerunSetup }: Props) {
             {update.phase === "error" && <span className="text-rose-300">{update.message}</span>}
             {update.phase === "available" && (
               <>
-                {update.update.version} is available.{" "}
+                {update.update.kind === "dev" ? `${updateSummary(update.update)}.` : `${update.update.version} is available.`}{" "}
                 <a className="text-violet-300 underline" href={update.update.url} target="_blank" rel="noreferrer">
-                  Release notes and download
+                  {update.update.kind === "dev" ? "View changes" : "Release notes and download"}
                 </a>
               </>
             )}
           </span>
         </div>
         <p className="mt-2 text-xs text-slate-500">
-          PR Nexus asks GitHub for the latest release with your token; it never downloads or installs anything itself.
+          PR Nexus asks GitHub for the latest release (or, for a dev build, how far it is behind main) with your token
+          when one is set; it never downloads or installs anything itself.
         </p>
         {isMac && (
           <div className="mt-3 rounded border border-slate-800 bg-slate-900/60 p-3 text-xs text-slate-300">

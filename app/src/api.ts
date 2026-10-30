@@ -152,9 +152,17 @@ export interface AppInfo {
 }
 
 export interface UpdateInfo {
+  /** `release`: a newer GitHub release; `dev`: a debug build behind `main`. */
+  kind: "release" | "dev";
+  /** Running version, or the short commit a dev build came from. */
+  current: string;
+  /** Newer version, or the short head of `main`. "Skip" stores this. */
   version: string;
+  /** Release page, or the compare view for dev builds. */
   url: string;
   command: string;
+  /** Dev only: commits on `main` this build lacks. */
+  behind_by: number | null;
 }
 
 /** `off` (default), `public` channels, or `all` (also private channels and DMs). */
