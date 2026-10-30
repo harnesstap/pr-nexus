@@ -1,0 +1,3 @@
+kind: Changed
+body: "macOS dev builds: the dev codesign runner now prefers an Apple Development identity, the only kind whose keychain \"Always Allow\" survives rebuilds (a self-signed identity has no Team ID, so the keychain partition list is keyed on the binary hash). CONTRIBUTING explains the one-time setup."
+time: 2026-10-30T11:30:00.000000Z

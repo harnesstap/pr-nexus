@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # One-time, idempotent: create a self-signed code-signing identity
 # "PR Nexus Dev" in the login keychain, used by
-# scripts/macos-dev-codesign-runner.sh to sign dev builds.
+# scripts/macos-dev-codesign-runner.sh to sign dev builds when no
+# "Apple Development" identity exists. Only an Apple-issued identity stops
+# the keychain prompt after each rebuild; see CONTRIBUTING.md.
 #
 # Manual fallback: Keychain Access > Certificate Assistant > Create a
 # Certificate..., Name "PR Nexus Dev", Identity Type "Self-Signed Root",
@@ -68,8 +70,10 @@ if has_identity; then
 
 Next steps:
   1. bun run tauri dev   (the dev binary is now signed with "$identity")
-  2. On the first keychain prompt, enter your password and click "Always Allow".
-     It sticks across rebuilds from then on.
+  2. On the keychain prompt, enter your password and click "Always Allow".
+     A self-signed identity has no Team ID, so macOS asks again after each
+     rebuild. An "Apple Development" identity (free Apple ID in Xcode) stops
+     that; the dev runner prefers it. See CONTRIBUTING.md.
   Opt out for one run: PR_NEXUS_DEV_SIGN=0 bun run tauri dev
 NEXT
 else

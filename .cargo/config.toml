@@ -1,5 +1,6 @@
-# macOS only: re-sign the dev app binary with a stable local identity so the
-# keychain "Always Allow" survives rebuilds. No-op without the identity.
+# macOS only: re-sign the dev app binary with a stable identity (Apple
+# Development preferred) so the keychain "Always Allow" survives rebuilds.
+# `tauri dev` uses `cargo run`, so this applies. No-op without an identity.
 # See CONTRIBUTING.md, "macOS dev: stop keychain prompts".
 [target.'cfg(target_os = "macos")']
 runner = "scripts/macos-dev-codesign-runner.sh"
