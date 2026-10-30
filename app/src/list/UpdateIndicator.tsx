@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Api, UpdateInfo } from "../api";
 import { ArrowUpCircleIcon, CopyIcon, ExternalIcon } from "../icons";
 import { Tooltip } from "../Tooltip";
+import { FOOTER_ICON_BUTTON } from "./sidebarFooter";
 import { dismissUpdate, updateDismissed } from "./hints";
 
 /** Re-check this often while the app stays open (plus once at startup). */
@@ -57,7 +58,7 @@ export function UpdateIndicator({ api }: { api: Api }) {
           data-update-trigger=""
           aria-label={`${updateSummary(update)}, update details`}
           aria-expanded={open}
-          className="shrink-0 rounded p-1 text-violet-400 hover:bg-slate-800 hover:text-violet-300"
+          className={`${FOOTER_ICON_BUTTON} text-violet-400 hover:bg-slate-800 hover:text-violet-300`}
           onClick={() => setOpen((value) => !value)}
         >
           <ArrowUpCircleIcon />

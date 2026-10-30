@@ -198,6 +198,7 @@ async function updateShots(browser, dir) {
     ["available", UPDATES.release, false],
     ["popover-release", UPDATES.release, true],
     ["popover-dev", UPDATES.dev, true],
+    ["aligned", UPDATES.release, null],
   ];
   for (const [name, update, open] of scenes) {
     const page = await browser.newPage({ viewport: { width, height: 900 }, deviceScaleFactor: 2, colorScheme: "dark" });
@@ -212,12 +213,27 @@ async function updateShots(browser, dir) {
       if (open) {
         await icon.click();
         await page.getByRole("dialog", { name: "Update available" }).waitFor();
-      } else {
+      } else if (open === false) {
         await icon.hover();
         await page.waitForTimeout(800);
       }
     }
     await page.waitForTimeout(300);
+    if (open === null) {
+      // Footer close-up: report both trailing icons' centres so drift shows up as numbers.
+      const centre = async (locator) => {
+        const box = await locator.locator("svg").boundingBox();
+        return { x: box.x + box.width / 2, y: box.y + box.height / 2, box };
+      };
+      const up = await centre(page.getByRole("button", { name: /update details$/ }));
+      const sync = await centre(page.getByRole("button", { name: "Refresh" }));
+      console.log(`update icon centre x=${up.x} box=${JSON.stringify(up.box)}`);
+      console.log(`sync icon centre x=${sync.x} box=${JSON.stringify(sync.box)}`);
+      const footer = await page.locator("aside footer").first().boundingBox();
+      await page.screenshot({ path: resolve(dir, `update-${name}-sidebar.png`), clip: footer });
+      await page.close();
+      continue;
+    }
     await page.screenshot({ path: resolve(dir, `update-${name}.png`) });
     const aside = await page.locator("aside").first().boundingBox();
     if (aside) {
