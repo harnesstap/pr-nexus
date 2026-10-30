@@ -14,6 +14,7 @@ pub mod cursor;
 pub mod elicit;
 pub mod fixtures;
 pub mod ids;
+pub mod link;
 pub mod sends;
 pub mod session;
 mod tools;

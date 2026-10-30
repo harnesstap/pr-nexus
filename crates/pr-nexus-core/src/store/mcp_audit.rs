@@ -54,6 +54,8 @@ pub struct AuditEntry {
     pub summary: String,
     pub error: Option<String>,
     pub duration_ms: i64,
+    /// The Slack message a successful write touched; `None` otherwise.
+    pub link: Option<String>,
 }
 
 impl Store {
@@ -101,7 +103,7 @@ impl Store {
             let mut stmt = conn
                 .prepare(
                     "SELECT id, at, client_name, tool, capability, outcome, fields, target_ids, \
-                     summary, error, duration_ms FROM mcp_audit \
+                     summary, error, duration_ms, link FROM mcp_audit \
                      WHERE ?1 IS NULL OR outcome = ?1 ORDER BY id DESC LIMIT ?2",
                 )
                 .map_err(db)?;
@@ -120,6 +122,7 @@ impl Store {
                         summary: row.get(8)?,
                         error: row.get(9)?,
                         duration_ms: row.get(10)?,
+                        link: row.get(11)?,
                     })
                 })
                 .map_err(db)?;
@@ -136,8 +139,8 @@ impl Store {
 fn insert(conn: &rusqlite::Connection, entry: &AuditEntry) -> Result<i64, CoreError> {
     conn.execute(
         "INSERT INTO mcp_audit (at, client_name, tool, capability, outcome, fields, \
-         target_ids, summary, error, duration_ms) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+         target_ids, summary, error, duration_ms, link) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             format_ts(entry.at),
             entry.client_name,
@@ -149,6 +152,7 @@ fn insert(conn: &rusqlite::Connection, entry: &AuditEntry) -> Result<i64, CoreEr
             entry.summary,
             entry.error,
             entry.duration_ms,
+            entry.link,
         ],
     )
     .map_err(db)?;
@@ -172,6 +176,7 @@ mod tests {
             summary: String::new(),
             error: None,
             duration_ms: 1,
+            link: None,
         }
     }
 
@@ -192,9 +197,16 @@ mod tests {
             all.iter().map(|row| row.tool.as_str()).collect::<Vec<_>>(),
             ["b", "a"]
         );
+        let mut sent = entry(now, "slack_send_message");
+        sent.link = Some("https://acme.slack.com/archives/C0123456789/p1700000000000100".into());
+        store.append_mcp_audit(sent).unwrap();
+        assert_eq!(
+            store.mcp_audit(None, 1).unwrap()[0].link.as_deref(),
+            Some("https://acme.slack.com/archives/C0123456789/p1700000000000100")
+        );
         let only = store.mcp_audit(Some(AuditOutcome::Denied), 10).unwrap();
         assert_eq!(only.len(), 1);
-        assert_eq!(store.clear_mcp_audit().unwrap(), 2);
+        assert_eq!(store.clear_mcp_audit().unwrap(), 3);
         assert!(store.mcp_audit(None, 10).unwrap().is_empty());
     }
 

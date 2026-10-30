@@ -38,6 +38,8 @@ pub struct AuditEvent {
     pub summary: String,
     /// The error message shown to the agent, for denied and failed calls.
     pub error: Option<String>,
+    /// The Slack message a successful write touched.
+    pub link: Option<String>,
 }
 
 impl AuditEvent {
@@ -120,6 +122,53 @@ fn slack_write_summary(noun: &str, result: Option<&Value>) -> String {
     }
 }
 
+/// `#name` when PR Nexus has the channel cached, else its ID.
+pub fn channel_label(name: Option<&str>, id: &str) -> String {
+    match name.filter(|name| !name.is_empty()) {
+        Some(name) => format!("#{name}"),
+        None => id.to_owned(),
+    }
+}
+
+/// "replied in a thread in #team-web (auto-send)": a reply is found by its
+/// thread, not by its channel alone.
+fn thread_reply_summary(arguments: &Map<String, Value>, result: Option<&Value>) -> String {
+    let get = |key: &str| result.and_then(|v| v.get(key)).and_then(Value::as_str);
+    let id = get("channel_id")
+        .or_else(|| arguments.get("channel_id").and_then(Value::as_str))
+        .unwrap_or_default();
+    let place = format!("in a thread in {}", channel_label(get("channel_name"), id));
+    match (get("status"), get("decided_in")) {
+        (Some("sent"), Some(agent)) => format!("replied {place}, approved in {agent}"),
+        (Some("sent"), None) => format!("replied {place} (auto-send)"),
+        (Some("rejected"), Some(agent)) => {
+            format!("declined a reply {place} in {agent}; not sent")
+        }
+        (Some("pending"), _) => match result
+            .and_then(|v| v.pointer("/held/reason"))
+            .and_then(Value::as_str)
+        {
+            Some("read_other_workspace") => {
+                format!("proposed a reply {place}; auto-send blocked: read another workspace")
+            }
+            _ => format!("proposed a reply {place}"),
+        },
+        _ => format!("reply {place}"),
+    }
+}
+
+/// The link Activity shows for a Slack write that went out.
+pub fn write_link(result: Option<&Value>) -> Option<String> {
+    let result = result?;
+    if result.get("status").and_then(Value::as_str) != Some("sent") {
+        return None;
+    }
+    result
+        .get("link")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+}
+
 fn slack_write_status(noun: &str, status: Option<&str>, result: Option<&Value>) -> String {
     match status {
         Some("sent") => format!("sent {noun} (auto-send)"),
@@ -195,6 +244,9 @@ pub fn summarize(tool: &str, arguments: &Map<String, Value>, result: Option<&Val
         "slack_read_file" => "read a Slack file".to_owned(),
         "slack_read_canvas" => "read a Slack canvas".to_owned(),
         "slack_read_list" => "read a Slack list".to_owned(),
+        "slack_send_message" if arguments.get("thread_ts").is_some_and(|ts| !ts.is_null()) => {
+            thread_reply_summary(arguments, result)
+        }
         "slack_send_message" => slack_write_summary("a Slack message", result),
         "slack_schedule_message" => slack_write_summary("a scheduled Slack message", result),
         "slack_send_message_draft" => slack_write_summary("a Slack draft", result),
@@ -291,6 +343,7 @@ impl AuditSink for StoreAudit {
             summary: event.summary.clone(),
             error: event.error.clone(),
             duration_ms: i64::try_from(event.duration_ms).unwrap_or(i64::MAX),
+            link: event.link.clone(),
         };
         if let Err(err) = self.0.store.append_mcp_audit(entry) {
             tracing::warn!(error = %err, "mcp audit row not saved");

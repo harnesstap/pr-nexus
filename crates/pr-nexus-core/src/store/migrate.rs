@@ -18,6 +18,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../migrations/0006_slack_team_ids.sql"),
     include_str!("../../migrations/0007_project_info.sql"),
     include_str!("../../migrations/0008_mcp_audit.sql"),
+    include_str!("../../migrations/0009_mcp_audit_link.sql"),
 ];
 
 pub(super) fn migrate(conn: &mut Connection) -> Result<(), CoreError> {
@@ -137,5 +138,27 @@ mod tests {
             [],
         )
         .unwrap();
+    }
+
+    #[test]
+    fn audit_link_upgrade_keeps_rows_without_a_link() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..8] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 8_i64).unwrap();
+        conn.execute(
+            "INSERT INTO mcp_audit (at, tool, capability, outcome) \
+             VALUES ('x', 'slack_send_message', 'slack_sends', 'allowed')",
+            [],
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+
+        let link: Option<String> = conn
+            .query_row("SELECT link FROM mcp_audit", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(link, None);
     }
 }

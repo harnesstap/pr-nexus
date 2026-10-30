@@ -674,6 +674,8 @@ export interface McpActivityEntry {
   /** "starred acme/api#482". */
   summary: string;
   error: string | null;
+  /** The Slack message a successful Slack write touched; absent on older rows. */
+  link?: string | null;
 }
 
 /** Emitted after an agent changed local data, so the list reloads at once. */

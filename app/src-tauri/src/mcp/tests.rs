@@ -940,6 +940,7 @@ async fn the_audit_is_bounded_through_the_server() {
                     summary: String::new(),
                     error: None,
                     duration_ms: 0,
+                    link: None,
                 })
                 .collect(),
         )

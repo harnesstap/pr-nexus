@@ -47,7 +47,20 @@ export const FAKE_MCP_TOKEN = "pnx_0123456789abcdef0123456789abcdef0123456789abc
 /** An in-memory MCP server: enabling it "runs" on port 43117 unless a port is set. */
 type FakeMcp = Pick<
   Api,
-  "mcpSettings" | "saveMcpSettings" | "mcpToken" | "regenerateMcpToken" | "mcpClientStates" | "mcpAddToClient" | "mcpOpenClientConfig" | "mcpActivity" | "clearMcpActivity" | "slackWorkspaces" | "slackConnect" | "mcpSlackProposals" | "decideMcpSlackProposal"
+  | "mcpSettings"
+  | "saveMcpSettings"
+  | "mcpToken"
+  | "regenerateMcpToken"
+  | "mcpClientStates"
+  | "mcpAddToClient"
+  | "mcpOpenClientConfig"
+  | "mcpActivity"
+  | "clearMcpActivity"
+  | "openExternal"
+  | "slackWorkspaces"
+  | "slackConnect"
+  | "mcpSlackProposals"
+  | "decideMcpSlackProposal"
 >;
 
 /** Made-up config paths under a fake home, one per client. */
@@ -94,6 +107,23 @@ export function sampleActivity(now = new Date()): McpActivityEntry[] {
     row(3, 26, "set_pr_starred", "denied", "starred PR id 482", "set_pr_starred is turned off in PR Nexus Settings → Agents (MCP)."),
     row(2, 27, "list_prs", "allowed", "listed pull requests"),
     row(1, 95, "list_projects", "allowed", "listed projects"),
+  ];
+}
+
+/** Two Slack writes in `acme`: a message, then a reply in its thread. */
+export function sampleSlackActivity(now = new Date()): McpActivityEntry[] {
+  const at = (minutes: number) => new Date(now.getTime() - minutes * 60_000).toISOString();
+  const base = { client: "claude-code", tool: "slack_send_message", capability: "slack_sends", outcome: "allowed" as const, error: null };
+  return [
+    {
+      ...base,
+      id: 12,
+      at: at(0),
+      summary: "replied in a thread in #release (auto-send)",
+      link: "https://acme.slack.com/archives/C0123456789/p1700000500000200?thread_ts=1700000000.000100&cid=C0123456789",
+    },
+    { ...base, id: 11, at: at(4), summary: "sent a Slack message (auto-send)", link: "https://acme.slack.com/archives/C0123456789/p1700000000000100" },
+    { ...base, id: 10, at: at(30), tool: "list_prs", capability: "reads", summary: "listed pull requests" },
   ];
 }
 
@@ -178,6 +208,7 @@ export function fakeMcp(
       clients = Object.fromEntries(Object.entries(clients).map(([id, status]) => [id, status === "added" ? "outdated" : status]));
       return Promise.resolve(view());
     },
+    openExternal: () => Promise.resolve(),
     mcpActivity: (outcome) => Promise.resolve(log.filter((entry) => !outcome || entry.outcome === outcome)),
     clearMcpActivity: () => {
       const removed = log.length;

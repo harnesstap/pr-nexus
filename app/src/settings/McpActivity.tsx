@@ -5,7 +5,7 @@ import { ago } from "../list/model";
 import { Tooltip } from "../Tooltip";
 
 interface Props {
-  api: Pick<Api, "mcpActivity" | "clearMcpActivity">;
+  api: Pick<Api, "mcpActivity" | "clearMcpActivity" | "openExternal">;
 }
 
 /** How often the list re-reads while open, so a running agent shows up. */
@@ -140,6 +140,19 @@ export function McpActivity({ api }: Props) {
               <span className="min-w-0 max-w-[10rem] truncate text-xs text-slate-300">{entry.client || "unknown client"}</span>
               <span className="shrink-0 font-mono text-xs text-sky-300">{entry.tool}</span>
               <span className="min-w-0 flex-1 basis-40 truncate">{entry.summary}</span>
+              {entry.link && (
+                <button
+                  type="button"
+                  className="shrink-0 text-xs text-sky-300 hover:text-sky-200 hover:underline"
+                  onClick={() => {
+                    if (entry.link) {
+                      api.openExternal(entry.link).catch((err: unknown) => setError(errorMessage(err)));
+                    }
+                  }}
+                >
+                  ↗ Open in Slack
+                </button>
+              )}
               <Badge entry={entry} />
             </li>
           ))}
