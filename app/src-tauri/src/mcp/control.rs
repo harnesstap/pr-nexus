@@ -210,23 +210,22 @@ impl McpControl {
                             ", Slack refused it".to_owned(),
                         )
                     }
-                    Status::Sent
-                        if proposal
-                            .arguments
-                            .get("thread_ts")
-                            .is_some_and(|ts| !ts.is_null()) =>
-                    {
+                    Status::Sent => {
                         let label = super::audit::channel_label(
                             proposal.channel_name.as_deref(),
                             &proposal.channel_id,
                         );
-                        (
-                            Outcome::Ok,
-                            None,
-                            format!(", replied in a thread in {label}"),
-                        )
+                        let thread = proposal
+                            .arguments
+                            .get("thread_ts")
+                            .is_some_and(|ts| !ts.is_null());
+                        let done = if thread {
+                            format!(", replied in a thread in {label}")
+                        } else {
+                            format!(", sent in {label}")
+                        };
+                        (Outcome::Ok, None, done)
                     }
-                    Status::Sent => (Outcome::Ok, None, ", sent".to_owned()),
                     _ => (Outcome::Ok, None, String::new()),
                 };
                 (

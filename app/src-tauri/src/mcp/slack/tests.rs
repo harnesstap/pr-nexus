@@ -1293,3 +1293,44 @@ async fn an_agent_with_elicitation_declines_over_http() {
     assert_eq!(out["status"], "rejected", "{out}");
     assert!(writes(&calls).is_empty());
 }
+
+/// The in-app approval line names the channel, cached name first.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_in_app_approval_says_where_it_went() {
+    let (env, _calls) = sending(&[], false);
+    env.state
+        .store
+        .upsert_slack_channel(pr_nexus_core::domain::SlackChannel {
+            slack_workspace: "acme".into(),
+            channel_id: "C0ACME0001".into(),
+            name: "release".into(),
+            is_private: false,
+            is_archived: false,
+            is_member: true,
+            fetched_at: chrono::Utc::now(),
+        })
+        .unwrap();
+    let kept = Arc::new(Kept::default());
+    let control =
+        crate::mcp::control::McpControl::with_audit(env.state.clone(), kept.clone(), None).unwrap();
+    let approve = async |arguments: Value| {
+        let out = call(&env, "slack_send_message", arguments).unwrap();
+        let id = out["proposal_id"].as_u64().unwrap();
+        control.decide(id, true).await.unwrap();
+        let summary = kept.0.lock().unwrap().last().unwrap().summary.clone();
+        (id, summary)
+    };
+    let (id, summary) = approve(hi()).await;
+    assert_eq!(
+        summary,
+        format!("user approved Slack proposal {id}, sent in #release")
+    );
+    let (id, summary) = approve(
+        json!({ "workspace": "acme", "channel_id": ACME_CHANNEL, "message": "Done", "thread_ts": "1700000000.000100" }),
+    )
+    .await;
+    assert_eq!(
+        summary,
+        format!("user approved Slack proposal {id}, replied in a thread in #release")
+    );
+}

@@ -107,7 +107,7 @@ fn slack_summary(verb: &str, result: Option<&Value>) -> String {
     }
 }
 
-/// "proposed a Slack message" / "sent a Slack message (auto-send)".
+/// "proposed a Slack draft" / "sent a Slack reaction (auto-send)".
 fn slack_write_summary(noun: &str, result: Option<&Value>) -> String {
     let status = result
         .and_then(|value| value.get("status"))
@@ -130,30 +130,36 @@ pub fn channel_label(name: Option<&str>, id: &str) -> String {
     }
 }
 
-/// "replied in a thread in #team-web (auto-send)": a reply is found by its
-/// thread, not by its channel alone.
-fn thread_reply_summary(arguments: &Map<String, Value>, result: Option<&Value>) -> String {
+/// "sent a message in #team-web (auto-send)", or "replied in a thread in
+/// #team-web (auto-send)" for a reply, which is found by its thread.
+fn message_summary(arguments: &Map<String, Value>, result: Option<&Value>) -> String {
     let get = |key: &str| result.and_then(|v| v.get(key)).and_then(Value::as_str);
     let id = get("channel_id")
         .or_else(|| arguments.get("channel_id").and_then(Value::as_str))
         .unwrap_or_default();
-    let place = format!("in a thread in {}", channel_label(get("channel_name"), id));
+    let label = channel_label(get("channel_name"), id);
+    let thread = arguments.get("thread_ts").is_some_and(|ts| !ts.is_null());
+    let (sent, noun, place) = if thread {
+        ("replied", "a reply", format!("in a thread in {label}"))
+    } else {
+        ("sent a message", "a message", format!("in {label}"))
+    };
     match (get("status"), get("decided_in")) {
-        (Some("sent"), Some(agent)) => format!("replied {place}, approved in {agent}"),
-        (Some("sent"), None) => format!("replied {place} (auto-send)"),
+        (Some("sent"), Some(agent)) => format!("{sent} {place}, approved in {agent}"),
+        (Some("sent"), None) => format!("{sent} {place} (auto-send)"),
         (Some("rejected"), Some(agent)) => {
-            format!("declined a reply {place} in {agent}; not sent")
+            format!("declined {noun} {place} in {agent}; not sent")
         }
         (Some("pending"), _) => match result
             .and_then(|v| v.pointer("/held/reason"))
             .and_then(Value::as_str)
         {
             Some("read_other_workspace") => {
-                format!("proposed a reply {place}; auto-send blocked: read another workspace")
+                format!("proposed {noun} {place}; auto-send blocked: read another workspace")
             }
-            _ => format!("proposed a reply {place}"),
+            _ => format!("proposed {noun} {place}"),
         },
-        _ => format!("reply {place}"),
+        _ => format!("send {noun} {place}"),
     }
 }
 
@@ -244,10 +250,7 @@ pub fn summarize(tool: &str, arguments: &Map<String, Value>, result: Option<&Val
         "slack_read_file" => "read a Slack file".to_owned(),
         "slack_read_canvas" => "read a Slack canvas".to_owned(),
         "slack_read_list" => "read a Slack list".to_owned(),
-        "slack_send_message" if arguments.get("thread_ts").is_some_and(|ts| !ts.is_null()) => {
-            thread_reply_summary(arguments, result)
-        }
-        "slack_send_message" => slack_write_summary("a Slack message", result),
+        "slack_send_message" => message_summary(arguments, result),
         "slack_schedule_message" => slack_write_summary("a scheduled Slack message", result),
         "slack_send_message_draft" => slack_write_summary("a Slack draft", result),
         "slack_add_reaction" => slack_write_summary("a Slack reaction", result),
@@ -359,5 +362,42 @@ impl AuditSink for Fanout {
         for sink in &self.0 {
             sink.record(event);
         }
+    }
+}
+
+#[cfg(test)]
+mod message_summary_tests {
+    use super::summarize;
+    use serde_json::{Map, Value, json};
+
+    fn args(value: Value) -> Map<String, Value> {
+        value.as_object().cloned().unwrap()
+    }
+
+    #[test]
+    fn a_message_names_its_channel_like_a_reply() {
+        let top = args(json!({ "channel_id": "C0123456789" }));
+        let reply = args(json!({ "channel_id": "C0123456789", "thread_ts": "1700000000.000100" }));
+        let named =
+            json!({ "status": "sent", "channel_id": "C0123456789", "channel_name": "release" });
+        let bare = json!({ "status": "sent", "channel_id": "C0123456789" });
+        let approved = json!({ "status": "sent", "channel_id": "C0123456789", "channel_name": "release", "decided_in": "acme-agent" });
+        let pending = json!({ "status": "pending", "channel_id": "C0123456789" });
+        let s = |a: &Map<String, Value>, r: &Value| summarize("slack_send_message", a, Some(r));
+        assert_eq!(s(&top, &named), "sent a message in #release (auto-send)");
+        assert_eq!(s(&top, &bare), "sent a message in C0123456789 (auto-send)");
+        assert_eq!(
+            s(&top, &approved),
+            "sent a message in #release, approved in acme-agent"
+        );
+        assert_eq!(s(&top, &pending), "proposed a message in C0123456789");
+        assert_eq!(
+            s(&reply, &named),
+            "replied in a thread in #release (auto-send)"
+        );
+        assert_eq!(
+            s(&reply, &bare),
+            "replied in a thread in C0123456789 (auto-send)"
+        );
     }
 }

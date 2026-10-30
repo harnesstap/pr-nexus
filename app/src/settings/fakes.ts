@@ -122,7 +122,7 @@ export function sampleSlackActivity(now = new Date()): McpActivityEntry[] {
       summary: "replied in a thread in #release (auto-send)",
       link: "https://acme.slack.com/archives/C0123456789/p1700000500000200?thread_ts=1700000000.000100&cid=C0123456789",
     },
-    { ...base, id: 11, at: at(4), summary: "sent a Slack message (auto-send)", link: "https://acme.slack.com/archives/C0123456789/p1700000000000100" },
+    { ...base, id: 11, at: at(4), summary: "sent a message in #release (auto-send)", link: "https://acme.slack.com/archives/C0123456789/p1700000000000100" },
     { ...base, id: 10, at: at(30), tool: "list_prs", capability: "reads", summary: "listed pull requests" },
   ];
 }

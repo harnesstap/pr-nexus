@@ -369,6 +369,7 @@ test("activity links Slack writes to the message and opens it in the browser", a
   const list = await screen.findByRole("list", { name: "Agent activity" });
   const [reply, sent, read] = within(list).getAllByRole("listitem");
   expect(reply).toHaveTextContent("replied in a thread in #release");
+  expect(sent).toHaveTextContent("sent a message in #release");
   fireEvent.click(within(reply).getByRole("button", { name: "↗ Open in Slack" }));
   expect(open).toHaveBeenCalledWith("https://acme.slack.com/archives/C0123456789/p1700000500000200?thread_ts=1700000000.000100&cid=C0123456789");
   fireEvent.click(within(sent).getByRole("button", { name: "↗ Open in Slack" }));
