@@ -131,11 +131,29 @@ impl SyncReport {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SyncProgress {
     pub full: bool,
+    /// What the sync is doing now: the search, then reading the status of
+    /// what it found. Without the second stage the header kept the last
+    /// search count for minutes after the search ended.
+    pub stage: SyncStage,
     /// In-scope pull requests the search returned so far.
     pub seen: usize,
     /// Rows written so far because their content changed.
     pub updated: usize,
 }
+
+/// The stage a running sync is in, for its progress line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncStage {
+    /// Search pages are arriving.
+    Searching,
+    /// The search is done; reading checks, reviews and mergeability for
+    /// `total` pull requests, `done` of them so far.
+    Checking { done: usize, total: usize },
+}
+
+/// Status ids per provider call, so progress moves between calls. A multiple
+/// of the provider's chunk size times its concurrency keeps both busy.
+pub const STATUS_BATCH: usize = 40;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrackedScope {
@@ -364,6 +382,7 @@ pub fn sync_account_with_progress(
                 match early.store(&mut writer, rows, &scope, &existing) {
                     Ok(()) => progress(SyncProgress {
                         full,
+                        stage: SyncStage::Searching,
                         seen: early.involvement.len(),
                         updated: writer.updated(),
                     }),
@@ -419,16 +438,27 @@ pub fn sync_account_with_progress(
         .map(|item| item.pull_request.remote.clone())
         .chain(volatile.iter().map(|pr| pr.remote.clone()))
         .collect();
-    let statuses: HashMap<String, PrStatus> = if ids.is_empty() {
-        HashMap::new()
-    } else {
-        provider
-            .pull_request_status(&ids)
+    let mut statuses: HashMap<String, PrStatus> = HashMap::new();
+    let seen = early.involvement.len();
+    let mut done = 0usize;
+    for batch in ids.chunks(STATUS_BATCH) {
+        progress(SyncProgress {
+            full,
+            stage: SyncStage::Checking {
+                done,
+                total: ids.len(),
+            },
+            seen,
+            updated: writer.updated(),
+        });
+        for status in provider
+            .pull_request_status(batch)
             .map_err(CoreError::from)?
-            .into_iter()
-            .map(|status| (status.remote_id.clone(), status))
-            .collect()
-    };
+        {
+            statuses.insert(status.remote_id.clone(), status);
+        }
+        done += batch.len();
+    }
     let mut stored = 0usize;
     for item in &mut kept {
         let id = &item.pull_request.remote.id;
@@ -1047,6 +1077,57 @@ mod tests {
             both.involvement,
             Involvement::AUTHOR | Involvement::REVIEW_REQUESTED
         );
+    }
+
+    /// Regression: the status pass after the search reported nothing, so the
+    /// header kept "Syncing… N so far" long after every page had arrived.
+    #[test]
+    fn the_status_pass_after_the_search_reports_its_own_progress() {
+        let (_dir, store, account) = open_store();
+        let mine: Vec<_> = (1..=95)
+            .map(|n| pr(&format!("N{n}"), "acme", n, Involvement::AUTHOR))
+            .collect();
+        let fake = Fake {
+            mine,
+            review: Vec::new(),
+            refresh: Vec::new(),
+            status: Vec::new(),
+            budget: sample_budget(5000, 4000),
+            queries: Default::default(),
+            status_asked: Default::default(),
+            fail_status: false,
+            refresh_asked: Default::default(),
+        };
+        let mut stages = Vec::new();
+        sync_account_with_progress(&store, &fake, account, SyncKind::Manual, ts(30), &mut |p| {
+            stages.push(p.stage)
+        })
+        .unwrap();
+        let first_check = stages
+            .iter()
+            .position(|stage| matches!(stage, SyncStage::Checking { .. }))
+            .expect("a checking stage after the search");
+        assert!(
+            stages[..first_check]
+                .iter()
+                .all(|stage| *stage == SyncStage::Searching)
+        );
+        let checks: Vec<_> = stages[first_check..].to_vec();
+        assert_eq!(
+            checks,
+            vec![
+                SyncStage::Checking { done: 0, total: 95 },
+                SyncStage::Checking {
+                    done: 40,
+                    total: 95
+                },
+                SyncStage::Checking {
+                    done: 80,
+                    total: 95
+                },
+            ]
+        );
+        assert_eq!(fake.status_asked.lock().unwrap().len(), 95);
     }
 
     #[test]
