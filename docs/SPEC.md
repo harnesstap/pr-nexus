@@ -1508,6 +1508,19 @@ Agents can make Slack writes. Whether each one waits for the user's approval fol
 - **No filtering.** PR Nexus does not check scopes, membership or text; Slack's reply and Slack's errors (such as `not_in_channel`) come back as is, IDs qualified and wrapped in the untrusted-content envelope (§10.1.2).
 - **Limits.** Kept under Slack's per-minute limits: 20 for send and draft, 50 for schedule and reaction.
 - **Audit.** Each proposal, auto-send (allowlist or automatic mode), approval and rejection is logged ("proposed a Slack message", "user approved Slack proposal N, sent"); message text is never stored.
+- **Confirm in the agent.** A held write can be confirmed in the agent itself first; see §10.1.4.
+
+#### 10.1.4 Confirming held writes in the agent (MCP elicitation)
+
+When the agent's client supports MCP elicitation, a held write is shown in the agent for the user to confirm, so it does not also need approval in PR Nexus.
+
+- **When it asks.** A write is held (Approve everything; or Channel allowlist with a channel not listed, or a `read_other_workspace` hold), the client declared form elicitation at `initialize`, and the setting is on. Fully automatic mode never asks; writes that go out at once never ask.
+- **Setting.** "Ask in the agent when it supports it" (`slack_elicit`), a checkbox under the send mode, on by default and hidden in Fully automatic mode. Settings saved before it existed read as on.
+- **What is shown.** A plain confirmation (`elicitation/create`, form mode, empty schema): the action, workspace, channel ID, thread or post time when set, reaction, and the exact message text.
+- **Accept.** The write is sent at once, through the same claim as an in-app approval, and recorded as approved in the client (`decided_in`); the activity log says "sent a Slack message, approved in <client>".
+- **Decline or cancel.** Nothing is sent; the proposal is rejected with `decided_in`, and the tool result tells the agent the user declined it.
+- **No answer.** On timeout (270 s, under clients' 5-minute HTTP idle timeout), a transport error or an unknown action, the proposal stays pending in PR Nexus and the tool result says so. If the user decided it in PR Nexus meanwhile, that decision stands.
+- **No capability.** Clients that do not declare elicitation see the previous behaviour unchanged.
 
 ### 10.2 Other providers & platforms
 - Internal roadmap only: none of these is shown or promised in the app, README, or release notes. Implementing one means adding its registry descriptor (§5.1), a factory, and its setup steps; until then the UI shows GitHub and Slack only.

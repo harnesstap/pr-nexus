@@ -37,7 +37,7 @@ base64 = "0.22"
 hmac = "0.13"
 regex = "1.13"
 sha2 = "0.11"
-rmcp = { version = "3.8.0", default-features = false, features = ["server", "transport-streamable-http-server"] }
+rmcp = { version = "3.8.0", default-features = false, features = ["server", "transport-streamable-http-server", "elicitation"] }
 schemars = "1"
 subtle = "2.6"
 tokio = { version = "1", features = ["net", "rt-multi-thread", "macros", "sync", "time"] }
@@ -46,3 +46,5 @@ tokio-util = "0.7"
 [dev-dependencies]
 pr-nexus-core = { path = "../../crates/pr-nexus-core", features = ["test-support"] }
 tempfile = "3"
+# An MCP client that answers elicitation, for the end-to-end approval test.
+rmcp = { version = "3.8.0", default-features = false, features = ["client", "elicitation", "reqwest", "transport-streamable-http-client-reqwest"] }

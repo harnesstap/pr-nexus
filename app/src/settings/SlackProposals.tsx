@@ -29,6 +29,9 @@ const STATUS: Record<SlackProposal["status"], string> = {
 };
 
 function why(p: SlackProposal): string | null {
+  if (p.decided_in) {
+    return p.status === "rejected" ? `Declined in ${p.decided_in}` : `Approved in ${p.decided_in}`;
+  }
   if (p.auto_sent) {
     return "Sent at once, without approval";
   }

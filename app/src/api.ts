@@ -602,6 +602,8 @@ export interface McpSettings {
   slack_auto_send_channels: string[];
   /** approve_all: every write waits; automatic: every write goes out at once; allowlist: only `slack_auto_send_channels`. */
   slack_send_mode: SlackSendMode;
+  /** Held writes are confirmed in the agent first when its client supports MCP elicitation. */
+  slack_elicit: boolean;
   /** null: any free port, picked at each start. */
   port: number | null;
 }
@@ -628,6 +630,10 @@ export interface SlackProposal {
   result: unknown;
   error: unknown;
   decided_at: string | null;
+  /** Client that confirmed or declined it through MCP elicitation. */
+  decided_in?: string | null;
+  /** Why the agent-side confirmation fell back to approval here. */
+  unanswered?: string | null;
 }
 
 export interface McpStatus {
