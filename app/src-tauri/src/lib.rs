@@ -16,6 +16,7 @@ pub mod services;
 mod slack;
 mod slack_link;
 mod state;
+mod templates;
 
 use std::sync::Arc;
 
@@ -113,6 +114,9 @@ pub fn run() {
             context::pr_slack_context,
             context::pr_slack_mentions,
             context::save_slack_mentions,
+            templates::load_message_templates,
+            templates::save_message_template,
+            templates::preview_message_template,
             preferences::load_preferences,
             preferences::save_preferences,
             preferences::list_mappings,

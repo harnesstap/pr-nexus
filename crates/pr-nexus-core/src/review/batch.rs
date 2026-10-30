@@ -23,6 +23,8 @@ use crate::store::Store;
 
 use super::lifecycle::{Target, active_request, wire_text, with_link};
 use super::message::{self, MessageMode};
+use super::message_template::MessageTemplates;
+use crate::settings;
 
 /// Minimum gap between two posts in the same channel. Slack allows about one
 /// message per second per channel (`chat.postMessage`, special tier).
@@ -165,16 +167,18 @@ pub fn plan_batch(
             });
         }
     }
+    let templates = settings::message_templates(store)?;
     let mut cards = Vec::new();
     for key in order {
         let (target, items) = groups.remove(&key).expect("grouped key");
         let single = options.single_top_level.contains(&key);
-        cards.push(plan_card(target, items, single, options, now)?);
+        cards.push(plan_card(&templates, target, items, single, options, now)?);
     }
     Ok(BatchPlan { cards, skipped })
 }
 
 fn plan_card(
+    templates: &MessageTemplates,
     target: Target,
     items: Vec<PlannedItem>,
     single: bool,
@@ -190,6 +194,7 @@ fn plan_card(
     let mut messages = Vec::new();
     if single {
         messages.push(build_message(
+            templates,
             MessagePlanKind::Request,
             items,
             options.requester.as_deref(),
@@ -223,18 +228,25 @@ fn plan_card(
         }
         if roots.len() > options.max_threads {
             let all: Vec<PlannedItem> = roots.into_iter().flat_map(|(_, list)| list).collect();
-            messages.push(build_message(MessagePlanKind::Remind, all, None)?);
+            messages.push(build_message(
+                templates,
+                MessagePlanKind::Remind,
+                all,
+                options.requester.as_deref(),
+            )?);
         } else {
             for (root_ts, list) in roots {
                 messages.push(build_message(
+                    templates,
                     MessagePlanKind::Bump { root_ts },
                     list,
-                    None,
+                    options.requester.as_deref(),
                 )?);
             }
         }
         if !fresh.is_empty() {
             messages.push(build_message(
+                templates,
                 MessagePlanKind::Request,
                 fresh,
                 options.requester.as_deref(),
@@ -251,6 +263,7 @@ fn plan_card(
 }
 
 fn build_message(
+    templates: &MessageTemplates,
     kind: MessagePlanKind,
     items: Vec<PlannedItem>,
     requester: Option<&str>,
@@ -259,12 +272,12 @@ fn build_message(
         .iter()
         .map(|item| (item.pr.title.as_str(), item.pr.url.as_str()))
         .collect();
-    let (mode, requester) = match kind {
-        MessagePlanKind::Request => (MessageMode::Request, requester),
-        // §7.5: reminds carry no requester suffix.
-        MessagePlanKind::Bump { .. } | MessagePlanKind::Remind => (MessageMode::Remind, None),
+    let mode = match kind {
+        MessagePlanKind::Request => MessageMode::Request,
+        // §7.5: the default remind templates carry no requester suffix.
+        MessagePlanKind::Bump { .. } | MessagePlanKind::Remind => MessageMode::Remind,
     };
-    let text = message::build(mode, &pairs, requester, None)?;
+    let text = message::build_with(templates, mode, &pairs, requester, None)?;
     Ok(PlannedMessage {
         kind,
         wire_text: wire_text(&text),

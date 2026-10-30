@@ -96,6 +96,15 @@ export interface Preferences {
   jira_base_url: string;
 }
 
+/** One editable Slack review-request template (§7.6). */
+export type TemplateKind = "single_request" | "batch_request" | "single_remind" | "batch_remind" | "item";
+
+export interface MessageTemplate {
+  kind: TemplateKind;
+  text: string;
+  default_text: string;
+}
+
 export interface MappingRow {
   github_org: string;
   team_slug: string;
@@ -695,6 +704,12 @@ export interface Api {
   saveOrgs(orgs: string[], includePersonal: boolean): Promise<void>;
   saveSlack(clientId: string, clientSecret: string, redirectUri: string): Promise<void>;
   slackManifestUrl(redirectUri: string): Promise<string>;
+  /** Settings → Slack → Message templates. Absent in fakes that do not show them. */
+  messageTemplates?(): Promise<MessageTemplate[]>;
+  /** Validates and saves; `null` resets to the default. Rejects with the validation error. */
+  saveMessageTemplate?(kind: TemplateKind, text: string | null): Promise<void>;
+  /** The message `text` produces for a sample PR, rendered by the backend builder. */
+  previewMessageTemplate?(kind: TemplateKind, text: string): Promise<string>;
   slackWorkspaces(): Promise<SlackWorkspace[]>;
   /** Opens the system browser and resolves after the redirect, a timeout, or cancel. */
   slackConnect(): Promise<SlackWorkspace>;
@@ -830,6 +845,9 @@ export const tauriApi: Api = {
       redirectUri,
     }),
   slackManifestUrl: (redirectUri) => invoke("slack_manifest_url", { redirectUri }),
+  messageTemplates: () => invoke("load_message_templates"),
+  saveMessageTemplate: (kind, text) => invoke("save_message_template", { kind, text }),
+  previewMessageTemplate: (kind, text) => invoke("preview_message_template", { kind, text }),
   slackWorkspaces: () => invoke("slack_workspaces"),
   slackConnect: () => invoke("slack_connect"),
   slackCancelConnect: () => invoke("slack_cancel_connect"),

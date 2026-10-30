@@ -8,6 +8,7 @@ pub mod codeowners;
 pub mod context;
 pub mod lifecycle;
 pub mod message;
+pub mod message_template;
 pub mod owners;
 pub mod permalink;
 pub mod readiness;

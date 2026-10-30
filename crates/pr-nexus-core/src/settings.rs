@@ -8,6 +8,9 @@ use serde::{Deserialize, Serialize};
 use crate::domain::SettingEntry;
 use crate::error::CoreError;
 use crate::providers::RateBudget;
+use crate::review::message_template::{
+    MessageTemplates, TemplateKind, validate as validate_template,
+};
 use crate::store::Store;
 
 pub const VCS: &str = "providers.vcs";
@@ -249,6 +252,33 @@ pub fn review_requester(store: &Store) -> Result<Option<String>, CoreError> {
 
 pub fn min_bump_interval_hours(store: &Store) -> Result<i64, CoreError> {
     json_or(store, MIN_BUMP_INTERVAL, 24)
+}
+
+/// The review-request templates in effect (§7.6). Absent keys are the
+/// script's defaults.
+pub fn message_templates(store: &Store) -> Result<MessageTemplates, CoreError> {
+    let mut templates = MessageTemplates::default();
+    for kind in TemplateKind::ALL {
+        if let Some(text) = get_json::<Option<String>>(store, kind.setting_key())?.flatten() {
+            templates.set(kind, text);
+        }
+    }
+    Ok(templates)
+}
+
+/// Save one template after validating it; `None` resets it to the default.
+pub fn set_message_template(
+    store: &Store,
+    kind: TemplateKind,
+    text: Option<&str>,
+) -> Result<(), CoreError> {
+    match text {
+        Some(text) if text != kind.default_text() => {
+            validate_template(kind, text)?;
+            put_json(store, kind.setting_key(), &Some(text))
+        }
+        _ => store.delete_setting(kind.setting_key().to_owned()),
+    }
 }
 
 /// Who the Slack panel's Mentions button searches (§7.10).
@@ -560,6 +590,51 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path().join("nexus.sqlite")).unwrap();
         (dir, store)
+    }
+
+    #[test]
+    fn message_templates_save_validate_and_reset() {
+        use crate::review::message::{MessageMode, build, build_with};
+        let (_dir, store) = store();
+        assert_eq!(
+            message_templates(&store).unwrap(),
+            MessageTemplates::default()
+        );
+        let url = "https://github.com/acme/widgets/pull/1";
+        set_message_template(
+            &store,
+            TemplateKind::SingleRequest,
+            Some("PTAL {title}\n{url}"),
+        )
+        .unwrap();
+        let templates = message_templates(&store).unwrap();
+        assert_eq!(
+            build_with(
+                &templates,
+                MessageMode::Request,
+                &[("a_b", url)],
+                None,
+                None
+            )
+            .unwrap(),
+            format!("PTAL `a_b`\n{url}\n")
+        );
+        let err = set_message_template(&store, TemplateKind::SingleRequest, Some("{oops} {url}"))
+            .unwrap_err();
+        assert!(err.to_string().contains("unknown placeholder"));
+        assert_eq!(message_templates(&store).unwrap(), templates);
+        set_message_template(&store, TemplateKind::SingleRequest, None).unwrap();
+        assert!(
+            store
+                .get_setting(TemplateKind::SingleRequest.setting_key().into())
+                .unwrap()
+                .is_none()
+        );
+        let defaults = message_templates(&store).unwrap();
+        assert_eq!(
+            build_with(&defaults, MessageMode::Request, &[("a_b", url)], None, None).unwrap(),
+            build(MessageMode::Request, &[("a_b", url)], None, None).unwrap()
+        );
     }
 
     #[test]

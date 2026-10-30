@@ -6,6 +6,7 @@
 //! literally. [`mrkdwn_escape`] is the Web API fallback and is not applied on
 //! the MCP path.
 
+use super::message_template::{MessageTemplates, TemplateKind, Values, render};
 use crate::error::CoreError;
 
 /// First ask, or a follow-up in the existing thread.
@@ -15,12 +16,26 @@ pub enum MessageMode {
     Remind,
 }
 
+/// Build the Slack message for one or more pull requests with the default
+/// (script) templates. See [`build_with`].
+pub fn build(
+    mode: MessageMode,
+    items: &[(&str, &str)],
+    requester: Option<&str>,
+    extra: Option<&str>,
+) -> Result<String, CoreError> {
+    build_with(&MessageTemplates::default(), mode, items, requester, extra)
+}
+
 /// Build the Slack message for one or more pull requests.
 ///
 /// Titles and URLs are trimmed. An empty title is an error. After trimming, a
-/// URL must start with `http`. A single item uses the single-PR wording. Two
-/// or more use the batch wording. Reminders never include `requester`.
-pub fn build(
+/// URL must start with `http`. A single item uses the single-PR template. Two
+/// or more use the batch template, whose `{items}` repeats the item template
+/// joined by newlines. The default reminders do not use `{who}`, so they
+/// never include `requester`.
+pub fn build_with(
+    templates: &MessageTemplates,
     mode: MessageMode,
     items: &[(&str, &str)],
     requester: Option<&str>,
@@ -46,59 +61,51 @@ pub fn build(
         cleaned.push((code_span(title), url));
     }
 
-    let who = match requester {
-        Some(name) if !name.is_empty() => format!(" ({name})"),
-        Some(_) | None => String::new(),
+    let requester = requester.unwrap_or("");
+    let who = if requester.is_empty() {
+        String::new()
+    } else {
+        format!(" ({requester})")
+    };
+    let base = Values {
+        who: &who,
+        requester,
+        count: cleaned.len(),
+        ..Values::default()
     };
 
-    let mut lines = match mode {
-        MessageMode::Request if cleaned.len() == 1 => {
-            let (title, url) = &cleaned[0];
-            vec![
-                "Hello team".to_string(),
-                format!("Could someone please review {title}?{who}"),
-                (*url).to_string(),
-                "Thanks!".to_string(),
-            ]
+    let body = if let [(title, url)] = cleaned.as_slice() {
+        let kind = match mode {
+            MessageMode::Request => TemplateKind::SingleRequest,
+            MessageMode::Remind => TemplateKind::SingleRemind,
+        };
+        render(kind, templates.get(kind), &Values { title, url, ..base })?
+    } else {
+        let mut rendered = Vec::with_capacity(cleaned.len());
+        for (title, url) in &cleaned {
+            rendered.push(render(
+                TemplateKind::Item,
+                templates.get(TemplateKind::Item),
+                &Values { title, url, ..base },
+            )?);
         }
-        MessageMode::Request => {
-            let mut lines = vec![
-                "Hello team".to_string(),
-                format!("Could someone please review these pull requests?{who}"),
-            ];
-            push_pr_lines(&mut lines, &cleaned);
-            lines.push("Thanks!".to_string());
-            lines
-        }
-        MessageMode::Remind if cleaned.len() == 1 => {
-            let (title, url) = &cleaned[0];
-            vec![
-                format!(
-                    "Hello, I'm still looking for a review on {title} when you have a moment :pray:"
-                ),
-                (*url).to_string(),
-                "Thanks!".to_string(),
-            ]
-        }
-        MessageMode::Remind => {
-            let mut lines = vec![
-                "Hello, I'm still looking for a review on these pull requests when you have a moment :pray:"
-                    .to_string(),
-            ];
-            push_pr_lines(&mut lines, &cleaned);
-            lines.push("Thanks!".to_string());
-            lines
-        }
+        let items = rendered.join("\n");
+        let kind = match mode {
+            MessageMode::Request => TemplateKind::BatchRequest,
+            MessageMode::Remind => TemplateKind::BatchRemind,
+        };
+        render(
+            kind,
+            templates.get(kind),
+            &Values {
+                items: &items,
+                ..base
+            },
+        )?
     };
+    let mut lines = vec![body];
     append_extra(&mut lines, extra);
     Ok(finish(lines))
-}
-
-fn push_pr_lines(lines: &mut Vec<String>, items: &[(String, &str)]) {
-    for (title, url) in items {
-        lines.push(format!("- {title}"));
-        lines.push((*url).to_string());
-    }
 }
 
 fn append_extra(lines: &mut Vec<String>, extra: Option<&str>) {
