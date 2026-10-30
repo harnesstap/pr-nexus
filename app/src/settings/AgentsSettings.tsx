@@ -6,10 +6,11 @@ import { Tooltip } from "../Tooltip";
 import { McpActivity } from "./McpActivity";
 import { SlackProposals } from "./SlackProposals";
 import { plainText } from "../textInput";
-import { mcpConfigSnippet, parsePort } from "./tabs";
+import { McpClientConfig } from "./McpClientConfig";
+import { parsePort } from "./tabs";
 
 interface Props {
-  api: Pick<Api, "mcpSettings" | "saveMcpSettings" | "mcpToken" | "regenerateMcpToken" | "mcpActivity" | "clearMcpActivity" | "slackWorkspaces" | "slackConnect" | "mcpSlackProposals" | "decideMcpSlackProposal">;
+  api: Pick<Api, "mcpSettings" | "saveMcpSettings" | "mcpToken" | "regenerateMcpToken" | "mcpClientStates" | "mcpAddToClient" | "mcpOpenClientConfig" | "mcpActivity" | "clearMcpActivity" | "slackWorkspaces" | "slackConnect" | "mcpSlackProposals" | "decideMcpSlackProposal">;
 }
 
 const button = "rounded border border-slate-700 px-3 py-1.5 text-sm hover:bg-slate-800 disabled:opacity-50";
@@ -291,27 +292,14 @@ export function AgentsSettings({ api }: Props) {
           </div>
         </dl>
         {url && view.token_masked && (
-          <div className="mt-3">
-            <div className="flex items-center justify-between">
-              <span className="text-slate-400">Client config</span>
-              <button
-                type="button"
-                aria-label="Copy client config"
-                className="rounded px-2 py-0.5 text-xs hover:bg-slate-800"
-                onClick={() =>
-                  copy(
-                    "client config",
-                    api.mcpToken().then((token) => mcpConfigSnippet(url, token)),
-                  )
-                }
-              >
-                Copy with token
-              </button>
-            </div>
-            <pre className="mt-1 overflow-x-auto rounded border border-slate-800 bg-slate-900/60 p-3 font-mono text-xs text-slate-300">
-              {mcpConfigSnippet(url, view.token_masked)}
-            </pre>
-          </div>
+          <McpClientConfig
+            url={url}
+            tokenMasked={view.token_masked}
+            fixedPort={settings.port != null}
+            api={api}
+            tokenVersion={view.token_masked}
+            onCopy={(label, build) => copy(label, api.mcpToken().then(build))}
+          />
         )}
         {copied && (
           <p role="status" className="mt-1 text-xs text-slate-300">

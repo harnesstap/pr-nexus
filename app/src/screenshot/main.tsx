@@ -6,7 +6,7 @@ import App from "../App";
 import "../index.css";
 import { pageFromRows, type PageRequest } from "../list/paging";
 import { DATA_CHANGED_EVENT } from "../api";
-import type { BulkRequest, JiraLinkDto, JiraLinkInput, ListRow, McpOutcome, McpSettings, PrWarning, ReviewTarget } from "../api";
+import type { BulkRequest, JiraLinkDto, JiraLinkInput, ListRow, McpClientId, McpOutcome, McpSettings, PrWarning, ReviewTarget } from "../api";
 import { fakeMcp, sampleActivity } from "../settings/fakes";
 import {
   boot,
@@ -50,13 +50,16 @@ function jiraLink(input: JiraLinkInput): JiraLinkDto {
   return { id: nextLink, key: text.toUpperCase(), url: "", href: `${jiraBaseUrl}/browse/${text.toUpperCase()}` };
 }
 
-const mcp = fakeMcp({ enabled: true, local_writes: true }, sampleActivity());
+const mcp = fakeMcp({ enabled: true, local_writes: true }, sampleActivity(), [], [], { codex: "added", cursor: "outdated" });
 
 const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   mcp_settings: () => mcp.mcpSettings(),
   save_mcp_settings: (args) => mcp.saveMcpSettings(args.settings as McpSettings),
   mcp_token: () => mcp.mcpToken(),
   regenerate_mcp_token: () => mcp.regenerateMcpToken(),
+  mcp_client_states: () => mcp.mcpClientStates(),
+  mcp_add_to_client: (args) => mcp.mcpAddToClient(args.client as McpClientId),
+  mcp_open_client_config: (args) => mcp.mcpOpenClientConfig(args.client as McpClientId),
   mcp_activity: (args) => mcp.mcpActivity((args.outcome as McpOutcome | null) ?? undefined),
   clear_mcp_activity: () => mcp.clearMcpActivity(),
   bootstrap: () => boot,

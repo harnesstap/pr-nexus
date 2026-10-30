@@ -3,7 +3,8 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { AgentsSettings } from "./AgentsSettings";
 import type { SlackProposal } from "../api";
 import { FAKE_MCP_TOKEN, FAKE_SLACK_WORKSPACES, fakeMcp, sampleActivity } from "./fakes";
-import { mcpConfigSnippet, parsePort } from "./tabs";
+import { mcpClientSnippet } from "./mcpClients";
+import { parsePort } from "./tabs";
 
 const writeText = vi.fn(() => Promise.resolve());
 
@@ -126,8 +127,17 @@ test("copies the real token and a config snippet with it", async () => {
   expect(writeText).toHaveBeenLastCalledWith(FAKE_MCP_TOKEN);
 
   fireEvent.click(screen.getByRole("button", { name: "Copy client config" }));
-  await screen.findByText("Copied client config.");
-  expect(writeText).toHaveBeenLastCalledWith(mcpConfigSnippet("http://127.0.0.1:43117/mcp", FAKE_MCP_TOKEN));
+  await screen.findByText("Copied Claude Desktop config.");
+  expect(writeText).toHaveBeenLastCalledWith(mcpClientSnippet("claude-desktop", "http://127.0.0.1:43117/mcp", FAKE_MCP_TOKEN).text);
+  expect(screen.getByRole("tabpanel")).not.toHaveTextContent(FAKE_MCP_TOKEN);
+
+  fireEvent.click(screen.getByRole("tab", { name: "Codex" }));
+  expect(window.localStorage.getItem("pr-nexus.mcp-client-tab")).toBe("codex");
+  expect(screen.getByRole("tabpanel")).toHaveTextContent("~/.codex/config.toml");
+  fireEvent.click(screen.getByRole("button", { name: "Copy client config" }));
+  await screen.findByText("Copied Codex config.");
+  expect(writeText).toHaveBeenLastCalledWith(mcpClientSnippet("codex", "http://127.0.0.1:43117/mcp", FAKE_MCP_TOKEN).text);
+  window.localStorage.clear();
 });
 
 test("regenerating the token asks first", async () => {
@@ -303,4 +313,31 @@ test("Slack send modes show the allowlist only in allowlist mode and warn in aut
   fireEvent.click(allowlist);
   // The saved allowlist survives the round trip through other modes.
   await screen.findByRole("button", { name: "Remove T0ACME0001/C0123456789" });
+});
+
+test("adds pr-nexus to a client and shows its status", async () => {
+  const api = fakeMcp({ enabled: true }, [], [], [], { cursor: "outdated", opencode: "unreadable" });
+  const add = vi.spyOn(api, "mcpAddToClient");
+  const openFile = vi.spyOn(api, "mcpOpenClientConfig");
+  window.localStorage.clear();
+  render(<AgentsSettings api={api} />);
+
+  expect(await screen.findByRole("status", { name: "Claude Desktop status" })).toHaveTextContent("Not added");
+  expect(screen.getByRole("button", { name: "Open folder" })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Add to Claude Desktop" }));
+  expect(await screen.findByRole("button", { name: "Added ✓" })).toBeDisabled();
+  expect(screen.getByRole("status", { name: "Claude Desktop status" })).toHaveTextContent("Added");
+  expect(screen.getByText("Restart Claude Desktop to load it.")).toBeInTheDocument();
+  expect(add).toHaveBeenLastCalledWith("claude-desktop");
+  fireEvent.click(screen.getByRole("button", { name: "Open config file" }));
+  expect(openFile).toHaveBeenLastCalledWith("claude-desktop");
+
+  fireEvent.click(screen.getByRole("tab", { name: "Cursor" }));
+  expect(screen.getByRole("status", { name: "Cursor status" })).toHaveTextContent("Added, but outdated");
+  fireEvent.click(screen.getByRole("button", { name: "Update Cursor" }));
+  expect(await screen.findByRole("button", { name: "Added ✓" })).toBeDisabled();
+
+  fireEvent.click(screen.getByRole("tab", { name: "OpenCode" }));
+  expect(screen.getByRole("button", { name: "Add to OpenCode" })).toBeDisabled();
+  window.localStorage.clear();
 });

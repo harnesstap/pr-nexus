@@ -65,8 +65,3 @@ export function parsePort(text: string): { port: number | null } | { error: stri
   }
   return { port };
 }
-
-/** A generic MCP client entry for the endpoint. */
-export function mcpConfigSnippet(url: string, token: string): string {
-  return JSON.stringify({ mcpServers: { "pr-nexus": { type: "http", url, headers: { Authorization: `Bearer ${token}` } } } }, null, 2);
-}

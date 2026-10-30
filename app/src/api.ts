@@ -644,6 +644,16 @@ export interface McpView {
   token_masked: string | null;
 }
 
+export type McpClientId = "claude-desktop" | "claude-code" | "cursor" | "vscode" | "codex" | "opencode";
+
+/** Whether a client's config file has the pr-nexus entry, and whether it matches the port and token. */
+export interface McpClientState {
+  client: McpClientId;
+  status: "not_added" | "added" | "outdated" | "unreadable";
+  path: string;
+  exists: boolean;
+}
+
 export type McpOutcome = "allowed" | "denied" | "error";
 
 /** One agent tool call in Settings → Agents → Activity. Never holds argument text. */
@@ -777,6 +787,12 @@ export interface Api {
   /** The full bearer token, for copying. Created on first use. */
   mcpToken(): Promise<string>;
   regenerateMcpToken(): Promise<McpView>;
+  /** Per client: config path and whether pr-nexus is in it. Fails while the server is off. */
+  mcpClientStates(): Promise<McpClientState[]>;
+  /** Adds or updates pr-nexus in one client's config; the token stays in Rust. */
+  mcpAddToClient(client: McpClientId): Promise<McpClientState>;
+  /** Opens the client's config file, or its folder when the file is missing. */
+  mcpOpenClientConfig(client: McpClientId): Promise<void>;
   /** Newest first, at most 200; `outcome` narrows to one kind. */
   mcpActivity(outcome?: McpOutcome): Promise<McpActivityEntry[]>;
   /** Empties the Activity log; resolves to how many rows went. */
@@ -889,6 +905,9 @@ export const tauriApi: Api = {
   saveMcpSettings: (settings) => invoke("save_mcp_settings", { settings }),
   mcpToken: () => invoke("mcp_token"),
   regenerateMcpToken: () => invoke("regenerate_mcp_token"),
+  mcpClientStates: () => invoke("mcp_client_states"),
+  mcpAddToClient: (client) => invoke("mcp_add_to_client", { client }),
+  mcpOpenClientConfig: (client) => invoke("mcp_open_client_config", { client }),
   mcpActivity: (outcome) => invoke("mcp_activity", { outcome: outcome ?? null }),
   clearMcpActivity: () => invoke("clear_mcp_activity"),
   mcpSlackProposals: () => invoke("mcp_slack_proposals"),

@@ -12,7 +12,7 @@ use super::Capability;
 use super::audit::{AuditEvent, AuditSink, Fanout, LogAudit, Outcome, StoreAudit};
 use super::server::{self, Running, Shared};
 use super::slack::sends::{self, Proposal, Status};
-use super::{McpSettings, config, token};
+use super::{McpSettings, clients, config, token};
 use crate::blocking;
 use crate::error::AppError;
 use crate::state::AppState;
@@ -348,4 +348,80 @@ pub async fn decide_mcp_slack_proposal(
 ) -> Result<Proposal, AppError> {
     let mcp = Arc::clone(&mcp);
     mcp.decide(id, approve).await
+}
+
+fn client_env() -> Result<clients::Env, AppError> {
+    clients::Env::current()
+        .ok_or_else(|| AppError::new("validation", "Could not find your home folder"))
+}
+
+/// The running server's URL and the token, or why there is nothing to add yet.
+async fn endpoint(mcp: &McpControl) -> Result<(String, String), AppError> {
+    let url = mcp
+        .status()
+        .url
+        .ok_or_else(|| AppError::new("validation", "Turn the server on first"))?;
+    Ok((url, mcp.token().await?))
+}
+
+/// Per client: config file path and whether pr-nexus is in it and current.
+#[tauri::command]
+pub async fn mcp_client_states(
+    mcp: State<'_, Arc<McpControl>>,
+) -> Result<Vec<clients::ClientState>, AppError> {
+    let mcp = Arc::clone(&mcp);
+    let env = client_env()?;
+    let (url, token) = endpoint(&mcp).await?;
+    blocking::run(move || {
+        Ok(clients::Client::ALL
+            .iter()
+            .map(|client| clients::state(*client, &env, &url, &token))
+            .collect())
+    })
+    .await
+}
+
+/// Adds or updates the pr-nexus entry in one client's config. The token
+/// never leaves Rust.
+#[tauri::command]
+pub async fn mcp_add_to_client(
+    mcp: State<'_, Arc<McpControl>>,
+    client: clients::Client,
+) -> Result<clients::ClientState, AppError> {
+    let mcp = Arc::clone(&mcp);
+    let env = client_env()?;
+    let (url, token) = endpoint(&mcp).await?;
+    blocking::run(move || {
+        let result = if client == clients::Client::ClaudeCode {
+            clients::install_claude_code(&env, &url, &token)
+        } else {
+            clients::install_file(client, &clients::config_path(client, &env), &url, &token)
+        };
+        result.map_err(|message| AppError::new("validation", message))?;
+        Ok(clients::state(client, &env, &url, &token))
+    })
+    .await
+}
+
+/// Opens the client's config file, or reveals its folder when the file is missing.
+#[tauri::command]
+pub async fn mcp_open_client_config(
+    app: tauri::AppHandle,
+    client: clients::Client,
+) -> Result<(), AppError> {
+    use tauri_plugin_opener::OpenerExt;
+    let env = client_env()?;
+    let path = clients::config_path(client, &env);
+    let opener = app.opener();
+    let result = if path.exists() {
+        opener.open_path(path.display().to_string(), None::<&str>)
+    } else if let Some(dir) = path.parent().filter(|dir| dir.exists()) {
+        opener.open_path(dir.display().to_string(), None::<&str>)
+    } else {
+        return Err(AppError::new(
+            "validation",
+            format!("{} does not exist yet", path.display()),
+        ));
+    };
+    result.map_err(|err| AppError::new("validation", err.to_string()))
 }
