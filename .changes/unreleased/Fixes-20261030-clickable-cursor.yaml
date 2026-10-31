@@ -1,0 +1,3 @@
+kind: Fixes
+body: Clickable elements (row GitHub and Slack icons, sidebar footer icons, tabs, popover actions, copy buttons and more) now show the hand cursor on hover; disabled controls show a not-allowed cursor.
+time: 2026-10-31T02:40:00.000000Z

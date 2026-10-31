@@ -38,7 +38,7 @@ export function Switch({ label, checked, onChange, disabled = false, children, c
         />
       </button>
       {children && (
-        <span className="text-sm" onClick={() => !disabled && onChange(!checked)}>
+        <span className={`text-sm ${disabled ? "cursor-not-allowed" : "cursor-pointer"}`} onClick={() => !disabled && onChange(!checked)}>
           {children}
         </span>
       )}
