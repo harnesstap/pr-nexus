@@ -7,6 +7,30 @@
     @apply min-h-screen bg-slate-950 text-slate-100;
     color-scheme: dark;
   }
+
+  /*
+   * Tailwind v4 preflight resets buttons to `cursor: default`, so icon buttons
+   * (row GitHub/Slack links, sidebar footer, popover actions...) gave no hover
+   * cue. Restore the pointer for everything interactive, app-wide.
+   */
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]),
+  [role="tab"]:not([aria-disabled="true"]),
+  [role="option"]:not([aria-disabled="true"]),
+  [role="menuitem"]:not([aria-disabled="true"]),
+  [role="switch"]:not([aria-disabled="true"]),
+  a[href],
+  summary,
+  label[for],
+  select:not(:disabled),
+  input[type="checkbox"]:not(:disabled),
+  input[type="radio"]:not(:disabled) {
+    cursor: pointer;
+  }
+  :disabled,
+  [aria-disabled="true"] {
+    cursor: not-allowed;
+  }
 }
 
 /*
