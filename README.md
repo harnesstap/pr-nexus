@@ -61,7 +61,7 @@ ARM64 uses `_arm64.deb`, `-1.aarch64.rpm` and `_aarch64.AppImage`. Tokens are st
 
 ### Windows
 
-Download `PR-Nexus_X.Y.Z_x64-setup.exe` (per-user install) or `PR-Nexus_X.Y.Z_x64_en-US.msi` from [Releases](https://github.com/harnesstap/pr-nexus/releases/latest). The installers are not code signed, so SmartScreen shows "Windows protected your PC": click **More info**, then **Run anyway**. Tokens are stored in Windows Credential Manager. A WinGet package is planned.
+Download `PR-Nexus_X.Y.Z_x64-setup.exe` (per-user install) or `PR-Nexus_X.Y.Z_x64_en-US.msi` from [Releases](https://github.com/harnesstap/pr-nexus/releases/latest). The installers are not code signed, so SmartScreen shows "Windows protected your PC": click **More info**, then **Run anyway**. Tokens are stored in Windows Credential Manager. A WinGet package (`harnesstap.PRNexus`) is prepared in `packaging/winget` but not published yet.
 
 ## Develop
 

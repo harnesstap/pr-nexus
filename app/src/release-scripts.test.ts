@@ -354,3 +354,21 @@ test("install.sh verifies the checksum and picks the package for the distro", as
     /checksum mismatch/,
   );
 });
+
+test("WinGet manifests render from SHA256SUMS", async () => {
+  const script = join(repoRoot, "scripts", "render-winget-manifests.sh");
+  const dir = await tempDir("pr-nexus-winget-");
+  const sums = join(dir, "SHA256SUMS");
+  await writeFile(sums, "ab12  PR-Nexus_0.2.0_x64-setup.exe\ncd34  PR-Nexus_0.2.0_x64_en-US.msi\n");
+  const { stdout } = await execFileAsync("/bin/bash", [script, "v0.2.0", sums, join(dir, "out"), "2026-01-02"]);
+  const dest = stdout.trim();
+  expect(dest).toBe(join(dir, "out", "manifests", "h", "harnesstap", "PRNexus", "0.2.0"));
+  const installer = await readFile(join(dest, "harnesstap.PRNexus.installer.yaml"), "utf8");
+  expect(installer).toContain("PackageIdentifier: harnesstap.PRNexus");
+  expect(installer).toContain("releases/download/v0.2.0/PR-Nexus_0.2.0_x64-setup.exe");
+  expect(installer).toContain("InstallerSha256: AB12");
+  expect(installer).toContain("InstallerSha256: CD34");
+  expect(installer).toContain("ReleaseDate: 2026-01-02");
+  await writeFile(sums, "ab12  PR-Nexus_0.2.0_x64-setup.exe\n");
+  await expect(execFileAsync("/bin/bash", [script, "v0.2.0", sums, join(dir, "out2")])).rejects.toThrow(/missing PR-Nexus_0.2.0_x64_en-US.msi/);
+});

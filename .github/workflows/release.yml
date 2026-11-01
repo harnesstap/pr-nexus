@@ -583,3 +583,53 @@ jobs:
       tag: ${{ needs.prepare.outputs.tag }}
     secrets:
       HOMEBREW_TAP_APP_PRIVATE_KEY: ${{ secrets.HOMEBREW_TAP_APP_PRIVATE_KEY }}
+
+  # Renders the WinGet manifests (packaging/winget) for the published tag and
+  # keeps them as an artifact. Submitting to microsoft/winget-pkgs with komac
+  # runs only when the WINGET_TOKEN secret exists (it does not yet), so this
+  # never opens a winget-pkgs pull request on its own.
+  winget:
+    needs:
+      - prepare
+      - publish
+    if: needs.publish.result == 'success' && needs.prepare.outputs.skip != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.prepare.outputs.tag }}
+      WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+    steps:
+      - name: Check out scripts
+        uses: actions/checkout@v7
+
+      - name: Render manifests
+        run: |
+          set -euo pipefail
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern SHA256SUMS --dir "$RUNNER_TEMP"
+          bash scripts/render-winget-manifests.sh "$TAG" "$RUNNER_TEMP/SHA256SUMS" "$RUNNER_TEMP/winget"
+
+      - name: Keep manifests
+        uses: actions/upload-artifact@v7
+        with:
+          name: winget-manifests
+          path: ${{ runner.temp }}/winget
+          retention-days: 30
+
+      - name: Submit to winget-pkgs
+        if: env.WINGET_TOKEN != ''
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          base="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG"
+          curl -fsSL -o "$RUNNER_TEMP/komac.deb" "https://github.com/russellbanks/Komac/releases/download/v2.17.1/komac_2.17.1-1_amd64.deb"
+          sudo dpkg -i "$RUNNER_TEMP/komac.deb"
+          komac update harnesstap.PRNexus --version "$version" \
+            --urls "$base/PR-Nexus_${version}_x64-setup.exe" "$base/PR-Nexus_${version}_x64_en-US.msi" \
+            --token "$WINGET_TOKEN" --submit
+
+      - name: Note skipped submission
+        if: env.WINGET_TOKEN == ''
+        run: echo "::notice::WINGET_TOKEN is not set; WinGet manifests were rendered but not submitted."

@@ -1,0 +1,20 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.9.0.schema.json
+PackageIdentifier: harnesstap.PRNexus
+PackageVersion: ${VERSION}
+MinimumOSVersion: 10.0.17763.0
+ReleaseDate: ${RELEASE_DATE}
+Installers:
+  - Architecture: x64
+    InstallerType: nullsoft
+    Scope: user
+    InstallerUrl: https://github.com/harnesstap/pr-nexus/releases/download/v${VERSION}/PR-Nexus_${VERSION}_x64-setup.exe
+    InstallerSha256: ${SHA256_EXE}
+    UpgradeBehavior: install
+  - Architecture: x64
+    InstallerType: wix
+    Scope: machine
+    InstallerUrl: https://github.com/harnesstap/pr-nexus/releases/download/v${VERSION}/PR-Nexus_${VERSION}_x64_en-US.msi
+    InstallerSha256: ${SHA256_MSI}
+    UpgradeBehavior: install
+ManifestType: installer
+ManifestVersion: 1.9.0
