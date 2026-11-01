@@ -276,17 +276,22 @@ test("homebrew cask refuses a release without exactly one hashed arm64 DMG", asy
   await expect(renderCask("v0.1.0-rc.1", [], tap)).rejects.toThrow(/not a stable vX\.Y\.Z tag/);
 });
 
-test("release asset check requires the arm64 DMG only", async () => {
+test("release asset check requires every platform installer", async () => {
   const ok = await execFileAsync("/bin/bash", [
     assetsScript,
     "v0.1.0",
-    "PR-Nexus_0.1.0_aarch64.dmg",
+    ...(await execFileAsync("/bin/bash", [assetsScript, "--list", "0.1.0"])).stdout.trim().split("\n"),
     "notes.txt",
   ]);
   expect(ok.stdout).toContain("PR-Nexus_0.1.0_aarch64.dmg");
+  expect(ok.stdout).toContain("PR-Nexus_0.1.0_amd64.deb");
+  expect(ok.stdout).toContain("PR-Nexus_0.1.0_x64-setup.exe");
   await expect(
     execFileAsync("/bin/bash", [assetsScript, "0.1.0", "PR-Nexus_0.1.0_x64.dmg"]),
   ).rejects.toThrow(/missing PR-Nexus_0.1.0_aarch64.dmg/);
+  await expect(execFileAsync("/bin/bash", [assetsScript, "0.1.0", "PR-Nexus_0.1.0_aarch64.dmg"])).rejects.toThrow(
+    /missing PR-Nexus_0.1.0_x64_en-US.msi/,
+  );
 });
 
 test("release dry run checks the version without calling gh", async () => {

@@ -1731,8 +1731,8 @@ M0–M1 come first on purpose. Every later PR is then built, linted, and releasa
 - **D7. GitHub team review request:** offered as a checkbox in the preview, off by default. It is the only GitHub write.
 - **D8. The Slack MCP search tools discover requests posted outside the app** (`slack_search_public`, then `slack_search_public_and_private`, with `include_bots=true`; §7.4). Without the search scopes, only app-posted requests are known.
 - **D9. CSV workspace:** the CSV may carry a `slack_workspace` column. Rows without one get the target workspace the user picks in the import dialog.
-- **D10. No auto-updater in v1:** an "update available" banner, and manual DMG install.
-- **D11. Linux/Windows build in CI only,** with no release assets.
+- **D10. No auto-updater in v1:** an "update available" banner, and a manual install of the platform installer (DMG, AppImage/deb/rpm, or setup.exe/MSI).
+- **D11. Release assets per platform:** macOS Apple Silicon DMG; Linux x86_64 and arm64 AppImage, deb and rpm; Windows x64 NSIS setup.exe and MSI, plus `SHA256SUMS`. All are built on GitHub-hosted runners and smoke-launched before upload (Linux under xvfb, Windows by checking the process stays alive). Windows builds are unsigned (SmartScreen warns). The keyring uses the Secret Service on Linux and Credential Manager on Windows; without a Secret Service the keyring banner explains the missing backend instead of crashing.
 - **D12. Bump interval:** a warning (not a block) below 24 h.
 - **D13. No Slack drafts:** the in-app preview plus an explicit Send replaces the skill's draft-first flow.
 - **D14. Review-request lifecycle:** a request is closed only by merge/close, explicit dismiss, being superseded by a new top-level message in the same channel, or an archived channel. Approvals and new commits do not close it, and there is no age expiry (§7.4).

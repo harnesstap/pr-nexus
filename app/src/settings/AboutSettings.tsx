@@ -127,6 +127,15 @@ export function AboutSettings({ api, onRerunSetup }: Props) {
             </p>
           </div>
         )}
+        {!isMac && (
+          <div className="mt-3 rounded border border-slate-800 bg-slate-900/60 p-3 text-xs text-slate-300">
+            <p className="font-medium text-slate-200">Installing an update on Linux or Windows</p>
+            <p className="mt-1">
+              Linux: rerun the install script, or install the new .deb, .rpm or AppImage from the release page. Windows:
+              run the new setup.exe or .msi; SmartScreen may warn on unsigned builds (More info → Run anyway).
+            </p>
+          </div>
+        )}
       </section>
 
       <section aria-labelledby="about-keychain">

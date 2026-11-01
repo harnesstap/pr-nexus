@@ -159,6 +159,22 @@ fn get_ok(http: &dyn HttpGet, url: &str, accept: &str) -> Option<String> {
         .map(|response| response.body)
 }
 
+/// Release asset glob for this build's platform, used in the suggested
+/// `gh release download` command. Linux suggests the AppImage, which runs on
+/// any distro; deb/rpm users reinstall through their package manager.
+pub fn asset_pattern() -> &'static str {
+    asset_pattern_for(std::env::consts::OS, std::env::consts::ARCH)
+}
+
+fn asset_pattern_for(os: &str, arch: &str) -> &'static str {
+    match (os, arch) {
+        ("windows", _) => "*_x64-setup.exe",
+        ("linux", "aarch64") => "*_aarch64.AppImage",
+        ("linux", _) => "*_amd64.AppImage",
+        _ => "*.dmg",
+    }
+}
+
 fn check_release(http: &dyn HttpGet, repo: &str, current: &str) -> Option<UpdateInfo> {
     let body = get_ok(http, &format!("{API}/repos/{repo}/releases/latest"), JSON)?;
     let release: Release = serde_json::from_str(&body).ok()?;
@@ -169,8 +185,9 @@ fn check_release(http: &dyn HttpGet, repo: &str, current: &str) -> Option<Update
         kind: UpdateKind::Release,
         current: current.trim_start_matches('v').to_owned(),
         command: format!(
-            "gh release download {} -R {repo} -p '*.dmg'",
-            release.tag_name
+            "gh release download {} -R {repo} -p '{}'",
+            release.tag_name,
+            asset_pattern()
         ),
         version: release.tag_name.trim_start_matches('v').to_owned(),
         url: release.html_url,
@@ -284,6 +301,14 @@ mod tests {
     }
 
     #[test]
+    fn asset_pattern_matches_each_platform_installer() {
+        assert_eq!(asset_pattern_for("macos", "aarch64"), "*.dmg");
+        assert_eq!(asset_pattern_for("windows", "x86_64"), "*_x64-setup.exe");
+        assert_eq!(asset_pattern_for("linux", "x86_64"), "*_amd64.AppImage");
+        assert_eq!(asset_pattern_for("linux", "aarch64"), "*_aarch64.AppImage");
+    }
+
+    #[test]
     fn a_newer_release_is_an_update() {
         let gh = FakeGithub::default().route(
             "/repos/acme/widgets/releases/latest",
@@ -296,7 +321,10 @@ mod tests {
         assert_eq!(info.version, "0.2.0");
         assert_eq!(
             info.command,
-            "gh release download v0.2.0 -R acme/widgets -p '*.dmg'"
+            format!(
+                "gh release download v0.2.0 -R acme/widgets -p '{}'",
+                asset_pattern()
+            )
         );
         assert_eq!(info.behind_by, None);
         assert!(check(&gh, "acme/widgets", "0.2.0", &Channel::Release).is_none());

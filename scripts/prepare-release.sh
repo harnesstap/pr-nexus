@@ -33,7 +33,8 @@ workspace_version() {
 
 if [ "${DRY_RUN:-}" = "1" ]; then
   version="$(workspace_version)"
-  bash scripts/check-release-assets.sh "$version" "PR-Nexus_${version}_aarch64.dmg"
+  mapfile -t expected < <(bash scripts/check-release-assets.sh --list "$version")
+  bash scripts/check-release-assets.sh "$version" "${expected[@]}"
   bash scripts/reseal-macos-app.sh "${TMPDIR:-/tmp}/pr-nexus-missing-bundle"
   write_output "dry_run=true"
   write_output "skip=true"
