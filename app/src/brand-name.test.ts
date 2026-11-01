@@ -28,7 +28,7 @@ test("no user-facing text says PR-Nexus", () => {
       continue; // deleted in the working tree
     }
     text.split("\n").forEach((line, index) => {
-      if (/PR-Nexus(?!_|-(?:\d|\$\{|<v>))/.test(line)) hits.push(`${file}:${index + 1}: ${line.trim()}`);
+      if (/PR-Nexus(?!_|-(?:\d|X\.Y|\$\{|<v>))/.test(line)) hits.push(`${file}:${index + 1}: ${line.trim()}`);
     });
   }
   expect(hits).toEqual([]);

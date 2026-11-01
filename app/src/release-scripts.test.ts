@@ -321,3 +321,36 @@ test("tag release plan batches v0.1.0 when nothing has shipped", async () => {
   expect(result.stdout).toContain("batch_args=v0.1.0");
   expect(result.stdout).toContain("action=prepare");
 });
+
+test("install.sh verifies the checksum and picks the package for the distro", async () => {
+  const installScript = join(repoRoot, "scripts", "install.sh");
+  const rel = await tempDir("pr-nexus-install-");
+  const deb = "PR-Nexus_9.9.9_amd64.deb";
+  await writeFile(join(rel, deb), "deb");
+  await writeFile(join(rel, "PR-Nexus_9.9.9_aarch64.AppImage"), "appimage");
+  const { stdout: sums } = await execFileAsync("sha256sum", [deb, "PR-Nexus_9.9.9_aarch64.AppImage"], { cwd: rel });
+  await writeFile(join(rel, "SHA256SUMS"), sums);
+  await writeFile(join(rel, "os-release"), 'ID=linuxmint\nID_LIKE="ubuntu debian"\n');
+  const env = {
+    ...process.env,
+    PR_NEXUS_DRY_RUN: "1",
+    PR_NEXUS_VERSION: "9.9.9",
+    PR_NEXUS_BASE_URL: `file://${rel}`,
+    PR_NEXUS_OS: "Linux",
+    PR_NEXUS_ARCH: "x86_64",
+    PR_NEXUS_OS_RELEASE: join(rel, "os-release"),
+  };
+  const ok = await execFileAsync("sh", [installScript], { env: { ...env, PR_NEXUS_METHOD: "deb" } });
+  expect(ok.stdout).toContain(`checksum ok: ${deb}`);
+  expect(ok.stdout).toContain("apt-get install -y");
+  const app = await execFileAsync("sh", [installScript], {
+    env: { ...env, PR_NEXUS_METHOD: "appimage", PR_NEXUS_ARCH: "aarch64" },
+  });
+  expect(app.stdout).toContain("pr-nexus.AppImage");
+  const mac = await execFileAsync("sh", [installScript], { env: { ...env, PR_NEXUS_OS: "Darwin" } });
+  expect(mac.stdout).toContain("brew install --cask harnesstap/tap/pr-nexus");
+  await writeFile(join(rel, deb), "tampered");
+  await expect(execFileAsync("sh", [installScript], { env: { ...env, PR_NEXUS_METHOD: "deb" } })).rejects.toThrow(
+    /checksum mismatch/,
+  );
+});
