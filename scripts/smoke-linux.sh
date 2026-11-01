@@ -25,7 +25,7 @@ alive_for() {
     return 1
   fi
   echo "$label still running after ${SECONDS_UP}s"
-  pkill -TERM -f "pr-nexus" || true
+  pkill -TERM -x pr-nexus || true
   kill "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true
   tail -n 20 "$log"
