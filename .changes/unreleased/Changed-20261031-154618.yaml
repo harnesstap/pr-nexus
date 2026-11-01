@@ -1,3 +1,0 @@
-kind: Changed
-body: Releases now include Linux (AppImage, deb, rpm for x86_64 and arm64) and Windows (setup.exe and MSI) installers, plus SHA256SUMS.
-time: 2026-10-31T15:46:18.058829404-10:00
