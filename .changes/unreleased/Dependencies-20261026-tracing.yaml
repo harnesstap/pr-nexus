@@ -1,3 +1,0 @@
-kind: Dependencies
-body: Add tracing, tracing-subscriber and tracing-appender for the app log.
-time: 2026-10-26T05:30:05.000000-10:00
