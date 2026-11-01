@@ -1,45 +1,36 @@
 # PR Nexus
 
-[![CI](https://github.com/harnesstap/pr-nexus/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/harnesstap/pr-nexus/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/harnesstap/pr-nexus?sort=semver)](https://github.com/harnesstap/pr-nexus/releases/latest)
-[![License](https://img.shields.io/github/license/harnesstap/pr-nexus)](LICENSE)
+[![Latest release](https://img.shields.io/github/v/release/harnesstap/pr-nexus?sort=semver)](https://github.com/harnesstap/pr-nexus/releases/latest)
 [![Platforms: macOS, Linux, Windows](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-black)](#install)
+[![License: MIT](https://img.shields.io/github/license/harnesstap/pr-nexus)](LICENSE)
 
-Desktop app (Tauri + Rust) to track your open GitHub pull requests by project and request or bump reviews from the owning teams on Slack.
+All your open GitHub pull requests in one desktop app, grouped by project. Ask the right team for a review on Slack in one click.
 
-https://github.com/user-attachments/assets/1c81dc94-66ef-49bc-82b8-6978ae3dc081
+![PR Nexus demo](docs/media/pr-nexus-demo.webp)
 
-<sub>PR Nexus in 30 seconds (with music). Fictional data.</sub>
+## What it does
 
-![The PR list grouped by project, with quick status filters and Slack review status per PR](docs/assets/screenshot-list.png)
+- **One list for your PRs.** It shows the PRs you opened and the ones waiting for your review, across the GitHub orgs you pick. It refreshes in the background.
+- **Grouped by project.** You put PRs into projects by hand or with rules (repo, label, branch, title, ticket key), and can link projects to Jira.
+- **Spot stuck PRs.** Quick filters and row cues show failing checks, conflicts, drafts, requested changes and reviews that have waited too long.
+- **Review requests on Slack.** PR Nexus finds the owning teams from CODEOWNERS, maps each team to its Slack channel, and previews the message before it sends it. Later you can bump the same thread. It also works in bulk across several PRs.
+- **Act on a PR without leaving the app.** You can mark a PR ready, convert it to draft, toggle auto-merge, update the branch, and keep notes and stars.
+- **Keyboard first.** <kbd>⌘K</kbd> (<kbd>Ctrl+K</kbd> on Linux and Windows) opens the command palette. Press <kbd>?</kbd> to list the shortcuts.
+- **Works with AI assistants.** An optional local MCP server lets Cursor, VS Code and other MCP clients read your PRs and, if you allow it, propose Slack messages for you to approve.
 
-<sub>Mock data. Regenerate with `cd app && bun run screenshot` (needs Chrome, or set `CHROME_PATH`).</sub>
-
-The v1 technical specification is [docs/SPEC.md](docs/SPEC.md). Agent instructions are in [AGENTS.md](AGENTS.md). The release and branch-ruleset runbook is in [CONTRIBUTING.md](CONTRIBUTING.md).
+![The PR list grouped by project, with quick status filters and the Slack review status of each PR](docs/assets/screenshot-list.png)
 
 ## Install
 
-Every release ships installers for macOS (Apple Silicon), Linux (x86_64 and arm64) and Windows (x64), plus a `SHA256SUMS` file. Linux and Windows installers start with v0.1.1. Builds are not notarized or code signed yet, so each OS warns on first launch.
+Downloads for macOS (Apple Silicon), Linux (x86_64, arm64) and Windows (x64) are on the [Releases](https://github.com/harnesstap/pr-nexus/releases/latest) page, with a `SHA256SUMS` file. Linux and Windows builds start with v0.1.1. The builds are not notarized or code signed yet, so each OS warns you the first time you open the app (see [Troubleshooting](#troubleshooting)).
 
 ### macOS
-
-With [Homebrew](https://brew.sh):
 
 ```bash
 brew install --cask harnesstap/tap/pr-nexus
 ```
 
-Upgrade with `brew upgrade --cask pr-nexus`.
-
-macOS blocks the first launch because the app is not notarized. Open **System Settings > Privacy & Security** and click **Open Anyway** once. The cask does not remove the quarantine flag for you.
-
-Without Homebrew, download the DMG from [Releases](https://github.com/harnesstap/pr-nexus/releases/latest), or with `gh`, which does not set the quarantine flag:
-
-```bash
-gh release download vX.Y.Z -R harnesstap/pr-nexus -p '*.dmg'
-```
-
-Each new version asks once for permission to use the keychain item `dev.pr-nexus`; choose Always Allow. Details are in CONTRIBUTING.
+Upgrade with `brew upgrade --cask pr-nexus`. Or download the `.dmg` from Releases.
 
 ### Linux
 
@@ -47,9 +38,9 @@ Each new version asks once for permission to use the keychain item `dev.pr-nexus
 curl -fsSL https://raw.githubusercontent.com/harnesstap/pr-nexus/main/scripts/install.sh | sh
 ```
 
-The script installs the `.deb` with apt on Debian and Ubuntu, the `.rpm` with dnf or zypper on Fedora, RHEL and openSUSE, and otherwise puts the AppImage in `~/.local/bin` with a desktop entry. It checks every download against `SHA256SUMS`. Set `PR_NEXUS_DRY_RUN=1` to see what it would do, or `PR_NEXUS_METHOD=deb|rpm|appimage` to choose. Rerun it to upgrade.
+The script installs the `.deb` (Debian, Ubuntu) or the `.rpm` (Fedora, RHEL, openSUSE). On other distributions it installs the AppImage in `~/.local/bin`. It checks every download against `SHA256SUMS`, and running it again upgrades the app. Set `PR_NEXUS_DRY_RUN=1` to see what it would do, or `PR_NEXUS_METHOD=deb|rpm|appimage` to choose the package type.
 
-Or install a package from [Releases](https://github.com/harnesstap/pr-nexus/releases/latest) yourself:
+You can also install a package from Releases yourself:
 
 ```bash
 sudo apt install ./PR-Nexus_X.Y.Z_amd64.deb          # Debian, Ubuntu
@@ -57,23 +48,49 @@ sudo dnf install ./PR-Nexus-X.Y.Z-1.x86_64.rpm       # Fedora, RHEL
 chmod +x PR-Nexus_X.Y.Z_amd64.AppImage && ./PR-Nexus_X.Y.Z_amd64.AppImage
 ```
 
-ARM64 uses `_arm64.deb`, `-1.aarch64.rpm` and `_aarch64.AppImage`. Tokens are stored with the Secret Service (GNOME Keyring or KWallet); if none is running, PR Nexus shows a keyring banner instead of saving tokens.
+On ARM64, use the `_arm64.deb`, `-1.aarch64.rpm` and `_aarch64.AppImage` files instead.
 
 ### Windows
 
-Download `PR-Nexus_X.Y.Z_x64-setup.exe` (per-user install) or `PR-Nexus_X.Y.Z_x64_en-US.msi` from [Releases](https://github.com/harnesstap/pr-nexus/releases/latest). The installers are not code signed, so SmartScreen shows "Windows protected your PC": click **More info**, then **Run anyway**. Tokens are stored in Windows Credential Manager. A WinGet package (`harnesstap.PRNexus`) is prepared in `packaging/winget` but not published yet.
+Download `PR-Nexus_X.Y.Z_x64-setup.exe` (installs for your user only) or `PR-Nexus_X.Y.Z_x64_en-US.msi` from Releases. A WinGet package is coming soon.
 
-## Develop
+## Getting started
 
-- Rust stable (`rust-toolchain.toml`)
-- Bun 1.3.14
+On first launch, a short setup wizard walks you through these steps:
 
-```bash
-bun install --cwd app
-bun run tauri dev
-```
+1. **Connect GitHub.** Use your `gh` CLI login, paste a personal access token, or sign in with the device flow.
+2. **Pick the orgs to track**, and choose whether to include your personal repos.
+3. **Connect Slack (optional).** Sign in to one or more workspaces. You can skip this step and do it later in Settings.
+4. **Import a team → channel mapping (optional).** Import a CSV such as `acme,web-team,Web Team,web-reviews,C0123456789`, or skip it and pick channels as you go.
 
-Linux needs the WebKitGTK packages listed in `.github/actions/linux-tauri-deps/action.yml`.
+Then the first sync runs. Create projects from the sidebar, and drag PRs into them or add rules. To run the setup again, open Settings → About.
+
+## Using with AI assistants
+
+The MCP server is off by default. To turn it on, open **Settings → Agents**. The server listens only on `127.0.0.1`, and clients need a token to connect. The same screen shows the config to paste into your client (Cursor, VS Code, Claude Code, …). You choose what agents can do:
+
+- read PRs and projects;
+- write local data (notes, stars, projects);
+- read Slack in the workspaces you expose;
+- send Slack messages.
+
+Slack messages wait for your approval unless you allow specific channels. Every call is listed in the activity log on that screen.
+
+## Privacy and security
+
+Tokens are stored in your OS keychain: the macOS Keychain, the Linux Secret Service, or the Windows Credential Manager. Everything else stays in a local database on your computer. PR Nexus talks only to GitHub and to the Slack workspaces you connect, and it sends no telemetry.
+
+## Troubleshooting
+
+- **macOS says the app can't be opened or is damaged.** Open **System Settings → Privacy & Security** and click **Open Anyway** once. If you download the DMG with `gh release download`, macOS does not show this warning.
+- **macOS asks to use the keychain item `dev.pr-nexus`.** Click **Always Allow**. The prompt can come back once after an update.
+- **Linux shows a keyring banner and tokens are not saved.** A Secret Service is needed (GNOME Keyring or KWallet). Install and start one, then click Retry.
+- **Windows shows "Windows protected your PC".** Click **More info**, then **Run anyway**.
+- **A GitHub org is missing or shows an SSO hint.** Authorize your token for that org's SAML SSO on GitHub, then run the setup again.
+
+## Contributing
+
+To build from source or work on the code, read [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 

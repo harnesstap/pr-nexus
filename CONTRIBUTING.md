@@ -2,6 +2,20 @@
 
 PR Nexus is a private desktop app. Do not commit company names, organization names, Slack workspaces, tokens, or customer data. See `AGENTS.md`.
 
+## Overview
+
+PR Nexus is a desktop app built with [Tauri v2](https://tauri.app). The backend is in Rust, and the frontend uses React, TypeScript and Vite, run with Bun.
+
+| Path | What |
+|---|---|
+| `crates/pr-nexus-core` | Domain, SQLite store and migrations, sync, review workflow (no HTTP) |
+| `crates/pr-nexus-providers` | GitHub (GraphQL/REST), Slack MCP client, keychain vault |
+| `app/src-tauri` | Tauri shell, commands, local MCP server |
+| `app/` | React frontend |
+| `docs/SPEC.md` | Technical specification |
+| `AGENTS.md` | Instructions for coding agents |
+| `scripts/`, `packaging/` | Install script, release helpers, Homebrew and WinGet templates |
+
 ## Prerequisites
 
 - Rust stable, via rustup. `rust-toolchain.toml` selects the channel and installs rustfmt and clippy.
@@ -63,6 +77,18 @@ bun run dev
 # http://127.0.0.1:1420/preview.html?screen=slack
 # http://127.0.0.1:1420/preview.html?screen=list
 ```
+
+## README screenshot and demo video
+
+`docs/assets/screenshot-list.png` is the real app rendered over mocked Tauri IPC with invented data (`app/src/screenshot/`). To regenerate it, run `cd app && bun run screenshot`. It needs Chrome, or `CHROME_PATH` set to a Chrome binary.
+
+The README demo is an animated WebP (`docs/media/pr-nexus-demo.webp`, 960×540, 10 fps, loops, no audio) that GitHub shows inline on the web and in the mobile app. Regenerate it from the promo video with:
+
+```sh
+ffmpeg -i pr-nexus-promo.mp4 -an -vf "fps=10,scale=960:-2:flags=lanczos" -c:v libwebp -q:v 45 -compression_level 6 -preset picture -loop 0 docs/media/pr-nexus-demo.webp
+```
+
+Keep it under 5 MB. Do not use an mp4 or a GitHub user-attachments link: the repo blob page will not play a large mp4, and the mobile app does not show the embedded player GitHub makes from user-attachments links. Use only invented `acme` data in the demo.
 
 ## macOS dev: stop keychain prompts
 
