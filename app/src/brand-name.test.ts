@@ -9,7 +9,8 @@ const repoRoot = join(process.cwd(), "..");
 /**
  * The product is "PR Nexus". Identifiers keep the dash-free lowercase form
  * (`pr-nexus`, `pr_nexus_*`, `dev.pr-nexus`), and the release asset keeps the
- * stable name `PR-Nexus_<version>_aarch64.dmg`. Released changelog entries are
+ * stable names `PR-Nexus_<version>_<arch>.<ext>` and
+ * `PR-Nexus-<version>-1.<arch>.rpm`. Released changelog entries are
  * history and are not rewritten.
  */
 const SKIPPED = [/^app\/src\/brand-name\.test\.ts$/, /^CHANGELOG\.md$/, /^\.changes\//, /\.lock$/, /(^|\/)bun\.lockb?$/, /\.(png|jpe?g|icns|ico|gif|webp)$/];
@@ -27,7 +28,7 @@ test("no user-facing text says PR-Nexus", () => {
       continue; // deleted in the working tree
     }
     text.split("\n").forEach((line, index) => {
-      if (/PR-Nexus(?!_)/.test(line)) hits.push(`${file}:${index + 1}: ${line.trim()}`);
+      if (/PR-Nexus(?!_|-(?:\d|\$\{|<v>))/.test(line)) hits.push(`${file}:${index + 1}: ${line.trim()}`);
     });
   }
   expect(hits).toEqual([]);

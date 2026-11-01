@@ -157,15 +157,22 @@ Certificate fingerprints:
 
 ## Release
 
-v1 ships one artifact: an ad-hoc-sealed macOS Apple Silicon DMG. There is no auto-updater and no Apple Developer ID signature.
+Each release ships:
+
+- macOS: an ad-hoc-sealed Apple Silicon DMG (`PR-Nexus_<v>_aarch64.dmg`), built on `macos-latest`.
+- Linux: `PR-Nexus_<v>_{amd64,aarch64}.AppImage`, `PR-Nexus_<v>_{amd64,arm64}.deb` and `PR-Nexus-<v>-1.{x86_64,aarch64}.rpm`, built on `ubuntu-24.04` and `ubuntu-24.04-arm`.
+- Windows: `PR-Nexus_<v>_x64-setup.exe` (NSIS) and `PR-Nexus_<v>_x64_en-US.msi`, built on `windows-latest`, unsigned.
+- `SHA256SUMS` over all of the above.
+
+There is no auto-updater, no Apple Developer ID signature and no Windows code signing. Every Linux and Windows build is smoke-launched before upload: `scripts/smoke-linux.sh` installs the deb and runs it and the AppImage under `xvfb-run`; `scripts/smoke-windows.ps1` installs the NSIS build silently and checks the app is still running after 15 s.
 
 1. Merge pull requests that include Changie fragments.
 2. On `main`, run **Tag release** (`workflow_dispatch`). It batches fragments (the first cut is `v0.1.0`; later cuts use `changie batch auto`), stamps `[workspace.package] version` in the root `Cargo.toml`, commits `Release vX.Y.Z` as `github-actions[bot]`, and pushes the tag. It stamps the same version into `app/package.json` (a CI test keeps the two equal). `tauri.conf.json` has no version; Tauri reads `Cargo.toml`.
-3. **Release** runs because a tag push made with `GITHUB_TOKEN` does not start workflows by itself (`workflow_run`), and also on a direct `v*` push or a manual dispatch. It opens a draft release, builds `PR-Nexus_<version>_aarch64.dmg` on `macos-latest`, reseals the app (`scripts/reseal-macos-app.sh`), uploads with `gh release upload --clobber`, checks that the DMG is attached, then clears the draft. `--latest` is set only when the tag is the highest semver.
-4. Re-running Release is safe: an existing draft is reused, uploads clobber, and an already published release is left in place when the DMG is present.
+3. **Release** runs because a tag push made with `GITHUB_TOKEN` does not start workflows by itself (`workflow_run`), and also on a direct `v*` push or a manual dispatch. It opens a draft release, builds `PR-Nexus_<version>_aarch64.dmg` on `macos-latest`, reseals the app (`scripts/reseal-macos-app.sh`), builds the Linux and Windows installers in parallel, uploads everything with `gh release upload --clobber`, checks that every installer is attached (`scripts/check-release-assets.sh`), uploads `SHA256SUMS`, then clears the draft. `--latest` is set only when the tag is the highest semver.
+4. Re-running Release is safe: an existing draft is reused, uploads clobber, and an already published release is left in place when every installer is present.
 5. The `homebrew-tap` job then runs `.github/workflows/homebrew-tap.yml` on a GitHub-hosted runner. It renders `Casks/pr-nexus.rb` from `packaging/homebrew/pr-nexus.rb.tmpl` (`scripts/render-homebrew-cask.sh`, using the release's `*_<version>_aarch64.dmg` asset, its sha256 digest, and `productName` from `tauri.conf.json`) and pushes it to [harnesstap/homebrew-tap](https://github.com/harnesstap/homebrew-tap) with a short-lived token from the tap's release GitHub App (variable `HOMEBREW_TAP_APP_CLIENT_ID`, secret `HOMEBREW_TAP_APP_PRIVATE_KEY`; the app is installed only on `homebrew-tap` with Contents read and write). Without them it logs a notice and skips. It skips drafts and prereleases and never downgrades the tap. To backfill or check the setup: `gh workflow run homebrew-tap.yml -f tag=vX.Y.Z`.
 
-`workflow_dispatch` on Tag release and Release accepts `dry_run`. Dry run batches or checks scripts and does not push a tag, build a DMG, or call the Releases API to publish. A real DMG is only produced by a tag cut on `main`.
+`workflow_dispatch` on Tag release and Release accepts `dry_run`. Dry run batches or checks scripts and does not push a tag, build a DMG, or call the Releases API to publish. On Release, add `platform_build_dry_run=true` to also build and smoke-test the Linux and Windows installers and keep them as workflow artifacts for 7 days: `gh workflow run release.yml --ref <branch> -f dry_run=true -f platform_build_dry_run=true`. A real DMG is only produced by a tag cut on `main`.
 
 `APPLE_CERTIFICATE` is unused. The release job has a Developer ID step that stays skipped until that secret exists, and that step fails on purpose so a secret cannot silently change the ad-hoc build. Signing and notarization are future work.
 

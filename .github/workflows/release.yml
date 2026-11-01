@@ -20,6 +20,11 @@ on:
         required: false
         type: boolean
         default: false
+      platform_build_dry_run:
+        description: With dry_run, also build and smoke-test the Linux and Windows installers (kept as workflow artifacts, no release)
+        required: false
+        type: boolean
+        default: false
   # Tag release pushes tags with GITHUB_TOKEN, which does not trigger a tag
   # push workflow. Run after that job succeeds.
   workflow_run:
@@ -346,11 +351,179 @@ jobs:
           codesign --verify --deep --strict --verbose=2 "$APP"
           ls -la "${CARGO_TARGET_DIR}/release/bundle/dmg/"
 
+  # Linux installers (AppImage, deb, rpm) on GitHub-hosted runners, x86_64 and
+  # arm64. The shared self-hosted runners never install system packages, and
+  # the smoke test needs apt + xvfb. Dry run (platform_build_dry_run) builds and
+  # smoke-tests without a tag and keeps the files as workflow artifacts.
+  linux:
+    needs: prepare
+    if: >-
+      needs.prepare.result == 'success' && (
+        (needs.prepare.outputs.skip != 'true' && needs.prepare.outputs.dry_run != 'true') ||
+        (github.event_name == 'workflow_dispatch' && inputs.dry_run && inputs.platform_build_dry_run)
+      )
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    steps:
+      - name: Check out tagged sources
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.tag || github.ref }}
+
+      - uses: ./.github/actions/linux-tauri-deps
+
+      - name: Install packaging and smoke-test tools
+        run: sudo apt-get install -y --no-install-recommends xvfb xauth rpm libfuse2t64 || sudo apt-get install -y --no-install-recommends xvfb xauth rpm libfuse2
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+          shared-key: release-linux-${{ matrix.arch }}
+
+      - name: Install dependencies
+        working-directory: app
+        run: bun install --frozen-lockfile
+
+      - name: Build AppImage, deb and rpm
+        working-directory: app
+        run: bun run tauri build --bundles appimage,deb,rpm
+
+      - name: Stable asset names
+        id: assets
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          out="$RUNNER_TEMP/assets"
+          mkdir -p "$out"
+          for file in "$CARGO_TARGET_DIR"/release/bundle/{appimage/*.AppImage,deb/*.deb,rpm/*.rpm}; do
+            cp "$file" "$out/$(basename "$file" | tr ' ' '-')"
+          done
+          ls -l "$out"
+          echo "dir=$out" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke-launch the packaged app
+        run: bash scripts/smoke-linux.sh "$CARGO_TARGET_DIR/release/bundle" 15
+
+      - name: Keep dry-run installers
+        if: needs.prepare.outputs.tag == ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-${{ matrix.arch }}
+          path: ${{ steps.assets.outputs.dir }}
+          retention-days: 7
+
+      - name: Upload installers
+        if: needs.prepare.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: gh release upload "$TAG" "${{ steps.assets.outputs.dir }}"/* --clobber --repo "$GITHUB_REPOSITORY"
+
+  # Windows installers (NSIS setup.exe and MSI), unsigned for now.
+  windows:
+    needs: prepare
+    if: >-
+      needs.prepare.result == 'success' && (
+        (needs.prepare.outputs.skip != 'true' && needs.prepare.outputs.dry_run != 'true') ||
+        (github.event_name == 'workflow_dispatch' && inputs.dry_run && inputs.platform_build_dry_run)
+      )
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out tagged sources
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.tag || github.ref }}
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+          shared-key: release-windows
+
+      - name: Install dependencies
+        working-directory: app
+        run: bun install --frozen-lockfile
+
+      - name: Build NSIS and MSI installers
+        working-directory: app
+        run: bun run tauri build --bundles nsis,msi
+
+      - name: Stable asset names
+        id: assets
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          out="$RUNNER_TEMP/assets"
+          mkdir -p "$out"
+          for file in "$CARGO_TARGET_DIR"/release/bundle/{nsis/*-setup.exe,msi/*.msi}; do
+            cp "$file" "$out/$(basename "$file" | tr ' ' '-')"
+          done
+          ls -l "$out"
+          echo "dir=$out" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke-launch the installed app
+        shell: pwsh
+        run: ./scripts/smoke-windows.ps1 -Bundle "$env:CARGO_TARGET_DIR/release/bundle" -Seconds 15
+
+      - name: Keep dry-run installers
+        if: needs.prepare.outputs.tag == ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-x64
+          path: ${{ steps.assets.outputs.dir }}
+          retention-days: 7
+
+      - name: Upload installers
+        if: needs.prepare.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: gh release upload "$TAG" "${{ steps.assets.outputs.dir }}"/* --clobber --repo "$GITHUB_REPOSITORY"
+
   publish:
     needs:
       - prepare
       - macos
-    if: needs.prepare.result == 'success' && needs.macos.result == 'success' && needs.prepare.outputs.skip != 'true'
+      - linux
+      - windows
+    if: needs.prepare.result == 'success' && needs.macos.result == 'success' && needs.linux.result == 'success' && needs.windows.result == 'success' && needs.prepare.outputs.skip != 'true'
     runs-on: ${{ fromJSON(vars.LINUX_RUNNER_LABELS || '["self-hosted","Linux"]') }}
     permissions:
       contents: write
@@ -358,7 +531,7 @@ jobs:
       - name: Check out scripts
         uses: actions/checkout@v7
 
-      - name: Verify the DMG and publish
+      - name: Verify installers, add SHA256SUMS and publish
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.prepare.outputs.tag }}
@@ -367,6 +540,14 @@ jobs:
           INFO="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,assets)"
           mapfile -t names < <(jq -r '.assets[].name' <<<"$INFO")
           bash scripts/check-release-assets.sh "${TAG#v}" "${names[@]}"
+          # SHA256SUMS over every installer, for scripts/install.sh and manual checks.
+          dl="$(mktemp -d)"
+          mapfile -t expected < <(bash scripts/check-release-assets.sh --list "${TAG#v}")
+          for name in "${expected[@]}"; do
+            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$name" --dir "$dl"
+          done
+          (cd "$dl" && sha256sum "${expected[@]}" > SHA256SUMS && cat SHA256SUMS)
+          gh release upload "$TAG" "$dl/SHA256SUMS" --clobber --repo "$GITHUB_REPOSITORY"
           if [ "$(jq -r .isDraft <<<"$INFO")" != "true" ]; then
             echo "Release $TAG is already published."
             exit 0
