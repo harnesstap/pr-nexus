@@ -7,6 +7,10 @@
 
 Desktop app (Tauri + Rust) to track your open GitHub pull requests by project and request or bump reviews from the owning teams on Slack.
 
+https://github.com/user-attachments/assets/1c81dc94-66ef-49bc-82b8-6978ae3dc081
+
+<sub>PR Nexus in 30 seconds (with music). Fictional data.</sub>
+
 ![The PR list grouped by project, with quick status filters and Slack review status per PR](docs/assets/screenshot-list.png)
 
 <sub>Mock data. Regenerate with `cd app && bun run screenshot` (needs Chrome, or set `CHROME_PATH`).</sub>
