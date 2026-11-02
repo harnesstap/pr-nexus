@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { Api, Bootstrap, Preferences } from "../api";
 import { errorMessage } from "../api";
+import { ChangelogSettings } from "../changelog/ChangelogSettings";
 import { AboutSettings } from "./AboutSettings";
 import { AgentsSettings } from "./AgentsSettings";
 import { MappingSettings } from "./MappingSettings";
@@ -18,7 +19,7 @@ interface Props {
   onRerunSetup: () => void;
 }
 
-/** Settings (§8.2): Accounts, Mappings, Review, Sync, About. */
+/** Settings (§8.2): Accounts, Mappings, Review, Sync, Agents, Changelog, About. */
 export function SettingsScreen({ api, boot, onBoot, accounts, tab, onTabChange, onRerunSetup }: Props) {
   const [prefs, setPrefs] = useState<Preferences | null>(null);
   const [prefsError, setPrefsError] = useState<string | null>(null);
@@ -128,6 +129,7 @@ export function SettingsScreen({ api, boot, onBoot, accounts, tab, onTabChange, 
         {tab === "review" && prefsBody("review")}
         {tab === "sync" && prefsBody("sync")}
         {tab === "agents" && <AgentsSettings api={api} />}
+        {tab === "changelog" && <ChangelogSettings api={api} />}
         {tab === "about" && <AboutSettings api={api} onRerunSetup={onRerunSetup} />}
       </div>
     </div>
