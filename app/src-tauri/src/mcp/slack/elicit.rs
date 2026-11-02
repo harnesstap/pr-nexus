@@ -56,6 +56,7 @@ pub fn message(tool: &str, workspace: &Value, channel_id: &str, arguments: &Valu
         "slack_schedule_message" => "Schedule this Slack message",
         "slack_send_message_draft" => "Save this Slack draft",
         "slack_add_reaction" => "Add this Slack reaction",
+        "request_reviews" => "Send this Slack review request",
         other => other,
     };
     let text = |key: &str| arguments.get(key).and_then(Value::as_str);

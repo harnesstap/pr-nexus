@@ -82,7 +82,11 @@ pub struct Proposal {
     /// The channel's name when PR Nexus has it cached.
     pub channel_name: Option<String>,
     #[serde(skip)]
-    session: Option<String>,
+    pub(super) session: Option<String>,
+    /// Set for `request_reviews`: the batch card PR Nexus sends once
+    /// approved, through the same path as the app's batch request.
+    #[serde(skip)]
+    pub(super) review: Option<super::reviews::Card>,
 }
 
 #[derive(Debug, Default)]
@@ -92,7 +96,7 @@ pub struct Proposals {
 }
 
 impl Proposals {
-    fn push(&mut self, mut proposal: Proposal) -> Proposal {
+    pub(super) fn push(&mut self, mut proposal: Proposal) -> Proposal {
         self.next += 1;
         proposal.id = self.next;
         if self.items.len() >= KEPT {
@@ -102,7 +106,7 @@ impl Proposals {
         proposal
     }
 
-    fn get_mut(&mut self, id: u64) -> Option<&mut Proposal> {
+    pub(super) fn get_mut(&mut self, id: u64) -> Option<&mut Proposal> {
         self.items.iter_mut().find(|p| p.id == id)
     }
 }
@@ -346,7 +350,7 @@ pub struct ProposalArgs {
 }
 
 /// The one exposed workspace `workspace` names; "all" and none are refused.
-fn target(state: &AppState, workspace: &str) -> Result<Exposed, AppError> {
+pub(super) fn target(state: &AppState, workspace: &str) -> Result<Exposed, AppError> {
     let workspace = workspace.trim();
     if workspace.is_empty() || workspace.eq_ignore_ascii_case("all") {
         return Err(validation(
@@ -377,7 +381,7 @@ fn channel_in(ws: &Exposed, value: &str) -> Result<String, AppError> {
 }
 
 /// Whether `channel` (qualified) is on the auto-send list.
-fn listed(list: &[String], ws: &Exposed, channel: &str) -> bool {
+pub(super) fn listed(list: &[String], ws: &Exposed, channel: &str) -> bool {
     list.iter().any(|entry| {
         ids::parse(entry).is_some_and(|id| {
             id.id == channel
@@ -443,6 +447,7 @@ fn propose<A: WriteArgs>(
         decided_in: None,
         unanswered: None,
         link: None,
+        review: None,
         channel_name: state
             .store
             .get_slack_channel(ws.domain.clone(), channel.clone())
@@ -474,7 +479,7 @@ fn propose<A: WriteArgs>(
 
 /// Ask the user to confirm held `proposal` in their agent, then send it,
 /// drop it, or leave it waiting in PR Nexus.
-fn ask_in_agent(
+pub(super) fn ask_in_agent(
     state: &AppState,
     ws: &Exposed,
     proposal: Proposal,
@@ -528,8 +533,8 @@ fn ask_in_agent(
 }
 
 /// Call Slack for proposal `id` and record how it went.
-fn execute(state: &AppState, ws: &Exposed, id: u64) -> Result<Proposal, AppError> {
-    let (tool, arguments) = {
+pub(super) fn execute(state: &AppState, ws: &Exposed, id: u64) -> Result<Proposal, AppError> {
+    let (tool, arguments, review) = {
         let mut proposals = lock(&state.slack_proxy.proposals);
         let proposal = proposals
             .get_mut(id)
@@ -542,13 +547,23 @@ fn execute(state: &AppState, ws: &Exposed, id: u64) -> Result<Proposal, AppError
         }
         // Claimed before calling Slack, so a double click sends once.
         proposal.status = Status::Sent;
-        (proposal.tool.clone(), proposal.arguments.clone())
+        (
+            proposal.tool.clone(),
+            proposal.arguments.clone(),
+            proposal.review.clone(),
+        )
     };
-    let outcome = run(state, &tool, vec![ws.clone()], None, |_| arguments.clone());
-    let link = outcome
-        .as_ref()
-        .ok()
-        .and_then(|reply| super::link::for_write(&ws.domain, &tool, &arguments, reply));
+    let (outcome, link) = match &review {
+        Some(card) => super::reviews::send(state, card),
+        None => {
+            let outcome = run(state, &tool, vec![ws.clone()], None, |_| arguments.clone());
+            let link = outcome
+                .as_ref()
+                .ok()
+                .and_then(|reply| super::link::for_write(&ws.domain, &tool, &arguments, reply));
+            (outcome, link)
+        }
+    };
     let mut proposals = lock(&state.slack_proxy.proposals);
     let proposal = proposals
         .get_mut(id)
@@ -568,7 +583,7 @@ fn execute(state: &AppState, ws: &Exposed, id: u64) -> Result<Proposal, AppError
 }
 
 /// What the agent sees of a proposal.
-fn agent_view(proposal: &Proposal) -> Value {
+pub(super) fn agent_view(proposal: &Proposal) -> Value {
     json!({
         "proposal_id": proposal.id,
         "status": proposal.status,

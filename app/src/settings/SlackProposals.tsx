@@ -19,6 +19,7 @@ const VERB: Record<string, string> = {
   slack_schedule_message: "Schedule",
   slack_send_message_draft: "Draft",
   slack_add_reaction: "React",
+  request_reviews: "Request review",
 };
 
 const STATUS: Record<SlackProposal["status"], string> = {

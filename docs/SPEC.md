@@ -1557,6 +1557,17 @@ When the agent's client supports MCP elicitation, a held write is shown in the a
 - **No answer.** On timeout (270 s, under clients' 5-minute HTTP idle timeout), a transport error or an unknown action, the proposal stays pending in PR Nexus and the tool result says so. If the user decided it in PR Nexus meanwhile, that decision stands.
 - **No capability.** Clients that do not declare elicitation see the previous behaviour unchanged.
 
+#### 10.1.5 Requesting reviews from an agent (`request_reviews`)
+
+`request_reviews` is the agent's form of the batch "Request review on Slack" (§7.9). It needs Slack sends and uses the same backend: the same templates, one message per destination (several messages when PRs go to different threads), the same request, bump and send-attempt records, so the PR list shows the request and its Bump afterwards.
+
+- **Arguments.** `prs`: PR ids, GitHub URLs, or `owner/repo#N`. `mode`: `auto` (default), `request` or `reminder`. `destination`: optional channel or user DM, in any form `slack_resolve` accepts (permalink, `ID@domain`, qualified ID); without it each PR goes where the app would send it (active request, then mappings). `workspace`: optional, limits the call to one exposed workspace. `preview`: `true` renders the messages and sends nothing.
+- **Mode.** `auto` picks per PR exactly like the app: a new request, or a bump/reminder when a request is already active. `request` and `reminder` only send that action; the other PRs are listed in `skipped` with the reason.
+- **Drafts.** Draft PRs are sent, as in the app, and listed in `warnings`.
+- **No note.** The batch has no free-text note, so the tool has none either.
+- **Policy.** Each destination is one proposal (`tool: request_reviews`) under the send mode of §10.1.3, with confirmation in the agent (§10.1.4) when supported and in-app approval otherwise. The confirmation shows the workspace, the channel and the exact text of every message.
+- **Result.** One entry per destination: `sent` (with the Slack link), `pending` (with `proposal_id`), `declined`, or `error`, plus the PRs in it, `skipped` and `warnings`. The activity log records the call with an ↗ Open in Slack link when everything was sent, and with the proposal's link when it is approved later.
+
 ### 10.2 Other providers & platforms
 - Internal roadmap only: none of these is shown or promised in the app, README, or release notes. Implementing one means adding its registry descriptor (§5.1), a factory, and its setup steps; until then the UI shows GitHub and Slack only.
 - GitLab and Gitea (`VcsProvider`): CODEOWNERS equivalents exist (GitLab `CODEOWNERS` with sections), so `decide_owners` stays as is, and new inputs go through `OwnershipInputs`.

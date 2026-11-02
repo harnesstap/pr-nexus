@@ -601,7 +601,7 @@ fn list_workspaces(state: &AppState, arguments: JsonObject) -> Result<Value, App
     Ok(json!({ "workspaces": workspaces, "hidden_count": hidden }))
 }
 
-fn resolve(state: &AppState, arguments: JsonObject) -> Result<Value, AppError> {
+pub(super) fn resolve(state: &AppState, arguments: JsonObject) -> Result<Value, AppError> {
     let ResolveArgs { reference } = parse(arguments)?;
     let (all, _) = exposed(state)?;
     let reference = reference.trim();
