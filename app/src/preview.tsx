@@ -22,6 +22,15 @@ const steps = [
 // `?sync=mine` shows the header mid-sync of My PRs; `?sync=reviews` shows
 // the To review tab while review requests load in the background.
 const scene = new URLSearchParams(window.location.search).get("sync");
+// `?screen=wizard&gh=missing` (or `gh=logged-out`) shows the GitHub step
+// when gh cannot be used.
+const ghScene = new URLSearchParams(window.location.search).get("gh");
+const ghStatus =
+  ghScene === "missing"
+    ? { gh_ready: false, gh_detail: "GitHub CLI (gh) not found. Install it from cli.github.com, or use a personal access token." }
+    : ghScene === "logged-out"
+      ? { gh_ready: false, gh_detail: "gh found at /opt/homebrew/bin/gh but not logged in. Run `gh auth login`, then try again." }
+      : { gh_ready: true, gh_detail: "gh is logged in" };
 
 const boot: Bootstrap = {
   onboarding: {
@@ -256,7 +265,7 @@ const api: Api = {
   activateReviews: () => Promise.resolve(boot.sync),
   loadMoreReviews: () => Promise.resolve(boot.sync),
   searchReviews: () => Promise.resolve(boot.sync),
-  probeGh: () => Promise.resolve({ gh_ready: true, gh_detail: "gh is logged in" }),
+  probeGh: () => Promise.resolve(ghStatus),
   listProjects: () => Promise.resolve(projects.map((item) => ({ ...item }))),
   createProject: (name) => Promise.resolve({ id: 99, name, color: "#7c5cbf", archived: false, description: "", sort_order: 99 , jira_links: [] }),
   renameProject: () => Promise.resolve(),
@@ -312,7 +321,8 @@ createRoot(root).render(
         boot={{
           ...boot,
           onboarding: { ...boot.onboarding, finished_at: null },
-          resume_step: screenName === "slack" ? "connect_chat" : "choose_vcs",
+          resume_step: screenName === "slack" ? "connect_chat" : ghScene ? "connect_vcs" : "choose_vcs",
+          ...(ghScene ? { ...ghStatus, gh_probed: true } : {}),
         }}
         onFinished={() => undefined}
       />

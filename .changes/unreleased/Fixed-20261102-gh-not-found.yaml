@@ -1,0 +1,3 @@
+kind: Fixed
+body: 'The setup wizard finds the GitHub CLI when the app is launched from Finder or the Dock (Homebrew and other install places, via the login shell), waits for a macOS keychain prompt, and says plainly when gh is missing or not logged in instead of "No such file or directory (os error 2)".'
+time: 2026-11-02T00:20:00.000000000-10:00
