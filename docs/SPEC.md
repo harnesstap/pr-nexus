@@ -1247,7 +1247,12 @@ Keyboard: `j/k` move, `x` toggle select, `Shift+x` toggle the focused row's sect
 - Mappings (table, import/export, dry-run diff; this is where a mapping skipped in the wizard is done later);
 - Review (the config keys in §7.12);
 - Sync;
+- Changelog (see **Release notes** below);
 - About (version, log folder, DB path, and **Re-run setup**, which reopens the wizard at step 1 with current values pre-filled).
+
+**Release notes** (in-app changelog). The frontend embeds Changie's files at build time (`.changes/vX.Y.Z.md` and `.changes/unreleased/*.yaml`, read with Vite `import.meta.glob`), so the notes always match the installed build and work offline. Each version file is parsed into version, date and sections (`### Kind`, ordered as in `.changie.yaml`) with their entries.
+- **Settings → Changelog** lists the 10 newest releases, newest first, with date and entries grouped by kind. The newest and the installed one (badge **Installed**, version from `app_info`) are expanded; older ones fold into a disclosure with their change count. Unreleased fragments, present in dev and PR builds only, show first under **Unreleased · Not in a release yet**. A link opens `https://github.com/OWNER/REPO/releases` in the browser.
+- **What's new** dialog. The last version seen is per-machine UI state in `localStorage` (`pr-nexus.last-seen-version`, like the dismissed banners). After the list opens: nothing stored (fresh install, or the first version with this feature) records the running version silently; the same version (every dev rebuild) does nothing; a newer version shows every embedded release in (last seen, running], newest first, or records silently when there are none; a downgrade records the running version. **Got it**, ✕, `Esc` and a click outside dismiss and record the running version; **See full changelog** dismisses and opens Settings → Changelog. The dialog traps `Tab`, focuses **Got it**, and restores focus on close.
 
 ### 8.3 Setup wizard (first run)
 

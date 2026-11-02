@@ -7,6 +7,9 @@ import { ListScreen } from "./list/ListScreen";
 import { memoryProjectApi } from "./memoryProjects";
 import type { SearchRow } from "./list/paging";
 import { Wizard } from "./wizard/Wizard";
+import { recordSeenVersion } from "./changelog/changelog";
+import { RELEASES } from "./changelog/data";
+import { SettingsScreen } from "./settings/SettingsScreen";
 import { fakeSettingsApi } from "./settings/fakes";
 
 const steps = [
@@ -308,6 +311,16 @@ document.body.style.margin = "0";
 document.body.style.background = "#020617";
 
 const screenName = new URLSearchParams(window.location.search).get("screen");
+// ?changelog=modal opens "What's new" as after an update from the oldest embedded release;
+// ?changelog=tab shows Settings → Changelog.
+const changelogPreview = new URLSearchParams(window.location.search).get("changelog");
+const latest = RELEASES[0]?.version ?? "0.1.0";
+if (changelogPreview === "modal") {
+  recordSeenVersion(RELEASES.length > 1 ? RELEASES[RELEASES.length - 1].version! : "0.0.0");
+}
+const previewApi: Api = changelogPreview
+  ? { ...api, appInfo: () => api.appInfo().then((info) => ({ ...info, version: latest })) }
+  : api;
 const root = document.getElementById("root");
 if (!root) {
   throw new Error("root element missing");
@@ -326,8 +339,12 @@ createRoot(root).render(
         }}
         onFinished={() => undefined}
       />
+    ) : changelogPreview === "tab" ? (
+      <div className="min-h-screen bg-slate-950 px-6 py-8 text-slate-200">
+        <SettingsScreen api={previewApi} boot={boot} onBoot={() => undefined} accounts={null} tab="changelog" onTabChange={() => undefined} onRerunSetup={() => undefined} />
+      </div>
     ) : (
-      <ListScreen api={api} boot={boot} onBoot={() => undefined} />
+      <ListScreen api={previewApi} boot={boot} onBoot={() => undefined} />
     )}
   </StrictMode>,
 );

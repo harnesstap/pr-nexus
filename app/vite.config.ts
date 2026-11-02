@@ -19,6 +19,10 @@ export default defineConfig({
           port: 1421,
         }
       : undefined,
+    fs: {
+      // The changelog tab embeds ../.changes (Changie) at build time.
+      allow: [".", "../.changes"],
+    },
     watch: {
       ignored: ["**/src-tauri/**"],
     },

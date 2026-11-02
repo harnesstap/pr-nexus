@@ -41,6 +41,7 @@ import { FOOTER_ICON_BUTTON, FOOTER_ROW } from "./sidebarFooter";
 import { UpdateIndicator } from "./UpdateIndicator";
 import { showMappingHint } from "./hints";
 import { plainText } from "../textInput";
+import { WhatsNew } from "../changelog/WhatsNew";
 
 interface Props {
   api: Api;
@@ -788,6 +789,13 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
             }}
           />
         )}
+        <WhatsNew
+          api={api}
+          onFullChangelog={() => {
+            setSettingsTab("changelog");
+            setViewKey("settings");
+          }}
+        />
         <GlobalCommands
           api={api}
           projects={projects}
