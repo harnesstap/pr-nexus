@@ -322,6 +322,26 @@ test("tag release plan batches v0.1.0 when nothing has shipped", async () => {
   expect(result.stdout).toContain("action=prepare");
 });
 
+test("tag release plan pins RELEASE_VERSION instead of auto", async () => {
+  const root = await tempDir("plan-pin-");
+  await mkdir(join(root, ".changes", "unreleased"), { recursive: true });
+  await writeFile(join(root, "Cargo.toml"), '[workspace.package]\nversion = "0.1.1"\n');
+  await writeFile(join(root, ".changes", "v0.1.1.md"), "## v0.1.1\n");
+  await writeFile(
+    join(root, ".changes", "unreleased", "Added-x.yaml"),
+    "kind: Added\nbody: Something\ntime: 2026-11-02T00:00:00Z\n",
+  );
+  const env = { ...process.env, TAG_RELEASE_ROOT: root, CHANGIE_LATEST: "v0.1.1" };
+  const auto = await execFileAsync("/bin/bash", [planScript], { env });
+  expect(auto.stdout).toContain("batch_args=auto");
+  const pinned = await execFileAsync("/bin/bash", [planScript], { env: { ...env, RELEASE_VERSION: "0.1.2" } });
+  expect(pinned.stdout).toContain("batch_args=v0.1.2");
+  expect(pinned.stdout).toContain("action=prepare");
+  await expect(execFileAsync("/bin/bash", [planScript], { env: { ...env, RELEASE_VERSION: "next" } })).rejects.toThrow(
+    /RELEASE_VERSION must look like/,
+  );
+});
+
 test("install.sh verifies the checksum and picks the package for the distro", async () => {
   const installScript = join(repoRoot, "scripts", "install.sh");
   const rel = await tempDir("pr-nexus-install-");

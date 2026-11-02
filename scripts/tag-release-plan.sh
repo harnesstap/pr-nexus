@@ -3,7 +3,7 @@
 # Writes key=value lines to stdout and to $GITHUB_OUTPUT when set.
 #
 # The first cut has no .changes/v*.md, so batch uses v0.1.0.
-# Later cuts use `changie batch auto`.
+# Later cuts use `changie batch auto`, or RELEASE_VERSION when set.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -43,6 +43,15 @@ if [ "$has_unreleased" = true ]; then
     batch_args="auto"
   else
     batch_args="v0.1.0"
+  fi
+  # RELEASE_VERSION (Tag release input) pins the version instead of `auto`,
+  # e.g. a patch release whose fragments include Added.
+  if [ -n "${RELEASE_VERSION:-}" ]; then
+    if ! [[ "$RELEASE_VERSION" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      echo "RELEASE_VERSION must look like 0.1.2 (got $RELEASE_VERSION)" >&2
+      exit 1
+    fi
+    batch_args="v${RELEASE_VERSION#v}"
   fi
 fi
 
