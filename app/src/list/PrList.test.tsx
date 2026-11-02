@@ -444,10 +444,11 @@ test("j and k move the focused row, x and Shift+x select, Esc clears", async () 
   expect(screen.getByText("1 selected")).toBeInTheDocument();
   fireEvent.keyDown(window, { key: "Escape" });
   expect(screen.queryByRole("region", { name: "Selection actions" })).not.toBeInTheDocument();
-  // A browser reports Shift+x as "X": it toggles the focused row's section.
+  // A browser reports Shift+x as "X": it toggles the focused row's section (Unassigned comes first in My PRs).
   fireEvent.keyDown(window, { key: "X", shiftKey: true });
-  const auth = screen.getByRole("region", { name: "Auth" });
-  expect(within(auth).getByRole("checkbox", { name: "Select Auth" })).toBeChecked();
+  const unassigned = screen.getByRole("region", { name: "Unassigned" });
+  expect(within(unassigned).getByRole("checkbox", { name: "Select Unassigned" })).toBeChecked();
+  expect(within(screen.getByRole("region", { name: "Auth" })).getByRole("checkbox", { name: "Select Auth" })).not.toBeChecked();
   fireEvent.keyDown(window, { key: "a", metaKey: true });
   expect(screen.getByRole("checkbox", { name: "Select all" })).toBeChecked();
 });

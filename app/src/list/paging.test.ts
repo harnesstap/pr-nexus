@@ -74,9 +74,13 @@ test("checking a pull request updates every section that contains it", () => {
   expect(checkState(page.sections[1]!.ids, selected)).toBe("all");
 });
 
-test("rows outside live projects land in Unassigned", () => {
-  const page = pageFromRows([row({ id: 1, title: "Loose" })], [auth], request("mine", defaultView()));
-  expect(page.sections.at(-1)).toMatchObject({ key: "unassigned", title: "Unassigned", project_id: null });
+test("rows outside live projects land in Unassigned, first in My PRs and last in To review", () => {
+  const rows = [row({ id: 1, title: "Loose", involvement: 3 }), row({ id: 2, title: "Auth one", project_ids: [1], involvement: 3 })];
+  const mine = pageFromRows(rows, [auth], request("mine", defaultView()));
+  expect(mine.sections[0]).toMatchObject({ key: "unassigned", title: "Unassigned", project_id: null });
+  expect(mine.sections.map((section) => section.key)).toEqual(["unassigned", "project:1"]);
+  const review = pageFromRows(rows, [auth], request("to_review", defaultView()));
+  expect(review.sections.map((section) => section.key)).toEqual(["project:1", "unassigned"]);
 });
 
 test("search is accent-insensitive and ANDs terms across title, body, repo, number, author, branch and project", () => {
@@ -226,11 +230,11 @@ test("collapsed sections keep their header and counts but skip rows", () => {
   const rows = [row({ id: 1, title: "A", project_ids: [1] }), row({ id: 2, title: "B" })];
   const page = pageFromRows(rows, [auth], request("mine", defaultView(), "", { collapsed: ["project:1"] }));
   expect(page.entries.map((entry) => [entry.section, entry.row?.id ?? null])).toEqual([
-    ["project:1", null],
     ["unassigned", null],
     ["unassigned", 2],
+    ["project:1", null],
   ]);
-  expect(page.sections[0]).toMatchObject({ count: 1, ids: [1] });
+  expect(page.sections[1]).toMatchObject({ key: "project:1", count: 1, ids: [1] });
 });
 
 test("link candidates put an exact number first and skip linked rows", () => {
