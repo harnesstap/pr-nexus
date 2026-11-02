@@ -1,3 +1,0 @@
-kind: Changed
-body: 'Sync reads your own PRs first and loads review requests only once To review is opened: the newest 100 in the background, with "Load more", a GitHub search as you type, per-stage progress ("Checking my PRs… 40/132") and status checks 4 at a time.'
-time: 2026-11-01T21:58:00.000000000-10:00
