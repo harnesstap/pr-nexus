@@ -7,6 +7,10 @@ on:
         description: Batch and stamp without committing or pushing a tag
         type: boolean
         default: false
+      version:
+        description: Version to cut, e.g. 0.1.2 (default from Changie fragment kinds)
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -56,6 +60,7 @@ jobs:
         id: plan
         env:
           CHANGIE_LATEST: ${{ steps.latest.outputs.output }}
+          RELEASE_VERSION: ${{ inputs.version }}
         run: bash scripts/tag-release-plan.sh
 
       - name: Batch unreleased changes
