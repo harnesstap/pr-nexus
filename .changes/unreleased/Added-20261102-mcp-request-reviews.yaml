@@ -1,3 +1,0 @@
-kind: Added
-body: 'MCP tool `request_reviews`: agents can request reviews (or send reminders) on Slack for several PRs at once, with the same messages, grouping and tracking as the app''s batch "Request review on Slack". Sends follow your Slack send policy and confirmation, and `preview: true` shows the messages without sending.'
-time: 2026-11-02T03:00:00.000000000-10:00
