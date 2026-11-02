@@ -19,6 +19,10 @@ const steps = [
   "done",
 ] as const;
 
+// `?sync=mine` shows the header mid-sync of My PRs; `?sync=reviews` shows
+// the To review tab while review requests load in the background.
+const scene = new URLSearchParams(window.location.search).get("sync");
+
 const boot: Bootstrap = {
   onboarding: {
     step: "choose_vcs",
@@ -51,6 +55,7 @@ const boot: Bootstrap = {
     revision: 0,
     live: { state: "demo", checked_at: null, detail: null },
   },
+
   env_token: false,
   oauth_client_configured: false,
   gh_ready: true,
@@ -248,6 +253,9 @@ const api: Api = {
   syncNow: () => Promise.resolve(boot.sync),
   syncStatus: () => Promise.resolve(boot.sync),
   fullResync: () => Promise.resolve(boot.sync),
+  activateReviews: () => Promise.resolve(boot.sync),
+  loadMoreReviews: () => Promise.resolve(boot.sync),
+  searchReviews: () => Promise.resolve(boot.sync),
   probeGh: () => Promise.resolve({ gh_ready: true, gh_detail: "gh is logged in" }),
   listProjects: () => Promise.resolve(projects.map((item) => ({ ...item }))),
   createProject: (name) => Promise.resolve({ id: 99, name, color: "#7c5cbf", archived: false, description: "", sort_order: 99 , jira_links: [] }),
@@ -278,6 +286,14 @@ const api: Api = {
   saveSlackMentions: () => Promise.resolve(),
   ...fakeSettingsApi(),
 };
+
+if (scene === "mine") {
+  boot.sync = { ...boot.sync, phase: "syncing", message: "Checking my PRs… 40/132" };
+} else if (scene === "reviews") {
+  const loading = { ...boot.sync, reviews: { state: "loading" as const, message: "Checking reviews… 30/100", total: 412, loaded: 2, window: 100 } };
+  api.syncStatus = () => Promise.resolve(loading);
+  api.activateReviews = () => Promise.resolve(loading);
+}
 
 document.body.style.margin = "0";
 document.body.style.background = "#020617";

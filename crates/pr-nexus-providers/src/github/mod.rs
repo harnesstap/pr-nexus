@@ -49,9 +49,10 @@ pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 /// Tries per page: one at each of `PAGE_SIZES` (10 → 5 → 3).
 const MAX_ATTEMPTS: u32 = 3;
 
-/// Requests one client sends at once (SPEC §6: at most 2 per host). The gate
-/// enforces it; the status pass uses it to run chunks side by side.
-const CONCURRENT_REQUESTS: usize = 2;
+/// Requests one client sends at once (SPEC §6: at most 4 per host). The gate
+/// enforces it; the status pass uses it to run chunks side by side. Secondary
+/// rate limits are waited out by `paged`, doubling the wait each time.
+const CONCURRENT_REQUESTS: usize = 4;
 
 type StatusAnswer = Result<Vec<PrStatus>, ProviderError>;
 
@@ -350,6 +351,36 @@ impl VcsProvider for GithubClient {
             })?;
         }
         Ok(items)
+    }
+
+    fn search_pull_requests_window(
+        &self,
+        query: &PrQuery,
+        limit: usize,
+        on_page: &mut dyn FnMut(&[SyncedPullRequest]),
+    ) -> Result<pr_nexus_core::providers::SearchWindow, ProviderError> {
+        let involvement = match query.bucket {
+            SearchBucket::Mine => Involvement::AUTHOR,
+            SearchBucket::ReviewRequested => Involvement::REVIEW_REQUESTED,
+        };
+        let what = match query.bucket {
+            SearchBucket::Mine => "search for your pull requests",
+            SearchBucket::ReviewRequested => "search for review requests",
+        };
+        let mut seen = std::collections::HashSet::new();
+        let mut rows = Vec::new();
+        let mut total = 0;
+        // Each query string is sorted newest first; the window is the newest
+        // `limit` across them.
+        for q in &query.queries {
+            total += self.search_newest(what, q, involvement, limit, &mut seen, &mut |page| {
+                on_page(&page);
+                rows.extend(page);
+            })?;
+        }
+        rows.sort_by_key(|row| std::cmp::Reverse(row.pull_request.updated_at));
+        rows.truncate(limit);
+        Ok(pr_nexus_core::providers::SearchWindow { rows, total })
     }
 
     fn refresh_pull_requests(

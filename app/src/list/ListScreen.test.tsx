@@ -335,3 +335,17 @@ test("a failed Sync now does not stay on the optimistic Syncing…", async () =>
   fireEvent.click(await screen.findByRole("button", { name: "Refresh" }));
   expect(await screen.findByRole("button", { name: /^Sync failed · network down, sync details/ })).toBeInTheDocument();
 });
+
+test("opening To review starts the review sync once and offers more", async () => {
+  const fake = api([]);
+  const reviews = { state: "ready" as const, message: "", total: 412, loaded: 100, window: 100 };
+  const activateReviews = vi.fn(() => Promise.resolve({ ...boot.sync, reviews }));
+  const loadMoreReviews = vi.fn(() => Promise.resolve({ ...boot.sync, reviews: { ...reviews, state: "loading" as const } }));
+  render(<ListScreen api={{ ...fake, activateReviews, loadMoreReviews }} boot={boot} onBoot={() => {}} />);
+  expect(activateReviews).not.toHaveBeenCalled();
+  fireEvent.click(await screen.findByRole("button", { name: /To review/ }));
+  await waitFor(() => expect(activateReviews).toHaveBeenCalledTimes(1));
+  expect(await screen.findByText(/100 of 412 loaded/)).toBeInTheDocument();
+  fireEvent.click(await screen.findByRole("button", { name: "Load more review requests" }));
+  await waitFor(() => expect(loadMoreReviews).toHaveBeenCalledTimes(1));
+});

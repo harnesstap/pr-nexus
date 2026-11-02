@@ -28,6 +28,8 @@ pub const UNFOCUSED_INTERVAL: &str = "sync.unfocused_interval_s";
 pub const RATE_BUDGET: &str = "github.rate_budget";
 /// Incremental sync's high-water mark (§6), see [`SyncMark`].
 pub const SYNC_MARK: &str = "sync.mark";
+/// The review-request bucket's mark; [`SYNC_MARK`] is the authored one.
+pub const SYNC_MARK_REVIEWS: &str = "sync.mark.reviews";
 /// Live updates from the notifications inbox (§6), on by default.
 pub const LIVE_ENABLED: &str = "live.enabled";
 /// Where the notifications poll stopped, see [`LiveMark`].
@@ -118,8 +120,13 @@ struct StoredMark {
 }
 
 pub fn sync_mark(store: &Store) -> Result<Option<SyncMark>, CoreError> {
+    sync_mark_at(store, SYNC_MARK)
+}
+
+/// The mark stored under `key` ([`SYNC_MARK`] or [`SYNC_MARK_REVIEWS`]).
+pub fn sync_mark_at(store: &Store, key: &str) -> Result<Option<SyncMark>, CoreError> {
     // A mark that no longer decodes is treated as missing: a full sync.
-    let Ok(Some(stored)) = get_json::<StoredMark>(store, SYNC_MARK) else {
+    let Ok(Some(stored)) = get_json::<StoredMark>(store, key) else {
         return Ok(None);
     };
     let (Ok(updated_at), Ok(full_at), Ok(rollup_at)) = (
@@ -138,9 +145,13 @@ pub fn sync_mark(store: &Store) -> Result<Option<SyncMark>, CoreError> {
 }
 
 pub fn set_sync_mark(store: &Store, mark: &SyncMark) -> Result<(), CoreError> {
+    set_sync_mark_at(store, SYNC_MARK, mark)
+}
+
+pub fn set_sync_mark_at(store: &Store, key: &str, mark: &SyncMark) -> Result<(), CoreError> {
     put_json(
         store,
-        SYNC_MARK,
+        key,
         &StoredMark {
             scope: mark.scope.clone(),
             updated_at: mark.updated_at.to_rfc3339(),
