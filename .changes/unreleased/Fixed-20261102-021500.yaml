@@ -1,0 +1,3 @@
+kind: Fixed
+body: "Selection after a filter change: the header and the selection bar now show the same count, bulk actions and drag only act on the selected PRs that match the current filters (the bar says how many are hidden and not included), and unchecking Select all clears hidden selections too."
+time: 2026-11-02T02:15:00.000000-10:00

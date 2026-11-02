@@ -21,6 +21,8 @@ import {
   ciTone,
   filtersActive,
   hiddenSelectedCount,
+  toggleGlobal,
+  visibleSelection,
   renameError,
   resetFilters,
   reviewLabel,
@@ -188,9 +190,6 @@ export function PrList({
   const commitRename = useRef(false);
   const selected = useMemo(() => new Set(selectedByView[viewKey] ?? []), [selectedByView, viewKey]);
 
-  useEffect(() => {
-    onSelectionChange?.(bulkIds(selected));
-  }, [selected, onSelectionChange]);
   const addMenu = addMenuFor === viewKey && selected.size > 0;
   const setAddMenu = (open: boolean | ((open: boolean) => boolean)) =>
     setAddMenuFor((current) => {
@@ -245,7 +244,14 @@ export function PrList({
   const ids = useMemo(() => pageIds(page?.sections ?? []), [page]);
   const hidden = hiddenSelectedCount(selected, ids);
   const global = checkState(ids, selected);
-  const singleSelected = selected.size === 1 ? (flat.find((item) => selected.has(item.row.id))?.row ?? null) : null;
+  // One source of truth for counts and bulk actions: the selected rows that match now.
+  const active = useMemo(() => visibleSelection(selected, ids), [selected, ids]);
+  const activeIds = bulkIds(active);
+  const activeKey = activeIds.join(",");
+  useEffect(() => {
+    onSelectionChange?.(activeKey === "" ? [] : activeKey.split(",").map(Number));
+  }, [activeKey, onSelectionChange]);
+  const singleSelected = active.size === 1 ? (flat.find((item) => active.has(item.row.id))?.row ?? null) : null;
   // The focused row stays in range when filters or a sync shrink the list.
   const focus = flat.length === 0 ? -1 : Math.min(focusIndex, flat.length - 1);
   const listRef = useRef<HTMLDivElement>(null);
@@ -330,7 +336,7 @@ export function PrList({
 
   /** The bulk bar's action: one PR opens the single preview, several open the bulk one (§7.9). */
   function requestSelection() {
-    const ids = bulkIds(selected);
+    const ids = activeIds;
     if (singleSelected && ids.length === 1) {
       onRequestReview(singleSelected);
     } else if (ids.length > 0) {
@@ -371,7 +377,7 @@ export function PrList({
         return true;
       case "selectAll":
         event?.preventDefault();
-        setSelected(toggleParent(ids, selected));
+        setSelected(toggleGlobal(ids, selected));
         return true;
       case "clear":
         if (addMenu) {
@@ -492,7 +498,7 @@ export function PrList({
   const header =
     checkState(ids, selected) === "none" && hidden === 0
       ? `${ids.length} open ${ids.length === 1 ? "PR" : "PRs"}`
-      : `${selectedCount(ids, selected)} of ${ids.length} selected`;
+      : `${activeIds.length} of ${ids.length} selected`;
 
   const titleProject = currentProject !== null ? projects.find((project) => project.id === currentProject) : undefined;
   const sectionProject = (id: number | null) => (id === null ? undefined : projects.find((project) => project.id === id));
@@ -534,7 +540,7 @@ export function PrList({
           (container queries) shrink the search, drop text labels, then the plain PR count, before anything overlaps. */}
       <div className="@container border-y border-slate-800 px-4 py-2 text-sm text-slate-300">
         <div role="toolbar" aria-label="List toolbar" className="flex h-8 min-w-0 flex-nowrap items-center gap-2">
-          <TriCheckbox label="Select all" state={global} onToggle={() => setSelected(toggleParent(ids, selected))} />
+          <TriCheckbox label="Select all" state={global} onToggle={() => setSelected(toggleGlobal(ids, selected))} />
           <span className={`shrink-0 whitespace-nowrap ${checkState(ids, selected) === "none" && hidden === 0 ? "hidden @4xl:inline" : ""}`}>{header}</span>
           {filtersActive(view.filters) && (
             <button
@@ -720,7 +726,7 @@ export function PrList({
                       key={`${section.key}-${row.id}`}
                       draggable
                       onDragStart={(event) => {
-                        const ids = dragIds(row.id, selected);
+                        const ids = dragIds(row.id, active);
                         event.dataTransfer.setData(DRAG_MIME, JSON.stringify(ids));
                         event.dataTransfer.setData("text/plain", ids.length === 1 ? row.url : `${ids.length} pull requests`);
                         event.dataTransfer.effectAllowed = "link";
@@ -826,14 +832,14 @@ export function PrList({
             className="pointer-events-auto flex items-center gap-4 rounded-lg border border-slate-700 bg-slate-900 px-5 py-2.5 text-sm shadow-lg"
           >
             <span aria-live="polite" className="text-slate-300">
-              {bulkIds(selected).length} selected{hidden > 0 ? ` (${hidden} hidden)` : ""}
+              {activeIds.length} selected{hidden > 0 ? ` · ${hidden} hidden by filters, not included` : ""}
             </span>
             <span aria-hidden="true" className="h-6 w-px bg-slate-700" />
             <Tooltip label="Request / bump on Slack" shortcut={hint("request")} detail="Preview the review request for each selected PR before anything is sent" side="top">
               <button
                 type="button"
                 className="flex items-center gap-2 rounded-md bg-violet-600 px-4 py-1.5 font-medium text-white hover:bg-violet-500 disabled:bg-violet-500/40"
-                disabled={bulkIds(selected).length === 0}
+                disabled={activeIds.length === 0}
                 onClick={requestSelection}
               >
                 <SlackLogo size={16} />
@@ -856,14 +862,14 @@ export function PrList({
               {addMenu && (
                 <AddToProjectMenu
                   projects={projects}
-                  count={bulkIds(selected).length}
+                  count={activeIds.length}
                   onClose={() => setAddMenu(false)}
                   onPick={(projectId) => {
                     setAddMenu(false);
-                    onLinkPrs(projectId, bulkIds(selected));
+                    onLinkPrs(projectId, activeIds);
                   }}
                   onCreate={async (name) => {
-                    await onCreateProjectWithPrs(name, bulkIds(selected));
+                    await onCreateProjectWithPrs(name, activeIds);
                     setAddMenu(false);
                   }}
                 />
@@ -1658,6 +1664,3 @@ function viewTitle(viewKey: string, projects: readonly ProjectDto[]): string {
   return "Pull requests";
 }
 
-function selectedCount(ids: readonly number[], selected: ReadonlySet<number>): number {
-  return ids.filter((id) => selected.has(id)).length;
-}
