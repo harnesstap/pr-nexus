@@ -1038,7 +1038,7 @@ Nothing org-specific is hard-coded or shipped: GitHub orgs, Slack workspaces, te
   - Color swatches (`#rrggbb`).
   - Rules editor: one row per rule with kind, pattern, priority, Save and Delete, plus Add rule. A debounced (250 ms) live preview reads `Matches N open PRs`; it counts open, non-hidden PRs and shows the validation error instead when the pattern is invalid.
   - Linked pull requests: each with a `Manual`, `Rule` (tooltip: the rule) or `Excluded` badge and Remove or Restore.
-- PRs with no project go to an **Unassigned** section, pinned last.
+- PRs with no project go to an **Unassigned** section, pinned first in My PRs (PRs still to sort) and last in To review.
 
 ### 8.2 Views (wireframes)
 

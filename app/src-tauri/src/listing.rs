@@ -708,12 +708,18 @@ fn group<'a>(
                 .filter(|item| !item.row.project_ids.iter().any(|id| live_ids.contains(id)))
                 .collect();
             if !unassigned.is_empty() {
-                groups.push(Group {
+                let section = Group {
                     key: "unassigned".to_owned(),
                     title: "Unassigned".to_owned(),
                     project_id: None,
                     items: unassigned,
-                });
+                };
+                // My PRs puts Unassigned first (PRs still to sort); other views keep it last.
+                if request.view_key == "mine" {
+                    groups.insert(0, section);
+                } else {
+                    groups.push(section);
+                }
             }
             groups
         }
@@ -952,6 +958,26 @@ mod tests {
         );
         assert_eq!(page.summary.unassigned, 1);
         assert_eq!(page.summary.live_projects, 3);
+    }
+
+    #[test]
+    fn unassigned_comes_first_in_my_prs_and_last_in_to_review() {
+        let projects = vec![project(1, "Billing", false)];
+        let mut items = vec![item(1, &[1], 1), item(2, &[], 2)];
+        for entry in &mut items {
+            entry.row.involvement = AUTHOR | REVIEW_REQUESTED;
+        }
+        let keys = |view: &str| -> Vec<String> {
+            let mut request = request("project");
+            request.view_key = view.into();
+            page(&items, &projects, &request, None)
+                .sections
+                .into_iter()
+                .map(|section| section.key)
+                .collect()
+        };
+        assert_eq!(keys("mine"), vec!["unassigned", "project:1"]);
+        assert_eq!(keys("to_review"), vec!["project:1", "unassigned"]);
     }
 
     #[test]

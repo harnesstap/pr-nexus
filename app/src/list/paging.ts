@@ -320,7 +320,13 @@ function group(rows: readonly SearchRow[], live: readonly ProjectDto[], request:
         .filter((section) => section.rows.length > 0 || keepEmpty.has(section.projectId));
       const unassigned = rows.filter((row) => !row.project_ids.some((id) => ids.has(id)));
       if (unassigned.length > 0) {
-        sections.push({ key: "unassigned", title: "Unassigned", projectId: null, rows: unassigned });
+        const section = { key: "unassigned", title: "Unassigned", projectId: null, rows: unassigned };
+        // My PRs puts Unassigned first (PRs still to sort); other views keep it last (as `listing::page`).
+        if (request.view_key === "mine") {
+          sections.unshift(section);
+        } else {
+          sections.push(section);
+        }
       }
       return sections;
     }
