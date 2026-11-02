@@ -171,7 +171,7 @@ test("search excludes hidden rows from the parent toggle and keeps a hidden sele
   });
   await settle();
   expect(screen.queryByText("Migrate login")).not.toBeInTheDocument();
-  expect(screen.getByText("3 selected (2 hidden)")).toBeInTheDocument();
+  expect(screen.getByText("1 selected · 2 hidden by filters, not included")).toBeInTheDocument();
   fireEvent.click(screen.getByRole("checkbox", { name: "Select Auth" }));
   expect(screen.getByRole("checkbox", { name: "Select Add passkeys" })).not.toBeChecked();
   fireEvent.change(screen.getByRole("textbox", { name: "Search" }), { target: { value: "" } });
@@ -912,4 +912,84 @@ test("every list command sits on the one toolbar row, the header keeps only the 
   expect(within(header).getByRole("heading", { name: "My PRs" })).toBeInTheDocument();
   expect(within(header).queryByRole("textbox")).toBeNull();
   expect(within(header).queryByRole("button")).toBeNull();
+});
+
+
+const filterRows = [
+  row({ id: 1, title: "Migrate login", repo: "acme/dbt-queries", project_ids: [1] }),
+  row({ id: 2, title: "Add passkeys", repo: "acme/dbt-queries", project_ids: [1] }),
+  row({ id: 3, title: "Fix tax rounding", repo: "acme/planning", project_ids: [2] }),
+  row({ id: 4, title: "Tax report", repo: "acme/planning", project_ids: [2] }),
+];
+
+test("header and bulk bar agree, and bulk actions skip rows hidden by a filter", async () => {
+  vi.useFakeTimers();
+  const onBulkReview = vi.fn();
+  const onLinkPrs = vi.fn();
+  await show(<Harness rows={filterRows} onBulkReview={onBulkReview} onLinkPrs={onLinkPrs} />);
+  fireEvent.click(screen.getByRole("checkbox", { name: "Select all" }));
+  await search("planning");
+  expect(screen.getByText("2 of 2 selected")).toBeInTheDocument();
+  expect(screen.getByText("2 selected · 2 hidden by filters, not included")).toBeInTheDocument();
+  const bar = screen.getByRole("region", { name: "Selection actions" });
+  fireEvent.click(within(bar).getByRole("button", { name: /Request \/ bump on Slack/ }));
+  expect(onBulkReview).toHaveBeenCalledWith([3, 4]);
+  fireEvent.click(within(bar).getByRole("button", { name: /Add to project/ }));
+  fireEvent.click(screen.getByRole("menuitem", { name: /Auth/ }));
+  expect(onLinkPrs).toHaveBeenCalledWith(1, [3, 4]);
+});
+
+test("unchecking the header after a filter change clears hidden selections too", async () => {
+  vi.useFakeTimers();
+  await show(<Harness rows={filterRows} />);
+  fireEvent.click(screen.getByRole("checkbox", { name: "Select all" }));
+  await search("planning");
+  const header = screen.getByRole("checkbox", { name: "Select all" });
+  expect(header).toBeChecked();
+  fireEvent.click(header);
+  expect(screen.queryByRole("region", { name: "Selection actions" })).not.toBeInTheDocument();
+  await search("");
+  expect(screen.getByRole("checkbox", { name: "Select all" })).not.toBeChecked();
+  expect(screen.getByRole("checkbox", { name: "Select Migrate login" })).not.toBeChecked();
+});
+
+test("round trip: select under filter A, deselect under B, back to A shows the true state", async () => {
+  vi.useFakeTimers();
+  await show(<Harness rows={filterRows} />);
+  await search("acme");
+  fireEvent.click(screen.getByRole("checkbox", { name: "Select all" }));
+  expect(screen.getByText("4 of 4 selected")).toBeInTheDocument();
+  await search("planning");
+  expect(screen.getByText("2 of 2 selected")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("checkbox", { name: "Select all" }));
+  await search("acme");
+  expect(screen.getByText("4 open PRs")).toBeInTheDocument();
+  expect(screen.queryByRole("region", { name: "Selection actions" })).not.toBeInTheDocument();
+  expect(screen.getByRole("checkbox", { name: "Select Migrate login" })).not.toBeChecked();
+  expect(screen.getByRole("checkbox", { name: "Select Auth" })).not.toBeChecked();
+});
+
+test("a group checkbox clears only its matching rows; Clear and Esc clear hidden ones", async () => {
+  vi.useFakeTimers();
+  await show(<Harness rows={filterRows} />);
+  fireEvent.click(screen.getByRole("checkbox", { name: "Select all" }));
+  await search("passkeys");
+  fireEvent.click(screen.getByRole("checkbox", { name: "Select Auth" }));
+  expect(screen.getByText("0 selected · 3 hidden by filters, not included")).toBeInTheDocument();
+  const bar = screen.getByRole("region", { name: "Selection actions" });
+  expect(within(bar).getByRole("button", { name: /Request \/ bump on Slack/ })).toBeDisabled();
+  fireEvent.keyDown(window, { key: "Escape" });
+  expect(screen.queryByRole("region", { name: "Selection actions" })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("checkbox", { name: "Select all" }));
+  await search("");
+  fireEvent.click(within(screen.getByRole("region", { name: "Selection actions" })).getByRole("button", { name: /Clear/ }));
+  expect(screen.queryByRole("region", { name: "Selection actions" })).not.toBeInTheDocument();
+});
+
+test("rows in a collapsed section count as selected, not hidden", async () => {
+  await show(<Harness rows={filterRows} />);
+  fireEvent.click(screen.getByRole("checkbox", { name: "Select all" }));
+  fireEvent.click(screen.getByRole("button", { name: /Collapse Billing|Billing/ , expanded: true }));
+  expect(screen.getByText("4 selected")).toBeInTheDocument();
+  expect(screen.getByText("4 of 4 selected")).toBeInTheDocument();
 });

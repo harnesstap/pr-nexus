@@ -12,6 +12,8 @@ import {
   dragIds,
   parseDragIds,
   hiddenSelectedCount,
+  toggleGlobal,
+  visibleSelection,
   liveLabel,
   parseViewState,
   renameError,
@@ -183,4 +185,11 @@ test("the reviews label tracks the lazy review sync", () => {
   expect(reviewsLabel({ ...ready, total: 100 })).toBeNull();
   expect(moreReviews(ready)).toBe(true);
   expect(moreReviews({ ...ready, loaded: 412 })).toBe(false);
+});
+
+test("the global toggle clears hidden selections when unchecked; visibleSelection drops them", () => {
+  const selected = new Set([1, 2, 3]);
+  expect([...visibleSelection(selected, [2, 3])]).toEqual([2, 3]);
+  expect(toggleGlobal([2, 3], selected).size).toBe(0);
+  expect([...toggleGlobal([2, 3, 4], selected)].sort()).toEqual([1, 2, 3, 4]);
 });

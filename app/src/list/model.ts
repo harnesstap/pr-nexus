@@ -180,6 +180,25 @@ export function hiddenSelectedCount(selected: ReadonlySet<number>, visibleIds: r
   return hidden;
 }
 
+/**
+ * The selected ids that pass the current filters and search: what counts, the
+ * bulk bar, bulk actions and drag act on. Selected rows a filter hides stay in
+ * the set (they come back checked when the filter changes again) but are left
+ * out here; collapsed sections still count, since their rows match.
+ */
+export function visibleSelection(selected: ReadonlySet<number>, visibleIds: readonly number[]): Set<number> {
+  const visible = new Set(visibleIds);
+  return new Set([...selected].filter((id) => visible.has(id)));
+}
+
+/**
+ * The global checkbox: unchecking it (all visible rows selected) clears the
+ * whole selection, hidden rows included; otherwise it selects every visible row.
+ */
+export function toggleGlobal(visibleIds: readonly number[], selected: ReadonlySet<number>): Set<number> {
+  return checkState(visibleIds, selected) === "all" ? new Set() : toggleParent(visibleIds, selected);
+}
+
 export function bulkIds(selected: ReadonlySet<number>): number[] {
   return [...selected].sort((left, right) => left - right);
 }
