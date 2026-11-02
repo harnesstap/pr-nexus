@@ -122,6 +122,54 @@ fn slack_write_summary(noun: &str, result: Option<&Value>) -> String {
     }
 }
 
+/// "requested reviews in 2 Slack channels (1 pending approval)"; a preview
+/// sends nothing. Counts only: no PR titles or message text.
+fn review_summary(result: Option<&Value>) -> String {
+    let Some(result) = result else {
+        return "request reviews on Slack".to_owned();
+    };
+    let channels = |key: &str| {
+        result
+            .get(key)
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len)
+    };
+    let plural = |n: usize| if n == 1 { "" } else { "s" };
+    if result.get("preview").and_then(Value::as_bool) == Some(true) {
+        let n = channels("cards");
+        return format!(
+            "previewed review requests for {n} Slack channel{}",
+            plural(n)
+        );
+    }
+    let results = result.get("results").and_then(Value::as_array);
+    let count = |status: &str| {
+        results.map_or(0, |all| {
+            all.iter()
+                .filter(|r| r.get("status").and_then(Value::as_str) == Some(status))
+                .count()
+        })
+    };
+    let n = channels("results");
+    let mut out = format!("requested reviews in {n} Slack channel{}", plural(n));
+    let parts: Vec<String> = [
+        ("sent", "sent"),
+        ("pending", "pending approval"),
+        ("declined", "declined"),
+        ("error", "failed"),
+    ]
+    .into_iter()
+    .filter_map(|(status, label)| {
+        let c = count(status);
+        (c > 0 && c < n).then(|| format!("{c} {label}"))
+    })
+    .collect();
+    if !parts.is_empty() {
+        out.push_str(&format!(" ({})", parts.join(", ")));
+    }
+    out
+}
+
 /// `#name` when PR Nexus has the channel cached, else its ID.
 pub fn channel_label(name: Option<&str>, id: &str) -> String {
     match name.filter(|name| !name.is_empty()) {
@@ -255,6 +303,7 @@ pub fn summarize(tool: &str, arguments: &Map<String, Value>, result: Option<&Val
         "slack_send_message_draft" => slack_write_summary("a Slack draft", result),
         "slack_add_reaction" => slack_write_summary("a Slack reaction", result),
         "slack_get_proposal" => "checked a Slack proposal".to_owned(),
+        "request_reviews" => review_summary(result),
         "list_projects" => "listed projects".to_owned(),
         "get_project" => format!("read {}", project()),
         "list_prs" => "listed pull requests".to_owned(),
@@ -398,6 +447,28 @@ mod message_summary_tests {
         assert_eq!(
             s(&reply, &bare),
             "replied in a thread in C0123456789 (auto-send)"
+        );
+    }
+
+    #[test]
+    fn review_requests_are_counted_per_channel() {
+        let args = Map::new();
+        let preview = json!({ "preview": true, "cards": [{}, {}] });
+        assert_eq!(
+            summarize("request_reviews", &args, Some(&preview)),
+            "previewed review requests for 2 Slack channels"
+        );
+        let sent = json!({ "preview": false, "results": [{ "status": "sent" }] });
+        assert_eq!(
+            summarize("request_reviews", &args, Some(&sent)),
+            "requested reviews in 1 Slack channel"
+        );
+        let mixed = json!({ "preview": false, "results": [
+            { "status": "sent" }, { "status": "pending" }, { "status": "pending" }
+        ] });
+        assert_eq!(
+            summarize("request_reviews", &args, Some(&mixed)),
+            "requested reviews in 3 Slack channels (1 sent, 2 pending approval)"
         );
     }
 }

@@ -72,7 +72,7 @@ The MCP server is off by default. To turn it on, open **Settings → Agents**. T
 - read PRs and projects;
 - write local data (notes, stars, projects);
 - read Slack in the workspaces you expose;
-- send Slack messages.
+- send Slack messages, including review requests for several PRs at once (`request_reviews`).
 
 Slack messages wait for your approval unless you allow specific channels. Every call is listed in the activity log on that screen.
 

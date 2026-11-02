@@ -15,11 +15,14 @@ pub mod elicit;
 pub mod fixtures;
 pub mod ids;
 pub mod link;
+pub mod reviews;
 pub mod sends;
 pub mod session;
 mod tools;
 pub mod upstream;
 
+#[cfg(test)]
+mod reviews_tests;
 #[cfg(test)]
 mod tests;
 

@@ -120,7 +120,38 @@ pub fn send(
     request: &BulkRequest,
     fingerprints: &[String],
 ) -> Result<BulkResult, AppError> {
+    let (plan, prs) = plan_request(state, request)?;
+    send_plan(state, chats, plan, &prs, fingerprints)
+}
+
+/// Send only the card for one channel (`fingerprint` from [`preview`]): the
+/// MCP `request_reviews` tool sends each channel once it is approved, so the
+/// other channels and the skipped PRs are left out, not recorded as skipped.
+pub fn send_card(
+    state: &AppState,
+    chats: &dyn ChatSource,
+    request: &BulkRequest,
+    fingerprint: &str,
+) -> Result<BulkResult, AppError> {
     let (mut plan, prs) = plan_request(state, request)?;
+    plan.cards.retain(|card| card.fingerprint() == fingerprint);
+    if plan.cards.is_empty() {
+        return Err(AppError::new(
+            "conflict",
+            "These pull requests changed since the preview; nothing was sent. Preview again.",
+        ));
+    }
+    plan.skipped.clear();
+    send_plan(state, chats, plan, &prs, &[fingerprint.to_owned()])
+}
+
+fn send_plan(
+    state: &AppState,
+    chats: &dyn ChatSource,
+    mut plan: BatchPlan,
+    prs: &[PullRequest],
+    fingerprints: &[String],
+) -> Result<BulkResult, AppError> {
     let stale: BTreeSet<(String, String)> = plan
         .cards
         .iter()
@@ -192,7 +223,7 @@ pub fn send(
         results: results
             .into_iter()
             .map(|result| BulkOutcome {
-                pr: pr_dto_by_id(&prs, result.pr, &result.title),
+                pr: pr_dto_by_id(prs, result.pr, &result.title),
                 target: result.target.map(|target| target_dto(&workspaces, target)),
                 outcome: result.outcome.as_str().to_owned(),
                 detail: result.detail,

@@ -62,6 +62,7 @@ pub fn registry() -> Vec<ToolSpec> {
     tools.extend(super::writes::write_tools());
     tools.extend(super::slack::slack_tools());
     tools.extend(super::slack::sends::send_tools());
+    tools.extend(super::slack::reviews::review_tools());
     tools
 }
 
