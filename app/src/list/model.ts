@@ -1,5 +1,5 @@
 import { targetWorkspaceName } from "../slack/workspaces";
-import type { BulkOutcome, BulkResult, ListRow, ProjectDto, SlackIndicator, SyncStatus } from "../api";
+import type { BulkOutcome, BulkResult, ListRow, ProjectDto, ReviewsStatus, SlackIndicator, SyncStatus } from "../api";
 import { channelLabel } from "../api";
 
 export const AUTHOR = 1;
@@ -317,8 +317,8 @@ export function syncLabel(sync: SyncStatus, now: Date): string {
     return "Demo data · sync off";
   }
   if (sync.phase === "syncing") {
-    // "Syncing… 42 so far" once the first search page is stored.
-    return sync.message.startsWith("Syncing") ? sync.message : "Syncing…";
+    // "Syncing my PRs… 42", "Checking my PRs… 40/132", "Rechecking stale PRs… 3".
+    return /^(Syncing|Checking|Rechecking)/.test(sync.message) ? sync.message : "Syncing…";
   }
   if (sync.paused || sync.phase === "paused") {
     return "Rate limited";
@@ -564,4 +564,27 @@ export function bulkToast(done: BulkResult): string {
   const count = (outcome: BulkOutcome["outcome"]) => done.results.filter((item) => item.outcome === outcome).length;
   const parts = (["sent", "skipped", "failed"] as const).filter((label) => count(label) > 0).map((label) => `${count(label)} ${label}`);
   return `Slack: ${parts.length > 0 ? parts.join(" · ") : "nothing sent"}`;
+}
+
+/**
+ * The To review tab's own sync line (§6): progress while review requests
+ * load, then how much of GitHub's total is loaded. Null before they were
+ * asked for, or in demo mode.
+ */
+export function reviewsLabel(reviews: ReviewsStatus | undefined): string | null {
+  if (!reviews || reviews.state === "off") {
+    return null;
+  }
+  if (reviews.state === "loading") {
+    return /^(Loading|Checking|Rechecking)/.test(reviews.message) ? reviews.message : "Loading reviews…";
+  }
+  if (reviews.state === "error") {
+    return reviews.message || "Review sync failed";
+  }
+  return reviews.total !== null && reviews.total > reviews.loaded ? `${reviews.loaded} of ${reviews.total} loaded` : null;
+}
+
+/** Whether GitHub has review requests past the loaded window. */
+export function moreReviews(reviews: ReviewsStatus | undefined): boolean {
+  return !!reviews && reviews.state === "ready" && reviews.total !== null && reviews.total > reviews.loaded;
 }

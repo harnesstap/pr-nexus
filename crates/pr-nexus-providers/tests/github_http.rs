@@ -575,7 +575,7 @@ fn status_reads_the_slow_fields_by_id_in_small_chunks() {
     let ids_back: Vec<_> = status.iter().map(|s| s.remote_id.clone()).collect();
     let ids_sent: Vec<_> = ids.iter().map(|id| id.id.clone()).collect();
     assert_eq!(ids_back, ids_sent, "answers keep the order of the ids");
-    // Two chunks run side by side, so only the multiset of sizes is fixed.
+    // Chunks run side by side, so only the multiset of sizes is fixed.
     let mut sizes: Vec<_> = sent_variables(&server)
         .iter()
         .map(|vars| vars["ids"].as_array().map_or(0, Vec::len))
@@ -591,7 +591,7 @@ fn a_failed_status_chunk_fails_the_pass() {
         &server,
         ResponseTemplate::new(500).set_body_string(r#"{"message":"boom"}"#),
     );
-    let ids: Vec<ProviderRef> = (0..25)
+    let ids: Vec<ProviderRef> = (0..60)
         .map(|n| ProviderRef {
             account: AccountId(1),
             id: format!("PR_node_{n}"),
@@ -600,7 +600,7 @@ fn a_failed_status_chunk_fails_the_pass() {
     let err = fast_client(&server).pull_request_status(&ids).unwrap_err();
     assert!(matches!(err, ProviderError::Api { ref code, .. } if code == "500"));
     assert!(
-        sent_variables(&server).len() <= 2,
+        sent_variables(&server).len() <= 4,
         "no new chunk starts after a failure"
     );
 }

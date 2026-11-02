@@ -11,7 +11,9 @@ import {
   defaultView,
   parseDragIds,
   parseViewState,
+  moreReviews,
   renameError,
+  reviewsLabel,
   sentToast,
   syncLabel,
   type SavedView,
@@ -118,11 +120,46 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
     return () => window.clearTimeout(timer);
   }, [notice]);
 
+  // Review requests sync lazily (§6): the first visit to To review starts
+  // them in the background; the list stays usable and fills in as they land.
+  const reviewsAsked = useRef(false);
+  useEffect(() => {
+    if (viewKey !== "to_review" || reviewsAsked.current || !api.activateReviews) {
+      return;
+    }
+    reviewsAsked.current = true;
+    void api.activateReviews().then(setSync, (err: unknown) => setError(errorMessage(err)));
+  }, [api, viewKey]);
+  const reviewsLoading = sync.reviews?.state === "loading";
+  const loadMoreReviews = useCallback(() => {
+    if (!api.loadMoreReviews) {
+      return;
+    }
+    setSync((current) => (current.reviews ? { ...current, reviews: { ...current.reviews, state: "loading", message: "Loading reviews…" } } : current));
+    void api.loadMoreReviews().then(setSync, (err: unknown) => setError(errorMessage(err)));
+  }, [api]);
+  const searchReviews = useCallback(
+    (terms: string) => {
+      if (!api.searchReviews || viewKey !== "to_review") {
+        return;
+      }
+      void api.searchReviews(terms).then(
+        (status) => {
+          setSync(status);
+          noteRevision(status.revision);
+        },
+        (err: unknown) => setError(errorMessage(err)),
+      );
+    },
+    [api, viewKey, noteRevision],
+  );
+
   // Sync runs in the background (§8.2): poll its status, and re-read the list
   // while it writes so new rows show up without blocking the first screen.
   const syncing = sync.phase === "syncing";
+  const polling = syncing || reviewsLoading;
   useEffect(() => {
-    if (!syncing) {
+    if (!polling) {
       return;
     }
     let cancel = false;
@@ -142,12 +179,12 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
       cancel = true;
       window.clearInterval(timer);
     };
-  }, [api, syncing, noteRevision]);
+  }, [api, polling, noteRevision]);
 
   // Between syncs, poll slowly so a scheduled background sync that changed
   // rows shows up, and so its "Syncing…" phase starts the fast poll above.
   useEffect(() => {
-    if (syncing) {
+    if (polling) {
       return;
     }
     let cancel = false;
@@ -157,7 +194,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
           return;
         }
         const changed = status.revision !== revision.current;
-        if (status.phase === "syncing" || changed) {
+        if (status.phase === "syncing" || status.reviews?.state === "loading" || changed) {
           setSync(status);
         }
         noteRevision(status.revision);
@@ -171,7 +208,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
       cancel = true;
       window.clearInterval(timer);
     };
-  }, [api, syncing, noteRevision]);
+  }, [api, polling, noteRevision]);
 
   // An agent write (MCP Local writes) reloads rows and projects at once.
   useEffect(() => {
@@ -625,7 +662,11 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
               <PrList
                 loadPage={loadPage}
                 version={version}
-                syncProgress={syncing ? syncLabel(sync, now) : null}
+                syncProgress={
+                  viewKey === "to_review" ? (reviewsLabel(sync.reviews) ?? (syncing ? syncLabel(sync, now) : null)) : syncing ? syncLabel(sync, now) : null
+                }
+                remoteMore={viewKey === "to_review" && moreReviews(sync.reviews) ? loadMoreReviews : null}
+                onRemoteSearch={viewKey === "to_review" ? searchReviews : undefined}
                 projects={projects}
                 viewKey={viewKey}
                 view={view}

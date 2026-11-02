@@ -163,6 +163,10 @@ pub struct PrFilter {
     pub limit: Option<usize>,
     /// `next_cursor` of the previous page.
     pub cursor: Option<String>,
+    /// Search GitHub for open review requests matching these terms first (waits for it).
+    pub review_search: Option<String>,
+    /// Read the next window of review requests from GitHub first (waits for it).
+    pub more_reviews: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]

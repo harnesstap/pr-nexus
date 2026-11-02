@@ -99,7 +99,7 @@ pub enum SyncPlan {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SyncReport {
     pub fetched: usize,
     pub stored: usize,
@@ -110,6 +110,8 @@ pub struct SyncReport {
     pub full: bool,
     pub paused: bool,
     pub message: String,
+    /// Review requests GitHub reports in all, when the sync read a window.
+    pub review_total: Option<u64>,
 }
 
 impl SyncReport {
@@ -123,6 +125,7 @@ impl SyncReport {
             full: false,
             paused,
             message,
+            review_total: None,
         }
     }
 }
@@ -131,11 +134,14 @@ impl SyncReport {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SyncProgress {
     pub full: bool,
+    /// The bucket being synced: authored pull requests first, then review
+    /// requests.
+    pub bucket: SearchBucket,
     /// What the sync is doing now: the search, then reading the status of
     /// what it found. Without the second stage the header kept the last
     /// search count for minutes after the search ended.
     pub stage: SyncStage,
-    /// In-scope pull requests the search returned so far.
+    /// In-scope pull requests this bucket's search returned so far.
     pub seen: usize,
     /// Rows written so far because their content changed.
     pub updated: usize,
@@ -149,6 +155,9 @@ pub enum SyncStage {
     /// The search is done; reading checks, reviews and mergeability for
     /// `total` pull requests, `done` of them so far.
     Checking { done: usize, total: usize },
+    /// A full reconcile re-reads `total` open rows its search no longer
+    /// returned, to learn whether they closed or merged.
+    Rechecking { total: usize },
 }
 
 /// Status ids per provider call, so progress moves between calls. A multiple
@@ -331,6 +340,104 @@ pub fn sync_account_with_progress(
     now: DateTime<Utc>,
     progress: &mut dyn FnMut(SyncProgress),
 ) -> Result<SyncReport, CoreError> {
+    sync_buckets(
+        store,
+        provider,
+        account_id,
+        kind,
+        now,
+        &[BucketPlan::mine(), BucketPlan::reviews(None)],
+        progress,
+    )
+}
+
+/// The review requests a sync reads by default: the most recently updated
+/// ones. "Load more" widens the window by this much.
+pub const REVIEW_WINDOW: usize = 100;
+/// Hits an on-demand review search (the To review search box) reads.
+pub const REVIEW_MATCH_LIMIT: usize = 50;
+
+/// One bucket of a sync and how much of it to read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BucketPlan {
+    pub bucket: SearchBucket,
+    /// Read only the `limit` most recently updated hits. Rows past the
+    /// window are left as stored: never rechecked, closed or hidden.
+    pub limit: Option<usize>,
+    /// Extra search terms: an on-demand search that stores and checks what
+    /// it finds, and changes nothing else (no vanished recheck, no mark).
+    pub terms: Option<String>,
+}
+
+impl BucketPlan {
+    pub fn mine() -> Self {
+        Self {
+            bucket: SearchBucket::Mine,
+            limit: None,
+            terms: None,
+        }
+    }
+
+    /// Review requests: the `limit` most recent ones, or all of them.
+    pub fn reviews(limit: Option<usize>) -> Self {
+        Self {
+            bucket: SearchBucket::ReviewRequested,
+            limit,
+            terms: None,
+        }
+    }
+
+    /// Review requests matching `terms`, on demand.
+    pub fn review_search(terms: &str) -> Self {
+        Self {
+            bucket: SearchBucket::ReviewRequested,
+            limit: Some(REVIEW_MATCH_LIMIT),
+            terms: Some(terms.trim().to_owned()),
+        }
+    }
+}
+
+/// The involvement flag a bucket's search decides.
+fn bucket_flag(bucket: SearchBucket) -> Involvement {
+    match bucket {
+        SearchBucket::Mine => Involvement::AUTHOR,
+        SearchBucket::ReviewRequested => Involvement::REVIEW_REQUESTED,
+    }
+}
+
+/// Which bucket keeps a stored row current: review requests own the rows
+/// that are only review requests; authored sync owns everything else, so
+/// every row has exactly one owner and a sync of one bucket never rechecks,
+/// closes or hides the other's rows.
+pub fn owned_by(pr: &PullRequest, bucket: SearchBucket) -> bool {
+    let review_only = pr.involvement.contains(Involvement::REVIEW_REQUESTED)
+        && !pr.involvement.contains(Involvement::AUTHOR);
+    match bucket {
+        SearchBucket::Mine => !review_only,
+        SearchBucket::ReviewRequested => review_only,
+    }
+}
+
+/// The settings key of a bucket's sync mark.
+pub fn mark_key(bucket: SearchBucket) -> &'static str {
+    match bucket {
+        SearchBucket::Mine => settings::SYNC_MARK,
+        SearchBucket::ReviewRequested => settings::SYNC_MARK_REVIEWS,
+    }
+}
+
+/// Runs `plans` one after the other, each through search, status pass,
+/// vanished-row recheck, closing finished review requests and its own mark,
+/// so authored pull requests are complete before review requests start.
+pub fn sync_buckets(
+    store: &Store,
+    provider: &dyn VcsProvider,
+    account_id: AccountId,
+    kind: SyncKind,
+    now: DateTime<Utc>,
+    plans: &[BucketPlan],
+    progress: &mut dyn FnMut(SyncProgress),
+) -> Result<SyncReport, CoreError> {
     let account = store
         .get_account(account_id)?
         .ok_or_else(|| CoreError::Validation("github account is missing".into()))?;
@@ -356,45 +463,139 @@ pub fn sync_account_with_progress(
             format!("Rate limited · resets {}", budget.reset_at.format("%H:%M")),
         ));
     }
+    let mut run = RunState::default();
+    let mut total = SyncReport::idle(false, String::new());
+    for plan in plans {
+        let report = sync_bucket(
+            store, provider, account_id, kind, now, &scope, plan, &mut run, progress,
+        )?;
+        total.fetched += report.fetched;
+        total.refreshed += report.refreshed;
+        total.hidden += report.hidden;
+        total.full |= report.full;
+        total.review_total = total.review_total.or(report.review_total);
+    }
+    total.stored = run.stored.len();
+    total.updated = run.updated.len();
+    total.message = if total.full {
+        format!("{} pull requests", total.stored)
+    } else {
+        format!("{} updated", total.updated)
+    };
+    Ok(total)
+}
 
-    let key = scope_key(&scope);
-    let mark = settings::sync_mark(store)?;
-    let plan = plan_sync(kind, mark.as_ref(), &key, now);
+/// What one sync shares between its buckets.
+#[derive(Default)]
+struct RunState {
+    /// Status answers so far: a pull request in both buckets is read once.
+    statuses: HashMap<String, PrStatus>,
+    /// Ids whose status was asked for, answered or not.
+    checked: HashSet<String>,
+    stored: HashSet<String>,
+    updated: HashSet<String>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sync_bucket(
+    store: &Store,
+    provider: &dyn VcsProvider,
+    account_id: AccountId,
+    kind: SyncKind,
+    now: DateTime<Utc>,
+    scope: &TrackedScope,
+    bucket_plan: &BucketPlan,
+    run: &mut RunState,
+    progress: &mut dyn FnMut(SyncProgress),
+) -> Result<SyncReport, CoreError> {
+    let bucket = bucket_plan.bucket;
+    let flag = bucket_flag(bucket);
+    let on_demand = bucket_plan.terms.is_some();
+    let key = scope_key(scope);
+    let mark_name = mark_key(bucket);
+    let mark = settings::sync_mark_at(store, mark_name)?;
+    let plan = if on_demand {
+        SyncPlan::Full(FullReason::Requested)
+    } else {
+        plan_sync(kind, mark.as_ref(), &key, now)
+    };
     let full = matches!(plan, SyncPlan::Full(_));
+    // A status read happened for every open row of this bucket lately: an
+    // unchanged, settled row can keep its stored status.
+    let statuses_fresh = mark.as_ref().is_some_and(|mark| {
+        mark.scope == key && now - mark.rollup_at < Duration::minutes(ROLLUP_EVERY_MINUTES)
+    });
 
-    // Rows as they were before this sync: their status and involvement fill
-    // in for what a search page does not carry.
+    // Rows as they are now (an earlier bucket of this sync may have written):
+    // their status and involvement fill in for what a search page lacks.
     let existing = store.list_pull_requests_for_account(account_id)?;
     let mut writer = Writer::new(store, account_id, now, &existing)?;
-    let mut fetched: Vec<SyncedPullRequest> = Vec::new();
     let mut early = EarlyRows::default();
-    for bucket in [SearchBucket::Mine, SearchBucket::ReviewRequested] {
-        let queries = match plan {
-            SyncPlan::Full(_) => search_queries(bucket, &scope),
-            SyncPlan::Incremental { since, .. } => incremental_queries(bucket, &scope, since),
-        };
-        let mut failed: Option<CoreError> = None;
-        let page = provider
-            .search_pull_requests_paged(&PrQuery { bucket, queries }, &mut |rows| {
-                if failed.is_some() {
-                    return;
-                }
-                match early.store(&mut writer, rows, &scope, &existing) {
-                    Ok(()) => progress(SyncProgress {
-                        full,
-                        stage: SyncStage::Searching,
-                        seen: early.involvement.len(),
-                        updated: writer.updated(),
-                    }),
-                    Err(err) => failed = Some(err),
-                }
-            })
-            .map_err(CoreError::from)?;
-        if let Some(err) = failed {
-            return Err(err);
+    let mut queries = match plan {
+        SyncPlan::Full(_) => search_queries(bucket, scope),
+        SyncPlan::Incremental { since, .. } => incremental_queries(bucket, scope, since),
+    };
+    if let Some(terms) = bucket_plan
+        .terms
+        .as_deref()
+        .filter(|terms| !terms.is_empty())
+    {
+        for query in &mut queries {
+            query.push(' ');
+            query.push_str(terms);
         }
-        merge_bucket(&mut fetched, page);
     }
+    let query = PrQuery { bucket, queries };
+    let mut failed: Option<CoreError> = None;
+    let mut on_page = |rows: &[SyncedPullRequest]| {
+        if failed.is_some() {
+            return;
+        }
+        match early.store(&mut writer, rows, scope, &existing) {
+            Ok(()) => progress(SyncProgress {
+                full,
+                bucket,
+                stage: SyncStage::Searching,
+                seen: early.involvement.len(),
+                updated: writer.updated(),
+            }),
+            Err(err) => failed = Some(err),
+        }
+    };
+    let (fetched, window_total) = match bucket_plan.limit {
+        Some(limit) => {
+            let window = provider
+                .search_pull_requests_window(&query, limit, &mut on_page)
+                .map_err(CoreError::from)?;
+            (window.rows, Some(window.total))
+        }
+        None => (
+            provider
+                .search_pull_requests_paged(&query, &mut on_page)
+                .map_err(CoreError::from)?,
+            None,
+        ),
+    };
+    if let Some(err) = failed {
+        return Err(err);
+    }
+    let mut merged = Vec::new();
+    merge_bucket(&mut merged, fetched);
+    let fetched = merged;
+    // A window that stopped short of every match: rows older than its
+    // oldest hit may simply lie past it.
+    let cutoff = match (bucket_plan.limit, window_total) {
+        (Some(limit), Some(total))
+            if fetched.len() >= limit || (total as usize) > fetched.len() =>
+        {
+            fetched
+                .iter()
+                .map(|item| item.pull_request.updated_at)
+                .min()
+        }
+        _ => None,
+    };
+    let in_window = |pr: &PullRequest| cutoff.is_none_or(|cutoff| pr.updated_at >= cutoff);
 
     // Search is scoped on GitHub's side; this filter is the safety net.
     let mut seen_ids: HashSet<String> = HashSet::new();
@@ -405,16 +606,25 @@ pub fn sync_account_with_progress(
         let owner = &item.pull_request.repo.owner;
         remember_org(&mut seen_orgs, owner, &scope.viewer_login);
         seen_ids.insert(item.pull_request.remote.id.clone());
-        if in_scope(owner, &scope) && keeps_hit(item, &existing) {
+        if in_scope(owner, scope) && keeps_hit(item, &existing) {
             latest = latest.max(Some(item.pull_request.updated_at));
-            kept.push(item.clone());
+            let mut item = item.clone();
+            // This search decides only its own flag; the other bucket's
+            // flag stays as stored.
+            if let Some(before) = existing
+                .iter()
+                .find(|pr| pr.remote.id == item.pull_request.remote.id)
+            {
+                item.pull_request.involvement |= before.involvement - flag;
+            }
+            kept.push(item);
         }
     }
     settings::set_seen_orgs(store, &seen_orgs)?;
 
-    // Incremental: open rows the search did not return whose status may have
-    // moved anyway: checks or mergeability still pending, or every open row
-    // when the periodic rollup is due.
+    // Incremental: open rows of this bucket the search did not return whose
+    // status may have moved anyway: checks or mergeability still pending,
+    // or every open row when the periodic rollup is due.
     let rollup = match plan {
         SyncPlan::Full(_) => false,
         SyncPlan::Incremental { rollup, .. } => rollup,
@@ -426,24 +636,49 @@ pub fn sync_account_with_progress(
             .iter()
             .filter(|pr| {
                 pr.state == PrState::Open
-                    && in_scope(&pr.repo.owner, &scope)
+                    && !pr.hidden
+                    && owned_by(pr, bucket)
+                    && in_window(pr)
+                    && in_scope(&pr.repo.owner, scope)
                     && !seen_ids.contains(&pr.remote.id)
                     && (rollup || status_is_moving(pr))
             })
             .collect()
     };
 
+    // Status: what this sync has not read yet, and, when this bucket's
+    // statuses are fresh, not the unchanged settled rows either.
     let ids: Vec<ProviderRef> = kept
         .iter()
+        .filter(|item| {
+            let id = &item.pull_request.remote.id;
+            if run.checked.contains(id) {
+                return false;
+            }
+            let unchanged = statuses_fresh
+                && existing.iter().any(|pr| {
+                    &pr.remote.id == id
+                        && pr.updated_at == item.pull_request.updated_at
+                        && pr.state == PrState::Open
+                        && !status_is_moving(pr)
+                });
+            !unchanged
+        })
         .map(|item| item.pull_request.remote.clone())
-        .chain(volatile.iter().map(|pr| pr.remote.clone()))
+        .chain(
+            volatile
+                .iter()
+                .filter(|pr| !run.checked.contains(&pr.remote.id))
+                .map(|pr| pr.remote.clone()),
+        )
         .collect();
-    let mut statuses: HashMap<String, PrStatus> = HashMap::new();
     let seen = early.involvement.len();
+    run.checked.extend(ids.iter().map(|id| id.id.clone()));
     let mut done = 0usize;
     for batch in ids.chunks(STATUS_BATCH) {
         progress(SyncProgress {
             full,
+            bucket,
             stage: SyncStage::Checking {
                 done,
                 total: ids.len(),
@@ -455,39 +690,58 @@ pub fn sync_account_with_progress(
             .pull_request_status(batch)
             .map_err(CoreError::from)?
         {
-            statuses.insert(status.remote_id.clone(), status);
+            run.statuses.insert(status.remote_id.clone(), status);
         }
         done += batch.len();
     }
-    let mut stored = 0usize;
+    let statuses = &run.statuses;
+    let mut stored_ids = Vec::new();
     for item in &mut kept {
-        let id = &item.pull_request.remote.id;
-        let status = statuses.get(id).cloned().or_else(|| {
+        let id = item.pull_request.remote.id.clone();
+        let status = statuses.get(&id).cloned().or_else(|| {
             existing
                 .iter()
-                .find(|pr| &pr.remote.id == id)
+                .find(|pr| pr.remote.id == id)
                 .map(PrStatus::of)
         });
         if let Some(status) = status {
             status.apply_to(&mut item.pull_request);
         }
         writer.write(item)?;
-        stored += 1;
+        stored_ids.push(id);
     }
     if let Ok(budget) = provider.rate_limit() {
         settings::set_rate_budget(store, &budget)?;
     }
+    run.stored.extend(stored_ids);
+    if on_demand {
+        run.updated.extend(writer.changed.iter().cloned());
+        return Ok(SyncReport {
+            fetched: fetched.len(),
+            stored: kept.len(),
+            refreshed: 0,
+            hidden: 0,
+            updated: writer.updated(),
+            full: false,
+            paused: false,
+            message: String::new(),
+            review_total: None,
+        });
+    }
 
-    // Open rows to read again in full: in a full reconcile, the ones the
-    // search no longer returns; incrementally, the volatile ones whose status
-    // answer says they finished or changed beyond their status.
+    // Open rows of this bucket to read again in full: in a full reconcile,
+    // the ones the search no longer returns (inside the window); incrementally,
+    // the volatile ones whose status answer says they finished or changed
+    // beyond their status.
     let mut status_only: Vec<SyncedPullRequest> = Vec::new();
     let stale: Vec<ProviderRef> = if full {
         writer
             .rows()
             .filter(|pr| {
                 pr.state == PrState::Open
-                    && in_scope(&pr.repo.owner, &scope)
+                    && owned_by(pr, bucket)
+                    && in_window(pr)
+                    && in_scope(&pr.repo.owner, scope)
                     && !seen_ids.contains(&pr.remote.id)
             })
             .map(|pr| pr.remote.clone())
@@ -516,6 +770,13 @@ pub fn sync_account_with_progress(
     let mut refreshed_rows = if stale.is_empty() {
         Vec::new()
     } else {
+        progress(SyncProgress {
+            full,
+            bucket,
+            stage: SyncStage::Rechecking { total: stale.len() },
+            seen,
+            updated: writer.updated(),
+        });
         provider
             .refresh_pull_requests(&stale)
             .map_err(CoreError::from)?
@@ -531,18 +792,24 @@ pub fn sync_account_with_progress(
     }
     let refreshed = refreshed_rows.len();
     for item in &refreshed_rows {
-        if in_scope(&item.pull_request.repo.owner, &scope) {
+        if in_scope(&item.pull_request.repo.owner, scope) {
             latest = latest.max(Some(item.pull_request.updated_at));
             writer.write(item)?;
         }
     }
 
+    // Only this bucket's rows: a sync of authored pull requests never closes
+    // or hides review requests it did not read, and the reverse.
     let keep_days = settings::keep_closed_days(store)?;
     let mut hidden = 0usize;
-    let rows: Vec<PullRequest> = writer.rows().cloned().collect();
+    let rows: Vec<PullRequest> = writer
+        .rows()
+        .filter(|pr| owned_by(pr, bucket))
+        .cloned()
+        .collect();
     for pr in rows {
         close_requests_of_finished(store, &pr, now)?;
-        let out_of_scope = !in_scope(&pr.repo.owner, &scope);
+        let out_of_scope = !in_scope(&pr.repo.owner, scope);
         let expired = should_hide_closed(pr.state, pr.updated_at, now, keep_days);
         let next = out_of_scope || expired;
         if next != pr.hidden {
@@ -553,15 +820,16 @@ pub fn sync_account_with_progress(
         }
     }
 
-    // The pass succeeded: only now does the mark move.
+    // The pass succeeded: only now does this bucket's mark move.
     let previous = mark.filter(|mark| mark.scope == key);
     let updated_at = latest
         .into_iter()
         .chain(previous.as_ref().map(|mark| mark.updated_at))
         .max()
         .unwrap_or(now);
-    settings::set_sync_mark(
+    settings::set_sync_mark_at(
         store,
+        mark_name,
         &SyncMark {
             scope: key,
             updated_at,
@@ -576,20 +844,17 @@ pub fn sync_account_with_progress(
         },
     )?;
 
-    let updated = writer.updated();
+    run.updated.extend(writer.changed.iter().cloned());
     Ok(SyncReport {
         fetched: fetched.len(),
-        stored,
+        stored: kept.len(),
         refreshed,
         hidden,
-        updated,
+        updated: writer.updated(),
         full,
         paused: false,
-        message: if full {
-            format!("{stored} pull requests")
-        } else {
-            format!("{updated} updated")
-        },
+        message: String::new(),
+        review_total: window_total,
     })
 }
 
@@ -1057,10 +1322,15 @@ mod tests {
             ts(30),
             &mut |progress| {
                 // Rows are in the store before the search (and status pass) ends.
-                let rows = store.list_pull_requests_for_account(account).unwrap();
-                assert_eq!(rows.len(), progress.seen);
-                assert_eq!(progress.updated, progress.seen);
-                counts.push(progress.seen);
+                // The count is per bucket: authored first, then review requests.
+                if progress.bucket == SearchBucket::Mine {
+                    let rows = store.list_pull_requests_for_account(account).unwrap();
+                    assert_eq!(rows.len(), progress.seen);
+                    assert_eq!(progress.updated, progress.seen);
+                    counts.push(progress.seen);
+                } else {
+                    assert_eq!(progress.seen, 1);
+                }
             },
         )
         .unwrap();
@@ -1128,6 +1398,204 @@ mod tests {
             ]
         );
         assert_eq!(fake.status_asked.lock().unwrap().len(), 95);
+    }
+
+    /// Authored pull requests are searched and fully checked before the
+    /// review search starts, so My PRs is current first.
+    #[test]
+    fn authored_status_is_read_before_the_review_search_starts() {
+        let (_dir, store, account) = open_store();
+        let mine: Vec<_> = (1..=15)
+            .map(|n| pr(&format!("M{n}"), "acme", n, Involvement::AUTHOR))
+            .collect();
+        let review: Vec<_> = (16..=30)
+            .map(|n| pr(&format!("R{n}"), "acme", n, Involvement::REVIEW_REQUESTED))
+            .collect();
+        let fake = Fake {
+            review,
+            ..fake(mine, Vec::new())
+        };
+        let mut checked_at_review_start = None;
+        let mut buckets = Vec::new();
+        sync_account_with_progress(&store, &fake, account, SyncKind::Full, ts(30), &mut |p| {
+            if p.bucket == SearchBucket::ReviewRequested && checked_at_review_start.is_none() {
+                checked_at_review_start = Some(fake.status_asked.lock().unwrap().clone());
+            }
+            if buckets.last() != Some(&p.bucket) {
+                buckets.push(p.bucket);
+            }
+        })
+        .unwrap();
+        let mut asked = checked_at_review_start.expect("a review stage");
+        asked.sort();
+        let mut want: Vec<String> = (1..=15).map(|n| format!("M{n}")).collect();
+        want.sort();
+        assert_eq!(asked, want);
+        assert_eq!(
+            buckets,
+            vec![SearchBucket::Mine, SearchBucket::ReviewRequested]
+        );
+        assert_eq!(fake.status_asked.lock().unwrap().len(), 30);
+    }
+
+    /// A sync of authored pull requests alone leaves review-only rows as
+    /// they are: not rechecked, closed, hidden, nor their mark moved.
+    #[test]
+    fn an_authored_only_sync_never_touches_review_rows() {
+        let (_dir, store, account) = open_store();
+        let first = Fake {
+            review: vec![pr("R1", "acme", 1, Involvement::REVIEW_REQUESTED)],
+            ..fake(vec![pr("M2", "acme", 2, Involvement::AUTHOR)], Vec::new())
+        };
+        sync_account(&store, &first, account, SyncKind::Full, ts(30)).unwrap();
+        let review_mark = settings::sync_mark_at(&store, settings::SYNC_MARK_REVIEWS).unwrap();
+        let mut closed = pr("R1", "acme", 1, Involvement::empty());
+        closed.pull_request.state = PrState::Closed;
+        let second = Fake {
+            refresh: vec![closed],
+            ..fake(vec![pr("M2", "acme", 2, Involvement::AUTHOR)], Vec::new())
+        };
+        sync_buckets(
+            &store,
+            &second,
+            account,
+            SyncKind::Full,
+            ts(40),
+            &[BucketPlan::mine()],
+            &mut |_| {},
+        )
+        .unwrap();
+        assert!(second.refresh_asked.lock().unwrap().is_empty());
+        let r1 = row(&store, account, 1);
+        assert_eq!(r1.state, PrState::Open);
+        assert!(!r1.hidden);
+        assert!(r1.involvement.contains(Involvement::REVIEW_REQUESTED));
+        assert_eq!(
+            settings::sync_mark_at(&store, settings::SYNC_MARK_REVIEWS).unwrap(),
+            review_mark
+        );
+        assert!(
+            second
+                .queries
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|q| q.bucket == SearchBucket::Mine)
+        );
+    }
+
+    /// The review window reads the newest hits only; stored rows older than
+    /// the window are not taken for vanished, newer ones are.
+    #[test]
+    fn the_review_window_only_rechecks_rows_inside_it() {
+        let (_dir, store, account) = open_store();
+        let at = |node: &str, n: u64, mins: i64| {
+            let mut item = pr(node, "acme", n, Involvement::REVIEW_REQUESTED);
+            item.pull_request.updated_at = ts(mins);
+            item
+        };
+        // Stored earlier: an old one (past the window) and a recent one.
+        let first = Fake {
+            review: vec![at("OLD", 1, 1), at("GONE", 2, 25)],
+            ..fake(Vec::new(), Vec::new())
+        };
+        sync_account(&store, &first, account, SyncKind::Full, ts(30)).unwrap();
+        // Now three matches; the window keeps the two newest. GONE vanished.
+        let second = Fake {
+            review: vec![at("A", 3, 28), at("B", 4, 20), at("C", 5, 5)],
+            ..fake(Vec::new(), Vec::new())
+        };
+        let report = sync_buckets(
+            &store,
+            &second,
+            account,
+            SyncKind::Full,
+            ts(40),
+            &[BucketPlan::mine(), BucketPlan::reviews(Some(2))],
+            &mut |_| {},
+        )
+        .unwrap();
+        assert_eq!(report.review_total, Some(3));
+        assert_eq!(
+            *second.refresh_asked.lock().unwrap(),
+            vec!["GONE".to_owned()]
+        );
+        let numbers: Vec<u64> = store
+            .list_pull_requests_for_account(account)
+            .unwrap()
+            .iter()
+            .map(|pr| pr.number)
+            .collect();
+        assert!(numbers.contains(&3) && numbers.contains(&4) && !numbers.contains(&5));
+        assert!(!row(&store, account, 1).hidden);
+    }
+
+    /// A full sync soon after the last status read skips unchanged, settled
+    /// rows; a changed one is read again.
+    #[test]
+    fn a_fresh_full_sync_skips_unchanged_settled_rows() {
+        let (_dir, store, account) = open_store();
+        let rows = vec![
+            pr("M1", "acme", 1, Involvement::AUTHOR),
+            pr("M2", "acme", 2, Involvement::AUTHOR),
+        ];
+        let first = fake(rows.clone(), Vec::new());
+        sync_account(&store, &first, account, SyncKind::Full, ts(30)).unwrap();
+        let mut moved = rows;
+        moved[1].pull_request.updated_at = ts(35);
+        let second = fake(moved, Vec::new());
+        sync_account(&store, &second, account, SyncKind::Full, ts(40)).unwrap();
+        assert_eq!(*second.status_asked.lock().unwrap(), vec!["M2".to_owned()]);
+        // Past the rollup interval every row is read again.
+        let third = fake(vec![pr("M1", "acme", 1, Involvement::AUTHOR)], Vec::new());
+        sync_account(
+            &store,
+            &third,
+            account,
+            SyncKind::Full,
+            ts(40 + ROLLUP_EVERY_MINUTES),
+        )
+        .unwrap();
+        assert_eq!(*third.status_asked.lock().unwrap(), vec!["M1".to_owned()]);
+    }
+
+    /// An on-demand review search adds its terms, stores and checks what it
+    /// finds, and changes no mark.
+    #[test]
+    fn an_on_demand_review_search_stores_hits_without_moving_the_mark() {
+        let (_dir, store, account) = open_store();
+        let found = Fake {
+            review: vec![pr("R9", "acme", 9, Involvement::REVIEW_REQUESTED)],
+            ..fake(Vec::new(), Vec::new())
+        };
+        sync_buckets(
+            &store,
+            &found,
+            account,
+            SyncKind::Manual,
+            ts(30),
+            &[BucketPlan::review_search("widget fix")],
+            &mut |_| {},
+        )
+        .unwrap();
+        let queries = found.queries.lock().unwrap().clone();
+        assert!(
+            queries[0]
+                .queries
+                .iter()
+                .all(|q| q.ends_with(" widget fix"))
+        );
+        assert_eq!(*found.status_asked.lock().unwrap(), vec!["R9".to_owned()]);
+        assert!(
+            row(&store, account, 9)
+                .involvement
+                .contains(Involvement::REVIEW_REQUESTED)
+        );
+        assert!(
+            settings::sync_mark_at(&store, settings::SYNC_MARK_REVIEWS)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -1682,7 +2150,7 @@ mod tests {
                  updated:>=2023-11-14T22:33:20Z org:acme"
                     .to_owned(),
                 "is:pr review-requested:@me archived:false sort:updated-desc \
-                 updated:>=2023-11-14T22:33:20Z org:acme"
+                 updated:>=2023-11-14T22:38:20Z org:acme"
                     .to_owned(),
             ]
         );
@@ -1842,8 +2310,16 @@ mod tests {
         assert_eq!(n2.title, "PR 2, reworked");
         // Involvement is kept from the stored row, like a full refresh.
         assert!(n2.involvement.contains(Involvement::REVIEW_REQUESTED));
+        // Each bucket moves its own mark.
         assert_eq!(
             settings::sync_mark(&store).unwrap().unwrap().updated_at,
+            ts(12)
+        );
+        assert_eq!(
+            settings::sync_mark_at(&store, settings::SYNC_MARK_REVIEWS)
+                .unwrap()
+                .unwrap()
+                .updated_at,
             ts(14)
         );
     }

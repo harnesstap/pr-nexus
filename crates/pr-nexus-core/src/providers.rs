@@ -205,6 +205,14 @@ pub enum SearchBucket {
 /// `queries` already carry the `org:`/`user:` qualifiers for the tracked
 /// scope (see `sync::search_queries`); the provider runs each one and merges
 /// the results. Sync still filters by org afterwards as a safety net.
+/// The most recently updated hits of a search, and how many it has in all.
+#[derive(Debug, Clone, Default)]
+pub struct SearchWindow {
+    pub rows: Vec<SyncedPullRequest>,
+    /// Matches GitHub reports (`issueCount`), across the query strings.
+    pub total: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrQuery {
     pub bucket: SearchBucket,
@@ -427,6 +435,22 @@ pub trait VcsProvider: Send + Sync {
         let items = self.search_pull_requests(query)?;
         on_page(&items);
         Ok(items)
+    }
+    /// The `limit` most recently updated results of the search, handed to
+    /// `on_page` as pages arrive, with the total match count. The default
+    /// runs the whole search and keeps the newest.
+    fn search_pull_requests_window(
+        &self,
+        query: &PrQuery,
+        limit: usize,
+        on_page: &mut dyn FnMut(&[SyncedPullRequest]),
+    ) -> Result<SearchWindow, ProviderError> {
+        let mut rows = self.search_pull_requests(query)?;
+        let total = rows.len() as u64;
+        rows.sort_by_key(|row| std::cmp::Reverse(row.pull_request.updated_at));
+        rows.truncate(limit);
+        on_page(&rows);
+        Ok(SearchWindow { rows, total })
     }
     fn refresh_pull_requests(
         &self,

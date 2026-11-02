@@ -103,7 +103,9 @@ fn read_tools() -> Vec<ToolSpec> {
                 ci_trouble (failing checks or merge conflicts); declined (changes requested); merge_ready (approved, \
                 green, no conflicts); waiting (asked for review over 48h ago, not approved); idle (no activity for 7 days). \
                 Each item lists its `statuses`, `starred`, `project_ids`, checks, review state and Slack request (`slack`, \
-                null when none). Returns `items`, `total` (over all pages) and `next_cursor` (null on the last page).",
+                null when none). Returns `items`, `total` (over all pages) and `next_cursor` (null on the last page). Review requests are \
+                synced lazily, newest first: `reviews` says how many are loaded of GitHub's `total` and whether the list \
+                is `partial`; pass `more_reviews: true` or `review_search` to fetch more from GitHub.",
             capability: Capability::Reads,
             destructive: false,
             idempotent: true,
@@ -203,7 +205,41 @@ fn get_project(state: &AppState, arguments: JsonObject) -> Result<Value, AppErro
 fn list_prs(state: &AppState, arguments: JsonObject) -> Result<Value, AppError> {
     let filter: PrFilter = parse(arguments)?;
     check_limit(filter.limit)?;
-    to_value(prs::list_prs(state, &filter)?)
+    // Review requests sync lazily (§6): the first read asks for them and
+    // answers from what is stored, flagged partial, instead of waiting.
+    if crate::state::activate_reviews(state) {
+        crate::live::request_sync(state);
+    }
+    if filter.more_reviews == Some(true) {
+        crate::state::load_more_reviews(state)?;
+    }
+    if let Some(terms) = filter.review_search.as_deref() {
+        crate::state::search_reviews(state, terms)?;
+    }
+    let mut value = to_value(prs::list_prs(state, &filter)?)?;
+    if let Value::Object(map) = &mut value {
+        map.insert("reviews".into(), reviews_value(state));
+    }
+    Ok(value)
+}
+
+/// Where the lazy review-request sync stands, and how to read more.
+fn reviews_value(state: &AppState) -> Value {
+    let dto = crate::commands::sync_dto(state).reviews;
+    let partial =
+        dto.state != "ready" || dto.total.is_some_and(|total| (dto.loaded as u64) < total);
+    json!({
+        "state": dto.state,
+        "loaded": dto.loaded,
+        "total": dto.total,
+        "partial": partial,
+        "hint": if partial {
+            "Review requests load the newest first. Pass more_reviews: true for the next window, or \
+             review_search with terms to search GitHub for older ones; while state is loading, list again shortly."
+        } else {
+            ""
+        },
+    })
 }
 
 fn get_pr(state: &AppState, arguments: JsonObject) -> Result<Value, AppError> {

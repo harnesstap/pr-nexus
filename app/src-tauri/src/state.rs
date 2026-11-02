@@ -8,7 +8,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use pr_nexus_core::domain::{Account, AccountKind};
 use pr_nexus_core::onboarding::{self, OnboardingState, StepValidity};
-use pr_nexus_core::providers::ChatProvider;
+use pr_nexus_core::providers::{ChatProvider, SearchBucket};
 use pr_nexus_core::providers::{ProviderRegistry, SetupStep};
 use pr_nexus_core::settings;
 use pr_nexus_core::store::Store;
@@ -29,6 +29,34 @@ pub struct SyncStatus {
     /// Goes up whenever sync changed stored rows, so the list re-reads only
     /// then (§6).
     pub revision: u64,
+    /// The lazy review-request sync of this session (§6).
+    pub reviews: ReviewStatus,
+}
+
+/// Review requests sync only once the To review tab (or an MCP tool) asks
+/// for them, and only the newest [`sync::REVIEW_WINDOW`] at first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewStatus {
+    /// `off`, `loading`, `ready` or `error`.
+    pub state: String,
+    /// Progress while loading ("Checking reviews… 20/100"), else the last
+    /// outcome.
+    pub message: String,
+    /// Open review requests GitHub reports in all, when known.
+    pub total: Option<u64>,
+    /// How many of the newest the window reads.
+    pub window: usize,
+}
+
+impl Default for ReviewStatus {
+    fn default() -> Self {
+        Self {
+            state: "off".into(),
+            message: String::new(),
+            total: None,
+            window: sync::REVIEW_WINDOW,
+        }
+    }
 }
 
 impl SyncStatus {
@@ -39,6 +67,7 @@ impl SyncStatus {
             synced_at: None,
             paused: false,
             revision: 0,
+            reviews: ReviewStatus::default(),
         }
     }
 
@@ -49,6 +78,7 @@ impl SyncStatus {
             synced_at: None,
             paused: false,
             revision: 0,
+            reviews: ReviewStatus::default(),
         }
     }
 }
@@ -74,6 +104,9 @@ pub struct AppState {
     pub sync_gate: Mutex<()>,
     pub device: Mutex<Option<DeviceSession>>,
     pub focused: AtomicBool,
+    /// Set once review requests were asked for this session; never stored,
+    /// so each launch syncs only My PRs until then.
+    pub reviews_active: AtomicBool,
     pub wake: Arc<(Mutex<bool>, Condvar)>,
     /// Live updates from the notifications inbox (§6).
     pub live: crate::live::LiveShared,
@@ -106,6 +139,7 @@ impl AppState {
             sync_gate: Mutex::new(()),
             device: Mutex::new(None),
             focused: AtomicBool::new(true),
+            reviews_active: AtomicBool::new(false),
             wake: Arc::new((Mutex::new(false), Condvar::new())),
             live: crate::live::LiveShared::default(),
             branch_cache: pr_nexus_core::branch::BranchCache::default(),
@@ -129,6 +163,7 @@ impl AppState {
             sync_gate: Mutex::new(()),
             device: Mutex::new(None),
             focused: AtomicBool::new(true),
+            reviews_active: AtomicBool::new(false),
             wake: Arc::new((Mutex::new(false), Condvar::new())),
             live: crate::live::LiveShared::default(),
             branch_cache: pr_nexus_core::branch::BranchCache::default(),
@@ -249,13 +284,18 @@ pub fn run_sync(state: &AppState, kind: SyncKind) -> Result<Option<sync::SyncRep
 /// counts what it has seen, an incremental pass what changed; after it, the
 /// status pass counts the pull requests it has checked.
 pub(crate) fn progress_message(progress: sync::SyncProgress) -> String {
-    if let sync::SyncStage::Checking { done, total } = progress.stage {
-        return format!("Syncing… checking {done}/{total}");
-    }
-    match (progress.full, progress.updated) {
-        (true, _) => format!("Syncing… {} so far", progress.seen),
-        (false, 0) => "Syncing…".into(),
-        (false, updated) => format!("Syncing… {updated} updated"),
+    let what = match progress.bucket {
+        SearchBucket::Mine => "my PRs",
+        SearchBucket::ReviewRequested => "reviews",
+    };
+    match progress.stage {
+        sync::SyncStage::Checking { done, total } => format!("Checking {what}… {done}/{total}"),
+        sync::SyncStage::Rechecking { total } => format!("Rechecking stale PRs… {total}"),
+        sync::SyncStage::Searching => match (progress.full, progress.updated) {
+            (true, _) => format!("Syncing {what}… {}", progress.seen),
+            (false, 0) => format!("Syncing {what}…"),
+            (false, updated) => format!("Syncing {what}… {updated} updated"),
+        },
     }
 }
 
@@ -322,72 +362,239 @@ fn sync_once(state: &AppState, kind: SyncKind) -> Result<sync::SyncReport, AppEr
     if state.demo {
         *state.sync.lock().expect("sync status") = SyncStatus::demo();
         return Ok(sync::SyncReport {
-            fetched: 0,
-            stored: 0,
-            refreshed: 0,
-            hidden: 0,
-            updated: 0,
-            full: false,
-            paused: false,
             message: "Demo data · sync disabled".into(),
+            ..sync::SyncReport::default()
         });
     }
-    settle(state, kind, || {
-        let account = github_account(&state.store)?
-            .ok_or_else(|| AppError::new("unauthorized", "Connect GitHub before syncing"))?;
-        let token = resolve_github_token(state, Some(&account))?;
-        let client = GithubClient::new(account.id, token)?;
-        // Each search page is stored as it arrives; the header shows the
-        // running count, updated at most every `PROGRESS_EVERY`.
-        let mut throttle = sync::Throttle::new(sync::PROGRESS_EVERY);
-        let mut shown = 0usize;
-        let mut stage = sync::SyncStage::Searching;
-        let report = sync::sync_account_with_progress(
+    // My PRs first, fully: search, status pass and code owners. The sync
+    // phase ends with them, so the header stops saying "Syncing".
+    let report = settle(state, kind, || {
+        let client = github_client(state)?;
+        let mut on_progress = progress_writer(state, |status, message| status.message = message);
+        let report = sync::sync_buckets(
             &state.store,
-            &client,
-            account.id,
+            &client.1,
+            client.0,
             kind,
             Utc::now(),
-            &mut |progress| {
-                // A new stage shows at once: the search ending must not wait
-                // on the throttle.
-                let moved =
-                    std::mem::discriminant(&progress.stage) != std::mem::discriminant(&stage);
-                stage = progress.stage;
-                if throttle.ready(std::time::Instant::now()) || moved {
-                    let mut status = lock_status(state);
-                    status.message = progress_message(progress);
-                    if progress.updated != shown {
-                        shown = progress.updated;
-                        status.revision += 1;
-                    }
-                }
-            },
+            &[sync::BucketPlan::mine()],
+            &mut on_progress,
         )?;
-        // §8.1: re-evaluate auto-link rules after every sync.
-        let prs = state.store.list_pull_requests_for_account(account.id)?;
-        let links = pr_nexus_core::linking::relink(&state.store, &prs)?;
-        let mut changed = report.updated > 0 || links.added + links.removed > 0;
-        // §7.1: a BLOCKED pull request with no review decision needs its
-        // code-owner status before the list can call it Ready.
-        if !report.paused {
-            let flag = settings::blocked_review_required_is_ready(&state.store)?;
-            let resolved = pr_nexus_core::ownership::resolve_unknown_code_owner_reviews(
-                &state.store,
-                &client,
-                &prs,
-                flag,
-                Utc::now(),
-                pr_nexus_core::ownership::MAX_RESOLVES_PER_SYNC,
-            )
-            .unwrap_or(0);
-            changed |= resolved > 0;
-        }
-        if changed {
-            state.sync.lock().expect("sync status").revision += 1;
-        }
+        after_pass(state, &client.1, client.0, &report, SearchBucket::Mine)?;
         Ok::<_, AppError>(report)
-    })
+    })?;
+    // Then review requests, once this session asked for them (§6). The
+    // list stays usable: their progress shows in the To review tab only.
+    if !report.paused && state.reviews_active.load(Ordering::Relaxed) {
+        let (window, known) = {
+            let status = lock_status(state);
+            (status.reviews.window, status.reviews.total.is_some())
+        };
+        // The first pass of a session reads the window in full, for its
+        // total; later ones only what changed.
+        let kind = if known { kind } else { SyncKind::Full };
+        let _ = review_pass(state, kind, sync::BucketPlan::reviews(Some(window)));
+    }
+    Ok(report)
+}
+
+/// The GitHub account id and a client for it.
+fn github_client(
+    state: &AppState,
+) -> Result<(pr_nexus_core::domain::AccountId, GithubClient), AppError> {
+    let account = github_account(&state.store)?
+        .ok_or_else(|| AppError::new("unauthorized", "Connect GitHub before syncing"))?;
+    let token = resolve_github_token(state, Some(&account))?;
+    Ok((account.id, GithubClient::new(account.id, token)?))
+}
+
+/// A progress callback that writes [`progress_message`] through `show`, at
+/// most every `PROGRESS_EVERY` but at once on a new stage, and bumps the
+/// revision when rows changed so the list re-reads them as they arrive.
+fn progress_writer<'a>(
+    state: &'a AppState,
+    show: impl Fn(&mut SyncStatus, String) + 'a,
+) -> impl FnMut(sync::SyncProgress) + 'a {
+    let mut throttle = sync::Throttle::new(sync::PROGRESS_EVERY);
+    let mut shown = 0usize;
+    let mut stage = None;
+    move |progress| {
+        let key = (progress.bucket, std::mem::discriminant(&progress.stage));
+        let moved = stage != Some(key);
+        stage = Some(key);
+        if throttle.ready(std::time::Instant::now()) || moved {
+            let mut status = lock_status(state);
+            show(&mut status, progress_message(progress));
+            if progress.updated != shown || moved {
+                shown = progress.updated;
+                status.revision += 1;
+            }
+        }
+    }
+}
+
+/// Auto-link rules and code-owner status after a pass over `bucket`.
+fn after_pass(
+    state: &AppState,
+    client: &GithubClient,
+    account: pr_nexus_core::domain::AccountId,
+    report: &sync::SyncReport,
+    bucket: SearchBucket,
+) -> Result<(), AppError> {
+    // §8.1: re-evaluate auto-link rules after every sync.
+    let prs = state.store.list_pull_requests_for_account(account)?;
+    let links = pr_nexus_core::linking::relink(&state.store, &prs)?;
+    let mut changed = report.updated > 0 || links.added + links.removed > 0;
+    // §7.1: a BLOCKED pull request with no review decision needs its
+    // code-owner status before the list can call it Ready. Only the rows
+    // of the bucket just synced, so authored ones never wait on reviews.
+    if !report.paused {
+        let owned: Vec<_> = prs
+            .into_iter()
+            .filter(|pr| sync::owned_by(pr, bucket))
+            .collect();
+        let flag = settings::blocked_review_required_is_ready(&state.store)?;
+        let resolved = pr_nexus_core::ownership::resolve_unknown_code_owner_reviews(
+            &state.store,
+            client,
+            &owned,
+            flag,
+            Utc::now(),
+            pr_nexus_core::ownership::MAX_RESOLVES_PER_SYNC,
+        )
+        .unwrap_or(0);
+        changed |= resolved > 0;
+    }
+    if changed {
+        lock_status(state).revision += 1;
+    }
+    Ok(())
+}
+
+/// One pass over review requests: the window, or an on-demand search.
+/// Never touches the sync phase, so My PRs and the header stay as they are.
+fn review_pass(
+    state: &AppState,
+    kind: SyncKind,
+    plan: sync::BucketPlan,
+) -> Result<sync::SyncReport, AppError> {
+    let searching = plan.terms.is_some();
+    {
+        let mut status = lock_status(state);
+        status.reviews.state = "loading".into();
+        status.reviews.message = "Loading reviews…".into();
+        status.revision += 1;
+    }
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let client = github_client(state)?;
+        let mut on_progress = progress_writer(state, |status, message| {
+            status.reviews.message = message.replace("Syncing reviews", "Loading reviews");
+        });
+        let report = sync::sync_buckets(
+            &state.store,
+            &client.1,
+            client.0,
+            kind,
+            Utc::now(),
+            std::slice::from_ref(&plan),
+            &mut on_progress,
+        )?;
+        after_pass(
+            state,
+            &client.1,
+            client.0,
+            &report,
+            SearchBucket::ReviewRequested,
+        )?;
+        Ok::<_, AppError>(report)
+    }))
+    .unwrap_or_else(|_| {
+        Err(AppError::new(
+            "internal",
+            "review sync stopped unexpectedly",
+        ))
+    });
+    let mut status = lock_status(state);
+    match &outcome {
+        Ok(report) => {
+            status.reviews.state = "ready".into();
+            status.reviews.message = report.message.clone();
+            // The window's issueCount is the open total; an incremental pass
+            // or a search counts something else.
+            if report.full && !searching {
+                status.reviews.total = report.review_total.or(status.reviews.total);
+            }
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, "review sync failed");
+            status.reviews.state = "error".into();
+            status.reviews.message = format!("Review sync failed · {}", err.message);
+        }
+    }
+    status.revision += 1;
+    outcome
+}
+
+/// Starts the review-request sync of this session, once. Later calls do
+/// nothing; the scheduler then includes reviews after My PRs.
+pub fn activate_reviews(state: &AppState) -> bool {
+    if state.demo || state.reviews_active.swap(true, Ordering::Relaxed) {
+        return false;
+    }
+    lock_status(state).reviews.state = "loading".into();
+    true
+}
+
+/// Runs the first review pass (the newest window, in full) behind the sync
+/// gate, so it never overlaps a My PRs pass.
+pub fn run_reviews(state: &AppState) -> Result<(), AppError> {
+    let _running = state
+        .sync_gate
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let window = lock_status(state).reviews.window;
+    review_pass(
+        state,
+        SyncKind::Full,
+        sync::BucketPlan::reviews(Some(window)),
+    )
+    .map(|_| ())
+}
+
+/// Widens the window by one more [`sync::REVIEW_WINDOW`] and reads it.
+pub fn load_more_reviews(state: &AppState) -> Result<(), AppError> {
+    {
+        let mut status = lock_status(state);
+        let known = status
+            .reviews
+            .total
+            .map_or(usize::MAX, |total| total as usize);
+        if status.reviews.window >= known {
+            return Ok(());
+        }
+        status.reviews.window += sync::REVIEW_WINDOW;
+    }
+    state.reviews_active.store(true, Ordering::Relaxed);
+    run_reviews(state)
+}
+
+/// An on-demand review search (the To review search box): stores and
+/// checks the matches, leaving the window and marks alone.
+pub fn search_reviews(state: &AppState, terms: &str) -> Result<(), AppError> {
+    let terms = terms.trim();
+    if terms.is_empty() || state.demo {
+        return Ok(());
+    }
+    let _running = state
+        .sync_gate
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    review_pass(
+        state,
+        SyncKind::Manual,
+        sync::BucketPlan::review_search(terms),
+    )
+    .map(|_| ())
 }
 
 /// Picks the focused or unfocused poll interval (§6). Coming back after more
@@ -477,6 +684,7 @@ mod tests {
             sync_gate: Mutex::new(()),
             device: Mutex::new(None),
             focused: AtomicBool::new(true),
+            reviews_active: AtomicBool::new(false),
             wake: Arc::new((Mutex::new(false), Condvar::new())),
             live: crate::live::LiveShared::default(),
             branch_cache: pr_nexus_core::branch::BranchCache::default(),
@@ -540,6 +748,7 @@ mod tests {
         let report = settle(&state, SyncKind::Full, || {
             assert_eq!(state.sync.lock().unwrap().phase, "syncing");
             state.sync.lock().unwrap().message = progress_message(sync::SyncProgress {
+                bucket: SearchBucket::Mine,
                 full: true,
                 stage: sync::SyncStage::Searching,
                 seen: 911,
@@ -554,6 +763,7 @@ mod tests {
                 full: true,
                 paused: false,
                 message: "911 pull requests".into(),
+                review_total: None,
             })
         });
         assert!(report.is_ok());
@@ -565,17 +775,80 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    fn progress(
+        bucket: SearchBucket,
+        full: bool,
+        stage: sync::SyncStage,
+        seen: usize,
+        updated: usize,
+    ) -> String {
+        progress_message(sync::SyncProgress {
+            bucket,
+            full,
+            stage,
+            seen,
+            updated,
+        })
+    }
+
     #[test]
-    fn the_status_pass_has_its_own_progress_line() {
-        let checking = sync::SyncProgress {
-            full: true,
-            stage: sync::SyncStage::Checking {
-                done: 400,
-                total: 911,
-            },
-            seen: 911,
-            updated: 0,
-        };
-        assert_eq!(progress_message(checking), "Syncing… checking 400/911");
+    fn each_stage_and_category_has_its_own_progress_line() {
+        use sync::SyncStage::{Checking, Rechecking, Searching};
+        let mine = SearchBucket::Mine;
+        let reviews = SearchBucket::ReviewRequested;
+        assert_eq!(
+            progress(mine, true, Searching, 132, 132),
+            "Syncing my PRs… 132"
+        );
+        assert_eq!(
+            progress(
+                mine,
+                true,
+                Checking {
+                    done: 40,
+                    total: 132
+                },
+                132,
+                132
+            ),
+            "Checking my PRs… 40/132"
+        );
+        assert_eq!(
+            progress(reviews, true, Searching, 60, 60),
+            "Syncing reviews… 60"
+        );
+        assert_eq!(
+            progress(
+                reviews,
+                true,
+                Checking {
+                    done: 20,
+                    total: 100
+                },
+                100,
+                100
+            ),
+            "Checking reviews… 20/100"
+        );
+        assert_eq!(
+            progress(mine, true, Rechecking { total: 3 }, 132, 132),
+            "Rechecking stale PRs… 3"
+        );
+        assert_eq!(progress(mine, false, Searching, 0, 0), "Syncing my PRs…");
+        assert_eq!(
+            progress(reviews, false, Searching, 4, 4),
+            "Syncing reviews… 4 updated"
+        );
+    }
+
+    #[test]
+    fn reviews_stay_off_until_asked_for_once() {
+        let (mut state, path) = demo_state("reviews");
+        assert_eq!(state.sync.lock().unwrap().reviews.state, "off");
+        state.demo = false;
+        assert!(activate_reviews(&state));
+        assert!(!activate_reviews(&state), "a second ask does nothing");
+        assert_eq!(state.sync.lock().unwrap().reviews.state, "loading");
+        let _ = std::fs::remove_file(&path);
     }
 }

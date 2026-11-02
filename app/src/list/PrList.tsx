@@ -59,8 +59,12 @@ interface Props {
   loadPage: (request: PageRequest) => Promise<PageDto>;
   /** Bumped when stored rows change (sync, links, Slack); reloads in place. */
   version: number;
-  /** "Syncing… 42 so far" while a sync runs, shown after the summary. */
+  /** "Syncing my PRs… 42" while a sync runs, shown after the summary. */
   syncProgress?: string | null;
+  /** Reads more rows from GitHub once the stored ones are all shown (To review). */
+  remoteMore?: (() => void) | null;
+  /** The debounced search, also run against GitHub (To review). */
+  onRemoteSearch?: (terms: string) => void;
   projects: ProjectDto[];
   viewKey: string;
   view: SavedView;
@@ -143,6 +147,8 @@ export function PrList({
   loadPage,
   version,
   syncProgress = null,
+  remoteMore = null,
+  onRemoteSearch,
   projects,
   viewKey,
   view,
@@ -217,6 +223,12 @@ export function PrList({
     [viewKey, view.grouping, view.ordering, view.direction, view.filters, debounced, collapsedKeys],
   );
   const list = usePagedList(loadPage, params, version, now);
+  // To review also asks GitHub for matches past the loaded window.
+  useEffect(() => {
+    if (debounced !== "") {
+      onRemoteSearch?.(debounced);
+    }
+  }, [debounced, onRemoteSearch]);
   const page = list.page;
   const sections = useMemo(
     () =>
@@ -295,8 +307,12 @@ export function PrList({
 
   function onListScroll() {
     const root = listRef.current;
-    if (root && hasMore && root.scrollTop + root.clientHeight >= root.scrollHeight - LOAD_AHEAD_PX) {
-      loadMore();
+    if (root && root.scrollTop + root.clientHeight >= root.scrollHeight - LOAD_AHEAD_PX) {
+      if (hasMore) {
+        loadMore();
+      } else if (!loadingMore && remoteMore && root.scrollTop > 0) {
+        remoteMore();
+      }
     }
   }
 
@@ -774,6 +790,13 @@ export function PrList({
           <p role="status" className="px-3 py-3 text-center text-xs text-slate-500">
             Loading more…
           </p>
+        )}
+        {!hasMore && !loadingMore && remoteMore && (
+          <div className="px-3 py-3 text-center">
+            <button type="button" className="rounded border border-slate-700 px-3 py-1 text-xs text-slate-300 hover:bg-slate-800" onClick={remoteMore}>
+              Load more review requests
+            </button>
+          </div>
         )}
         <div ref={sentinelRef} data-testid="list-sentinel" aria-hidden="true" className="h-px" />
         {page && !list.pending && !showSections && (

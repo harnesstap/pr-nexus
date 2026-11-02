@@ -35,6 +35,21 @@ pub struct SyncDto {
     pub paused: bool,
     pub revision: u64,
     pub live: crate::live::LiveDto,
+    pub reviews: ReviewsDto,
+}
+
+/// The lazy review-request sync (§6), shown inside the To review tab.
+#[derive(Debug, Serialize)]
+pub struct ReviewsDto {
+    /// `off`, `loading`, `ready` or `error`.
+    pub state: String,
+    pub message: String,
+    /// Open review requests on GitHub, when known.
+    pub total: Option<u64>,
+    /// Open review requests stored locally.
+    pub loaded: usize,
+    /// How many of the newest the window reads.
+    pub window: usize,
 }
 
 /// The keychain banner (§9): state, text, and whether Retry is offered.
@@ -249,8 +264,16 @@ pub struct OnboardingPatch {
     pub finished_at: Option<String>,
 }
 
-fn sync_dto(state: &AppState) -> SyncDto {
+pub(crate) fn sync_dto(state: &AppState) -> SyncDto {
+    let loaded = loaded_reviews(state);
     let status = state.sync.lock().expect("sync status");
+    let reviews = ReviewsDto {
+        state: status.reviews.state.clone(),
+        message: status.reviews.message.clone(),
+        total: status.reviews.total,
+        loaded,
+        window: status.reviews.window,
+    };
     SyncDto {
         phase: status.phase.clone(),
         message: status.message.clone(),
@@ -258,7 +281,85 @@ fn sync_dto(state: &AppState) -> SyncDto {
         paused: status.paused,
         revision: status.revision,
         live: crate::live::live_dto(state),
+        reviews,
     }
+}
+
+/// Open, visible review requests in the store.
+fn loaded_reviews(state: &AppState) -> usize {
+    let Ok(Some(account)) = state::github_account(&state.store) else {
+        return 0;
+    };
+    state
+        .store
+        .list_pull_requests_for_account(account.id)
+        .map(|prs| {
+            prs.iter()
+                .filter(|pr| {
+                    pr.state == pr_nexus_core::domain::PrState::Open
+                        && !pr.hidden
+                        && pr
+                            .involvement
+                            .contains(pr_nexus_core::domain::Involvement::REVIEW_REQUESTED)
+                })
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+/// Starts the review-request sync of this session in the background, the
+/// first time the To review tab opens (§6). Returns at once.
+pub(crate) fn start_reviews(app: &std::sync::Arc<AppState>) {
+    if !state::activate_reviews(app) {
+        return;
+    }
+    let background = app.clone();
+    let _ = std::thread::Builder::new()
+        .name("pr-nexus-reviews".into())
+        .spawn(move || {
+            let _ = state::run_reviews(&background);
+        });
+}
+
+#[tauri::command]
+pub async fn activate_reviews(
+    app: State<'_, std::sync::Arc<AppState>>,
+) -> Result<SyncDto, AppError> {
+    start_reviews(app.inner());
+    Ok(sync_dto(app.inner()))
+}
+
+/// "Load more": the next [`pr_nexus_core::sync::REVIEW_WINDOW`] review
+/// requests and their status, in the background.
+#[tauri::command]
+pub async fn load_more_reviews(
+    app: State<'_, std::sync::Arc<AppState>>,
+) -> Result<SyncDto, AppError> {
+    let background = app.inner().clone();
+    if !background.demo {
+        let _ = std::thread::Builder::new()
+            .name("pr-nexus-reviews".into())
+            .spawn(move || {
+                let _ = state::load_more_reviews(&background);
+            });
+    }
+    Ok(sync_dto(app.inner()))
+}
+
+/// The To review search box: a GitHub search of review requests matching
+/// `terms`, stored with their status. Resolves when it is done.
+#[tauri::command]
+pub async fn search_reviews(
+    app: State<'_, std::sync::Arc<AppState>>,
+    terms: String,
+) -> Result<SyncDto, AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        state::search_reviews(state, &terms)?;
+        Ok(sync_dto(state))
+    })
+    .await
 }
 
 #[derive(Serialize)]

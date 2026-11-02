@@ -22,6 +22,21 @@ export interface SyncStatus {
   revision: number;
   /** Live updates from the notifications inbox (§6). */
   live?: LiveStatus;
+  /** The lazy review-request sync of this session (§6). */
+  reviews?: ReviewsStatus;
+}
+
+/** Review requests sync once To review opens, newest first (§6). */
+export interface ReviewsStatus {
+  state: "off" | "loading" | "ready" | "error";
+  /** "Checking reviews… 20/100" while loading, else the last outcome. */
+  message: string;
+  /** Open review requests on GitHub, when known. */
+  total: number | null;
+  /** Open review requests stored locally. */
+  loaded: number;
+  /** How many of the newest the window reads. */
+  window: number;
 }
 
 export interface LiveStatus {
@@ -744,6 +759,12 @@ export interface Api {
   syncStatus(): Promise<SyncStatus>;
   /** Re-read every open pull request instead of only what changed (§6). */
   fullResync(): Promise<SyncStatus>;
+  /** Starts the review-request sync of this session; returns at once (§6). */
+  activateReviews?(): Promise<SyncStatus>;
+  /** Reads the next window of review requests in the background. */
+  loadMoreReviews?(): Promise<SyncStatus>;
+  /** Searches GitHub for review requests matching `terms`; resolves when stored. */
+  searchReviews?(terms: string): Promise<SyncStatus>;
   /** One slice of the list with counts over every match (§8.2). */
   listPage(request: PageRequest): Promise<PageDto>;
   /** Rows by id in the order asked; unknown ids are skipped. */
@@ -885,6 +906,9 @@ export const tauriApi: Api = {
   syncNow: () => invoke("sync_now"),
   syncStatus: () => invoke("sync_status"),
   fullResync: () => invoke("full_resync"),
+  activateReviews: () => invoke("activate_reviews"),
+  loadMoreReviews: () => invoke("load_more_reviews"),
+  searchReviews: (terms) => invoke("search_reviews", { terms }),
   listPage: (request) => invoke("list_page", { request }),
   rowsById: (ids) => invoke("rows_by_id", { ids }),
   linkCandidates: (projectId, query, limit) => invoke("link_candidates", { projectId, query, limit }),

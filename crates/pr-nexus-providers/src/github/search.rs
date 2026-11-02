@@ -196,6 +196,48 @@ impl GithubClient {
         })
     }
 
+    /// The `limit` first results of `query` (sorted by its own `sort:`),
+    /// page by page, and the match count GitHub reports. `on_page` gets each
+    /// page's rows not seen before.
+    pub(crate) fn search_newest(
+        &self,
+        what: &str,
+        query: &str,
+        involvement: Involvement,
+        limit: usize,
+        seen: &mut HashSet<String>,
+        on_page: &mut dyn FnMut(Vec<SyncedPullRequest>),
+    ) -> Result<u64, ProviderError> {
+        let mut level = 0;
+        let mut cursor = Value::Null;
+        let mut total = 0;
+        let mut taken = 0usize;
+        while taken < limit {
+            let body = self.paged(what, &mut level, |size| {
+                self.graphql(
+                    SEARCH,
+                    json!({ "query": query, "first": size.min(limit - taken), "cursor": cursor }),
+                )
+            })?;
+            let page = parse::parse_search(&body, self.account, involvement)?;
+            total = total.max(page.total);
+            taken += page.items.len();
+            let fresh: Vec<_> = page
+                .items
+                .into_iter()
+                .filter(|item| seen.insert(item.pull_request.remote.id.clone()))
+                .collect();
+            if !fresh.is_empty() {
+                on_page(fresh);
+            }
+            if !page.has_next || taken == 0 {
+                break;
+            }
+            cursor = page.cursor.map(Value::String).unwrap_or(Value::Null);
+        }
+        Ok(total)
+    }
+
     /// Pages `query` within `range`. When the first page reports more matches
     /// than GitHub lets through, queues both halves of the range instead.
     fn search_range(

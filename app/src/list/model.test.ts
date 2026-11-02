@@ -16,6 +16,8 @@ import {
   parseViewState,
   renameError,
   syncLabel,
+  reviewsLabel,
+  moreReviews,
   toggleParent,
 } from "./model";
 
@@ -161,4 +163,24 @@ test("the Starred filter counts as active and passes only starred rows", () => {
   const filters = { ...defaultFilters(), starred: true };
   expect(filtersActive(defaultFilters())).toBe(false);
   expect(filtersActive(filters)).toBe(true);
+});
+
+test("per-stage sync messages show as they are", () => {
+  const now = new Date();
+  const base = { phase: "syncing", message: "", synced_at: null, revision: 0 } as unknown as Parameters<typeof syncLabel>[0];
+  for (const message of ["Syncing my PRs… 12", "Checking my PRs… 10/132", "Rechecking stale PRs… 3"]) {
+    expect(syncLabel({ ...base, message }, now)).toBe(message);
+  }
+});
+
+test("the reviews label tracks the lazy review sync", () => {
+  const ready = { state: "ready" as const, message: "", total: 412, loaded: 100, window: 100 };
+  expect(reviewsLabel(undefined)).toBeNull();
+  expect(reviewsLabel({ ...ready, state: "off" })).toBeNull();
+  expect(reviewsLabel({ ...ready, state: "loading", message: "Checking reviews… 20/100" })).toBe("Checking reviews… 20/100");
+  expect(reviewsLabel({ ...ready, state: "loading", message: "" })).toBe("Loading reviews…");
+  expect(reviewsLabel(ready)).toBe("100 of 412 loaded");
+  expect(reviewsLabel({ ...ready, total: 100 })).toBeNull();
+  expect(moreReviews(ready)).toBe(true);
+  expect(moreReviews({ ...ready, loaded: 412 })).toBe(false);
 });
