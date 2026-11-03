@@ -126,6 +126,13 @@ pub struct BranchCache {
 }
 
 impl BranchCache {
+    /// Drops every cached comparison.
+    pub fn clear(&self) {
+        if let Ok(mut entries) = self.entries.lock() {
+            entries.clear();
+        }
+    }
+
     fn get(&self, pr: PrId, head: &str, base: &str) -> Option<BranchComparison> {
         let entries = self.entries.lock().expect("branch cache");
         entries

@@ -47,7 +47,10 @@ fn migration_is_idempotent() {
     let dirs = ProfileDirs::new(dir.path().join("pr-nexus.db"));
     drop(Store::open(&dirs.default_db).unwrap());
     let mut first = dirs.migrate(now()).unwrap();
-    let backup = std::fs::metadata(dirs.backup_path()).unwrap().modified().unwrap();
+    let backup = std::fs::metadata(dirs.backup_path())
+        .unwrap()
+        .modified()
+        .unwrap();
     first.profiles.push(Profile {
         id: "work-1".into(),
         name: "Work".into(),
@@ -57,7 +60,10 @@ fn migration_is_idempotent() {
     dirs.save(&first).unwrap();
     let again = dirs.migrate(now()).unwrap();
     assert_eq!(again, first, "a second run keeps the registry as saved");
-    let after = std::fs::metadata(dirs.backup_path()).unwrap().modified().unwrap();
+    let after = std::fs::metadata(dirs.backup_path())
+        .unwrap()
+        .modified()
+        .unwrap();
     assert_eq!(backup, after, "the backup is never retaken");
 }
 
@@ -132,10 +138,20 @@ fn copy_copies_only_the_chosen_items_and_does_not_link_them() {
         .insert_account(account(AccountKind::GitHub, "1", None, "github:alice"))
         .unwrap();
     source
-        .insert_account(account(AccountKind::Slack, "T1:U1", Some("acme"), "slack:T1:U1"))
+        .insert_account(account(
+            AccountKind::Slack,
+            "T1:U1",
+            Some("acme"),
+            "slack:T1:U1",
+        ))
         .unwrap();
     source
-        .insert_account(account(AccountKind::Slack, "T2:U2", Some("acme-labs"), "slack:T2:U2"))
+        .insert_account(account(
+            AccountKind::Slack,
+            "T2:U2",
+            Some("acme-labs"),
+            "slack:T2:U2",
+        ))
         .unwrap();
     let project = source.create_project("Checkout".into()).unwrap();
     source
@@ -168,7 +184,10 @@ fn copy_copies_only_the_chosen_items_and_does_not_link_them() {
         },
     )
     .unwrap();
-    assert_eq!(keys, vec!["github:alice".to_owned(), "slack:T2:U2".to_owned()]);
+    assert_eq!(
+        keys,
+        vec!["github:alice".to_owned(), "slack:T2:U2".to_owned()]
+    );
 
     let target = Store::open(&target_path).unwrap();
     let accounts = target.list_accounts().unwrap();
@@ -179,11 +198,15 @@ fn copy_copies_only_the_chosen_items_and_does_not_link_them() {
     assert_eq!(copied.len(), 1);
     assert_eq!(target.list_project_rules(copied[0].id).unwrap().len(), 1);
     // Templates were not picked.
-    assert!(crate::settings::message_templates(&target).unwrap()
-        == crate::review::message_template::MessageTemplates::default());
+    assert!(
+        crate::settings::message_templates(&target).unwrap()
+            == crate::review::message_template::MessageTemplates::default()
+    );
 
     // A copy, not a link: renaming in the target leaves the source alone.
-    target.rename_project(copied[0].id, "Payments".into()).unwrap();
+    target
+        .rename_project(copied[0].id, "Payments".into())
+        .unwrap();
     assert_eq!(source.list_projects().unwrap()[0].name, "Checkout");
 
     // Copying again adds no duplicates.

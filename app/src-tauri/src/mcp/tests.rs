@@ -23,6 +23,7 @@ impl AuditSink for Recorder {
 }
 
 struct Harness {
+    state: Arc<AppState>,
     control: Arc<McpControl>,
     audit: Arc<Recorder>,
     url: String,
@@ -36,7 +37,7 @@ async fn harness() -> Harness {
     let state = Arc::new(AppState::for_tests(&dir.path().join("test.db"), true));
     crate::demo::seed_if_empty(&state.store).unwrap();
     let audit = Arc::new(Recorder::default());
-    let control = Arc::new(McpControl::with_audit(state, audit.clone(), None).unwrap());
+    let control = Arc::new(McpControl::with_audit(state.clone(), audit.clone(), None).unwrap());
     let view = control
         .update(McpSettings {
             enabled: true,
@@ -54,6 +55,7 @@ async fn harness() -> Harness {
     assert!(url.starts_with("http://127.0.0.1:"));
     let token = control.token().await.unwrap();
     Harness {
+        state,
         control,
         audit,
         url,
@@ -248,14 +250,20 @@ async fn tools_list_has_the_read_tools_with_schemas() {
         .collect();
     assert_eq!(
         names,
-        ["list_projects", "get_project", "list_prs", "get_pr"]
+        [
+            "list_profiles",
+            "list_projects",
+            "get_project",
+            "list_prs",
+            "get_pr"
+        ]
     );
     for tool in tools {
         assert_eq!(tool["annotations"]["readOnlyHint"], true, "{tool}");
         assert_eq!(tool["inputSchema"]["type"], "object", "{tool}");
         assert!(tool["description"].as_str().unwrap().len() > 80);
     }
-    let list_prs = &tools[2]["inputSchema"];
+    let list_prs = &tools[3]["inputSchema"];
     let schema = list_prs.to_string();
     for status in ["merge_ready", "ci_trouble", "no_review", "idle"] {
         assert!(schema.contains(status), "{status} missing from {schema}");
@@ -295,12 +303,12 @@ async fn agent_facing_text_has_no_rust_doc_syntax() {
     }
     let tools = reply["result"]["tools"].as_array().unwrap();
     assert!(tools.len() > 4, "write tools missing from the check");
-    let starred = &tools[2]["inputSchema"]["properties"]["starred"]["description"];
+    let starred = &tools[3]["inputSchema"]["properties"]["starred"]["description"];
     assert_eq!(
         starred,
         "true: starred only; false: not starred; omit: any."
     );
-    for tool in [&tools[1], &tools[2]] {
+    for tool in [&tools[2], &tools[3]] {
         let limit = &tool["inputSchema"]["properties"]["limit"];
         assert_eq!(limit["minimum"], 1, "{limit}");
         assert_eq!(limit["maximum"], 200, "{limit}");
@@ -1054,4 +1062,50 @@ async fn slack_reads_are_off_by_default_then_audited_without_text() {
     let text = format!("{rows:?}");
     assert!(text.contains("slack:C0ACME0001"), "{text}");
     assert!(!text.contains("secret plans"), "{text}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn tools_take_a_profile_and_default_to_the_active_one() {
+    let h = harness().await;
+    let (labs, _) = h.state.profiles.create("Acme Labs", &[]).unwrap();
+    let session = h.session().await;
+
+    let listed = h.call(&session, "list_profiles", json!({})).await;
+    let profiles = &listed["structuredContent"]["profiles"];
+    assert_eq!(profiles.as_array().unwrap().len(), 2, "{listed}");
+    assert_eq!(listed["structuredContent"]["active"], "default");
+
+    let active = h.call(&session, "list_projects", json!({})).await;
+    let by_name = h
+        .call(&session, "list_projects", json!({"profile": "Acme Labs"}))
+        .await;
+    let by_id = h
+        .call(&session, "list_projects", json!({"profile": labs.id}))
+        .await;
+    assert_ne!(
+        active["structuredContent"], by_name["structuredContent"],
+        "{by_name}"
+    );
+    assert_eq!(by_name["structuredContent"], by_id["structuredContent"]);
+
+    let unknown = h
+        .call(&session, "list_projects", json!({"profile": "nope"}))
+        .await;
+    assert_eq!(unknown["isError"], true, "{unknown}");
+
+    let reply = h.rpc(&session, 3, "tools/list", json!({})).await;
+    for tool in reply["result"]["tools"].as_array().unwrap() {
+        if tool["name"] != "list_profiles" {
+            assert!(
+                tool["inputSchema"]["properties"]["profile"].is_object(),
+                "{tool}"
+            );
+        }
+    }
+    let audited = h.audit.0.lock().unwrap();
+    assert!(
+        audited
+            .iter()
+            .any(|e| e.profile.as_deref() == Some(labs.id.as_str()))
+    );
 }

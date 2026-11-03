@@ -95,6 +95,8 @@ pub async fn keyring_retry(
 
 #[derive(Serialize)]
 pub struct Bootstrap {
+    /// Every profile; the active one has `active: true` (§3.4).
+    pub profiles: Vec<crate::profiles::commands::ProfileDto>,
     pub onboarding: OnboardingState,
     pub resume_step: String,
     pub steps: Vec<String>,
@@ -423,6 +425,7 @@ pub async fn bootstrap(app: State<'_, std::sync::Arc<AppState>>) -> Result<Boots
             .or(settings::oauth_client_id(&state.store)?.into())
             .filter(|value| !value.is_empty());
         Ok(Bootstrap {
+            profiles: crate::profiles::commands::list(state)?,
             resume_step: resume.as_str().to_owned(),
             steps: state::registry_steps()
                 .into_iter()
@@ -515,13 +518,19 @@ pub async fn connect_github(
     app: State<'_, std::sync::Arc<AppState>>,
     mode: String,
     pat: Option<String>,
+    login: Option<String>,
 ) -> Result<GithubSession, AppError> {
     let app = blocking::Handle::new(&app);
     blocking::run(move || {
         let state = app.inner().as_ref();
+        // Only the default profile follows gh's active account. Another
+        // profile keeps its own copy of the token (§3.4), so switching gh
+        // accounts elsewhere never changes which account it uses.
+        let own_token = state.profile() != pr_nexus_core::profiles::DEFAULT_ID;
         let auth_mode = match mode.as_str() {
+            "gh_cli" if own_token => AuthMode::Pat,
             "gh_cli" => AuthMode::GhCli,
-            "pat" => AuthMode::Pat,
+            "pat" | "gh_user" => AuthMode::Pat,
             other => {
                 return Err(AppError::new(
                     "validation",
@@ -531,7 +540,17 @@ pub async fn connect_github(
         };
         let token = if let Some(token) = github::github_token_from_env() {
             token
-        } else if auth_mode == AuthMode::GhCli {
+        } else if mode == "gh_user" {
+            let login = login
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| AppError::new("validation", "Pick a gh account"))?;
+            match github::read_gh_token_for(Some(login.trim())) {
+                github::GhProbe::Ready { token } => token,
+                github::GhProbe::Unavailable { reason } => {
+                    return Err(AppError::new("unauthorized", reason));
+                }
+            }
+        } else if mode == "gh_cli" {
             match github::read_gh_token() {
                 github::GhProbe::Ready { token } => token,
                 github::GhProbe::Unavailable { reason } => {

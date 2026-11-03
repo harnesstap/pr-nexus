@@ -89,7 +89,12 @@ pub struct DeviceSession {
 }
 
 pub struct AppState {
-    pub store: Store,
+    /// The active profile's store (§3.4).
+    pub store: crate::profiles::StoreSlot,
+    pub profiles: Arc<crate::profiles::ProfileManager>,
+    /// The profile this state serves. The main state follows switches; a
+    /// state built for an MCP `profile` argument stays on one.
+    pub profile_id: std::sync::RwLock<String>,
     pub vault: Arc<Vault>,
     /// One lazy Slack MCP session per connected workspace account.
     pub chats: Mutex<HashMap<i64, Arc<dyn ChatProvider>>>,
@@ -118,15 +123,32 @@ pub struct AppState {
 
 impl AppState {
     pub fn open(path: PathBuf) -> Result<Self, AppError> {
-        let store = Store::open(&path)?;
-        let vault = Vault::open();
         let demo = demo_enabled();
+        let profiles = Arc::new(crate::profiles::ProfileManager::open(path)?);
+        let active = profiles.registry().active;
+        let vault = Vault::open();
+        vault.set_profile(&active);
+        let state = Self::build(profiles, &active, Arc::new(vault), demo)?;
         if demo {
-            crate::demo::seed_if_empty(&store)?;
+            crate::demo::seed_if_empty(&state.store)?;
         }
+        Ok(state)
+    }
+
+    /// A state over `profile`, sharing `profiles`.
+    pub(crate) fn build(
+        profiles: Arc<crate::profiles::ProfileManager>,
+        profile: &str,
+        vault: Arc<Vault>,
+        demo: bool,
+    ) -> Result<Self, AppError> {
+        let home = profiles.store(pr_nexus_core::profiles::DEFAULT_ID)?;
+        let store = profiles.store(profile)?;
         Ok(Self {
-            store,
-            vault: Arc::new(vault),
+            store: crate::profiles::StoreSlot::new(store, home),
+            profiles,
+            profile_id: std::sync::RwLock::new(profile.to_owned()),
+            vault,
             chats: Mutex::new(HashMap::new()),
             slack_cancel: Mutex::new(None),
             slack_tokens: Mutex::new(HashMap::new()),
@@ -146,29 +168,89 @@ impl AppState {
             demo,
         })
     }
+
+    /// The id of the profile this state serves.
+    pub fn profile(&self) -> String {
+        self.profile_id
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Makes `id` the active profile: stops the sync in flight, points the
+    /// store and the vault at the profile, and drops what belonged to the
+    /// previous one (Slack sessions, caches, sign-ins, sync status).
+    pub fn switch_profile(&self, id: &str) -> Result<(), AppError> {
+        let profile = self.profiles.resolve(id)?;
+        let store = self.profiles.store(&profile.id)?;
+        // A running sync sees the new generation at its next progress
+        // report and unwinds; holding the gate keeps a new one from
+        // starting until the switch is done.
+        self.profiles.bump();
+        let _gate = self
+            .sync_gate
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        self.profiles.set_active(&profile.id)?;
+        self.store.set(store);
+        self.vault.set_profile(&profile.id);
+        *self
+            .profile_id
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = profile.id.clone();
+        self.chats
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
+        self.slack_tokens
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
+        self.slack_proxy.clear();
+        if let Some(cancel) = self
+            .slack_cancel
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+        {
+            cancel.cancel();
+        }
+        *self.device.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        self.branch_cache.clear();
+        self.reviews_active.store(false, Ordering::Relaxed);
+        {
+            let mut status = lock_status(self);
+            let revision = status.revision + 1;
+            *status = if self.demo {
+                SyncStatus::demo()
+            } else {
+                SyncStatus::idle()
+            };
+            status.revision = revision;
+        }
+        drop(_gate);
+        crate::mcp::profiles::forget(&profile.id);
+        crate::live::request_sync(self);
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 impl AppState {
     /// A state over a fresh database at `path`, with an in-memory vault.
     pub(crate) fn for_tests(path: &std::path::Path, demo: bool) -> Self {
-        Self {
-            store: Store::open(path).expect("test store"),
-            vault: Arc::new(Vault::memory("test")),
-            chats: Mutex::new(HashMap::new()),
-            slack_cancel: Mutex::new(None),
-            slack_tokens: Mutex::new(HashMap::new()),
-            slack_proxy: crate::mcp::slack::SlackProxy::default(),
-            sync: Mutex::new(SyncStatus::demo()),
-            sync_gate: Mutex::new(()),
-            device: Mutex::new(None),
-            focused: AtomicBool::new(true),
-            reviews_active: AtomicBool::new(false),
-            wake: Arc::new((Mutex::new(false), Condvar::new())),
-            live: crate::live::LiveShared::default(),
-            branch_cache: pr_nexus_core::branch::BranchCache::default(),
+        let profiles = Arc::new(
+            crate::profiles::ProfileManager::open(path.to_owned()).expect("test profiles"),
+        );
+        let mut state = Self::build(
+            profiles,
+            pr_nexus_core::profiles::DEFAULT_ID,
+            Arc::new(Vault::memory("test")),
             demo,
-        }
+        )
+        .expect("test store");
+        state.sync = Mutex::new(SyncStatus::demo());
+        state
     }
 }
 
@@ -314,7 +396,7 @@ fn settle(
         status.paused = false;
     }
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work))
-        .unwrap_or_else(|_| Err(AppError::new("internal", "sync stopped unexpectedly")));
+        .unwrap_or_else(|payload| Err(unwound(payload.as_ref())));
     let mut status = lock_status(state);
     match &outcome {
         Ok(report) if report.paused => {
@@ -351,6 +433,15 @@ fn settle(
         }
     }
     outcome
+}
+
+/// The error for a sync that unwound: a profile switch, or a panic.
+fn unwound(payload: &(dyn std::any::Any + Send)) -> AppError {
+    if payload.is::<crate::profiles::Cancelled>() {
+        AppError::new("cancelled", "Sync stopped: switched profile")
+    } else {
+        AppError::new("internal", "sync stopped unexpectedly")
+    }
 }
 
 /// The sync status, even after a panic poisoned its lock.
@@ -418,7 +509,13 @@ fn progress_writer<'a>(
     let mut throttle = sync::Throttle::new(sync::PROGRESS_EVERY);
     let mut shown = 0usize;
     let mut stage = None;
+    let generation = state.profiles.generation();
     move |progress| {
+        if state.profiles.generation() != generation {
+            // A profile switch: stop here. `settle` and `review_pass`
+            // catch the unwind; `resume_unwind` skips the panic hook.
+            std::panic::resume_unwind(Box::new(crate::profiles::Cancelled));
+        }
         let key = (progress.bucket, std::mem::discriminant(&progress.stage));
         let moved = stage != Some(key);
         stage = Some(key);
@@ -672,24 +769,10 @@ mod tests {
     use super::*;
 
     fn demo_state(name: &str) -> (AppState, PathBuf) {
-        let path = std::env::temp_dir().join(format!("pr-nexus-{name}-{}.db", std::process::id()));
-        let state = AppState {
-            store: Store::open(&path).unwrap(),
-            vault: Arc::new(Vault::memory("test")),
-            chats: Mutex::new(HashMap::new()),
-            slack_cancel: Mutex::new(None),
-            slack_tokens: Mutex::new(HashMap::new()),
-            slack_proxy: crate::mcp::slack::SlackProxy::default(),
-            sync: Mutex::new(SyncStatus::demo()),
-            sync_gate: Mutex::new(()),
-            device: Mutex::new(None),
-            focused: AtomicBool::new(true),
-            reviews_active: AtomicBool::new(false),
-            wake: Arc::new((Mutex::new(false), Condvar::new())),
-            live: crate::live::LiveShared::default(),
-            branch_cache: pr_nexus_core::branch::BranchCache::default(),
-            demo: true,
-        };
+        // Each state gets its own directory: profiles.json sits next to the db.
+        let dir = std::env::temp_dir().join(format!("pr-nexus-{name}-{}", std::process::id()));
+        let path = dir.join("pr-nexus.db");
+        let state = AppState::for_tests(&path, true);
         (state, path)
     }
 
@@ -704,7 +787,7 @@ mod tests {
         assert_eq!(status.phase, "demo");
         assert!(!status.message.contains("failed"));
         drop(status);
-        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[test]
@@ -726,7 +809,7 @@ mod tests {
             waiter.join().unwrap().is_none(),
             "it joined instead of syncing again"
         );
-        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     /// Regression: a sync that panicked left the phase at "syncing" forever.
@@ -739,7 +822,7 @@ mod tests {
         assert_eq!(status.phase, "error");
         assert!(status.message.starts_with("Sync failed"));
         drop(status);
-        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[test]
@@ -772,7 +855,7 @@ mod tests {
         assert_eq!(status.message, "Synced · 911 pull requests");
         assert!(status.synced_at.is_some());
         drop(status);
-        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     fn progress(
@@ -849,6 +932,6 @@ mod tests {
         assert!(activate_reviews(&state));
         assert!(!activate_reviews(&state), "a second ask does nothing");
         assert_eq!(state.sync.lock().unwrap().reviews.state, "loading");
-        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 }

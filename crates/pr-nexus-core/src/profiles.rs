@@ -250,7 +250,7 @@ pub fn new_id(name: &str, taken: &[&str], now: DateTime<Utc>) -> String {
 
 /// What the Add-a-profile wizard copies from one existing profile.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(rename_all = "camelCase", default)]
 pub struct ReuseItems {
     /// The GitHub account, its tracked orgs and the personal-repos switch.
     pub github: bool,
@@ -287,12 +287,19 @@ const GITHUB_SETTINGS: &[&str] = &[
 /// existing profile database). Rows are copied, never shared: later edits
 /// on either side stay there. Returns the copied accounts' keychain keys,
 /// whose secrets the caller copies between the profiles' vault scopes.
-pub fn copy_items(target: &Path, source: &Path, items: &ReuseItems) -> Result<Vec<String>, CoreError> {
+pub fn copy_items(
+    target: &Path,
+    source: &Path,
+    items: &ReuseItems,
+) -> Result<Vec<String>, CoreError> {
     let mut conn = Connection::open(target).map_err(db)?;
     conn.pragma_update(None, "foreign_keys", "ON").map_err(db)?;
     conn.pragma_update(None, "busy_timeout", 5000).map_err(db)?;
-    conn.execute("ATTACH DATABASE ?1 AS src", [source.to_string_lossy().as_ref()])
-        .map_err(db)?;
+    conn.execute(
+        "ATTACH DATABASE ?1 AS src",
+        [source.to_string_lossy().as_ref()],
+    )
+    .map_err(db)?;
     let keys = copy_in(&mut conn, items);
     conn.execute("DETACH DATABASE src", []).map_err(db)?;
     keys
@@ -371,7 +378,9 @@ fn copy_in(conn: &mut Connection, items: &ReuseItems) -> Result<Vec<String>, Cor
     if items.projects {
         let cols = columns(&tx, "projects")?;
         tx.execute(
-            &format!("INSERT OR IGNORE INTO main.projects ({cols}) SELECT {cols} FROM src.projects"),
+            &format!(
+                "INSERT OR IGNORE INTO main.projects ({cols}) SELECT {cols} FROM src.projects"
+            ),
             [],
         )
         .map_err(db)?;

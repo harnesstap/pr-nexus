@@ -41,18 +41,22 @@ impl ToolSpec {
             Capability::Reads | Capability::SlackReads | Capability::SlackPrivateSearch
         );
         debug_assert!(!read_only || (!self.destructive && self.idempotent));
-        Tool::new(self.name, self.description, (self.input_schema)())
-            .with_title(self.title)
-            .with_annotations(
-                ToolAnnotations::with_title(self.title)
-                    .read_only(read_only)
-                    .destructive(self.destructive)
-                    .idempotent(self.idempotent)
-                    .open_world(!matches!(
-                        self.capability,
-                        Capability::Reads | Capability::LocalWrites
-                    )),
-            )
+        Tool::new(
+            self.name,
+            self.description,
+            super::profiles::with_arg((self.input_schema)()),
+        )
+        .with_title(self.title)
+        .with_annotations(
+            ToolAnnotations::with_title(self.title)
+                .read_only(read_only)
+                .destructive(self.destructive)
+                .idempotent(self.idempotent)
+                .open_world(!matches!(
+                    self.capability,
+                    Capability::Reads | Capability::LocalWrites
+                )),
+        )
     }
 }
 
@@ -68,6 +72,18 @@ pub fn registry() -> Vec<ToolSpec> {
 
 fn read_tools() -> Vec<ToolSpec> {
     vec![
+        ToolSpec {
+            name: "list_profiles",
+            title: "List profiles",
+            description: "List PR Nexus profiles (`id`, `name`, `active`). Each profile has its own GitHub account, \
+                Slack workspaces, projects and settings. Every tool acts on the active profile unless \
+                its `profile` argument names another one (by name or id).",
+            capability: Capability::Reads,
+            destructive: false,
+            idempotent: true,
+            input_schema: schema_for_type::<super::profiles::ListProfilesArgs>,
+            handler: super::profiles::list_profiles,
+        },
         ToolSpec {
             name: "list_projects",
             title: "List projects",

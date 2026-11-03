@@ -449,7 +449,9 @@ impl Vault {
     pub fn remove_profile(&self, profile: &str) -> Result<usize, CoreError> {
         let scope = profile_scope(profile);
         if scope.is_empty() {
-            return Err(CoreError::Store("the default profile's secrets are not removed".into()));
+            return Err(CoreError::Store(
+                "the default profile's secrets are not removed".into(),
+            ));
         }
         let keys: Vec<String> = {
             let inner = self.shared.wait_for_read()?;
@@ -1074,11 +1076,20 @@ mod tests {
         let work = vault.view("work-1");
         assert_eq!(work.get("github:1").unwrap(), None);
         work.set("github:1", "work-token").unwrap();
-        assert_eq!(vault.get("github:1").unwrap().as_deref(), Some("default-token"));
+        assert_eq!(
+            vault.get("github:1").unwrap().as_deref(),
+            Some("default-token")
+        );
         assert_eq!(work.get("github:1").unwrap().as_deref(), Some("work-token"));
         vault.set_profile("work-1");
-        assert_eq!(vault.get("github:1").unwrap().as_deref(), Some("work-token"));
-        assert_eq!(vault.global().get("github:1").unwrap().as_deref(), Some("default-token"));
+        assert_eq!(
+            vault.get("github:1").unwrap().as_deref(),
+            Some("work-token")
+        );
+        assert_eq!(
+            vault.global().get("github:1").unwrap().as_deref(),
+            Some("default-token")
+        );
     }
 
     #[test]
@@ -1087,7 +1098,11 @@ mod tests {
         vault.set("slack:T1:U1", "xoxp-a").unwrap();
         vault.set("mcp.token", "global").unwrap();
         vault
-            .copy_between("default", "work-1", &["slack:T1:U1".into(), "missing".into()])
+            .copy_between(
+                "default",
+                "work-1",
+                &["slack:T1:U1".into(), "missing".into()],
+            )
             .unwrap();
         let work = vault.view("work-1");
         assert_eq!(work.get("slack:T1:U1").unwrap().as_deref(), Some("xoxp-a"));
