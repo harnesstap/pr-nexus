@@ -349,3 +349,32 @@ test("opening To review starts the review sync once and offers more", async () =
   fireEvent.click(await screen.findByRole("button", { name: "Load more review requests" }));
   await waitFor(() => expect(loadMoreReviews).toHaveBeenCalledTimes(1));
 });
+
+test("To review filters with a GitHub qualifier search GitHub, debounced, with their own window", async () => {
+  const fake = api([]);
+  const reviews = { state: "ready" as const, message: "", total: 412, loaded: 100, window: 100 };
+  const saved = JSON.stringify({ filters: { ci: ["failing"] } });
+  const loadViewState = (key: string) => Promise.resolve(key === "to_review" ? saved : null);
+  const filtered = { key: "|status:failure", state: "ready" as const, message: "", total: 57, loaded: 40, window: 100, retry_at: null };
+  const activateReviews = vi.fn(() => Promise.resolve({ ...boot.sync, reviews }));
+  const filterReviews = vi.fn(() => Promise.resolve({ ...boot.sync, revision: 1, reviews: { ...reviews, filtered } }));
+  const loadMoreReviews = vi.fn(() => Promise.resolve({ ...boot.sync, reviews }));
+  render(<ListScreen api={{ ...fake, loadViewState, activateReviews, filterReviews, loadMoreReviews }} boot={boot} onBoot={() => {}} />);
+  fireEvent.click(await screen.findByRole("button", { name: /To review/ }));
+  await waitFor(() => expect(filterReviews).toHaveBeenCalledTimes(1), { timeout: 3_000 });
+  expect(filterReviews).toHaveBeenCalledWith({ orgs: [], draft: null, review: null, ci: "failure" }, false);
+  expect(await screen.findByText(/40 of 57 loaded/)).toBeInTheDocument();
+  fireEvent.click(await screen.findByRole("button", { name: "Load more review requests" }));
+  await waitFor(() => expect(filterReviews).toHaveBeenLastCalledWith({ orgs: [], draft: null, review: null, ci: "failure" }, true));
+  expect(loadMoreReviews).not.toHaveBeenCalled();
+});
+
+test("My PRs never searches GitHub with its filters", async () => {
+  const fake = api([]);
+  const saved = JSON.stringify({ filters: { ci: ["failing"] } });
+  const filterReviews = vi.fn(() => Promise.resolve(boot.sync));
+  render(<ListScreen api={{ ...fake, loadViewState: () => Promise.resolve(saved), filterReviews }} boot={boot} onBoot={() => {}} />);
+  await screen.findByRole("button", { name: /To review/ });
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  expect(filterReviews).not.toHaveBeenCalled();
+});

@@ -10,6 +10,7 @@ use pr_nexus_core::onboarding::{self, OnboardingState};
 use pr_nexus_core::overview::{self, MergeMethod, PrOverview};
 use pr_nexus_core::ownership::{self, OwnershipReport};
 use pr_nexus_core::providers::{SetupStep, VcsProvider};
+use pr_nexus_core::review_filter::RemoteReviewFilter;
 use pr_nexus_core::search;
 use pr_nexus_core::settings::{self, DEFAULT_REDIRECT};
 use pr_nexus_core::store::ListFacts;
@@ -50,6 +51,22 @@ pub struct ReviewsDto {
     pub loaded: usize,
     /// How many of the newest the window reads.
     pub window: usize,
+    /// The current GitHub-side filter's own window and total, when one is on.
+    pub filtered: Option<FilteredDto>,
+}
+
+/// A filtered review query (§6): "loaded of total" for the filter.
+#[derive(Debug, Serialize)]
+pub struct FilteredDto {
+    pub key: String,
+    /// `loading`, `ready`, `limited` or `error`.
+    pub state: String,
+    pub message: String,
+    pub total: Option<u64>,
+    pub loaded: usize,
+    pub window: usize,
+    /// While rate limited: when GitHub filtering resumes (RFC 3339).
+    pub retry_at: Option<String>,
 }
 
 /// The keychain banner (§9): state, text, and whether Retry is offered.
@@ -91,6 +108,24 @@ pub async fn keyring_retry(
 ) -> Result<KeyringDto, AppError> {
     let app = blocking::Handle::new(&app);
     blocking::run(move || Ok(KeyringDto::from(app.vault.retry()))).await
+}
+
+/// The GitHub-side part of the To review filters (§6): searches review
+/// requests with it, in a window of its own (`more` widens it), and stores
+/// what it finds. An empty filter clears it. Resolves when it is done.
+#[tauri::command]
+pub async fn filter_reviews(
+    app: State<'_, std::sync::Arc<AppState>>,
+    filter: RemoteReviewFilter,
+    more: bool,
+) -> Result<SyncDto, AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        state::filter_reviews(state, &filter, more)?;
+        Ok(sync_dto(state))
+    })
+    .await
 }
 
 #[derive(Serialize)]
@@ -273,6 +308,23 @@ pub(crate) fn sync_dto(state: &AppState) -> SyncDto {
         total: status.reviews.total,
         loaded,
         window: status.reviews.window,
+        filtered: status.reviews.filters.current.as_ref().and_then(|key| {
+            let entry = status.reviews.filters.entries.get(key)?;
+            Some(FilteredDto {
+                key: key.clone(),
+                state: entry.state.clone(),
+                message: entry.message.clone(),
+                total: entry.total,
+                loaded: entry.loaded,
+                window: entry.window,
+                retry_at: status
+                    .reviews
+                    .filters
+                    .hold_until
+                    .filter(|_| entry.state == "limited")
+                    .map(|at| at.to_rfc3339()),
+            })
+        }),
     };
     SyncDto {
         phase: status.phase.clone(),

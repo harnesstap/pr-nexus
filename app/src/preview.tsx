@@ -23,7 +23,8 @@ const steps = [
 ] as const;
 
 // `?sync=mine` shows the header mid-sync of My PRs; `?sync=reviews` shows
-// the To review tab while review requests load in the background.
+// the To review tab while review requests load in the background;
+// `?sync=filtered` shows To review with a CI filter answered on GitHub.
 const scene = new URLSearchParams(window.location.search).get("sync");
 // `?screen=wizard&gh=missing` (or `gh=logged-out`) shows the GitHub step
 // when gh cannot be used.
@@ -268,6 +269,7 @@ const api: Api = {
   activateReviews: () => Promise.resolve(boot.sync),
   loadMoreReviews: () => Promise.resolve(boot.sync),
   searchReviews: () => Promise.resolve(boot.sync),
+  filterReviews: () => Promise.resolve(boot.sync),
   probeGh: () => Promise.resolve(ghStatus),
   listProjects: () => Promise.resolve(projects.map((item) => ({ ...item }))),
   createProject: (name) => Promise.resolve({ id: 99, name, color: "#7c5cbf", archived: false, description: "", sort_order: 99 , jira_links: [] }),
@@ -305,6 +307,15 @@ if (scene === "mine") {
   const loading = { ...boot.sync, reviews: { state: "loading" as const, message: "Checking reviews… 30/100", total: 412, loaded: 2, window: 100 } };
   api.syncStatus = () => Promise.resolve(loading);
   api.activateReviews = () => Promise.resolve(loading);
+} else if (scene === "filtered") {
+  const reviews = { state: "ready" as const, message: "", total: 412, loaded: 100, window: 100 };
+  const filtered = { key: "|status:failure", state: "ready" as const, message: "", total: 57, loaded: 40, window: 100, retry_at: null };
+  const answered = { ...boot.sync, revision: boot.sync.revision + 1, reviews: { ...reviews, filtered } };
+  api.activateReviews = () => Promise.resolve({ ...boot.sync, reviews });
+  api.filterReviews = () => Promise.resolve(answered);
+  api.syncStatus = () => Promise.resolve(answered);
+  api.loadViewState = (key) =>
+    Promise.resolve(JSON.stringify(key === "to_review" ? { show: { notRequested: true }, filters: { ci: ["failing"] } } : { show: { notRequested: true } }));
 }
 
 document.body.style.margin = "0";

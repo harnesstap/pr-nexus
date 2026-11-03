@@ -1,5 +1,5 @@
 import { targetWorkspaceName } from "../slack/workspaces";
-import type { BulkOutcome, BulkResult, ListRow, ProjectDto, ReviewsStatus, SlackIndicator, SyncStatus } from "../api";
+import type { BulkOutcome, BulkResult, FilteredReviews, ListRow, ProjectDto, RemoteReviewFilter, ReviewsStatus, SlackIndicator, SyncStatus } from "../api";
 import { channelLabel } from "../api";
 
 export const AUTHOR = 1;
@@ -596,6 +596,9 @@ export function reviewsLabel(reviews: ReviewsStatus | undefined): string | null 
   if (!reviews || reviews.state === "off") {
     return null;
   }
+  if (reviews.filtered) {
+    return filteredLabel(reviews.filtered);
+  }
   if (reviews.state === "loading") {
     return /^(Loading|Checking|Rechecking)/.test(reviews.message) ? reviews.message : "Loading reviews…";
   }
@@ -605,7 +608,139 @@ export function reviewsLabel(reviews: ReviewsStatus | undefined): string | null 
   return reviews.total !== null && reviews.total > reviews.loaded ? `${reviews.loaded} of ${reviews.total} loaded` : null;
 }
 
-/** Whether GitHub has review requests past the loaded window. */
+function filteredLabel(filtered: FilteredReviews): string | null {
+  switch (filtered.state) {
+    case "loading":
+      return "Searching GitHub…";
+    case "limited": {
+      const at = filtered.retry_at ? new Date(filtered.retry_at) : null;
+      const until = at && !Number.isNaN(at.getTime()) ? ` until ${at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "";
+      return `${filtered.message || "GitHub rate limit · filtering loaded reviews only"}${until}`;
+    }
+    case "error":
+      return filtered.message || "GitHub filter failed";
+    case "ready":
+      return filtered.total !== null && filtered.total > filtered.loaded ? `${filtered.loaded} of ${filtered.total} loaded` : null;
+    default: {
+      const unreachable: never = filtered.state;
+      return unreachable;
+    }
+  }
+}
+
+/** Whether GitHub has review requests past the loaded window (the filter's own one when a filter is on). */
 export function moreReviews(reviews: ReviewsStatus | undefined): boolean {
+  if (reviews?.filtered) {
+    const filtered = reviews.filtered;
+    return filtered.state === "ready" && filtered.total !== null && filtered.total > filtered.loaded;
+  }
   return !!reviews && reviews.state === "ready" && reviews.total !== null && reviews.total > reviews.loaded;
+}
+
+/**
+ * The part of the To review filters GitHub search can answer (§6), or null
+ * when none can. Each qualifier returns a superset of what the local filter
+ * keeps, and every filter still runs locally afterwards, so nothing is lost:
+ * - Org: the chosen owners (searched instead of the whole tracked scope).
+ * - Status / draft: only Draft is `draft:true`; any choice without Draft is `draft:false`.
+ * - Review decision: one choice of Approved, Changes requested or Review required.
+ * - CI: one choice of Passing, Failing or Pending (`status:`).
+ * - Quick filters Draft, Review declined and Ready to merge.
+ * Local only: projects, Slack request, starred, archived, the search box,
+ * readiness (Ready / Unknown / Blocked), "None" choices, several choices in
+ * one submenu, and the No review and CI or conflicts quick filters.
+ */
+export function remoteReviewFilter(filters: Filters): RemoteReviewFilter | null {
+  const remote: RemoteReviewFilter = { orgs: [...filters.orgs], draft: null, review: null, ci: null };
+  if (filters.statuses.length > 0) {
+    remote.draft = filters.statuses.length === 1 && filters.statuses[0] === "draft" ? true : filters.statuses.includes("draft") ? null : false;
+  }
+  if (filters.reviews.length === 1) {
+    remote.review = reviewQualifier(filters.reviews[0]);
+  }
+  if (filters.ci.length === 1) {
+    remote.ci = ciQualifier(filters.ci[0]);
+  }
+  switch (filters.quick) {
+    case "draft":
+      remote.draft ??= true;
+      break;
+    case "declined":
+      remote.review ??= "changes_requested";
+      break;
+    case "ready":
+      remote.draft ??= false;
+      remote.review ??= "approved";
+      remote.ci ??= "success";
+      break;
+    case "no_review":
+    case "ci_trouble":
+    case null:
+      break;
+    default: {
+      const unreachable: never = filters.quick;
+      return unreachable;
+    }
+  }
+  const empty = remote.orgs.length === 0 && remote.draft === null && remote.review === null && remote.ci === null;
+  return empty ? null : remote;
+}
+
+function reviewQualifier(review: ReviewFilter): RemoteReviewFilter["review"] {
+  switch (review) {
+    case "approved":
+      return "approved";
+    case "changes_requested":
+      return "changes_requested";
+    case "review_required":
+      return "required";
+    case "none":
+      return null;
+    default: {
+      const unreachable: never = review;
+      return unreachable;
+    }
+  }
+}
+
+function ciQualifier(ci: CiFilter): RemoteReviewFilter["ci"] {
+  switch (ci) {
+    case "passing":
+      return "success";
+    case "failing":
+      return "failure";
+    case "pending":
+      return "pending";
+    case "none":
+      return null;
+    default: {
+      const unreachable: never = ci;
+      return unreachable;
+    }
+  }
+}
+
+/** Mirrors `RemoteReviewFilter::key` in `review_filter.rs`: owners folded and sorted, then the qualifiers. */
+export function remoteFilterKey(filter: RemoteReviewFilter): string {
+  const orgs = [...new Set(filter.orgs.map((org) => org.toLowerCase()))].sort();
+  const qualifiers: string[] = [];
+  if (filter.draft !== null) {
+    qualifiers.push(`draft:${filter.draft}`);
+  }
+  if (filter.review !== null) {
+    qualifiers.push(`review:${filter.review}`);
+  }
+  if (filter.ci !== null) {
+    qualifiers.push(`status:${filter.ci}`);
+  }
+  return `${orgs.join(",")}|${qualifiers.join(" ")}`;
+}
+
+/** The review status as the list should read it: the filtered window only when it answers `key`. */
+export function reviewsFor(reviews: ReviewsStatus | undefined, key: string | null): ReviewsStatus | undefined {
+  if (!reviews) {
+    return reviews;
+  }
+  const filtered = key !== null && reviews.filtered?.key === key ? reviews.filtered : null;
+  return { ...reviews, filtered };
 }
