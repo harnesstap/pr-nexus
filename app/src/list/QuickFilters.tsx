@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, type ReactElement } from "react";
-import { AlertIcon, CheckIcon, CloseIcon, DeclinedIcon, DraftIcon, EyeOffIcon, MergeIcon, MoreIcon, StarIcon } from "../icons";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactElement } from "react";
+import { AlertIcon, CheckIcon, DeclinedIcon, DraftIcon, EyeOffIcon, MergeIcon, MoreIcon, StarIcon } from "../icons";
 import { Tooltip } from "../Tooltip";
 import { QUICK_FILTERS, type QuickFilter } from "./model";
 import { hint } from "./shortcuts";
@@ -11,8 +11,8 @@ interface QuickSpec {
   label: string;
   detail: string;
   icon: ReactElement;
-  /** Tailwind classes for the chip when it is on. */
-  tone: string;
+  /** Tailwind text colour for the idle icon, so each chip keeps its status hue. */
+  tint: string;
 }
 
 export const QUICK_SPECS: Record<QuickFilter, QuickSpec> = {
@@ -20,43 +20,44 @@ export const QUICK_SPECS: Record<QuickFilter, QuickSpec> = {
     chip: "Draft",
     label: "Draft",
     detail: "Show only draft PRs",
-    icon: <DraftIcon size={14} />,
-    tone: "border-slate-300 bg-slate-700 text-white",
+    icon: <DraftIcon size={12} />,
+    tint: "text-slate-400",
   },
   no_review: {
     chip: "No review",
     label: "No review requested",
     detail: "Open PRs nobody has been asked to review yet, on GitHub or Slack",
-    icon: <EyeOffIcon size={14} />,
-    tone: "border-sky-400 bg-sky-500/20 text-sky-100",
+    icon: <EyeOffIcon size={12} />,
+    tint: "text-sky-400",
   },
   ci_trouble: {
     chip: "CI or conflicts",
     label: "CI errors or conflicts",
     detail: "PRs with failing checks or merge conflicts",
-    icon: <AlertIcon size={14} />,
-    tone: "border-amber-400 bg-amber-500/20 text-amber-100",
+    icon: <AlertIcon size={12} />,
+    tint: "text-amber-400",
   },
   declined: {
     chip: "Changes requested",
     label: "Review declined",
     detail: "PRs where a reviewer requested changes",
-    icon: <DeclinedIcon size={14} />,
-    tone: "border-rose-400 bg-rose-500/20 text-rose-100",
+    icon: <DeclinedIcon size={12} />,
+    tint: "text-rose-400",
   },
   ready: {
     chip: "Ready",
     label: "Ready to merge",
     detail: "Approved, checks green and no conflicts",
-    icon: <MergeIcon size={14} />,
-    tone: "border-emerald-400 bg-emerald-500/20 text-emerald-100",
+    icon: <MergeIcon size={12} />,
+    tint: "text-emerald-400",
   },
 };
 
-/** Chips from this index on fold into **More** on a narrow list (unless they are on). */
-export const CHIPS_ALWAYS_SHOWN = 3;
-
 type ChipKey = QuickFilter | "starred";
+
+const KEYS: ChipKey[] = [...QUICK_FILTERS, "starred"];
+/** Gap between chips, in px; matches `gap-1`. */
+const GAP = 4;
 
 interface Props {
   active: QuickFilter | null;
@@ -68,105 +69,156 @@ interface Props {
   onStarredChange: (on: boolean) => void;
 }
 
-const BASE = "flex h-7 shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-full border px-2.5 text-xs transition-colors";
-const IDLE = "border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-500 hover:text-white";
+// Same 28px height and rounded-md as the toolbar's inputs, a hairline border, and the accent only when on.
+const BASE =
+  "flex h-7 shrink-0 cursor-pointer items-center gap-1 whitespace-nowrap rounded-md border px-1.5 text-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-violet-400";
+const IDLE = "border-slate-800 bg-transparent text-slate-300 hover:border-slate-600 hover:bg-slate-900 hover:text-white";
+const ON = "border-violet-500/50 bg-violet-500/15 text-violet-100 hover:bg-violet-500/25";
+const EMPTY = "opacity-60";
 
 function Count({ count, on }: { count: number | null | undefined; on: boolean }) {
   if (count === null || count === undefined) {
     return null;
   }
   return (
-    <span
-      aria-hidden="true"
-      className={`min-w-4 rounded-full px-1 text-center tabular-nums ${on ? "bg-black/25" : count === 0 ? "text-slate-600" : "bg-slate-800 text-slate-200"}`}
-    >
+    <span aria-hidden="true" className={`text-[11px] tabular-nums ${on ? "text-violet-300" : "text-slate-500"}`}>
       {count}
     </span>
   );
 }
 
 /**
- * Quick status filters (§8.2) as labelled chips: one quick filter at a time (clicking the
- * active one again clears it), plus Starred, which stacks with them. Counts cover the current
- * search and menu filters, so a chip says what clicking leaves. On a narrow list the later
- * chips move into a **More** menu; a chip that is on always stays visible.
+ * Which chips fit in `available` px, in toolbar order. Active chips are placed first so they
+ * stay visible; the rest fill in order until one does not fit, and everything after it folds
+ * into More (which needs `moreWidth` px once anything folds).
+ */
+export function fitChips(keys: readonly ChipKey[], widths: readonly number[], available: number, moreWidth: number, isOn: (key: ChipKey) => boolean): Set<ChipKey> {
+  const total = widths.reduce((sum, width) => sum + width, 0) + GAP * Math.max(0, widths.length - 1);
+  if (total <= available) {
+    return new Set(keys);
+  }
+  let budget = available - moreWidth - GAP;
+  const shown = new Set<ChipKey>();
+  const take = (index: number) => {
+    const cost = widths[index] + GAP;
+    if (cost > budget) {
+      return false;
+    }
+    budget -= cost;
+    shown.add(keys[index]);
+    return true;
+  };
+  keys.forEach((key, index) => isOn(key) && take(index));
+  for (let index = 0; index < keys.length; index += 1) {
+    if (!isOn(keys[index]) && !take(index)) {
+      break;
+    }
+  }
+  return shown;
+}
+
+/**
+ * Quick status filters (§8.2) as compact chips inside the toolbar row: one quick filter at a
+ * time (clicking the active one again clears it), plus Starred, which stacks with them. Counts
+ * cover the current search and menu filters, so a chip says what clicking leaves; a chip with
+ * nothing to show is muted. Chips that do not fit the row's width fold into **More (N)**, with
+ * active chips kept visible first. The toolbar's **Clear filters** turns them off.
  */
 export function QuickFilters({ active, counts, onChange, starred, starredCount, onStarredChange }: Props) {
-  const keys: ChipKey[] = [...QUICK_FILTERS, "starred"];
   const isOn = (key: ChipKey) => (key === "starred" ? starred : active === key);
   const toggle = (key: ChipKey) => (key === "starred" ? onStarredChange(!starred) : onChange(active === key ? null : key));
-  const folded = keys.filter((key, index) => index >= CHIPS_ALWAYS_SHOWN && !isOn(key));
-  const anyOn = active !== null || starred;
+  const countOf = (key: ChipKey) => (key === "starred" ? starredCount : counts?.[key]);
+  const box = useRef<HTMLDivElement>(null);
+  const ruler = useRef<HTMLDivElement>(null);
+  const [shown, setShown] = useState<Set<ChipKey>>(() => new Set(KEYS));
+  const onKey = KEYS.filter(isOn).join(",");
+
+  useLayoutEffect(() => {
+    const container = box.current;
+    const measure = ruler.current;
+    if (!container || !measure) {
+      return;
+    }
+    const fit = () => {
+      // Not laid out yet (hidden, or a test DOM): show every chip rather than folding them all.
+      if (container.clientWidth <= 0) {
+        setShown((prev) => (prev.size === KEYS.length ? prev : new Set(KEYS)));
+        return;
+      }
+      const items = Array.from(measure.children) as HTMLElement[];
+      const widths = items.slice(0, KEYS.length).map((item) => item.offsetWidth);
+      const moreWidth = items[KEYS.length]?.offsetWidth ?? 0;
+      const next = fitChips(KEYS, widths, container.clientWidth, moreWidth, (key) => onKey.split(",").includes(key));
+      setShown((prev) => (prev.size === next.size && [...next].every((key) => prev.has(key)) ? prev : next));
+    };
+    fit();
+    if (typeof ResizeObserver === "undefined") {
+      return;
+    }
+    const observer = new ResizeObserver(fit);
+    observer.observe(container);
+    observer.observe(measure);
+    return () => observer.disconnect();
+  }, [onKey]);
+
+  const folded = KEYS.filter((key) => !shown.has(key));
   return (
-    <div role="group" aria-label="Quick filters" className="@container flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
-      {keys.map((key, index) => {
-        const on = isOn(key);
-        const foldable = index >= CHIPS_ALWAYS_SHOWN && !on;
-        return <Chip key={key} chipKey={key} on={on} counts={counts} starredCount={starredCount} className={foldable ? "hidden @xl:flex" : ""} onToggle={() => toggle(key)} />;
-      })}
-      {folded.length > 0 && <MoreChips keys={folded} counts={counts} starredCount={starredCount} onToggle={toggle} />}
-      {anyOn && (
-        <Tooltip label="Clear quick filters" detail="Turn off every chip; menu filters stay">
-          <button
-            type="button"
-            aria-label="Clear quick filters"
-            className="flex h-7 shrink-0 cursor-pointer items-center gap-1 whitespace-nowrap rounded-full px-2 text-xs text-violet-300 hover:bg-slate-800 hover:text-violet-200"
-            onClick={() => {
-              onChange(null);
-              if (starred) {
-                onStarredChange(false);
-              }
-            }}
-          >
-            <CloseIcon size={12} />
-            Clear
-          </button>
-        </Tooltip>
-      )}
+    <div ref={box} role="group" aria-label="Quick filters" className="relative flex h-8 min-w-0 flex-1 flex-nowrap items-center gap-1 overflow-visible">
+      {/* Invisible copies of every chip (and More) at their natural width, measured to decide what fits. */}
+      <div ref={ruler} aria-hidden="true" className="pointer-events-none invisible absolute left-0 top-0 flex gap-1" inert>
+        {KEYS.map((key) => (
+          <ChipFace key={key} chipKey={key} on={isOn(key)} count={countOf(key)} />
+        ))}
+        <span className={`${BASE} ${IDLE}`}>
+          <MoreIcon size={12} />
+          More ({KEYS.length})
+        </span>
+      </div>
+      {KEYS.filter((key) => shown.has(key)).map((key) => (
+        <Chip key={key} chipKey={key} on={isOn(key)} count={countOf(key)} onToggle={() => toggle(key)} />
+      ))}
+      {folded.length > 0 && <MoreChips keys={folded} countOf={countOf} isOn={isOn} onToggle={toggle} />}
     </div>
   );
 }
 
-function chipText(key: ChipKey): { chip: string; label: string; detail: string; icon: ReactElement; tone: string } {
+function chipText(key: ChipKey): QuickSpec {
   if (key === "starred") {
-    return { chip: "Starred", label: "Starred only", detail: "Show only the PRs you starred", icon: <StarIcon size={14} />, tone: "border-amber-400 bg-amber-500/20 text-amber-100" };
+    return { chip: "Starred", label: "Starred only", detail: "Show only the PRs you starred", icon: <StarIcon size={12} />, tint: "text-amber-400" };
   }
   return QUICK_SPECS[key];
 }
 
-function Chip({
-  chipKey,
-  on,
-  counts,
-  starredCount,
-  className,
-  onToggle,
-}: {
-  chipKey: ChipKey;
-  on: boolean;
-  counts: Record<QuickFilter, number> | null;
-  starredCount: number | null;
-  className: string;
-  onToggle: () => void;
-}) {
+function ChipFace({ chipKey, on, count }: { chipKey: ChipKey; on: boolean; count: number | null | undefined }) {
   const spec = chipText(chipKey);
-  const count = chipKey === "starred" ? starredCount : counts?.[chipKey];
-  const icon = chipKey === "starred" ? <StarIcon size={14} filled={on} /> : spec.icon;
+  const icon = chipKey === "starred" ? <StarIcon size={12} filled={on} /> : spec.icon;
+  return (
+    <span className={`${BASE} ${on ? `${ON} font-medium` : IDLE} ${!on && count === 0 ? EMPTY : ""}`}>
+      <span className={`flex shrink-0 ${on ? "text-violet-300" : spec.tint}`}>{on ? <CheckIcon size={12} /> : icon}</span>
+      {spec.chip}
+      <Count count={count} on={on} />
+    </span>
+  );
+}
+
+function Chip({ chipKey, on, count, onToggle }: { chipKey: ChipKey; on: boolean; count: number | null | undefined; onToggle: () => void }) {
+  const spec = chipText(chipKey);
+  const icon = chipKey === "starred" ? <StarIcon size={12} filled={on} /> : spec.icon;
   return (
     <Tooltip
       label={spec.label}
       shortcut={chipKey === "starred" ? hint("star") : undefined}
-      detail={on ? "Click again to show every PR" : spec.detail}
+      detail={on ? "Click again to show every PR" : count === 0 ? `${spec.detail}. None right now` : spec.detail}
       align="start"
     >
       <button
         type="button"
         aria-label={count === null || count === undefined ? spec.chip : `${spec.chip} (${count})`}
         aria-pressed={on}
-        className={`${BASE} ${on ? `${spec.tone} font-medium` : IDLE} ${className}`}
+        className={`${BASE} ${on ? `${ON} font-medium` : IDLE} ${!on && count === 0 ? EMPTY : ""}`}
         onClick={onToggle}
       >
-        {on ? <CheckIcon size={14} /> : icon}
+        <span className={`flex shrink-0 ${on ? "text-violet-300" : spec.tint}`}>{on ? <CheckIcon size={12} /> : icon}</span>
         {spec.chip}
         <Count count={count} on={on} />
       </button>
@@ -176,17 +228,18 @@ function Chip({
 
 function MoreChips({
   keys,
-  counts,
-  starredCount,
+  countOf,
+  isOn,
   onToggle,
 }: {
   keys: ChipKey[];
-  counts: Record<QuickFilter, number> | null;
-  starredCount: number | null;
+  countOf: (key: ChipKey) => number | null | undefined;
+  isOn: (key: ChipKey) => boolean;
   onToggle: (key: ChipKey) => void;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const anyOn = keys.some(isOn);
   useEffect(() => {
     if (!open) {
       return;
@@ -210,40 +263,41 @@ function MoreChips({
     };
   }, [open]);
   return (
-    <div ref={ref} className="relative @xl:hidden">
+    <div ref={ref} className="relative shrink-0">
       <Tooltip label="More quick filters" detail={keys.map((key) => chipText(key).chip).join(", ")}>
         <button
           type="button"
           aria-label={`More quick filters (${keys.length})`}
           aria-haspopup="menu"
           aria-expanded={open}
-          className={`${BASE} ${IDLE}`}
+          className={`${BASE} ${anyOn ? ON : IDLE}`}
           onClick={() => setOpen(!open)}
         >
-          <MoreIcon size={14} />
-          More
+          <MoreIcon size={12} />
+          More ({keys.length})
         </button>
       </Tooltip>
       {open && (
         <div role="menu" aria-label="More quick filters" className="absolute right-0 top-8 z-30 min-w-48 rounded-md border border-slate-700 bg-slate-900 p-1 shadow-xl">
           {keys.map((key) => {
             const spec = chipText(key);
-            const count = key === "starred" ? starredCount : counts?.[key];
+            const count = countOf(key);
+            const on = isOn(key);
             return (
               <button
                 key={key}
                 type="button"
                 role="menuitemcheckbox"
-                aria-checked={false}
-                className="flex w-full cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-slate-200 hover:bg-slate-800"
+                aria-checked={on}
+                className={`flex w-full cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-slate-800 ${on ? "text-violet-100" : "text-slate-200"} ${!on && count === 0 ? EMPTY : ""}`}
                 onClick={() => {
                   setOpen(false);
                   onToggle(key);
                 }}
               >
-                {spec.icon}
+                <span className={`flex shrink-0 ${on ? "text-violet-300" : spec.tint}`}>{on ? <CheckIcon size={12} /> : spec.icon}</span>
                 <span className="flex-1">{spec.chip}</span>
-                {count !== null && count !== undefined && <span className="tabular-nums text-slate-400">{count}</span>}
+                {count !== null && count !== undefined && <span className="tabular-nums text-slate-500">{count}</span>}
               </button>
             );
           })}

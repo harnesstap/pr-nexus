@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { expect, test, vi } from "vitest";
-import { QuickFilters } from "./QuickFilters";
+import { QuickFilters, fitChips } from "./QuickFilters";
 
 const counts = { draft: 2, no_review: 1, ci_trouble: 3, declined: 0, ready: 4 };
 
@@ -19,39 +19,67 @@ test("each chip shows its label and count, with a pointer cursor", () => {
     expect(chip).toHaveClass("cursor-pointer");
     expect(chip).toHaveTextContent(name.replace(/ \((\d+)\)$/, "$1"));
   }
-  expect(screen.queryByRole("button", { name: "Clear quick filters" })).toBeNull();
+  expect(screen.queryByRole("button", { name: /Clear/ })).toBeNull();
 });
 
 test("clicking a chip picks it, clicking the active one clears it", () => {
   const { onChange } = setup({ active: "ready" });
   const ready = screen.getByRole("button", { name: "Ready (4)" });
   expect(ready).toHaveAttribute("aria-pressed", "true");
-  expect(ready.className).toContain("border-emerald-400");
+  expect(ready.className).toContain("bg-violet-500/15");
   fireEvent.click(ready);
   expect(onChange).toHaveBeenCalledWith(null);
   fireEvent.click(screen.getByRole("button", { name: "Draft (2)" }));
   expect(onChange).toHaveBeenLastCalledWith("draft");
 });
 
-test("Clear turns off the quick filter and Starred together", () => {
-  const { onChange, onStarredChange } = setup({ active: "draft", starred: true });
-  fireEvent.click(screen.getByRole("button", { name: "Clear quick filters" }));
-  expect(onChange).toHaveBeenCalledWith(null);
-  expect(onStarredChange).toHaveBeenCalledWith(false);
+test("a chip with nothing to show is muted but still clickable", () => {
+  const { onChange } = setup();
+  const declined = screen.getByRole("button", { name: "Changes requested (0)" });
+  expect(declined).toHaveClass("opacity-60");
+  expect(screen.getByRole("button", { name: "Draft (2)" })).not.toHaveClass("opacity-60");
+  fireEvent.click(declined);
+  expect(onChange).toHaveBeenCalledWith("declined");
 });
 
-test("later chips fold into More on a narrow list, but an active one stays out", () => {
-  setup({ active: "ready" });
-  expect(screen.getByRole("button", { name: "Changes requested (0)" })).toHaveClass("hidden", "@xl:flex");
-  expect(screen.getByRole("button", { name: "Ready (4)" })).not.toHaveClass("hidden");
-  expect(screen.getByRole("button", { name: "Draft (2)" })).not.toHaveClass("hidden");
-  fireEvent.click(screen.getByRole("button", { name: "More quick filters (2)" }));
-  const menu = screen.getByRole("menu", { name: "More quick filters" });
-  expect(within(menu).getAllByRole("menuitemcheckbox").map((item) => item.textContent)).toEqual(["Changes requested0", "Starred5"]);
+test("fitChips keeps everything when it fits and folds the tail otherwise", () => {
+  const keys = ["draft", "no_review", "ci_trouble", "declined", "ready", "starred"] as const;
+  const widths = [50, 50, 50, 50, 50, 50];
+  const off = () => false;
+  expect([...fitChips(keys, widths, 320, 60, off)]).toEqual([...keys]);
+  // 200 - More 60 - gap 4 = 136: two 54px chips fit.
+  expect([...fitChips(keys, widths, 200, 60, off)]).toEqual(["draft", "no_review"]);
+});
+
+test("fitChips keeps active chips visible first", () => {
+  const keys = ["draft", "no_review", "ci_trouble", "declined", "ready", "starred"] as const;
+  const shown = fitChips(keys, [50, 50, 50, 50, 50, 50], 200, 60, (key) => key === "ready" || key === "starred");
+  expect([...shown].sort()).toEqual(["ready", "starred"]);
+});
+
+test("chips that do not fit the measured width fold into More", () => {
+  const width = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(60);
+  const client = vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(200);
+  try {
+    setup({ active: "ready" });
+    expect(screen.getByRole("button", { name: "Ready (4)" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Draft (2)" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Starred (5)" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "More quick filters (4)" }));
+    const menu = screen.getByRole("menu", { name: "More quick filters" });
+    expect(within(menu).getAllByRole("menuitemcheckbox").map((item) => item.textContent)).toEqual(["No review1", "CI or conflicts3", "Changes requested0", "Starred5"]);
+  } finally {
+    width.mockRestore();
+    client.mockRestore();
+  }
 });
 
 test("picking from More applies that filter and closes the menu", () => {
+  const width = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(60);
+  const client = vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(200);
   const { onStarredChange } = setup();
+  width.mockRestore();
+  client.mockRestore();
   fireEvent.click(screen.getByRole("button", { name: /^More quick filters/ }));
   fireEvent.click(within(screen.getByRole("menu")).getByRole("menuitemcheckbox", { name: /Starred/ }));
   expect(onStarredChange).toHaveBeenCalledWith(true);

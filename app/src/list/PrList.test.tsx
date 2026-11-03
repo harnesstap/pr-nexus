@@ -868,6 +868,15 @@ test("quick filters show counts, filter one at a time and clear on a second clic
   await settle();
   expect(screen.getByRole("checkbox", { name: "Select Draft work" })).toBeInTheDocument();
   expect(screen.getByRole("checkbox", { name: "Select Ship it" })).toBeInTheDocument();
+
+  // The toolbar's single Clear filters also turns chips off; there is no chip-only Clear.
+  fireEvent.click(within(group).getByRole("button", { name: "Draft (1)" }));
+  await settle();
+  expect(within(group).queryByRole("button", { name: /Clear/ })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
+  await settle();
+  expect(within(group).getByRole("button", { name: "Draft (1)" })).toHaveAttribute("aria-pressed", "false");
+  expect(screen.queryByRole("button", { name: "Clear filters" })).toBeNull();
 });
 
 test("a row shows who still has to review, and a row without requests shows no stack", async () => {
@@ -917,9 +926,9 @@ test("every list command sits on the one toolbar row, the header keeps only the 
   expect(inToolbar.getByText("3 open PRs")).toBeInTheDocument();
   expect(inToolbar.getByRole("textbox", { name: "Search" })).toBeInTheDocument();
   expect(inToolbar.getByRole("combobox", { name: "Sort by" })).toBeInTheDocument();
+  expect(inToolbar.getByRole("group", { name: "Quick filters" }).className).toContain("flex-nowrap");
   expect(inToolbar.getByRole("button", { name: "Filter menu" })).toBeInTheDocument();
   expect(toolbar.className).toContain("flex-nowrap");
-  expect(screen.getByRole("group", { name: "Quick filters" }).className).toContain("flex-wrap");
   const header = container.querySelector("header") as HTMLElement;
   expect(within(header).getByRole("heading", { name: "My PRs" })).toBeInTheDocument();
   expect(within(header).queryByRole("textbox")).toBeNull();
