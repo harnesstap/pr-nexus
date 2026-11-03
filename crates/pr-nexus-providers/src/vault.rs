@@ -286,6 +286,20 @@ type Job = Option<mpsc::Sender<()>>;
 pub struct Vault {
     shared: Arc<Shared>,
     jobs: Option<mpsc::Sender<Job>>,
+    /// Prefix added to every key: empty for the default profile, so keys
+    /// saved before profiles existed keep their names; `profile/<id>/`
+    /// otherwise. All profiles share the one keychain entry, so adding a
+    /// profile never brings up another keychain prompt.
+    scope: std::sync::RwLock<String>,
+}
+
+/// The key prefix for a profile's secrets. The default profile has none.
+pub fn profile_scope(profile: &str) -> String {
+    if profile == pr_nexus_core::profiles::DEFAULT_ID {
+        String::new()
+    } else {
+        format!("profile/{profile}/")
+    }
 }
 
 impl Vault {
@@ -348,6 +362,7 @@ impl Vault {
             Ok(_) => Self {
                 shared,
                 jobs: Some(tx),
+                scope: Default::default(),
             },
             Err(err) => {
                 return Self::memory(&format!(
@@ -378,7 +393,77 @@ impl Vault {
                 timeout: Duration::ZERO,
             }),
             jobs: None,
+            scope: Default::default(),
         }
+    }
+
+    /// The same keychain entry seen through `profile`'s key prefix.
+    pub fn view(&self, profile: &str) -> Self {
+        Self {
+            shared: Arc::clone(&self.shared),
+            jobs: self.jobs.clone(),
+            scope: std::sync::RwLock::new(profile_scope(profile)),
+        }
+    }
+
+    /// The same entry without a prefix, for app-wide secrets such as the
+    /// MCP token.
+    pub fn global(&self) -> Self {
+        self.view(pr_nexus_core::profiles::DEFAULT_ID)
+    }
+
+    /// Points this vault at `profile`'s secrets (profile switch).
+    pub fn set_profile(&self, profile: &str) {
+        if let Ok(mut scope) = self.scope.write() {
+            *scope = profile_scope(profile);
+        }
+    }
+
+    fn key(&self, key: &str) -> String {
+        let scope = self.scope.read().map(|s| s.clone()).unwrap_or_default();
+        format!("{scope}{key}")
+    }
+
+    /// Copies `keys` from `from`'s secrets into `to`'s. Missing keys are
+    /// skipped. The copies are independent of the originals.
+    pub fn copy_between(&self, from: &str, to: &str, keys: &[String]) -> Result<(), CoreError> {
+        let (from, to) = (profile_scope(from), profile_scope(to));
+        let values: Vec<(String, String)> = {
+            let inner = self.shared.wait_for_read()?;
+            keys.iter()
+                .filter_map(|key| {
+                    inner
+                        .secrets
+                        .get(&format!("{from}{key}"))
+                        .map(|value| (format!("{to}{key}"), value.clone()))
+                })
+                .collect()
+        };
+        for (key, value) in values {
+            self.change_raw(&key, Some(&value))?;
+        }
+        Ok(())
+    }
+
+    /// Removes every secret of a non-default `profile`.
+    pub fn remove_profile(&self, profile: &str) -> Result<usize, CoreError> {
+        let scope = profile_scope(profile);
+        if scope.is_empty() {
+            return Err(CoreError::Store("the default profile's secrets are not removed".into()));
+        }
+        let keys: Vec<String> = {
+            let inner = self.shared.wait_for_read()?;
+            inner
+                .secrets
+                .keys()
+                .filter(|key| key.starts_with(&scope))
+                .cloned()
+                .collect()
+        };
+        for key in &keys {
+            self.change_raw(key, None)?;
+        }
+        Ok(keys.len())
     }
 
     fn kick(&self) {
@@ -471,14 +556,16 @@ impl Vault {
     /// (a prompt on screen), waits for it, up to the prompt timeout. Call it
     /// off the UI thread.
     pub fn get(&self, key: &str) -> Result<Option<String>, CoreError> {
-        Ok(self.shared.wait_for_read()?.secrets.get(key).cloned())
+        let key = self.key(key);
+        Ok(self.shared.wait_for_read()?.secrets.get(&key).cloned())
     }
 
     /// The secret under `key` as known now, without waiting for the keychain.
     /// Use it for display: before the first read it only sees this session's
     /// changes.
     pub fn peek(&self, key: &str) -> Result<Option<String>, CoreError> {
-        Ok(self.shared.lock()?.secrets.get(key).cloned())
+        let key = self.key(key);
+        Ok(self.shared.lock()?.secrets.get(&key).cloned())
     }
 
     /// Saves `value` in memory at once, then in the keychain. When the
@@ -496,6 +583,11 @@ impl Vault {
     }
 
     fn change(&self, key: &str, value: Option<&str>) -> Result<(), CoreError> {
+        let key = self.key(key);
+        self.change_raw(&key, value)
+    }
+
+    fn change_raw(&self, key: &str, value: Option<&str>) -> Result<(), CoreError> {
         let (revision, ready) = {
             let mut inner = self.shared.lock()?;
             let revision = inner.change(key, value);
@@ -973,5 +1065,39 @@ mod tests {
         assert!(!is_denial(
             "Error { code: -25291, message: \"No keychain is available.\" }"
         ));
+    }
+
+    #[test]
+    fn profiles_see_only_their_own_secrets() {
+        let vault = Vault::memory("test");
+        vault.set("github:1", "default-token").unwrap();
+        let work = vault.view("work-1");
+        assert_eq!(work.get("github:1").unwrap(), None);
+        work.set("github:1", "work-token").unwrap();
+        assert_eq!(vault.get("github:1").unwrap().as_deref(), Some("default-token"));
+        assert_eq!(work.get("github:1").unwrap().as_deref(), Some("work-token"));
+        vault.set_profile("work-1");
+        assert_eq!(vault.get("github:1").unwrap().as_deref(), Some("work-token"));
+        assert_eq!(vault.global().get("github:1").unwrap().as_deref(), Some("default-token"));
+    }
+
+    #[test]
+    fn copies_are_independent_and_removal_is_scoped() {
+        let vault = Vault::memory("test");
+        vault.set("slack:T1:U1", "xoxp-a").unwrap();
+        vault.set("mcp.token", "global").unwrap();
+        vault
+            .copy_between("default", "work-1", &["slack:T1:U1".into(), "missing".into()])
+            .unwrap();
+        let work = vault.view("work-1");
+        assert_eq!(work.get("slack:T1:U1").unwrap().as_deref(), Some("xoxp-a"));
+        assert_eq!(work.get("missing").unwrap(), None);
+        work.set("slack:T1:U1", "xoxp-b").unwrap();
+        assert_eq!(vault.get("slack:T1:U1").unwrap().as_deref(), Some("xoxp-a"));
+        assert_eq!(vault.remove_profile("work-1").unwrap(), 1);
+        assert_eq!(work.get("slack:T1:U1").unwrap(), None);
+        assert_eq!(vault.get("slack:T1:U1").unwrap().as_deref(), Some("xoxp-a"));
+        assert_eq!(vault.get("mcp.token").unwrap().as_deref(), Some("global"));
+        assert!(vault.remove_profile("default").is_err());
     }
 }
