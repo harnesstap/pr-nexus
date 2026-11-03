@@ -10,6 +10,7 @@ use pr_nexus_core::domain::{Account, AccountKind};
 use pr_nexus_core::onboarding::{self, OnboardingState, StepValidity};
 use pr_nexus_core::providers::{ChatProvider, SearchBucket};
 use pr_nexus_core::providers::{ProviderRegistry, SetupStep};
+use pr_nexus_core::review_filter::RemoteReviewFilter;
 use pr_nexus_core::settings;
 use pr_nexus_core::store::Store;
 use pr_nexus_core::sync::{self, SyncKind};
@@ -46,6 +47,49 @@ pub struct ReviewStatus {
     pub total: Option<u64>,
     /// How many of the newest the window reads.
     pub window: usize,
+    /// GitHub-side To review filters asked for this session (§6).
+    pub filters: FilterCache,
+}
+
+/// How long a filtered query's answer is reused before GitHub is asked again.
+pub const FILTER_FRESH_SECS: i64 = 120;
+
+/// Answers of filtered review queries, per [`RemoteReviewFilter::key`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FilterCache {
+    /// The filter the list shows now. A pass for another key still stores
+    /// its rows but is not what the header reports.
+    pub current: Option<String>,
+    pub entries: HashMap<String, FilteredReviews>,
+    /// GitHub rate limited a filtered search: filters run locally only
+    /// until then.
+    pub hold_until: Option<DateTime<Utc>>,
+}
+
+/// One filtered review query: its own window and GitHub total, so the
+/// header can say "40 of 57 loaded" for the filter rather than for the
+/// whole bucket.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FilteredReviews {
+    /// `loading`, `ready`, `limited` (rate limited: local only) or `error`.
+    pub state: String,
+    pub message: String,
+    /// Matches on GitHub (`issueCount`), when known.
+    pub total: Option<u64>,
+    /// Matches read from GitHub by the last pass (at most `window`).
+    pub loaded: usize,
+    pub window: usize,
+    /// When the last pass finished.
+    pub at: Option<DateTime<Utc>>,
+}
+
+impl FilteredReviews {
+    fn fresh(&self, now: DateTime<Utc>) -> bool {
+        self.state == "ready"
+            && self
+                .at
+                .is_some_and(|at| now - at < chrono::Duration::seconds(FILTER_FRESH_SECS))
+    }
 }
 
 impl Default for ReviewStatus {
@@ -55,6 +99,7 @@ impl Default for ReviewStatus {
             message: String::new(),
             total: None,
             window: sync::REVIEW_WINDOW,
+            filters: FilterCache::default(),
         }
     }
 }
@@ -597,6 +642,201 @@ pub fn search_reviews(state: &AppState, terms: &str) -> Result<(), AppError> {
     .map(|_| ())
 }
 
+/// What [`filter_reviews`] should do for one request.
+#[derive(Debug, PartialEq, Eq)]
+enum FilterStep {
+    /// Nothing to ask GitHub: no filter, a fresh cached answer, a window
+    /// that already holds every match, or a rate-limit hold.
+    Done,
+    Search(usize),
+}
+
+/// Records `key` as the current filter and decides whether GitHub has to
+/// be asked, and for how wide a window. Pure over the cache, so it is
+/// tested without a network.
+fn plan_filter(
+    cache: &mut FilterCache,
+    key: Option<&str>,
+    more: bool,
+    now: DateTime<Utc>,
+) -> FilterStep {
+    cache.current = key.map(str::to_owned);
+    let Some(key) = key else {
+        return FilterStep::Done;
+    };
+    if let Some(until) = cache.hold_until {
+        if now < until {
+            let entry = cache
+                .entries
+                .entry(key.to_owned())
+                .or_insert_with(|| FilteredReviews {
+                    state: String::new(),
+                    message: String::new(),
+                    total: None,
+                    loaded: 0,
+                    window: sync::REVIEW_WINDOW,
+                    at: None,
+                });
+            if !entry.fresh(now) {
+                entry.state = "limited".into();
+                entry.message = "GitHub rate limit · filtering loaded reviews only".into();
+            }
+            return FilterStep::Done;
+        }
+        cache.hold_until = None;
+    }
+    let entry = cache
+        .entries
+        .entry(key.to_owned())
+        .or_insert_with(|| FilteredReviews {
+            state: "loading".into(),
+            message: String::new(),
+            total: None,
+            loaded: 0,
+            window: sync::REVIEW_WINDOW,
+            at: None,
+        });
+    if more {
+        if entry
+            .total
+            .is_some_and(|total| entry.window as u64 >= total)
+        {
+            return FilterStep::Done;
+        }
+        if entry.at.is_some() {
+            entry.window += sync::REVIEW_WINDOW;
+        }
+    } else if entry.fresh(now) {
+        return FilterStep::Done;
+    }
+    entry.state = "loading".into();
+    entry.message = "Searching GitHub…".into();
+    FilterStep::Search(entry.window)
+}
+
+/// Writes the outcome of a filtered pass into the cache. A rate limit
+/// starts a hold so filters stay local until GitHub's reset.
+fn finish_filter(
+    cache: &mut FilterCache,
+    key: &str,
+    outcome: &Result<sync::SyncReport, AppError>,
+    now: DateTime<Utc>,
+) {
+    let Some(entry) = cache.entries.get_mut(key) else {
+        return;
+    };
+    match outcome {
+        Ok(report) => {
+            entry.state = "ready".into();
+            entry.message = String::new();
+            entry.total = report.review_total.or(entry.total);
+            entry.loaded = report.fetched.min(entry.window);
+            entry.at = Some(now);
+        }
+        Err(err) if err.kind == "rate_limited" => {
+            let until = err
+                .retry_at
+                .as_deref()
+                .and_then(|at| DateTime::parse_from_rfc3339(at).ok())
+                .map_or(now + chrono::Duration::minutes(1), |at| {
+                    at.with_timezone(&Utc)
+                });
+            cache.hold_until = Some(until);
+            entry.state = "limited".into();
+            entry.message = "GitHub rate limit · filtering loaded reviews only".into();
+        }
+        Err(err) => {
+            entry.state = "error".into();
+            entry.message = format!("GitHub filter failed · {}", err.message);
+        }
+    }
+}
+
+/// The GitHub-side part of the To review filters (§6): searches review
+/// requests with the filter's qualifiers, newest first, in a window of its
+/// own, and stores what it finds. An empty filter just clears the current
+/// one. Never fails on GitHub errors: they land in the filter's status and
+/// the list keeps filtering what is loaded.
+pub fn filter_reviews(
+    state: &AppState,
+    filter: &RemoteReviewFilter,
+    more: bool,
+) -> Result<(), AppError> {
+    let key = (!filter.is_empty()).then(|| filter.key());
+    let step = {
+        let mut status = lock_status(state);
+        let step = if state.demo {
+            status.reviews.filters.current = None;
+            FilterStep::Done
+        } else {
+            plan_filter(
+                &mut status.reviews.filters,
+                key.as_deref(),
+                more,
+                Utc::now(),
+            )
+        };
+        status.revision += 1;
+        step
+    };
+    let (FilterStep::Search(window), Some(key)) = (step, key) else {
+        return Ok(());
+    };
+    let _running = state
+        .sync_gate
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    // Superseded while waiting for the gate: the newer filter runs instead.
+    {
+        let mut status = lock_status(state);
+        let cache = &mut status.reviews.filters;
+        if cache.current.as_deref() != Some(key.as_str()) {
+            if let Some(entry) = cache.entries.get_mut(&key) {
+                if entry.at.is_some() {
+                    entry.state = "ready".into();
+                } else {
+                    cache.entries.remove(&key);
+                }
+            }
+            return Ok(());
+        }
+    }
+    let plan = sync::BucketPlan::review_filter(filter.clone(), window);
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let client = github_client(state)?;
+        let report = sync::sync_buckets(
+            &state.store,
+            &client.1,
+            client.0,
+            SyncKind::Manual,
+            Utc::now(),
+            std::slice::from_ref(&plan),
+            &mut |_| {},
+        )?;
+        after_pass(
+            state,
+            &client.1,
+            client.0,
+            &report,
+            SearchBucket::ReviewRequested,
+        )?;
+        Ok::<_, AppError>(report)
+    }))
+    .unwrap_or_else(|_| {
+        Err(AppError::new(
+            "internal",
+            "review filter stopped unexpectedly",
+        ))
+    });
+    if let Err(err) = &outcome {
+        tracing::warn!(error = %err, "review filter failed");
+    }
+    let mut status = lock_status(state);
+    finish_filter(&mut status.reviews.filters, &key, &outcome, Utc::now());
+    status.revision += 1;
+    Ok(())
+}
+
 /// Picks the focused or unfocused poll interval (§6). Coming back after more
 /// than a minute away also asks for an incremental pass. Never blocks on
 /// network work: it only flips flags and wakes the background threads.
@@ -670,6 +910,112 @@ pub fn registry_steps() -> Vec<SetupStep> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn report(fetched: usize, total: u64) -> sync::SyncReport {
+        sync::SyncReport {
+            fetched,
+            stored: fetched,
+            refreshed: 0,
+            hidden: 0,
+            updated: 0,
+            full: true,
+            paused: false,
+            message: String::new(),
+            review_total: Some(total),
+        }
+    }
+
+    fn at(minute: i64) -> DateTime<Utc> {
+        DateTime::<Utc>::from_timestamp(1_800_000_000 + minute * 60, 0).unwrap()
+    }
+
+    #[test]
+    fn a_filter_searches_once_then_reuses_its_fresh_answer() {
+        let mut cache = FilterCache::default();
+        let step = plan_filter(&mut cache, Some("k"), false, at(0));
+        assert_eq!(step, FilterStep::Search(sync::REVIEW_WINDOW));
+        assert_eq!(cache.entries["k"].state, "loading");
+        finish_filter(&mut cache, "k", &Ok(report(100, 340)), at(0));
+        assert_eq!(
+            (cache.entries["k"].loaded, cache.entries["k"].total),
+            (100, Some(340))
+        );
+        assert_eq!(
+            plan_filter(&mut cache, Some("k"), false, at(1)),
+            FilterStep::Done
+        );
+        // Stale after FILTER_FRESH_SECS: asked again, same window.
+        assert_eq!(
+            plan_filter(&mut cache, Some("k"), false, at(3)),
+            FilterStep::Search(sync::REVIEW_WINDOW)
+        );
+    }
+
+    #[test]
+    fn more_widens_a_filter_window_until_it_holds_every_match() {
+        let mut cache = FilterCache::default();
+        plan_filter(&mut cache, Some("k"), false, at(0));
+        finish_filter(&mut cache, "k", &Ok(report(100, 150)), at(0));
+        assert_eq!(
+            plan_filter(&mut cache, Some("k"), true, at(0)),
+            FilterStep::Search(2 * sync::REVIEW_WINDOW)
+        );
+        finish_filter(&mut cache, "k", &Ok(report(150, 150)), at(0));
+        assert_eq!(cache.entries["k"].loaded, 150);
+        assert_eq!(
+            plan_filter(&mut cache, Some("k"), true, at(0)),
+            FilterStep::Done
+        );
+    }
+
+    #[test]
+    fn a_rate_limit_holds_filters_local_until_the_reset() {
+        let mut cache = FilterCache::default();
+        plan_filter(&mut cache, Some("k"), false, at(0));
+        let limited = AppError {
+            kind: "rate_limited".into(),
+            message: "GitHub rate limit".into(),
+            retry_at: Some(at(10).to_rfc3339()),
+            sso_url: None,
+        };
+        finish_filter(&mut cache, "k", &Err(limited), at(0));
+        assert_eq!(cache.entries["k"].state, "limited");
+        assert_eq!(
+            plan_filter(&mut cache, Some("other"), false, at(5)),
+            FilterStep::Done
+        );
+        assert_eq!(cache.entries["other"].state, "limited");
+        assert_eq!(
+            plan_filter(&mut cache, Some("other"), false, at(11)),
+            FilterStep::Search(sync::REVIEW_WINDOW)
+        );
+        assert_eq!(cache.hold_until, None);
+    }
+
+    #[test]
+    fn clearing_the_filter_forgets_the_current_key_but_keeps_the_cache() {
+        let mut cache = FilterCache::default();
+        plan_filter(&mut cache, Some("k"), false, at(0));
+        assert_eq!(
+            plan_filter(&mut cache, None, false, at(0)),
+            FilterStep::Done
+        );
+        assert_eq!(cache.current, None);
+        assert!(cache.entries.contains_key("k"));
+    }
+
+    #[test]
+    fn demo_mode_never_searches_a_filter() {
+        let (state, path) = demo_state("filter");
+        let filter = RemoteReviewFilter {
+            draft: Some(true),
+            ..Default::default()
+        };
+        filter_reviews(&state, &filter, false).unwrap();
+        assert_eq!(lock_status(&state).reviews.filters.current, None);
+        drop(state);
+        let _ = std::fs::remove_file(path);
+    }
 
     fn demo_state(name: &str) -> (AppState, PathBuf) {
         let path = std::env::temp_dir().join(format!("pr-nexus-{name}-{}.db", std::process::id()));

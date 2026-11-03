@@ -37,6 +37,29 @@ export interface ReviewsStatus {
   loaded: number;
   /** How many of the newest the window reads. */
   window: number;
+  /** The current GitHub-side filter's own window and total (§6), when one is on. */
+  filtered?: FilteredReviews | null;
+}
+
+/** A filtered review query: "loaded of total" for the filter, not the bucket. */
+export interface FilteredReviews {
+  /** `remoteFilterKey` of the filter it answers. */
+  key: string;
+  state: "loading" | "ready" | "limited" | "error";
+  message: string;
+  total: number | null;
+  loaded: number;
+  window: number;
+  /** While rate limited: when GitHub filtering resumes (RFC 3339). */
+  retry_at: string | null;
+}
+
+/** The To review filters GitHub search can answer (§6); see `remoteReviewFilter`. */
+export interface RemoteReviewFilter {
+  orgs: string[];
+  draft: boolean | null;
+  review: "approved" | "changes_requested" | "required" | null;
+  ci: "success" | "failure" | "pending" | null;
 }
 
 export interface LiveStatus {
@@ -765,6 +788,8 @@ export interface Api {
   loadMoreReviews?(): Promise<SyncStatus>;
   /** Searches GitHub for review requests matching `terms`; resolves when stored. */
   searchReviews?(terms: string): Promise<SyncStatus>;
+  /** Searches GitHub for review requests matching a filter (`more` widens its window); resolves when stored. */
+  filterReviews?(filter: RemoteReviewFilter, more: boolean): Promise<SyncStatus>;
   /** One slice of the list with counts over every match (§8.2). */
   listPage(request: PageRequest): Promise<PageDto>;
   /** Rows by id in the order asked; unknown ids are skipped. */
@@ -909,6 +934,7 @@ export const tauriApi: Api = {
   activateReviews: () => invoke("activate_reviews"),
   loadMoreReviews: () => invoke("load_more_reviews"),
   searchReviews: (terms) => invoke("search_reviews", { terms }),
+  filterReviews: (filter, more) => invoke("filter_reviews", { filter, more }),
   listPage: (request) => invoke("list_page", { request }),
   rowsById: (ids) => invoke("rows_by_id", { ids }),
   linkCandidates: (projectId, query, limit) => invoke("link_candidates", { projectId, query, limit }),

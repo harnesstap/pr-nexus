@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import type { Api, Bootstrap, ListRow, ProjectDto, ReplacedLinkDto } from "../api";
+import type { Api, Bootstrap, ListRow, ProjectDto, RemoteReviewFilter, ReplacedLinkDto } from "../api";
 import { errorMessage } from "../api";
 import { ClockIcon, CloseIcon, FolderIcon, GearIcon, HomeIcon, LogoIcon, PlusIcon, RefreshIcon } from "../icons";
 import { Tooltip } from "../Tooltip";
@@ -12,7 +12,10 @@ import {
   parseDragIds,
   parseViewState,
   moreReviews,
+  remoteFilterKey,
+  remoteReviewFilter,
   renameError,
+  reviewsFor,
   reviewsLabel,
   sentToast,
   syncLabel,
@@ -27,6 +30,9 @@ import type { PageRequest } from "./paging";
 const SYNC_POLL_MS = 500;
 /** Idle poll that notices scheduled background syncs (§6). */
 const IDLE_POLL_MS = 15_000;
+/** Quiet time after a To review filter change before GitHub is searched with it (§6). */
+export const REMOTE_FILTER_DEBOUNCE_MS = 400;
+const NO_REMOTE_FILTER: RemoteReviewFilter = { orgs: [], draft: null, review: null, ci: null };
 import { DetailPanel } from "../detail/DetailPanel";
 import { ProjectDialog } from "./ProjectDialog";
 import { AccountsSettings } from "../settings/AccountsSettings";
@@ -154,6 +160,49 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
     },
     [api, viewKey, noteRevision],
   );
+
+  // GitHub-side filters (§6): what the To review filters can say as search
+  // qualifiers goes to GitHub, debounced, with a window of its own; the rest
+  // keeps filtering locally. Answers for an older filter are dropped, and
+  // the backend caches each query and backs off on rate limits.
+  const remoteFilter = useMemo(() => (viewKey === "to_review" ? remoteReviewFilter(view.filters) : null), [viewKey, view.filters]);
+  const remoteKey = remoteFilter ? remoteFilterKey(remoteFilter) : null;
+  const latestRemote = useRef<RemoteReviewFilter | null>(null);
+  useEffect(() => {
+    latestRemote.current = remoteFilter;
+  }, [remoteFilter]);
+  const remoteSent = useRef<string | null>(null);
+  const remoteToken = useRef(0);
+  const filterReviews = useCallback(
+    (more: boolean) => {
+      if (!api.filterReviews) {
+        return;
+      }
+      const filter = latestRemote.current ?? NO_REMOTE_FILTER;
+      const token = ++remoteToken.current;
+      remoteSent.current = latestRemote.current ? remoteFilterKey(filter) : null;
+      void api.filterReviews(filter, more).then(
+        (status) => {
+          if (token !== remoteToken.current) {
+            return;
+          }
+          setSync(status);
+          noteRevision(status.revision);
+        },
+        (err: unknown) => token === remoteToken.current && setError(errorMessage(err)),
+      );
+    },
+    [api, noteRevision],
+  );
+  useEffect(() => {
+    if (viewKey !== "to_review" || (remoteKey === null && remoteSent.current === null)) {
+      return;
+    }
+    const timer = window.setTimeout(() => filterReviews(false), REMOTE_FILTER_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [viewKey, remoteKey, filterReviews]);
+  const reviews = reviewsFor(sync.reviews, remoteKey);
+  const loadMore = reviews?.filtered ? () => filterReviews(true) : loadMoreReviews;
 
   // Sync runs in the background (§8.2): poll its status, and re-read the list
   // while it writes so new rows show up without blocking the first screen.
@@ -664,9 +713,9 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
                 loadPage={loadPage}
                 version={version}
                 syncProgress={
-                  viewKey === "to_review" ? (reviewsLabel(sync.reviews) ?? (syncing ? syncLabel(sync, now) : null)) : syncing ? syncLabel(sync, now) : null
+                  viewKey === "to_review" ? (reviewsLabel(reviews) ?? (syncing ? syncLabel(sync, now) : null)) : syncing ? syncLabel(sync, now) : null
                 }
-                remoteMore={viewKey === "to_review" && moreReviews(sync.reviews) ? loadMoreReviews : null}
+                remoteMore={viewKey === "to_review" && moreReviews(reviews) ? loadMore : null}
                 onRemoteSearch={viewKey === "to_review" ? searchReviews : undefined}
                 projects={projects}
                 viewKey={viewKey}

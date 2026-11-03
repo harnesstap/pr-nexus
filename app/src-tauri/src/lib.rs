@@ -135,6 +135,7 @@ pub fn run() {
             commands::activate_reviews,
             commands::load_more_reviews,
             commands::search_reviews,
+            commands::filter_reviews,
             commands::full_resync,
             commands::sync_status,
             commands::set_focus,

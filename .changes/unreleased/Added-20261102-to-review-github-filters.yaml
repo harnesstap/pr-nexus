@@ -1,0 +1,3 @@
+kind: Added
+body: To review filters with a GitHub search qualifier (org, draft, review decision, CI) now search GitHub, so "N of total loaded" counts the filtered query and Load more pages through it. Projects, groups and the other filters still apply locally.
+time: 2026-11-03T07:23:06.000000Z

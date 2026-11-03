@@ -19,6 +19,7 @@ use crate::error::CoreError;
 use crate::providers::{
     PrQuery, PrStatus, RateBudget, SearchBucket, SyncedPullRequest, VcsProvider,
 };
+use crate::review_filter::RemoteReviewFilter;
 use crate::settings::{self, SyncMark};
 use crate::store::Store;
 
@@ -203,6 +204,26 @@ pub fn incremental_queries(
     scoped_queries(&base, scope)
 }
 
+/// An on-demand search: the bucket query plus a filter's qualifiers and
+/// typed terms, packed with the owners like [`search_queries`] so the
+/// 256-character cap still holds.
+pub fn on_demand_queries(
+    bucket: SearchBucket,
+    scope: &TrackedScope,
+    filter: Option<&RemoteReviewFilter>,
+    terms: Option<&str>,
+) -> Vec<String> {
+    let mut base = search_query(bucket).to_owned();
+    if let Some(filter) = filter {
+        base.push_str(&filter.qualifiers());
+    }
+    if let Some(terms) = terms.map(str::trim).filter(|terms| !terms.is_empty()) {
+        base.push(' ');
+        base.push_str(terms);
+    }
+    scoped_queries(&base, scope)
+}
+
 fn scoped_queries(base: &str, scope: &TrackedScope) -> Vec<String> {
     let mut owners: Vec<String> = Vec::new();
     let mut add = |qualifier: &str, name: &str| {
@@ -367,6 +388,9 @@ pub struct BucketPlan {
     /// Extra search terms: an on-demand search that stores and checks what
     /// it finds, and changes nothing else (no vanished recheck, no mark).
     pub terms: Option<String>,
+    /// The GitHub-side part of a To review filter: an on-demand search like
+    /// `terms`, over the owners it keeps, with its qualifiers.
+    pub filter: Option<RemoteReviewFilter>,
 }
 
 impl BucketPlan {
@@ -375,6 +399,7 @@ impl BucketPlan {
             bucket: SearchBucket::Mine,
             limit: None,
             terms: None,
+            filter: None,
         }
     }
 
@@ -384,6 +409,7 @@ impl BucketPlan {
             bucket: SearchBucket::ReviewRequested,
             limit,
             terms: None,
+            filter: None,
         }
     }
 
@@ -393,6 +419,18 @@ impl BucketPlan {
             bucket: SearchBucket::ReviewRequested,
             limit: Some(REVIEW_MATCH_LIMIT),
             terms: Some(terms.trim().to_owned()),
+            filter: None,
+        }
+    }
+
+    /// Review requests matching a To review filter, the `limit` most
+    /// recently updated ones.
+    pub fn review_filter(filter: RemoteReviewFilter, limit: usize) -> Self {
+        Self {
+            bucket: SearchBucket::ReviewRequested,
+            limit: Some(limit),
+            terms: None,
+            filter: Some(filter),
         }
     }
 }
@@ -510,7 +548,23 @@ fn sync_bucket(
 ) -> Result<SyncReport, CoreError> {
     let bucket = bucket_plan.bucket;
     let flag = bucket_flag(bucket);
-    let on_demand = bucket_plan.terms.is_some();
+    let on_demand = bucket_plan.terms.is_some() || bucket_plan.filter.is_some();
+    let narrowed;
+    let scope = match &bucket_plan.filter {
+        Some(filter) => match filter.narrow(scope) {
+            Some(found) => {
+                narrowed = found;
+                &narrowed
+            }
+            None => {
+                let mut report = SyncReport::idle(false, String::new());
+                report.full = true;
+                report.review_total = Some(0);
+                return Ok(report);
+            }
+        },
+        None => scope,
+    };
     let key = scope_key(scope);
     let mark_name = mark_key(bucket);
     let mark = settings::sync_mark_at(store, mark_name)?;
@@ -531,20 +585,16 @@ fn sync_bucket(
     let existing = store.list_pull_requests_for_account(account_id)?;
     let mut writer = Writer::new(store, account_id, now, &existing)?;
     let mut early = EarlyRows::default();
-    let mut queries = match plan {
+    let queries = match plan {
+        SyncPlan::Full(_) if on_demand => on_demand_queries(
+            bucket,
+            scope,
+            bucket_plan.filter.as_ref(),
+            bucket_plan.terms.as_deref(),
+        ),
         SyncPlan::Full(_) => search_queries(bucket, scope),
         SyncPlan::Incremental { since, .. } => incremental_queries(bucket, scope, since),
     };
-    if let Some(terms) = bucket_plan
-        .terms
-        .as_deref()
-        .filter(|terms| !terms.is_empty())
-    {
-        for query in &mut queries {
-            query.push(' ');
-            query.push_str(terms);
-        }
-    }
     let query = PrQuery { bucket, queries };
     let mut failed: Option<CoreError> = None;
     let mut on_page = |rows: &[SyncedPullRequest]| {
@@ -725,7 +775,7 @@ fn sync_bucket(
             full: false,
             paused: false,
             message: String::new(),
-            review_total: None,
+            review_total: window_total,
         });
     }
 
@@ -1583,7 +1633,7 @@ mod tests {
             queries[0]
                 .queries
                 .iter()
-                .all(|q| q.ends_with(" widget fix"))
+                .all(|q| q.contains(" widget fix "))
         );
         assert_eq!(*found.status_asked.lock().unwrap(), vec!["R9".to_owned()]);
         assert!(
@@ -1596,6 +1646,73 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn a_review_filter_searches_its_qualifiers_and_reports_its_own_total() {
+        let (_dir, store, account) = open_store();
+        let found = Fake {
+            review: vec![pr("R7", "acme", 7, Involvement::REVIEW_REQUESTED)],
+            ..fake(Vec::new(), Vec::new())
+        };
+        let filter = RemoteReviewFilter {
+            orgs: vec!["ACME".into()],
+            ci: Some(crate::review_filter::CiQualifier::Failure),
+            ..Default::default()
+        };
+        let report = sync_buckets(
+            &store,
+            &found,
+            account,
+            SyncKind::Manual,
+            ts(30),
+            &[BucketPlan::review_filter(filter, 100)],
+            &mut |_| {},
+        )
+        .unwrap();
+        let queries = found.queries.lock().unwrap().clone();
+        assert!(
+            queries[0]
+                .queries
+                .iter()
+                .all(|q| q.contains(" status:failure")
+                    && q.contains(" org:acme")
+                    && q.contains("review-requested:@me"))
+        );
+        assert_eq!(report.fetched, 1);
+        assert_eq!(report.review_total, Some(1));
+        assert!(
+            row(&store, account, 7)
+                .involvement
+                .contains(Involvement::REVIEW_REQUESTED)
+        );
+        assert!(
+            settings::sync_mark_at(&store, settings::SYNC_MARK_REVIEWS)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_review_filter_on_an_untracked_owner_searches_nothing() {
+        let (_dir, store, account) = open_store();
+        let found = fake(Vec::new(), Vec::new());
+        let filter = RemoteReviewFilter {
+            orgs: vec!["elsewhere".into()],
+            ..Default::default()
+        };
+        let report = sync_buckets(
+            &store,
+            &found,
+            account,
+            SyncKind::Manual,
+            ts(30),
+            &[BucketPlan::review_filter(filter, 100)],
+            &mut |_| {},
+        )
+        .unwrap();
+        assert!(found.queries.lock().unwrap().is_empty());
+        assert_eq!(report.review_total, Some(0));
     }
 
     #[test]
