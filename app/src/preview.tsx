@@ -7,6 +7,7 @@ import "./index.css";
 import { ListScreen } from "./list/ListScreen";
 import { memoryProjectApi } from "./memoryProjects";
 import type { SearchRow } from "./list/paging";
+import { variedRows } from "./previewRows";
 import { Wizard } from "./wizard/Wizard";
 import { recordSeenVersion } from "./changelog/changelog";
 import { RELEASES } from "./changelog/data";
@@ -182,6 +183,11 @@ const rows: SearchRow[] = [
     },
   }),
 ];
+
+// `?rows=varied` swaps in one PR per next action (§8.2) for the badges and the "Needs attention" sort.
+if (new URLSearchParams(window.location.search).get("rows") === "varied") {
+  rows.splice(0, rows.length, ...variedRows(row));
+}
 
 /** Demo plan for the bulk Slack dialog: one card per acme channel, or one card for "All to one channel". */
 function demoBulkPreview(ids: number[], target: ReviewTarget | null): BulkPreview {

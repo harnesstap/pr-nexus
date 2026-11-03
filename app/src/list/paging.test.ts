@@ -140,6 +140,7 @@ test("a search reports matches in other views, behind filters, and among closed 
     row({ id: 4, title: "Hidden floor", repo: "acme/service-ssp", hidden: true, involvement: 3 }),
   ];
   const view = defaultView();
+  view.ordering = "updated";
   view.filters.statuses = ["ready"];
   const page = pageFromRows(rows, [], request("mine", view, "service-ssp"));
   expect(pageIds(page.sections)).toEqual([]);

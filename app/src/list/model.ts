@@ -7,8 +7,8 @@ export const REVIEW_REQUESTED = 2;
 const BUMP_DUE_MS = 24 * 60 * 60 * 1000;
 
 export type Grouping = "project" | "repository" | "org" | "status" | "updated";
-export type Ordering = "updated" | "created" | "slack" | "readiness" | "number" | "waiting" | "bumped";
-export const ORDERING_IDS: readonly Ordering[] = ["updated", "created", "slack", "readiness", "number", "waiting", "bumped"];
+export type Ordering = "attention" | "updated" | "created" | "slack" | "readiness" | "number" | "waiting" | "bumped";
+export const ORDERING_IDS: readonly Ordering[] = ["attention", "updated", "created", "slack", "readiness", "number", "waiting", "bumped"];
 export type Direction = "asc" | "desc";
 export type CheckState = "none" | "partial" | "all";
 export type StatusFilter = "ready" | "unknown" | "blocked" | "draft";
@@ -79,7 +79,8 @@ export function defaultFilters(): Filters {
 export function defaultView(): SavedView {
   return {
     grouping: "project",
-    ordering: "updated",
+    // New views (and new installs) start on "Needs attention"; a saved view keeps its own ordering.
+    ordering: "attention",
     direction: "desc",
     show: defaultShow(),
     filters: defaultFilters(),

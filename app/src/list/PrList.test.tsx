@@ -236,7 +236,7 @@ test("the funnel button sits right of search and its menu closes on Escape and o
   expect(screen.queryByRole("menu")).not.toBeInTheDocument();
 });
 
-test("rows show labelled threads, a review pill, and the Slack request status", async () => {
+test("rows show labelled threads, a next-action badge, and the Slack request status", async () => {
   const slack = {
     workspace: "acme-team",
     channel_id: "C1",
@@ -284,8 +284,8 @@ test("rows show labelled threads, a review pill, and the Slack request status", 
   expect(screen.getByLabelText("1 unresolved of 3 review threads")).toBeInTheDocument();
   expect(screen.queryByLabelText("0 unresolved of 0 review threads")).not.toBeInTheDocument();
   expect(screen.queryByText("0/0")).not.toBeInTheDocument();
-  expect(screen.getByText("Approved")).toBeInTheDocument();
-  expect(within(screen.getByRole("region", { name: "Pull requests" })).getByText("Changes requested")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /^Ready to merge: / })).toHaveClass("cursor-pointer");
+  expect(screen.getByRole("button", { name: /^Address review: / })).toBeInTheDocument();
   fireEvent.click(requested);
   expect(onOpen).toHaveBeenCalledWith(slack.permalink);
   expect(screen.queryByRole("button", { name: /^Open Slack request for Quiet one/ })).not.toBeInTheDocument();
@@ -483,7 +483,8 @@ test("a merged PR is not listed as open and shows its state under the Archived f
   fireEvent.click(screen.getByRole("checkbox", { name: "Archived and closed" }));
   await settle();
   const merged = screen.getByRole("article", { name: /Ship sync/ });
-  expect(within(merged).getByText("Merged")).toBeInTheDocument();
+  expect(within(merged).getAllByText("Merged").length).toBeGreaterThan(0);
+  expect(within(merged).getByRole("img", { name: /^Merged: / })).toBeInTheDocument();
   expect(screen.getAllByText(/3 open PRs .*· 1 merged or closed/).length).toBeGreaterThan(0);
 });
 
