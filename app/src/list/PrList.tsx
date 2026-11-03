@@ -3,7 +3,7 @@ import type { ListRow, ProjectDto } from "../api";
 import { AlertIcon, ChevronDownIcon, ChevronRightIcon, ClockIcon, CloseIcon, CommentIcon, CopyIcon, DraftIcon, FolderPlusIcon, FunnelIcon, MoreIcon, SearchIcon, SlackLogo } from "../icons";
 import { Tooltip } from "../Tooltip";
 import { ReviewerAvatars } from "./ReviewerAvatars";
-import { QuickFilters, StarredChip } from "./QuickFilters";
+import { QuickFilters } from "./QuickFilters";
 import { AddToProjectMenu } from "./AddToProjectMenu";
 import { GitHubRowButton, StarButton } from "./StarButton";
 import { ProjectInfo } from "./JiraChips";
@@ -594,17 +594,18 @@ export function PrList({
             )}
           </label>
           <SortPicker view={view} onViewChange={onViewChange} />
+          <FilterMenu view={view} orgs={page?.orgs ?? []} menu={menu} setMenu={setMenu} onViewChange={onViewChange} />
+        </div>
+        {/* Quick filter chips get their own row so their labels fit; it wraps, and folds into More when narrow. */}
+        <div className="mt-2 flex min-w-0">
           <QuickFilters
             active={view.filters.quick}
             counts={page?.quick ?? null}
             onChange={(quick) => onViewChange({ ...view, filters: { ...view.filters, quick } })}
+            starred={view.filters.starred}
+            starredCount={page ? new Set(list.entries.flatMap((entry) => (entry.row?.starred ? [entry.row.id] : []))).size : null}
+            onStarredChange={(starred) => onViewChange({ ...view, filters: { ...view.filters, starred } })}
           />
-          <StarredChip
-            on={view.filters.starred}
-            count={page ? new Set(list.entries.flatMap((entry) => (entry.row?.starred ? [entry.row.id] : []))).size : null}
-            onChange={(starred) => onViewChange({ ...view, filters: { ...view.filters, starred } })}
-          />
-          <FilterMenu view={view} orgs={page?.orgs ?? []} menu={menu} setMenu={setMenu} onViewChange={onViewChange} />
         </div>
       </div>
       <div
