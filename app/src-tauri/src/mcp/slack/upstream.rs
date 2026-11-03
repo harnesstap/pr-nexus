@@ -124,7 +124,7 @@ impl Default for SlackProxy {
 
 impl SlackProxy {
     /// Forgets every session, cached answer and pending proposal: they
-    /// belong to the profile being left (§3.4).
+    /// belong to the profile being left (§8.4).
     pub fn clear(&self) {
         lock(&self.official.sessions).clear();
         lock(&self.enterprises).clear();

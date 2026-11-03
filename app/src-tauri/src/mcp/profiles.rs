@@ -1,4 +1,4 @@
-//! The optional `profile` argument of every tool (§3.4): tools act on the
+//! The optional `profile` argument of every tool (§8.4): tools act on the
 //! active profile unless an agent names another one.
 
 use std::collections::HashMap;

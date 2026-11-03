@@ -89,7 +89,7 @@ pub struct DeviceSession {
 }
 
 pub struct AppState {
-    /// The active profile's store (§3.4).
+    /// The active profile's store (§8.4).
     pub store: crate::profiles::StoreSlot,
     pub profiles: Arc<crate::profiles::ProfileManager>,
     /// The profile this state serves. The main state follows switches; a

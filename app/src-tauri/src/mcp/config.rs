@@ -142,7 +142,7 @@ impl McpSettings {
     }
 }
 
-/// The Slack part of [`McpSettings`], kept per profile (§3.4) under
+/// The Slack part of [`McpSettings`], kept per profile (§8.4) under
 /// [`pr_nexus_core::profiles::SEND_POLICY_KEY`]: which workspaces agents
 /// see and how their writes are approved. The rest is app-wide.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

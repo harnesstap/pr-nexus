@@ -95,7 +95,7 @@ pub async fn keyring_retry(
 
 #[derive(Serialize)]
 pub struct Bootstrap {
-    /// Every profile; the active one has `active: true` (§3.4).
+    /// Every profile; the active one has `active: true` (§8.4).
     pub profiles: Vec<crate::profiles::commands::ProfileDto>,
     pub onboarding: OnboardingState,
     pub resume_step: String,
@@ -524,7 +524,7 @@ pub async fn connect_github(
     blocking::run(move || {
         let state = app.inner().as_ref();
         // Only the default profile follows gh's active account. Another
-        // profile keeps its own copy of the token (§3.4), so switching gh
+        // profile keeps its own copy of the token (§8.4), so switching gh
         // accounts elsewhere never changes which account it uses.
         let own_token = state.profile() != pr_nexus_core::profiles::DEFAULT_ID;
         let auth_mode = match mode.as_str() {

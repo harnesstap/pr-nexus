@@ -1411,6 +1411,43 @@ Step 7:
 └────────────────────────────────────────────────────────────────────────────┘
 ```
 
+### 8.4 Profiles
+
+A profile is a separate set of accounts and work: one GitHub account,
+its Slack workspaces and channel mappings, projects, message templates,
+the MCP send policy, the Activity log and review/bump tracking. One
+profile is active at a time; switching cancels the running sync, swaps
+the store and reloads every view.
+
+- **Storage.** `profiles.json` next to the database lists the profiles
+  and the active id. The `default` profile keeps `pr-nexus.db`; another
+  profile `<id>` gets `profiles/<id>/pr-nexus.db`. Theme, UI preferences,
+  the update channel and the MCP server switch, port and capabilities
+  stay in the default database and are shared.
+- **Migration.** On first start the existing database becomes the
+  `default` profile. It is copied first to `pr-nexus.pre-profiles.db`
+  (`VACUUM INTO`); the step is idempotent and a fresh install writes no
+  backup.
+- **Secrets.** All secrets stay in the single keychain item (service
+  `dev.pr-nexus`). The default profile uses the existing keys; another
+  profile prefixes them with `profile/<id>/`. Deleting a profile removes
+  its keys.
+- **GitHub.** The default profile keeps following `gh`'s active account.
+  Another profile stores its own token, pasted or read with
+  `gh auth token --user <login>` for an account listed by
+  `gh auth status`. The app never runs `gh auth switch`.
+- **Adding a profile** reuses the setup wizard. Its first step offers the
+  GitHub account, Slack workspaces, templates, send policy and projects
+  of any existing profiles. Picked items are copied, not linked: later
+  edits in one profile never change another.
+- **Settings** rename and delete profiles. Delete asks first; the default
+  profile, the active one and the last one can't be deleted.
+- **MCP.** Tools act on the active profile. Every tool takes an optional
+  `profile` (name or id), and `list_profiles` lists them. Slack sends go
+  through the active profile only, since their approval shows in its
+  window. With two or more profiles, confirmations name the profile next
+  to the workspace, and the audit records which profile a call used.
+
 ## 9. Auth, secrets & security
 
 **GitHub auth**, in the order offered:

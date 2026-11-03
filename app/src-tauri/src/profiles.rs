@@ -1,4 +1,4 @@
-//! Profiles (§3.4): one active profile at a time, each with its own
+//! Profiles (§8.4): one active profile at a time, each with its own
 //! database and keychain scope. The default profile keeps the database it
 //! had before profiles existed.
 
