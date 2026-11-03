@@ -512,7 +512,7 @@ test("Enter on a button keeps its own action instead of opening the focused row"
   const onDetails = vi.fn();
   await show(<Harness rows={rows} onDetails={onDetails} />);
   fireEvent.click(screen.getByRole("checkbox", { name: "Select Add passkeys" }));
-  const clear = screen.getByRole("button", { name: "Clear" });
+  const clear = screen.getByRole("button", { name: "Clear selection" });
   fireEvent.keyDown(clear, { key: "Enter" });
   expect(onDetails).not.toHaveBeenCalled();
 });
@@ -994,7 +994,7 @@ test("a group checkbox clears only its matching rows; Clear and Esc clear hidden
   expect(screen.queryByRole("region", { name: "Selection actions" })).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole("checkbox", { name: "Select all" }));
   await search("");
-  fireEvent.click(within(screen.getByRole("region", { name: "Selection actions" })).getByRole("button", { name: /Clear/ }));
+  fireEvent.click(within(screen.getByRole("region", { name: "Selection actions" })).getByRole("button", { name: "Clear selection" }));
   expect(screen.queryByRole("region", { name: "Selection actions" })).not.toBeInTheDocument();
 });
 

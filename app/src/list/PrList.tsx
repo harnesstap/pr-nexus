@@ -913,11 +913,11 @@ export function PrList({
             <Tooltip label="Clear selection" shortcut={hint("clear")} detail="Unselect every PR in this view" side="top">
               <button
                 type="button"
-                className="flex items-center gap-1.5 rounded-md border border-slate-700 px-4 py-1.5 text-slate-200 hover:bg-slate-800"
+                aria-label="Clear selection"
+                className="flex items-center rounded-md border border-slate-700 p-2 text-slate-200 hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-violet-400"
                 onClick={() => setSelected(new Set())}
               >
                 <CloseIcon />
-                Clear
               </button>
             </Tooltip>
           </div>
