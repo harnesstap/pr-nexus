@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import type { ListRow, ProjectDto } from "../api";
-import { AlertIcon, ChevronDownIcon, ChevronRightIcon, ClockIcon, CloseIcon, CommentIcon, DraftIcon, FolderPlusIcon, FunnelIcon, MoreIcon, SearchIcon, SlackLogo } from "../icons";
+import { AlertIcon, ChevronDownIcon, ChevronRightIcon, ClockIcon, CloseIcon, CommentIcon, CopyIcon, DraftIcon, FolderPlusIcon, FunnelIcon, MoreIcon, SearchIcon, SlackLogo } from "../icons";
 import { Tooltip } from "../Tooltip";
 import { ReviewerAvatars } from "./ReviewerAvatars";
 import { QuickFilters, StarredChip } from "./QuickFilters";
@@ -8,6 +8,8 @@ import { AddToProjectMenu } from "./AddToProjectMenu";
 import { GitHubRowButton, StarButton } from "./StarButton";
 import { ProjectInfo } from "./JiraChips";
 import { isTypingTarget, wantsRowEnter } from "./keys";
+import { copyText, prsToMarkdown } from "./markdown";
+import type { Toast } from "./model";
 import { displayKey, hint, matchShortcut, shortcut, type ShortcutId } from "./shortcuts";
 import {
   ago,
@@ -96,6 +98,8 @@ interface Props {
   onToggleStar?: (row: ListRow) => void;
   /** Two or more PRs from the bottom bar (§7.9). */
   onBulkReview: (ids: number[]) => void;
+  /** Shows a toast, e.g. after "Copy as Markdown". */
+  onNotice?: (toast: Toast) => void;
   /** Draft flags changed in the app ahead of the reload, by PR id. */
   draftPatches?: Record<number, boolean>;
   /** Opens Settings, from the "no open PRs" empty state. */
@@ -170,6 +174,7 @@ export function PrList({
   onRequestReview,
   onToggleStar,
   onBulkReview,
+  onNotice,
   draftPatches,
   actionsRef,
   onOpenSettings,
@@ -344,6 +349,19 @@ export function PrList({
     }
   }
 
+  /** Copies the selected loaded rows, in list order, as a Markdown list. */
+  function copySelectionAsMarkdown() {
+    const chosen = new Set(activeIds);
+    const rows = flat.filter((item) => chosen.has(item.row.id)).map((item) => item.row);
+    if (rows.length === 0) {
+      return;
+    }
+    copyText(prsToMarkdown(rows)).then(
+      () => onNotice?.({ text: `Copied ${rows.length} ${rows.length === 1 ? "PR" : "PRs"} as Markdown` }),
+      (reason: unknown) => onNotice?.({ text: `Couldn't copy to the clipboard: ${reason instanceof Error ? reason.message : String(reason)}`, error: true }),
+    );
+  }
+
   function toggleRow(id: number) {
     const next = new Set(selected);
     if (next.has(id)) {
@@ -436,6 +454,12 @@ export function PrList({
         if (selected.size > 0 || current) {
           event?.preventDefault();
           setAddMenu((open) => !open);
+        }
+        return true;
+      case "copyMarkdown":
+        if (selected.size > 0) {
+          event?.preventDefault();
+          copySelectionAsMarkdown();
         }
         return true;
       case "star":
@@ -875,14 +899,25 @@ export function PrList({
                 />
               )}
             </div>
+            <Tooltip label="Copy as Markdown" shortcut={hint("copyMarkdown")} detail="Copy the selected PRs as a Markdown list of links" side="top">
+              <button
+                type="button"
+                className="flex items-center gap-2 rounded-md border border-slate-700 px-4 py-1.5 text-slate-200 hover:bg-slate-800"
+                disabled={activeIds.length === 0}
+                onClick={copySelectionAsMarkdown}
+              >
+                <CopyIcon />
+                Copy as Markdown
+              </button>
+            </Tooltip>
             <Tooltip label="Clear selection" shortcut={hint("clear")} detail="Unselect every PR in this view" side="top">
               <button
                 type="button"
-                className="flex items-center gap-1.5 rounded-md border border-slate-700 px-4 py-1.5 text-slate-200 hover:bg-slate-800"
+                aria-label="Clear selection"
+                className="flex items-center rounded-md border border-slate-700 p-2 text-slate-200 hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-violet-400"
                 onClick={() => setSelected(new Set())}
               >
                 <CloseIcon />
-                Clear
               </button>
             </Tooltip>
           </div>

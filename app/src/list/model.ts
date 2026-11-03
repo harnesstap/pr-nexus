@@ -568,6 +568,8 @@ export interface Toast {
   link?: string | null;
   /** Shows an Undo button; the toast closes when it is pressed. */
   undo?: () => void;
+  /** Shows the toast as a failure. */
+  error?: boolean;
 }
 
 /** Success toast for a single request or bump. */
