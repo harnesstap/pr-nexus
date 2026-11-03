@@ -123,6 +123,16 @@ impl Default for SlackProxy {
 }
 
 impl SlackProxy {
+    /// Forgets every session, cached answer and pending proposal: they
+    /// belong to the profile being left (§8.4).
+    pub fn clear(&self) {
+        lock(&self.official.sessions).clear();
+        lock(&self.enterprises).clear();
+        lock(&self.calls).clear();
+        lock(&self.reads).clear();
+        lock(&self.proposals).clear();
+    }
+
     /// Answer every workspace from `upstream` instead (tests).
     pub fn set_upstream(&self, upstream: Arc<dyn Upstream>) {
         *self.upstream.write().expect("upstream lock") = Some(upstream);

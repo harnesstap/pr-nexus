@@ -5,6 +5,8 @@ use pr_nexus_core::store::Store;
 use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
+use crate::profiles::StoreSlot;
+use pr_nexus_core::profiles::SEND_POLICY_KEY;
 
 /// Settings key holding [`McpSettings`] as JSON.
 pub const SETTINGS_KEY: &str = "mcp.server";
@@ -140,16 +142,66 @@ impl McpSettings {
     }
 }
 
-pub fn load(store: &Store) -> Result<McpSettings, AppError> {
-    let Some(entry) = store.get_setting(SETTINGS_KEY.to_owned())? else {
-        return Ok(McpSettings::default());
-    };
-    let saved: McpSettings = serde_json::from_str(&entry.value_json)
-        .map_err(|err| AppError::new("internal", format!("decode {SETTINGS_KEY}: {err}")))?;
-    Ok(saved.normalized())
+/// The Slack part of [`McpSettings`], kept per profile (§8.4) under
+/// [`pr_nexus_core::profiles::SEND_POLICY_KEY`]: which workspaces agents
+/// see and how their writes are approved. The rest is app-wide.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SendPolicy {
+    pub slack_workspaces: Vec<String>,
+    pub slack_auto_send_channels: Vec<String>,
+    pub slack_send_mode: SlackSendMode,
+    pub slack_elicit: bool,
 }
 
-pub fn save(store: &Store, value: &McpSettings) -> Result<McpSettings, AppError> {
+impl Default for SendPolicy {
+    fn default() -> Self {
+        Self::of(&McpSettings::default())
+    }
+}
+
+impl SendPolicy {
+    fn of(settings: &McpSettings) -> Self {
+        Self {
+            slack_workspaces: settings.slack_workspaces.clone(),
+            slack_auto_send_channels: settings.slack_auto_send_channels.clone(),
+            slack_send_mode: settings.slack_send_mode,
+            slack_elicit: settings.slack_elicit,
+        }
+    }
+
+    fn apply(self, settings: &mut McpSettings) {
+        settings.slack_workspaces = self.slack_workspaces;
+        settings.slack_auto_send_channels = self.slack_auto_send_channels;
+        settings.slack_send_mode = self.slack_send_mode;
+        settings.slack_elicit = self.slack_elicit;
+    }
+}
+
+fn read<T: serde::de::DeserializeOwned>(store: &Store, key: &str) -> Result<Option<T>, AppError> {
+    let Some(entry) = store.get_setting(key.to_owned())? else {
+        return Ok(None);
+    };
+    serde_json::from_str(&entry.value_json)
+        .map(Some)
+        .map_err(|err| AppError::new("internal", format!("decode {key}: {err}")))
+}
+
+/// The app-wide settings with the active profile's send policy. The
+/// default profile's policy falls back to what was saved before profiles.
+pub fn load(store: &StoreSlot) -> Result<McpSettings, AppError> {
+    let mut settings: McpSettings = read(store.home(), SETTINGS_KEY)?.unwrap_or_default();
+    match read::<SendPolicy>(store.get(), SEND_POLICY_KEY)? {
+        Some(policy) => policy.apply(&mut settings),
+        None if store.is_home() => {}
+        None => SendPolicy::default().apply(&mut settings),
+    }
+    Ok(settings.normalized())
+}
+
+/// Saves the app-wide part for every profile and the send policy for the
+/// active one only.
+pub fn save(store: &StoreSlot, value: &McpSettings) -> Result<McpSettings, AppError> {
     let value = value.clone().normalized();
     if value.port.is_some_and(|port| port < 1024) {
         return Err(AppError::new(
@@ -157,7 +209,16 @@ pub fn save(store: &Store, value: &McpSettings) -> Result<McpSettings, AppError>
             "Pick a port from 1024 to 65535, or leave it empty for any free port.",
         ));
     }
-    settings::put_json(store, SETTINGS_KEY, &value)?;
+    let mut global = value.clone();
+    // The default profile's pre-profiles policy stays where it was, so a
+    // profile without its own policy never picks up another one's.
+    if let Some(home) = read::<McpSettings>(store.home(), SETTINGS_KEY)? {
+        SendPolicy::of(&home).apply(&mut global);
+    } else {
+        SendPolicy::default().apply(&mut global);
+    }
+    settings::put_json(store.home(), SETTINGS_KEY, &global)?;
+    settings::put_json(store.get(), SEND_POLICY_KEY, &SendPolicy::of(&value))?;
     Ok(value)
 }
 

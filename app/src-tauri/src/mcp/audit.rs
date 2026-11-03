@@ -27,6 +27,9 @@ pub enum Outcome {
 
 #[derive(Debug, Clone)]
 pub struct AuditEvent {
+    /// The profile the call acted on; its Activity log keeps the row.
+    /// `None` when the named profile was not found (kept in the active one).
+    pub profile: Option<String>,
     pub tool: String,
     pub capability: Capability,
     pub arguments: Map<String, Value>,
@@ -397,7 +400,12 @@ impl AuditSink for StoreAudit {
             duration_ms: i64::try_from(event.duration_ms).unwrap_or(i64::MAX),
             link: event.link.clone(),
         };
-        if let Err(err) = self.0.store.append_mcp_audit(entry) {
+        let store = match &event.profile {
+            Some(id) => self.0.profiles.store(id).ok(),
+            None => None,
+        }
+        .unwrap_or_else(|| self.0.store.get());
+        if let Err(err) = store.append_mcp_audit(entry) {
             tracing::warn!(error = %err, "mcp audit row not saved");
         }
     }

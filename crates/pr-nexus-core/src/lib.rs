@@ -12,6 +12,7 @@ pub mod mapping;
 pub mod onboarding;
 pub mod overview;
 pub mod ownership;
+pub mod profiles;
 pub mod providers;
 pub mod redact;
 pub mod review;

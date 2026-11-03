@@ -20,8 +20,8 @@ pub mod search;
 pub use notifications::{SCOPE_UNAVAILABLE, TOKEN_TYPE_UNAVAILABLE};
 
 pub use auth::{
-    DevicePoll, DeviceStart, GhProbe, github_token_from_env, oauth_client_id_from_env,
-    poll_device_flow, read_gh_token, start_device_flow,
+    DevicePoll, DeviceStart, GhProbe, gh_accounts, github_token_from_env, oauth_client_id_from_env,
+    parse_gh_accounts, poll_device_flow, read_gh_token, read_gh_token_for, start_device_flow,
 };
 
 use std::sync::{Arc, Mutex};

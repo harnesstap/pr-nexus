@@ -96,6 +96,10 @@ pub struct Proposals {
 }
 
 impl Proposals {
+    pub(crate) fn clear(&mut self) {
+        self.items.clear();
+    }
+
     pub(super) fn push(&mut self, mut proposal: Proposal) -> Proposal {
         self.next += 1;
         proposal.id = self.next;
@@ -486,12 +490,19 @@ pub(super) fn ask_in_agent(
     ask: &dyn session::Ask,
     client: Option<String>,
 ) -> Result<Value, AppError> {
-    let text = elicit::message(
+    let mut text = elicit::message(
         &proposal.tool,
         &proposal.workspace,
         &proposal.channel_id,
         &Value::Object(proposal.arguments.clone()),
     );
+    if let Some(profile) = crate::mcp::profiles::label(state) {
+        text = text.replacen(
+            "\n\nWorkspace:",
+            &format!("\n\nProfile: {profile}\nWorkspace:"),
+            1,
+        );
+    }
     let agent = client.unwrap_or_else(|| "the agent".to_owned());
     let id = proposal.id;
     let outcome = elicit::outcome(ask.ask(&text));

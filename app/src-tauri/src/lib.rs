@@ -11,6 +11,7 @@ mod logging;
 mod mapping_file;
 mod mcp;
 mod preferences;
+mod profiles;
 mod project_info;
 pub mod services;
 mod slack;
@@ -83,6 +84,13 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::bootstrap,
+            profiles::commands::list_profiles,
+            profiles::commands::switch_profile,
+            profiles::commands::profile_reuse_options,
+            profiles::commands::create_profile,
+            profiles::commands::rename_profile,
+            profiles::commands::delete_profile,
+            profiles::commands::gh_accounts,
             commands::keyring_status,
             commands::keyring_retry,
             commands::save_providers,

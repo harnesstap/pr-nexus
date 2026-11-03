@@ -122,7 +122,7 @@ impl McpControl {
             return Ok(current);
         }
         let state = Arc::clone(&self.shared.state);
-        let token = blocking::run(move || token::ensure(&state.vault)).await?;
+        let token = blocking::run(move || token::ensure(&state.vault.global())).await?;
         *self.shared.token.write().expect("mcp token") = token.clone();
         Ok(token)
     }
@@ -130,7 +130,7 @@ impl McpControl {
     /// A new token; the running server rejects the old one at once.
     pub async fn regenerate(&self) -> Result<McpView, AppError> {
         let state = Arc::clone(&self.shared.state);
-        let token = blocking::run(move || token::regenerate(&state.vault)).await?;
+        let token = blocking::run(move || token::regenerate(&state.vault.global())).await?;
         *self.shared.token.write().expect("mcp token") = token;
         Ok(self.view())
     }
@@ -247,6 +247,7 @@ impl McpControl {
             ),
         };
         self.shared.audit.record(&AuditEvent {
+            profile: None,
             tool,
             capability: Capability::SlackSends,
             arguments,

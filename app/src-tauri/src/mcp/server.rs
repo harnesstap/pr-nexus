@@ -112,7 +112,10 @@ impl ServerHandler for NexusMcp {
             ));
         };
         let spec = &self.tools[index];
-        let arguments = request.arguments.unwrap_or_default();
+        let mut arguments = request.arguments.unwrap_or_default();
+        let target = super::profiles::take(&mut arguments)
+            .and_then(|key| super::profiles::resolve(&self.shared.state, key.as_deref()));
+        let profile_id = target.as_ref().ok().map(|state| state.profile());
         let client = context
             .peer
             .peer_info()
@@ -121,6 +124,7 @@ impl ServerHandler for NexusMcp {
         let audit =
             |outcome: Outcome, result: Option<&serde_json::Value>, error: Option<String>| {
                 self.shared.audit.record(&AuditEvent {
+                    profile: profile_id.clone(),
                     tool: spec.name.to_owned(),
                     capability: spec.capability,
                     summary: summarize(spec.name, &arguments, result),
@@ -146,7 +150,35 @@ impl ServerHandler for NexusMcp {
             }))
             .into());
         }
-        let state = Arc::clone(&self.shared.state);
+        let state = match target {
+            Ok(state) => state,
+            Err(err) => {
+                audit(
+                    Outcome::Failed {
+                        kind: err.kind.clone(),
+                    },
+                    None,
+                    Some(err.message.clone()),
+                );
+                return Ok(CallToolResult::structured_error(
+                    json!({ "kind": err.kind, "message": err.message }),
+                )
+                .into());
+            }
+        };
+        if spec.capability == Capability::SlackSends && !Arc::ptr_eq(&state, &self.shared.state) {
+            // Approvals live in the open profile's window; a write for a
+            // profile nobody is looking at could never be approved.
+            let message =
+                "Slack writes only go through the active profile. Switch to it in PR Nexus first."
+                    .to_owned();
+            audit(Outcome::Denied, None, Some(message.clone()));
+            return Ok(CallToolResult::structured_error(json!({
+                "kind": "forbidden",
+                "message": message,
+            }))
+            .into());
+        }
         let handler = spec.handler;
         let input = arguments.clone();
         let caller = super::slack::session::Caller {

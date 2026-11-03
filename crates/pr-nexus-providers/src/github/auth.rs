@@ -206,6 +206,12 @@ fn wait_with_timeout(mut child: Child, timeout: Duration) -> Result<Finished, St
 }
 
 pub fn read_gh_token() -> GhProbe {
+    read_gh_token_for(None)
+}
+
+/// `gh auth token` for one of the accounts gh knows (`--user <login>`), or
+/// the active one. Never switches gh's active account.
+pub fn read_gh_token_for(login: Option<&str>) -> GhProbe {
     let Some(gh) = find_gh() else {
         return GhProbe::Unavailable {
             reason: NOT_FOUND.into(),
@@ -213,8 +219,12 @@ pub fn read_gh_token() -> GhProbe {
     };
     // stdin is closed: `gh auth token` never prompts on the terminal. A
     // keychain prompt on macOS is a system dialog, which the timeout allows for.
+    let mut args = vec!["auth", "token", "--hostname", "github.com"];
+    if let Some(login) = login {
+        args.extend(["--user", login]);
+    }
     let child = match Command::new(&gh)
-        .args(["auth", "token", "--hostname", "github.com"])
+        .args(&args)
         .env("GH_PROMPT_DISABLED", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -518,5 +528,66 @@ mod tests {
             std::fs::create_dir_all(&self).unwrap();
             self
         }
+    }
+}
+
+/// The github.com logins gh is signed in to, active first, read from
+/// `gh auth status`. Empty when gh is missing or signed out.
+pub fn gh_accounts() -> Vec<String> {
+    let Some(gh) = find_gh() else {
+        return Vec::new();
+    };
+    let Ok(child) = Command::new(&gh)
+        .args(["auth", "status", "--hostname", "github.com"])
+        .env("GH_PROMPT_DISABLED", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    else {
+        return Vec::new();
+    };
+    match wait_with_timeout(child, GH_TOKEN_TIMEOUT) {
+        Ok((_, stdout, stderr)) => parse_gh_accounts(&format!("{stdout}\n{stderr}")),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Parses `gh auth status` lines such as
+/// `✓ Logged in to github.com account alice (keyring)` and the following
+/// `- Active account: true`.
+pub fn parse_gh_accounts(output: &str) -> Vec<String> {
+    let mut accounts: Vec<(String, bool)> = Vec::new();
+    for line in output.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.split("Logged in to github.com account ").nth(1) {
+            if let Some(login) = rest.split_whitespace().next() {
+                accounts.push((login.to_owned(), false));
+            }
+        } else if line.contains("Active account: true")
+            && let Some(last) = accounts.last_mut()
+        {
+            last.1 = true;
+        }
+    }
+    accounts.sort_by_key(|(_, active)| !active);
+    let mut out: Vec<String> = Vec::new();
+    for (login, _) in accounts {
+        if !out.contains(&login) {
+            out.push(login);
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod gh_accounts_tests {
+    use super::parse_gh_accounts;
+
+    #[test]
+    fn lists_every_account_active_first() {
+        let output = "github.com\n  ✓ Logged in to github.com account alice (keyring)\n  - Active account: false\n  ✓ Logged in to github.com account acme-bot (keyring)\n  - Active account: true\n";
+        assert_eq!(parse_gh_accounts(output), ["acme-bot", "alice"]);
+        assert!(parse_gh_accounts("You are not logged into any GitHub hosts.").is_empty());
     }
 }
