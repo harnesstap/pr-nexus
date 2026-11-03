@@ -16,6 +16,16 @@ const planScript = join(repoRoot, "scripts", "tag-release-plan.sh");
 const caskScript = join(repoRoot, "scripts", "render-homebrew-cask.sh");
 const dirs: string[] = [];
 
+/**
+ * Scripts get only what they need, never the runner's environment: CI sets
+ * GITHUB_OUTPUT (the scripts append to it), and a stray RELEASE_VERSION,
+ * RESEAL_REQUIRE or similar on the runner changes what they do.
+ */
+function cleanEnv(): NodeJS.ProcessEnv {
+  return { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: process.env.HOME ?? tmpdir(), TMPDIR: tmpdir(), LC_ALL: "C" };
+}
+
+
 afterEach(async () => {
   await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
@@ -34,13 +44,13 @@ async function writeExecutable(path: string, body: string): Promise<void> {
 test("reseal skips on non-Darwin unless required", async () => {
   const root = await tempDir("reseal-skip-");
   const skipped = await execFileAsync("/bin/bash", [resealScript, join(root, "missing")], {
-    env: { ...process.env, RESEAL_UNAME: "Linux" },
+    env: { ...cleanEnv(), RESEAL_UNAME: "Linux" },
   });
   expect(skipped.stdout).toContain("skipping on Linux");
 
   await expect(
     execFileAsync("/bin/bash", [resealScript, join(root, "missing")], {
-      env: { ...process.env, RESEAL_UNAME: "Linux", RESEAL_REQUIRE: "1" },
+      env: { ...cleanEnv(), RESEAL_UNAME: "Linux", RESEAL_REQUIRE: "1" },
     }),
   ).rejects.toThrow(/required on Darwin/);
 });
@@ -87,7 +97,7 @@ exit 0
 
   const result = await execFileAsync("/bin/bash", [resealScript, bundle], {
     env: {
-      ...process.env,
+      ...cleanEnv(),
       PATH: `${root}:/usr/bin:/bin`,
       RESEAL_UNAME: "Darwin",
       RESEAL_REQUIRE: "1",
@@ -130,7 +140,7 @@ exit 0
   await writeExecutable(join(root, "hdiutil"), `#!/usr/bin/env bash\nout="\${@: -1}"; echo dmg > "$out"\n`);
   await execFileAsync("/bin/bash", [resealScript, bundle], {
     env: {
-      ...process.env,
+      ...cleanEnv(),
       PATH: `${root}:/usr/bin:/bin`,
       RESEAL_UNAME: "Darwin",
       RESEAL_CODESIGN: join(root, "codesign"),
@@ -176,7 +186,7 @@ exit 0
   await expect(
     execFileAsync("/bin/bash", [resealScript, bundle], {
       env: {
-        ...process.env,
+        ...cleanEnv(),
         RESEAL_UNAME: "Darwin",
         RESEAL_CODESIGN: join(root, "codesign"),
       },
@@ -205,7 +215,7 @@ serde = "1"
     '{\n  "name": "pr-nexus",\n  "version": "0.1.0",\n  "devDependencies": {\n    "x": {\n      "version": "9.9.9"\n    }\n  }\n}\n',
   );
   await execFileAsync("/bin/bash", [stampScript, "v0.2.0"], {
-    env: { ...process.env, STAMP_RELEASE_ROOT: root, STAMP_SKIP_CARGO: "1" },
+    env: { ...cleanEnv(), STAMP_RELEASE_ROOT: root, STAMP_SKIP_CARGO: "1" },
   });
   const text = await readFile(join(root, "Cargo.toml"), "utf8");
   expect(text).toContain('version = "0.2.0"');
@@ -231,7 +241,7 @@ async function renderCask(tag: string, assets: unknown, tap: string, appName = "
   const assetsFile = join(tap, "..", `assets-${tag}.json`);
   await writeFile(assetsFile, JSON.stringify({ assets }));
   return execFileAsync("/bin/bash", [caskScript, tag, assetsFile, tap], {
-    env: { ...process.env, CASK_APP_NAME: appName },
+    env: { ...cleanEnv(), CASK_APP_NAME: appName },
   });
 }
 
@@ -280,23 +290,23 @@ test("release asset check requires every platform installer", async () => {
   const ok = await execFileAsync("/bin/bash", [
     assetsScript,
     "v0.1.0",
-    ...(await execFileAsync("/bin/bash", [assetsScript, "--list", "0.1.0"])).stdout.trim().split("\n"),
+    ...(await execFileAsync("/bin/bash", [assetsScript, "--list", "0.1.0"], { env: cleanEnv() })).stdout.trim().split("\n"),
     "notes.txt",
-  ]);
+  ], { env: cleanEnv() });
   expect(ok.stdout).toContain("PR-Nexus_0.1.0_aarch64.dmg");
   expect(ok.stdout).toContain("PR-Nexus_0.1.0_amd64.deb");
   expect(ok.stdout).toContain("PR-Nexus_0.1.0_x64-setup.exe");
   await expect(
-    execFileAsync("/bin/bash", [assetsScript, "0.1.0", "PR-Nexus_0.1.0_x64.dmg"]),
+    execFileAsync("/bin/bash", [assetsScript, "0.1.0", "PR-Nexus_0.1.0_x64.dmg"], { env: cleanEnv() }),
   ).rejects.toThrow(/missing PR-Nexus_0.1.0_aarch64.dmg/);
-  await expect(execFileAsync("/bin/bash", [assetsScript, "0.1.0", "PR-Nexus_0.1.0_aarch64.dmg"])).rejects.toThrow(
+  await expect(execFileAsync("/bin/bash", [assetsScript, "0.1.0", "PR-Nexus_0.1.0_aarch64.dmg"], { env: cleanEnv() })).rejects.toThrow(
     /missing PR-Nexus_0.1.0_x64_en-US.msi/,
   );
 });
 
 test("release dry run checks the version without calling gh", async () => {
   const result = await execFileAsync("/bin/bash", [prepareScript], {
-    env: { ...process.env, DRY_RUN: "1", PREPARE_RELEASE_ROOT: repoRoot },
+    env: { ...cleanEnv(), DRY_RUN: "1", PREPARE_RELEASE_ROOT: repoRoot },
   });
   expect(result.stdout).toContain("dry_run=true");
   expect(result.stdout).toContain("skip=true");
@@ -315,7 +325,7 @@ test("tag release plan batches v0.1.0 when nothing has shipped", async () => {
     "kind: Features\nbody: Bootstrap\ntime: 2026-10-26T00:00:00Z\n",
   );
   const result = await execFileAsync("/bin/bash", [planScript], {
-    env: { ...process.env, TAG_RELEASE_ROOT: root, CHANGIE_LATEST: "" },
+    env: { ...cleanEnv(), TAG_RELEASE_ROOT: root, CHANGIE_LATEST: "" },
   });
   expect(result.stdout).toContain("has_unreleased=true");
   expect(result.stdout).toContain("batch_args=v0.1.0");
@@ -331,7 +341,7 @@ test("tag release plan pins RELEASE_VERSION instead of auto", async () => {
     join(root, ".changes", "unreleased", "Added-x.yaml"),
     "kind: Added\nbody: Something\ntime: 2026-11-02T00:00:00Z\n",
   );
-  const env = { ...process.env, TAG_RELEASE_ROOT: root, CHANGIE_LATEST: "v0.1.1" };
+  const env = { ...cleanEnv(), TAG_RELEASE_ROOT: root, CHANGIE_LATEST: "v0.1.1" };
   const auto = await execFileAsync("/bin/bash", [planScript], { env });
   expect(auto.stdout).toContain("batch_args=auto");
   const pinned = await execFileAsync("/bin/bash", [planScript], { env: { ...env, RELEASE_VERSION: "0.1.2" } });
@@ -352,7 +362,7 @@ test("install.sh verifies the checksum and picks the package for the distro", as
   await writeFile(join(rel, "SHA256SUMS"), sums);
   await writeFile(join(rel, "os-release"), 'ID=linuxmint\nID_LIKE="ubuntu debian"\n');
   const env = {
-    ...process.env,
+    ...cleanEnv(),
     PR_NEXUS_DRY_RUN: "1",
     PR_NEXUS_VERSION: "9.9.9",
     PR_NEXUS_BASE_URL: `file://${rel}`,
@@ -380,7 +390,7 @@ test("WinGet manifests render from SHA256SUMS", async () => {
   const dir = await tempDir("pr-nexus-winget-");
   const sums = join(dir, "SHA256SUMS");
   await writeFile(sums, "ab12  PR-Nexus_0.2.0_x64-setup.exe\ncd34  PR-Nexus_0.2.0_x64_en-US.msi\n");
-  const { stdout } = await execFileAsync("/bin/bash", [script, "v0.2.0", sums, join(dir, "out"), "2026-01-02"]);
+  const { stdout } = await execFileAsync("/bin/bash", [script, "v0.2.0", sums, join(dir, "out"), "2026-01-02"], { env: cleanEnv() });
   const dest = stdout.trim();
   expect(dest).toBe(join(dir, "out", "manifests", "h", "harnesstap", "PRNexus", "0.2.0"));
   const installer = await readFile(join(dest, "harnesstap.PRNexus.installer.yaml"), "utf8");
@@ -390,5 +400,5 @@ test("WinGet manifests render from SHA256SUMS", async () => {
   expect(installer).toContain("InstallerSha256: CD34");
   expect(installer).toContain("ReleaseDate: 2026-01-02");
   await writeFile(sums, "ab12  PR-Nexus_0.2.0_x64-setup.exe\n");
-  await expect(execFileAsync("/bin/bash", [script, "v0.2.0", sums, join(dir, "out2")])).rejects.toThrow(/missing PR-Nexus_0.2.0_x64_en-US.msi/);
+  await expect(execFileAsync("/bin/bash", [script, "v0.2.0", sums, join(dir, "out2")], { env: cleanEnv() })).rejects.toThrow(/missing PR-Nexus_0.2.0_x64_en-US.msi/);
 });

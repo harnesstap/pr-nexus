@@ -590,6 +590,14 @@ test("the header and the bulk bar follow the mockup wording", async () => {
 });
 
 /** 130 open PRs in Auth: more than two pages of `PAGE_SIZE`. */
+/**
+ * Tests over `many()` mount 50 to 130 full rows in development-mode React and
+ * re-render them on every page. That is ~0.5 s on an idle machine and several
+ * seconds on a busy CI runner, past Vitest's 5 s default. The budget is for
+ * the CPU work; nothing here waits on a clock.
+ */
+const LARGE_LIST_TIMEOUT = 30_000;
+
 function many(count = 130): SearchRow[] {
   return Array.from({ length: count }, (_, index) =>
     row({ id: index + 1, number: 1000 + index, title: `Change ${index + 1}`, project_ids: [1], updated_at: new Date(Date.UTC(2026, 9, 26, 11, 0, 0) - index * 60_000).toISOString() }),
@@ -622,13 +630,13 @@ test("header counts, select-all and drag cover the full result, not just the loa
   const [projectId, ids] = onLinkPrs.mock.calls[0] as [number, number[]];
   expect(projectId).toBe(2);
   expect([...ids].sort((a, b) => a - b)).toEqual(all.map((item) => item.id));
-});
+}, LARGE_LIST_TIMEOUT);
 
 test("the section checkbox selects every PR in the section, loaded or not", async () => {
   await show(<Harness rows={many()} />);
   fireEvent.click(screen.getByRole("checkbox", { name: "Select Auth" }));
   expect(within(screen.getByRole("region", { name: "Selection actions" })).getByText(/^130 selected/)).toBeInTheDocument();
-});
+}, LARGE_LIST_TIMEOUT);
 
 test("infinite scroll loads the next page when the sentinel comes into view", async () => {
   const observers: Array<(items: Array<{ isIntersecting: boolean }>) => void> = [];
@@ -687,7 +695,7 @@ test("infinite scroll loads the next page when the sentinel comes into view", as
   } finally {
     vi.unstubAllGlobals();
   }
-});
+}, LARGE_LIST_TIMEOUT);
 
 test("a scroll near the bottom also loads more, as a fallback for the observer", async () => {
   await show(<Harness rows={many()} />);
@@ -696,7 +704,7 @@ test("a scroll near the bottom also loads more, as a fallback for the observer",
   fireEvent.scroll(region);
   await settle();
   expect(screen.getAllByRole("article").length).toBeGreaterThan(before);
-});
+}, LARGE_LIST_TIMEOUT);
 
 test("a slow search response that lands after a newer one is dropped", async () => {
   vi.useFakeTimers();
@@ -770,7 +778,7 @@ test("a sync refresh re-reads what is loaded in place, without a loading state",
   expect(refresh.cursor).toBeNull();
   expect(refresh.limit).toBeGreaterThan(PAGE_SIZE);
   expect(screen.getAllByRole("article").length).toBe(loaded);
-});
+}, LARGE_LIST_TIMEOUT);
 
 test("Add to project links the selection to a picked project", async () => {
   const onLinkPrs = vi.fn();

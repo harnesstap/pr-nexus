@@ -28,7 +28,9 @@ it("shows releases since the last seen version, traps focus and closes on Escape
   expect(dialog).toHaveTextContent("Old bug");
   expect(dialog).not.toHaveTextContent("First");
   const gotIt = screen.getByRole("button", { name: "Got it" });
-  expect(gotIt).toHaveFocus();
+  // The modal focuses "Got it" in a passive effect. findByRole resolves as soon
+  // as the dialog is committed, which can be before that effect has run.
+  await waitFor(() => expect(gotIt).toHaveFocus());
   fireEvent.keyDown(gotIt, { key: "Tab" });
   expect(screen.getByRole("button", { name: /close what's new/i })).toHaveFocus();
   fireEvent.keyDown(dialog, { key: "Escape" });

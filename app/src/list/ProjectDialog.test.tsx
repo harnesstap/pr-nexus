@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { expect, test, vi } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import type { Api, ProjectDto } from "../api";
 import type { SearchRow } from "./paging";
 import { memoryProjectApi } from "../memoryProjects";
@@ -39,7 +39,21 @@ function row(id: number, title: string, project_ids: number[]): SearchRow {
   };
 }
 
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+/**
+ * The rule preview (250 ms) and the PR picker (200 ms) are debounced with real
+ * timers, which ate most of findBy's 1 s budget on a loaded runner. Fake only
+ * the timeouts and step past the debounce, so the wait is for the answer alone.
+ */
+async function pastDebounce() {
+  await act(() => vi.advanceTimersByTimeAsync(300));
+}
+
 function setup() {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
   const rows = [row(1, "Migrate login", [1]), row(2, "Add passkeys", []), row(3, "Fix tax rounding", [])];
   const memory = memoryProjectApi(rows, [project]);
   const api = { ...memory, previewRule: vi.fn(() => Promise.resolve(2)), saveProjectRule: vi.fn(memory.saveProjectRule) } as unknown as Api;
@@ -57,6 +71,7 @@ test("rules get a live preview and save with their kind, pattern and priority", 
   fireEvent.change(within(dialog).getByRole("combobox", { name: "Rule kind" }), { target: { value: "title_regex" } });
   fireEvent.change(within(dialog).getByRole("textbox", { name: "Rule pattern" }), { target: { value: "(?i)login" } });
   fireEvent.change(within(dialog).getByRole("spinbutton", { name: "Rule priority" }), { target: { value: "5" } });
+  await pastDebounce();
   expect(await within(dialog).findByText("Matches 2 open PRs")).toBeInTheDocument();
   expect(api.previewRule).toHaveBeenLastCalledWith("title_regex", "(?i)login");
   fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
@@ -72,6 +87,7 @@ test("PRs are added from the picker, removed, and the dialog closes on Escape", 
   expect(await within(dialog).findByText("Linked pull requests (1)")).toBeInTheDocument();
   expect(within(dialog).getByText("Manual")).toBeInTheDocument();
   fireEvent.change(within(dialog).getByRole("textbox", { name: "Add pull request" }), { target: { value: "passkeys" } });
+  await pastDebounce();
   const matches = within(dialog).getByRole("list", { name: "Matching pull requests" });
   await within(matches).findByRole("button", { name: "Add Add passkeys" });
   expect(within(matches).queryByText(/Migrate login/)).not.toBeInTheDocument();
