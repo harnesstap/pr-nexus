@@ -24,7 +24,8 @@ export type ShortcutId =
   | "github"
   | "filters"
   | "project"
-  | "star";
+  | "star"
+  | "copyMarkdown";
 
 type KeyEvent = Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey">;
 
@@ -59,6 +60,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { id: "github", group: "Actions", keys: ["o"], label: "Open in GitHub", match: ["o"] },
   { id: "filters", group: "Actions", keys: ["f"], label: "View options and filters", match: ["f"] },
   { id: "project", group: "Actions", keys: ["p"], label: "Add to project", match: ["p"] },
+  { id: "copyMarkdown", group: "Actions", keys: ["Mod+Shift+C"], label: "Copy selected PRs as Markdown", match: ["c"], mod: true, shift: true },
 ];
 
 const BY_ID = new Map(SHORTCUTS.map((shortcut) => [shortcut.id, shortcut]));

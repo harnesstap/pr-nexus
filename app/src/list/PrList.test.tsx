@@ -3,7 +3,7 @@ import { useState } from "react";
 import { afterEach, expect, test, vi } from "vitest";
 import type { ListRow, ProjectDto } from "../api";
 import { PAGE_SIZE, pageFromRows, type PageDto, type PageRequest, type SearchRow } from "./paging";
-import { defaultView, type SavedView } from "./model";
+import { defaultView, type SavedView, type Toast } from "./model";
 import { PrList, SEARCH_DEBOUNCE_MS } from "./PrList";
 
 afterEach(() => {
@@ -60,6 +60,7 @@ function Harness({
   onRequestReview = () => undefined,
   onBulkReview = () => undefined,
   onOpen = () => undefined,
+  onNotice,
 }: {
   rows: SearchRow[];
   projects?: ProjectDto[];
@@ -76,6 +77,7 @@ function Harness({
   onRequestReview?: (row: ListRow) => void;
   onBulkReview?: (ids: number[]) => void;
   onOpen?: (url: string) => void;
+  onNotice?: (toast: Toast) => void;
 }) {
   const [view, setView] = useState<SavedView>(defaultView());
   const [currentView, setCurrentView] = useState(viewKey);
@@ -101,6 +103,7 @@ function Harness({
       detailId={detailId}
       onRequestReview={onRequestReview}
       onBulkReview={onBulkReview}
+      onNotice={onNotice}
     />
   );
 }
@@ -1001,4 +1004,45 @@ test("rows in a collapsed section count as selected, not hidden", async () => {
   fireEvent.click(screen.getByRole("button", { name: /Collapse Billing|Billing/ , expanded: true }));
   expect(screen.getByText("4 selected")).toBeInTheDocument();
   expect(screen.getByText("4 of 4 selected")).toBeInTheDocument();
+});
+
+test("Copy as Markdown copies the selected PRs in list order and shows a toast", async () => {
+  const writeText = vi.fn(() => Promise.resolve());
+  Object.assign(navigator, { clipboard: { writeText } });
+  const onNotice = vi.fn();
+  const copyRows = [
+    row({ id: 31, title: "Older [beta] change", updated_at: "2026-10-25T11:00:00Z" }),
+    row({ id: 32, title: "  Newer change ", updated_at: "2026-10-26T11:00:00Z" }),
+    row({ id: 33, title: "Not selected", updated_at: "2026-10-24T11:00:00Z" }),
+  ];
+  await show(<Harness rows={copyRows} onNotice={onNotice} />);
+  const boxes = screen.getAllByRole("checkbox", { name: /^Select (Older|Newer)/ });
+  const order = boxes.map((box) => box.getAttribute("aria-label") ?? "");
+  // Select in reverse of the visible order: the copy still follows the list.
+  fireEvent.click(boxes[1]);
+  fireEvent.click(boxes[0]);
+  fireEvent.click(within(screen.getByRole("region", { name: "Selection actions" })).getByRole("button", { name: /Copy as Markdown/ }));
+  await settle();
+  const older = "- [Older \\[beta\\] change](https://github.com/acme/widgets/pull/31)";
+  const newer = "- [Newer change](https://github.com/acme/widgets/pull/32)";
+  const lines = order[0].includes("Older") ? [older, newer] : [newer, older];
+  expect(writeText).toHaveBeenCalledWith(`${lines.join("\n")}\n`);
+  expect(onNotice).toHaveBeenCalledWith({ text: "Copied 2 PRs as Markdown" });
+
+  writeText.mockClear();
+  fireEvent.keyDown(window, { key: "C", metaKey: true, shiftKey: true });
+  await settle();
+  expect(writeText).toHaveBeenCalledTimes(1);
+});
+
+test("Copy as Markdown shows an error toast when the clipboard fails", async () => {
+  Object.assign(navigator, { clipboard: { writeText: vi.fn(() => Promise.reject(new Error("denied"))) } });
+  const exec = vi.fn(() => false);
+  Object.assign(document, { execCommand: exec });
+  const onNotice = vi.fn();
+  await show(<Harness rows={[row({ id: 41, title: "Solo" })]} onNotice={onNotice} />);
+  fireEvent.click(screen.getByRole("checkbox", { name: "Select Solo" }));
+  fireEvent.click(screen.getByRole("button", { name: /Copy as Markdown/ }));
+  await settle();
+  expect(onNotice).toHaveBeenCalledWith(expect.objectContaining({ error: true }));
 });

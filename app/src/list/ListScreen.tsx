@@ -699,6 +699,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
                 onRequestReview={setReviewRow}
                 onToggleStar={(row) => void toggleStar(row)}
                 onBulkReview={setBulkIds}
+                onNotice={setNotice}
                 draftPatches={shownDraftPatches}
                 actionsRef={listActions}
               />
@@ -723,7 +724,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
         {notice && (
           <p
             role="status"
-            className="fixed bottom-6 right-6 z-50 flex items-center gap-3 rounded border border-emerald-700 bg-slate-900 px-4 py-2 text-sm text-slate-100 shadow-lg"
+            className={`fixed bottom-6 right-6 z-50 flex items-center gap-3 rounded border ${notice.error ? "border-rose-700" : "border-emerald-700"} bg-slate-900 px-4 py-2 text-sm text-slate-100 shadow-lg`}
           >
             {notice.text}
             {notice.link && (
