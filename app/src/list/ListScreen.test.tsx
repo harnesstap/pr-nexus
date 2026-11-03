@@ -120,13 +120,14 @@ function api(projects: ProjectDto[], rows: SearchRow[] = []): Api {
   };
 }
 
-test("an empty Projects section offers to create one, and Settings lives in the footer", async () => {
+test("an empty Projects section offers to create one, and Settings lives in the footer account menu", async () => {
   const fake = api([]);
   render(<ListScreen api={fake} boot={boot} onBoot={() => undefined} />);
   const projects = screen.getByRole("region", { name: "Projects" });
   expect(within(projects).getByText(/No projects yet/)).toBeInTheDocument();
   expect(within(projects).queryByRole("button", { name: /Settings/ })).not.toBeInTheDocument();
-  expect(within(screen.getByRole("contentinfo")).getByRole("button", { name: /Settings/ })).toBeInTheDocument();
+  fireEvent.click(within(screen.getByRole("contentinfo")).getByRole("button", { name: /account menu/ }));
+  expect(screen.getByRole("menuitem", { name: "Settings" })).toBeInTheDocument();
 
   fireEvent.click(within(projects).getByRole("button", { name: "Create project" }));
   const input = screen.getByRole("textbox", { name: "Project name" });

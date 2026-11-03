@@ -1,5 +1,6 @@
 export const SETTINGS_TABS = [
   { id: "accounts", label: "Accounts" },
+  { id: "profiles", label: "Profiles" },
   { id: "mappings", label: "Mappings" },
   { id: "review", label: "Review" },
   { id: "sync", label: "Sync" },

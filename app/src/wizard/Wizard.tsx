@@ -24,9 +24,11 @@ interface Props {
   onFinished: () => void;
   /** Set when re-running setup from Settings: shows Back to PR Nexus, and keeps setup marked finished meanwhile. */
   onCancel?: () => void;
+  /** Text of the cancel button; "Back to PR Nexus" by default. */
+  cancelLabel?: string;
 }
 
-export function Wizard({ api, boot, onFinished, onCancel }: Props) {
+export function Wizard({ api, boot, onFinished, onCancel, cancelLabel }: Props) {
   const steps = useMemo(() => visibleSteps(boot.steps), [boot.steps]);
   // A re-run must not drop the user back into setup on the next launch if they quit halfway.
   const finishedAt = onCancel ? boot.onboarding.finished_at : null;
@@ -90,6 +92,24 @@ export function Wizard({ api, boot, onFinished, onCancel }: Props) {
   }, [api, gh.probed]);
 
   const mode = chosenMode ?? (gh.ready ? "gh_cli" : "pat");
+
+  // Accounts gh is signed in to: a profile can use any of them without
+  // `gh auth switch` (the token is read with `gh auth token --user`).
+  const [ghLogins, setGhLogins] = useState<string[]>([]);
+  const [ghLogin, setGhLogin] = useState("");
+  useEffect(() => {
+    if (!gh.ready || !api.ghAccounts) {
+      return;
+    }
+    let cancel = false;
+    void api
+      .ghAccounts()
+      .then((logins) => !cancel && setGhLogins(logins))
+      .catch(() => undefined);
+    return () => {
+      cancel = true;
+    };
+  }, [api, gh.ready]);
 
   const step = steps[index] ?? steps[0] ?? "connect_vcs";
   // The Done screen's button sits where Skip/Next were; a short delay keeps a
@@ -276,7 +296,12 @@ export function Wizard({ api, boot, onFinished, onCancel }: Props) {
         await api.openExternal(prompt.verification_uri);
         return;
       }
-      const session = await api.connectGithub(mode === "pat" ? "pat" : "gh_cli", pat);
+      const session =
+        mode === "pat"
+          ? await api.connectGithub("pat", pat)
+          : ghLogin && ghLogins.length > 1
+            ? await api.connectGithub("gh_user", undefined, ghLogin)
+            : await api.connectGithub("gh_cli", pat);
       setGithubConnected(true);
       setLogin(session.login);
       setChoices((current) => mergeOrgs(current, session.organizations));
@@ -329,7 +354,7 @@ export function Wizard({ api, boot, onFinished, onCancel }: Props) {
           {onCancel && (
             <button type="button" className="flex items-center gap-1 rounded px-2 py-1 text-sm text-slate-300 hover:bg-slate-800" onClick={onCancel}>
               <ChevronLeftIcon />
-              Back to PR Nexus
+              {cancelLabel ?? "Back to PR Nexus"}
             </button>
           )}
         </div>
@@ -358,6 +383,24 @@ export function Wizard({ api, boot, onFinished, onCancel }: Props) {
               <span>
                 Use the gh CLI token
                 <span className="mt-1 block text-sm text-slate-400">{gh.detail}</span>
+                {ghLogins.length > 1 && (
+                  <select
+                    aria-label="gh account"
+                    className="mt-2 block rounded border border-slate-700 bg-slate-900 px-2 py-1 text-sm"
+                    value={ghLogin || ghLogins[0]}
+                    onChange={(event) => {
+                      setGhLogin(event.target.value);
+                      chooseMode("gh_cli");
+                    }}
+                  >
+                    {ghLogins.map((item, at) => (
+                      <option key={item} value={item}>
+                        {item}
+                        {at === 0 ? " (active in gh)" : ""}
+                      </option>
+                    ))}
+                  </select>
+                )}
               </span>
             </label>
             <label className="flex items-start gap-3">

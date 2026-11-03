@@ -1,3 +1,4 @@
+import { ProfilesSettings } from "./ProfilesSettings";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { Api, Bootstrap, Preferences } from "../api";
 import { errorMessage } from "../api";
@@ -19,7 +20,7 @@ interface Props {
   onRerunSetup: () => void;
 }
 
-/** Settings (§8.2): Accounts, Mappings, Review, Sync, Agents, Changelog, About. */
+/** Settings (§8.2): Accounts, Profiles, Mappings, Review, Sync, Agents, Changelog, About. */
 export function SettingsScreen({ api, boot, onBoot, accounts, tab, onTabChange, onRerunSetup }: Props) {
   const [prefs, setPrefs] = useState<Preferences | null>(null);
   const [prefsError, setPrefsError] = useState<string | null>(null);
@@ -113,6 +114,7 @@ export function SettingsScreen({ api, boot, onBoot, accounts, tab, onTabChange, 
       </div>
       <div role="tabpanel" id={`settings-panel-${tab}`} aria-labelledby={`settings-tab-${tab}`}>
         {tab === "accounts" && accounts}
+        {tab === "profiles" && <ProfilesSettings api={api} boot={boot} onBoot={onBoot} />}
         {tab === "mappings" && (
           <MappingSettings
             api={api}
