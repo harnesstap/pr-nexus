@@ -78,7 +78,7 @@ The MCP server is off by default. To turn it on, open **Settings → Agents**. T
 - read Slack in the workspaces you expose;
 - send Slack messages, including review requests for several PRs at once (`request_reviews`).
 
-Slack messages wait for your approval unless you allow specific channels. Every call is listed in the activity log on that screen. Tools act on the active profile unless the agent passes a `profile`.
+Slack messages wait for your approval unless you allow specific channels. Every call is listed in the activity log on that screen. Its **Stats** tab shows how fast your own PRs get a first review and who you ask most (7, 30 or 90 days, per repo or org); agents can read the same numbers with `get_review_stats`. Tools act on the active profile unless the agent passes a `profile`.
 
 ## Privacy and security
 

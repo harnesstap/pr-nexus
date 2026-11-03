@@ -1,12 +1,17 @@
-import { useCallback, useEffect, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useState } from "react";
 import type { Api, McpActivityEntry, McpOutcome } from "../api";
 import { errorMessage } from "../api";
 import { ago } from "../list/model";
 import { Tooltip } from "../Tooltip";
+import { ReviewStats } from "./ReviewStats";
 
 interface Props {
-  api: Pick<Api, "mcpActivity" | "clearMcpActivity" | "openExternal">;
+  api: Pick<Api, "mcpActivity" | "clearMcpActivity" | "openExternal" | "reviewStats">;
+  /** Which sub-tab opens first. */
+  initialView?: ActivityView;
 }
+
+export type ActivityView = "log" | "stats";
 
 /** How often the list re-reads while open, so a running agent shows up. */
 export const ACTIVITY_POLL_MS = 5_000;
@@ -41,8 +46,48 @@ function Badge({ entry }: { entry: McpActivityEntry }) {
   );
 }
 
-/** Settings → Agents → Activity: every tool call an agent made, newest first. */
-export function McpActivity({ api }: Props) {
+function Tabs({ view, onChange }: { view: ActivityView; onChange: (view: ActivityView) => void }) {
+  const tab = (value: ActivityView, label: string) => (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={view === value}
+      className={`cursor-pointer px-2.5 py-1 text-sm ${view === value ? "bg-slate-700 text-slate-100" : "text-slate-300 hover:bg-slate-800"}`}
+      onClick={() => onChange(value)}
+    >
+      {label}
+    </button>
+  );
+  return (
+    <div role="tablist" aria-label="Activity view" className="flex overflow-hidden rounded border border-slate-700">
+      {tab("log", "Log")}
+      {tab("stats", "Stats")}
+    </div>
+  );
+}
+
+/** Settings → Agents → Activity: the agents' log, or review stats. */
+export function McpActivity({ api, initialView = "log" }: Props) {
+  const [view, setView] = useState<ActivityView>(initialView);
+  const tabs = <Tabs view={view} onChange={setView} />;
+  if (view === "stats") {
+    return (
+      <section aria-labelledby="agents-activity">
+        <div className="flex flex-wrap items-center gap-3">
+          <h2 id="agents-activity" className="text-base font-semibold">
+            Activity
+          </h2>
+          {tabs}
+        </div>
+        <ReviewStats api={api} />
+      </section>
+    );
+  }
+  return <ActivityLog api={api} tabs={tabs} />;
+}
+
+/** Every tool call an agent made, newest first. */
+function ActivityLog({ api, tabs }: { api: Props["api"]; tabs: ReactNode }) {
   const [filter, setFilter] = useState<McpOutcome | "all">("all");
   const [entries, setEntries] = useState<McpActivityEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -79,9 +124,12 @@ export function McpActivity({ api }: Props) {
   return (
     <section aria-labelledby="agents-activity">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 id="agents-activity" className="text-base font-semibold">
-          Activity
-        </h2>
+        <div className="flex items-center gap-3">
+          <h2 id="agents-activity" className="text-base font-semibold">
+            Activity
+          </h2>
+          {tabs}
+        </div>
         <div className="flex items-center gap-2">
           <label className="flex items-center gap-1 text-slate-400">
             Show

@@ -1,0 +1,3 @@
+kind: Added
+body: 'Activity → Stats: median and average time to first review of your own PRs (and from a Slack request), PRs opened, merged and waiting, Slack reminders sent, and the most requested reviewers with their response rate and median response time, over 7, 30 or 90 days and per repository or organization. Agents can read the same numbers with the MCP tool `get_review_stats`.'
+time: 2026-11-02T21:10:00.000000000-10:00

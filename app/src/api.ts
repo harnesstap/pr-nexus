@@ -781,6 +781,52 @@ export interface McpActivityEntry {
 /** Emitted after an agent changed local data, so the list reloads at once. */
 export const DATA_CHANGED_EVENT = "pr-nexus://data-changed";
 
+/** The Stats view's periods, in days. */
+export type StatsPeriod = 7 | 30 | 90;
+
+export interface StatsFilter {
+  repo?: string | null;
+  org?: string | null;
+}
+
+/** Who was asked: a GitHub user or team (`org/slug`), or a Slack channel. */
+export type RequestTarget = { kind: "user"; name: string } | { kind: "team"; name: string } | { kind: "slack_channel"; name: string };
+
+export interface DurationSummary {
+  count: number;
+  median_secs: number | null;
+  average_secs: number | null;
+}
+
+export interface ReviewerStat {
+  target: RequestTarget;
+  requests: number;
+  responded: number;
+  /** 0..=1 */
+  response_rate: number;
+  median_response_secs: number | null;
+}
+
+export interface ReviewStats {
+  period_days: number;
+  since: string;
+  opened: number;
+  merged: number;
+  waiting: number;
+  reminders: number;
+  first_review: DurationSummary;
+  slack_to_first_review: DurationSummary;
+  reviewers: ReviewerStat[];
+  repos: string[];
+}
+
+export interface ReviewStatsView {
+  stats: ReviewStats;
+  fetched_at: string;
+  /** The fetch stopped early (rate budget or size cap). */
+  partial: boolean;
+}
+
 export interface Api {
   bootstrap(): Promise<Bootstrap>;
   /** Never waits on the keychain; poll it while the state is `waiting` or `timed_out`. */
@@ -933,6 +979,8 @@ export interface Api {
   mcpActivity(outcome?: McpOutcome): Promise<McpActivityEntry[]>;
   /** Empties the Activity log; resolves to how many rows went. */
   clearMcpActivity(): Promise<number>;
+  /** Review stats of the user's own PRs over `days` (7, 30 or 90); fetches only when stale or `refresh`. */
+  reviewStats(days: StatsPeriod, filter: StatsFilter, refresh: boolean): Promise<ReviewStatsView>;
   /** Slack writes agents proposed this run, newest first. */
   mcpSlackProposals(): Promise<SlackProposal[]>;
   /** Approve (send now) or reject one pending proposal. */
@@ -1061,6 +1109,7 @@ export const tauriApi: Api = {
   mcpOpenClientConfig: (client) => invoke("mcp_open_client_config", { client }),
   mcpActivity: (outcome) => invoke("mcp_activity", { outcome: outcome ?? null }),
   clearMcpActivity: () => invoke("clear_mcp_activity"),
+  reviewStats: (days, filter, refresh) => invoke("review_stats", { days, repo: filter.repo ?? null, org: filter.org ?? null, refresh }),
   mcpSlackProposals: () => invoke("mcp_slack_proposals"),
   decideMcpSlackProposal: (id, approve) => invoke("decide_mcp_slack_proposal", { id, approve }),
   onDataChanged: (onChange) => {

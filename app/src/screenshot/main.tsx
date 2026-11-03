@@ -6,7 +6,7 @@ import App from "../App";
 import "../index.css";
 import { pageFromRows, type PageRequest } from "../list/paging";
 import { DATA_CHANGED_EVENT } from "../api";
-import type { BulkRequest, JiraLinkDto, JiraLinkInput, ListRow, McpClientId, McpOutcome, McpSettings, PrWarning, ReviewTarget } from "../api";
+import type { BulkRequest, JiraLinkDto, JiraLinkInput, ListRow, McpClientId, McpOutcome, McpSettings, PrWarning, ReviewTarget, StatsPeriod } from "../api";
 import { fakeMcp, sampleActivity } from "../settings/fakes";
 import {
   boot,
@@ -92,6 +92,7 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   mcp_open_client_config: (args) => mcp.mcpOpenClientConfig(args.client as McpClientId),
   mcp_activity: (args) => mcp.mcpActivity((args.outcome as McpOutcome | null) ?? undefined),
   clear_mcp_activity: () => mcp.clearMcpActivity(),
+  review_stats: (args) => mcp.reviewStats(args.days as StatsPeriod, { repo: args.repo as string | null, org: args.org as string | null }, false),
   load_message_templates: () => Object.entries(templateDefaults).map(([kind, text]) => ({ kind, text, default_text: text })),
   preview_message_template: (args) => mockTemplatePreview(String(args.kind), String(args.text)),
   save_message_template: () => null,

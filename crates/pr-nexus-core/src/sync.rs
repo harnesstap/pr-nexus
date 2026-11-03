@@ -224,7 +224,7 @@ pub fn on_demand_queries(
     scoped_queries(&base, scope)
 }
 
-fn scoped_queries(base: &str, scope: &TrackedScope) -> Vec<String> {
+pub(crate) fn scoped_queries(base: &str, scope: &TrackedScope) -> Vec<String> {
     let mut owners: Vec<String> = Vec::new();
     let mut add = |qualifier: &str, name: &str| {
         let valid = !name.is_empty()

@@ -1,4 +1,4 @@
-import type { Api, McpActivityEntry, McpClientId, McpClientState, McpOutcome, McpSettings, McpView, Preferences, SlackProposal, SlackWorkspace } from "../api";
+import type { Api, ReviewStats, StatsFilter, StatsPeriod, McpActivityEntry, McpClientId, McpClientState, McpOutcome, McpSettings, McpView, Preferences, SlackProposal, SlackWorkspace } from "../api";
 
 /** The §7.12 defaults, as the backend returns them on a fresh database. */
 export const DEFAULT_PREFERENCES: Preferences = {
@@ -39,6 +39,7 @@ type SettingsApi = Pick<
   | "mcpOpenClientConfig"
   | "mcpActivity"
   | "clearMcpActivity"
+  | "reviewStats"
   | "mcpSlackProposals"
   | "decideMcpSlackProposal"
 >;
@@ -57,6 +58,7 @@ type FakeMcp = Pick<
   | "mcpOpenClientConfig"
   | "mcpActivity"
   | "clearMcpActivity"
+  | "reviewStats"
   | "openExternal"
   | "slackWorkspaces"
   | "slackConnect"
@@ -126,6 +128,35 @@ export function sampleSlackActivity(now = new Date()): McpActivityEntry[] {
     { ...base, id: 11, at: at(4), summary: "sent a message in #release (auto-send)", link: "https://acme.slack.com/archives/C0123456789/p1700000000000100" },
     { ...base, id: 10, at: at(30), tool: "list_prs", capability: "reads", summary: "listed pull requests" },
   ];
+}
+
+const HOUR = 3_600;
+
+/** Made-up review stats for tests and the preview; the period scales the counts. */
+export function sampleReviewStats(days: StatsPeriod = 30, filter: StatsFilter = {}, now = new Date()): ReviewStats {
+  const scale = days / 30;
+  const n = (value: number) => Math.max(0, Math.round(value * scale));
+  const repos = ["acme/api", "acme/web", "acme-labs/ml-pipeline"];
+  const narrowed = Boolean(filter.repo || filter.org);
+  const k = (value: number) => (narrowed ? Math.ceil(value / 2) : value);
+  return {
+    period_days: days,
+    since: new Date(now.getTime() - days * 86_400_000).toISOString(),
+    opened: k(n(24)),
+    merged: k(n(19)),
+    waiting: k(3),
+    reminders: k(n(7)),
+    first_review: { count: k(n(21)), median_secs: Math.round(2.6 * HOUR), average_secs: Math.round(5.1 * HOUR) },
+    slack_to_first_review: { count: k(n(9)), median_secs: Math.round(1.4 * HOUR), average_secs: Math.round(2.2 * HOUR) },
+    reviewers: [
+      { target: { kind: "user", name: "grace" }, requests: k(n(14)), responded: k(n(12)), response_rate: 12 / 14, median_response_secs: Math.round(1.8 * HOUR) },
+      { target: { kind: "team", name: "acme/platform" }, requests: k(n(9)), responded: k(n(8)), response_rate: 8 / 9, median_response_secs: Math.round(3.2 * HOUR) },
+      { target: { kind: "slack_channel", name: "team-reviews" }, requests: k(n(9)), responded: k(n(7)), response_rate: 7 / 9, median_response_secs: Math.round(1.4 * HOUR) },
+      { target: { kind: "user", name: "linus" }, requests: k(n(7)), responded: k(n(4)), response_rate: 4 / 7, median_response_secs: Math.round(9.5 * HOUR) },
+      { target: { kind: "user", name: "margaret" }, requests: k(n(4)), responded: k(n(4)), response_rate: 1, median_response_secs: 40 * 60 },
+    ],
+    repos,
+  };
 }
 
 export function fakeMcp(
@@ -216,6 +247,7 @@ export function fakeMcp(
       log = [];
       return Promise.resolve(removed);
     },
+    reviewStats: (days, filter) => Promise.resolve({ stats: sampleReviewStats(days, filter), fetched_at: new Date().toISOString(), partial: false }),
     mcpSlackProposals: () => Promise.resolve([...proposals].reverse()),
     decideMcpSlackProposal: (id, approve) => {
       const found = proposals.find((p) => p.id === id);

@@ -62,6 +62,7 @@ mod tests {
         ("preferences.rs", include_str!("preferences.rs")),
         ("project_info.rs", include_str!("project_info.rs")),
         ("slack.rs", include_str!("slack.rs")),
+        ("stats.rs", include_str!("stats.rs")),
         ("templates.rs", include_str!("templates.rs")),
     ];
 

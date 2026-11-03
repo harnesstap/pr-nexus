@@ -486,6 +486,16 @@ pub trait VcsProvider: Send + Sync {
     ) -> Result<(), ProviderError> {
         Err(crate::overview::unsupported())
     }
+    /// The viewer's own pull requests matching `queries` with their review
+    /// timelines, for the Stats view (§8.2). `on_progress(read, total)`
+    /// runs after each page.
+    fn review_timelines(
+        &self,
+        _queries: &[String],
+        _on_progress: &mut dyn FnMut(usize, u64),
+    ) -> Result<crate::stats::StatsFetch, ProviderError> {
+        Err(crate::overview::unsupported())
+    }
     /// Converts to a draft (`true`) or marks ready for review (`false`).
     fn set_draft(&self, _pr: &PullRequest, _draft: bool) -> Result<(), ProviderError> {
         Err(crate::overview::unsupported())

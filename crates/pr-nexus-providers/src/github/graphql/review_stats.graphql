@@ -1,0 +1,69 @@
+# The viewer's own pull requests with the timeline the Stats view needs:
+# ready-for-review events, review requests and submitted reviews.
+query ReviewStats($query: String!, $first: Int!, $cursor: String) {
+  rateLimit {
+    limit
+    remaining
+    resetAt
+    cost
+  }
+  search(type: ISSUE, query: $query, first: $first, after: $cursor) {
+    issueCount
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+    nodes {
+      ... on PullRequest {
+        id
+        number
+        isDraft
+        state
+        createdAt
+        mergedAt
+        author {
+          login
+        }
+        repository {
+          nameWithOwner
+        }
+        timelineItems(first: 100, itemTypes: [READY_FOR_REVIEW_EVENT, REVIEW_REQUESTED_EVENT, PULL_REQUEST_REVIEW]) {
+          nodes {
+            __typename
+            ... on ReadyForReviewEvent {
+              createdAt
+            }
+            ... on ReviewRequestedEvent {
+              createdAt
+              requestedReviewer {
+                __typename
+                ... on User {
+                  login
+                }
+                ... on Bot {
+                  login
+                }
+                ... on Mannequin {
+                  login
+                }
+                ... on Team {
+                  slug
+                  organization {
+                    login
+                  }
+                }
+              }
+            }
+            ... on PullRequestReview {
+              submittedAt
+              author {
+                __typename
+                login
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
