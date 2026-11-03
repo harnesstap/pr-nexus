@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Api, Bootstrap, ListRow, ProjectDto, RemoteReviewFilter, ReplacedLinkDto } from "../api";
 import { errorMessage } from "../api";
-import { ClockIcon, CloseIcon, FolderIcon, GearIcon, HomeIcon, LogoIcon, PlusIcon, RefreshIcon } from "../icons";
+import { ClockIcon, CloseIcon, FolderIcon, HomeIcon, LogoIcon, PlusIcon, RefreshIcon } from "../icons";
 import { Tooltip } from "../Tooltip";
 import { OrgOption } from "../orgs";
 import {
@@ -45,6 +45,7 @@ import { SlackSignInBanner, SyncErrorBanner, SyncPopover } from "./SyncBanners";
 import { MappingHint } from "./Banners";
 import { FOOTER_ICON_BUTTON, FOOTER_ROW } from "./sidebarFooter";
 import { UpdateIndicator } from "./UpdateIndicator";
+import { AccountMenu } from "./AccountMenu";
 import { showMappingHint } from "./hints";
 import { plainText } from "../textInput";
 import { WhatsNew } from "../changelog/WhatsNew";
@@ -55,9 +56,13 @@ interface Props {
   onBoot: (boot: Bootstrap) => void;
   /** Settings → About → Re-run setup. */
   onRerunSetup?: () => void;
+  /** Account menu → another profile. */
+  onSwitchProfile?: (id: string) => void;
+  /** Account menu → Add a profile. */
+  onAddProfile?: () => void;
 }
 
-export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
+export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, onAddProfile }: Props) {
   /** Bumped whenever stored rows may have changed; the list re-reads in place. */
   const [version, setVersion] = useState(0);
   const [projects, setProjects] = useState<ProjectDto[]>([]);
@@ -600,9 +605,17 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup }: Props) {
         <footer className="relative border-t border-slate-800 px-2 py-2 text-sm">
           <div className={`${FOOTER_ROW} -ml-2`}>
             <div className="min-w-0 flex-1">
-              <NavButton current={viewKey} id="settings" icon={<GearIcon />} onSelect={setViewKey}>
-                Settings
-              </NavButton>
+              <AccountMenu
+                profiles={boot.profiles?.length ? boot.profiles : [{ id: "default", name: "Default", active: true, githubLogin: boot.github_login, isDefault: true }]}
+                settingsActive={viewKey === "settings"}
+                onSwitch={(id) => onSwitchProfile?.(id)}
+                onAdd={() => onAddProfile?.()}
+                onSettings={() => setViewKey("settings")}
+                onAbout={() => {
+                  setSettingsTab("about");
+                  setViewKey("settings");
+                }}
+              />
             </div>
             <UpdateIndicator api={api} />
           </div>

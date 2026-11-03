@@ -65,6 +65,10 @@ On first launch, a short setup wizard walks you through these steps:
 
 Then the first sync runs. Create projects from the sidebar, and drag PRs into them or add rules. To run the setup again, open Settings → About.
 
+## Profiles
+
+Keep work and side projects apart with profiles. Each profile has its own GitHub account, Slack workspaces, projects, templates, agent send policy and activity. Theme and other preferences are shared. Switch profiles, or add one, from the account menu at the bottom left. A new profile can copy items from your other profiles and then runs the setup steps for the rest. Copies are independent of the original. If `gh` is logged in to several accounts, you can pick which one a profile uses. Rename or delete profiles in **Settings → Profiles**.
+
 ## Using with AI assistants
 
 The MCP server is off by default. To turn it on, open **Settings → Agents**. The server listens only on `127.0.0.1`, and clients need a token to connect. The same screen shows the config to paste into your client (Cursor, VS Code, Claude Code, …). You choose what agents can do:
@@ -74,7 +78,7 @@ The MCP server is off by default. To turn it on, open **Settings → Agents**. T
 - read Slack in the workspaces you expose;
 - send Slack messages, including review requests for several PRs at once (`request_reviews`).
 
-Slack messages wait for your approval unless you allow specific channels. Every call is listed in the activity log on that screen.
+Slack messages wait for your approval unless you allow specific channels. Every call is listed in the activity log on that screen. Tools act on the active profile unless the agent passes a `profile`.
 
 ## Privacy and security
 

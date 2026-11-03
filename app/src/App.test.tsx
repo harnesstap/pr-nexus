@@ -157,3 +157,34 @@ test("Settings → About → Re-run setup opens the wizard at step 1 and Back re
   expect(await screen.findByRole("button", { name: "My PRs" })).toBeInTheDocument();
   expect(screen.queryByRole("heading", { name: /Step 1 of 5/ })).not.toBeInTheDocument();
 });
+
+test("switching profiles reloads the list for the new profile and adding one starts from the reuse step", async () => {
+  const done = { ...boot.onboarding, step: "done" as const, finished_at: "2026-10-26T00:00:00Z" };
+  const work = { id: "default", name: "Work", active: true, githubLogin: null, isDefault: true };
+  const side = { id: "side", name: "Side projects", active: false, githubLogin: null, isDefault: false };
+  let active = "default";
+  const switched: string[] = [];
+  const profiles = () => [work, side].map((profile) => ({ ...profile, active: profile.id === active }));
+  const fake: Api = {
+    ...api(),
+    bootstrap: () => Promise.resolve({ ...boot, onboarding: done, resume_step: "done" as const, tracked_orgs: ["acme"], github_connected: true, profiles: profiles() }),
+    switchProfile: (id) => {
+      switched.push(id);
+      active = id;
+      return Promise.resolve(profiles());
+    },
+    profileReuseOptions: (id) => Promise.resolve({ profile: id, githubLogin: null, slackTeams: [], templates: 0, projects: 2, sendPolicy: false }),
+  };
+  render(<App api={fake} />);
+  fireEvent.click(await screen.findByRole("button", { name: "Profile Work, account menu" }));
+  fireEvent.click(screen.getByRole("menuitemradio", { name: /Side projects/ }));
+  expect(await screen.findByRole("button", { name: "Profile Side projects, account menu" })).toBeInTheDocument();
+  expect(switched).toEqual(["side"]);
+
+  fireEvent.click(screen.getByRole("button", { name: "Profile Side projects, account menu" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Add a profile" }));
+  expect(await screen.findByRole("heading", { name: "Start from what you already have" })).toBeInTheDocument();
+  expect(await screen.findAllByRole("group", { name: /Copy from/ })).toHaveLength(2);
+  fireEvent.click(screen.getByRole("button", { name: "Back to PR Nexus" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Profile Side projects, account menu" })).toBeInTheDocument());
+});

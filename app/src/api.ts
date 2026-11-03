@@ -84,7 +84,42 @@ export interface KeyringStatus {
   unsaved: boolean;
 }
 
+/** One profile: its own GitHub account, Slack workspaces, projects and activity. */
+export interface ProfileDto {
+  id: string;
+  name: string;
+  active: boolean;
+  githubLogin: string | null;
+  isDefault: boolean;
+}
+
+/** What an existing profile can share with a new one. */
+export interface ReuseOptions {
+  profile: string;
+  githubLogin: string | null;
+  slackTeams: { team: string; name: string }[];
+  templates: number;
+  projects: number;
+  sendPolicy: boolean;
+}
+
+/** Items copied (never linked) from one profile into a new one. */
+export interface ReuseItems {
+  github: boolean;
+  slackTeams: string[];
+  templates: boolean;
+  sendPolicy: boolean;
+  projects: boolean;
+}
+
+export interface ReuseFrom {
+  profile: string;
+  items: ReuseItems;
+}
+
 export interface Bootstrap {
+  /** Every profile, the active one flagged. Absent from older fixtures. */
+  profiles?: ProfileDto[];
   onboarding: OnboardingState;
   resume_step: StepId;
   steps: StepId[];
@@ -744,7 +779,19 @@ export interface Api {
   keyringRetry(): Promise<KeyringStatus>;
   saveProviders(vcs: string, chat: string): Promise<void>;
   saveOnboarding(state: OnboardingState): Promise<void>;
-  connectGithub(mode: "gh_cli" | "pat", pat?: string): Promise<GithubSession>;
+  connectGithub(mode: "gh_cli" | "pat" | "gh_user", pat?: string, login?: string): Promise<GithubSession>;
+  /** Profiles; absent in fakes that do not show them. */
+  listProfiles?(): Promise<ProfileDto[]>;
+  /** Makes `id` active; cancels the running sync. Resolves to the new list. */
+  switchProfile?(id: string): Promise<ProfileDto[]>;
+  profileReuseOptions?(id: string): Promise<ReuseOptions>;
+  /** Creates the profile from copies of `reuse` and makes it active. */
+  createProfile?(name: string, reuse: ReuseFrom[]): Promise<ProfileDto>;
+  renameProfile?(id: string, name: string): Promise<ProfileDto[]>;
+  /** Also removes the profile's keychain secrets. */
+  deleteProfile?(id: string): Promise<ProfileDto[]>;
+  /** github.com accounts `gh` is signed in to, the active one first. */
+  ghAccounts?(): Promise<string[]>;
   startDevice(): Promise<DevicePrompt>;
   pollDevice(): Promise<{ status: string; login: string | null }>;
   saveOrgs(orgs: string[], includePersonal: boolean): Promise<void>;
@@ -888,7 +935,14 @@ export const tauriApi: Api = {
   keyringRetry: () => invoke("keyring_retry"),
   saveProviders: (vcs, chat) => invoke("save_providers", { vcs, chat }),
   saveOnboarding: (state) => invoke("save_onboarding", { patch: state }),
-  connectGithub: (mode, pat) => invoke("connect_github", { mode, pat }),
+  connectGithub: (mode, pat, login) => invoke("connect_github", { mode, pat, login }),
+  listProfiles: () => invoke("list_profiles"),
+  switchProfile: (id) => invoke("switch_profile", { id }),
+  profileReuseOptions: (id) => invoke("profile_reuse_options", { id }),
+  createProfile: (name, reuse) => invoke("create_profile", { name, reuse }),
+  renameProfile: (id, name) => invoke("rename_profile", { id, name }),
+  deleteProfile: (id) => invoke("delete_profile", { id }),
+  ghAccounts: () => invoke("gh_accounts"),
   startDevice: () => invoke("start_device_flow"),
   pollDevice: () => invoke("poll_device_flow"),
   saveOrgs: (orgs, includePersonal) => invoke("save_orgs", { orgs, includePersonal }),

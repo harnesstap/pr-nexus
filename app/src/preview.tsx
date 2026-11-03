@@ -1,6 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import type { Api, Bootstrap, ContextThread, ProjectDto, ReviewTarget } from "./api";
+import type { Api, Bootstrap, ContextThread, ProfileDto, ProjectDto, ReviewTarget } from "./api";
+import { ProfileReuse } from "./wizard/ProfileReuse";
 import { mockBranch, mockDetail, mockOverview } from "./detail/mock";
 import "./index.css";
 import { ListScreen } from "./list/ListScreen";
@@ -318,6 +319,41 @@ if (scene === "mine") {
     Promise.resolve(JSON.stringify(key === "to_review" ? { show: { notRequested: true }, filters: { ci: ["failing"] } } : { show: { notRequested: true } }));
 }
 
+// Two profiles so the account menu, the reuse step and Settings → Profiles have something to show.
+// ?profiles=menu opens the account menu; ?screen=profile-reuse shows the first step of "Add a profile";
+// ?settings=profiles shows Settings → Profiles.
+let previewProfiles: ProfileDto[] = [
+  { id: "default", name: "Acme", active: true, githubLogin: "ada", isDefault: true },
+  { id: "acme-labs", name: "Acme Labs", active: false, githubLogin: null, isDefault: false },
+];
+boot.profiles = previewProfiles;
+api.listProfiles = () => Promise.resolve(previewProfiles);
+api.switchProfile = (id) => {
+  previewProfiles = previewProfiles.map((profile) => ({ ...profile, active: profile.id === id }));
+  return Promise.resolve(previewProfiles);
+};
+api.profileReuseOptions = (id) =>
+  Promise.resolve(
+    id === "default"
+      ? { profile: id, githubLogin: "ada", slackTeams: [{ team: "T0ACME0001", name: "Acme" }, { team: "T0ACME0002", name: "Acme Labs" }], templates: 3, projects: 4, sendPolicy: true }
+      : { profile: id, githubLogin: null, slackTeams: [], templates: 0, projects: 1, sendPolicy: false },
+  );
+api.createProfile = (name) => Promise.resolve({ id: "new", name, active: true, githubLogin: null, isDefault: false });
+api.renameProfile = (id, name) => {
+  previewProfiles = previewProfiles.map((profile) => (profile.id === id ? { ...profile, name } : profile));
+  return Promise.resolve(previewProfiles);
+};
+api.deleteProfile = (id) => {
+  previewProfiles = previewProfiles.filter((profile) => profile.id !== id);
+  return Promise.resolve(previewProfiles);
+};
+api.ghAccounts = () => Promise.resolve(["ada", "ada-labs"]);
+const profilesScene = new URLSearchParams(window.location.search).get("profiles");
+const settingsScene = new URLSearchParams(window.location.search).get("settings");
+if (profilesScene === "menu") {
+  window.setTimeout(() => document.querySelector<HTMLButtonElement>('button[aria-haspopup="menu"]')?.click(), 600);
+}
+
 document.body.style.margin = "0";
 document.body.style.background = "#020617";
 
@@ -350,6 +386,14 @@ createRoot(root).render(
         }}
         onFinished={() => undefined}
       />
+    ) : screenName === "profile-reuse" ? (
+      <div className="min-h-screen bg-slate-950 px-6 py-8 text-slate-200">
+        <ProfileReuse api={api} profiles={previewProfiles} onCreated={() => undefined} onCancel={() => undefined} />
+      </div>
+    ) : settingsScene === "profiles" ? (
+      <div className="min-h-screen bg-slate-950 px-6 py-8 text-slate-200">
+        <SettingsScreen api={previewApi} boot={boot} onBoot={() => undefined} accounts={null} tab="profiles" onTabChange={() => undefined} onRerunSetup={() => undefined} />
+      </div>
     ) : changelogPreview === "tab" ? (
       <div className="min-h-screen bg-slate-950 px-6 py-8 text-slate-200">
         <SettingsScreen api={previewApi} boot={boot} onBoot={() => undefined} accounts={null} tab="changelog" onTabChange={() => undefined} onRerunSetup={() => undefined} />

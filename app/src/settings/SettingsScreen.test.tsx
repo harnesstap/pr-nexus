@@ -78,7 +78,7 @@ test("tabs follow the WAI-ARIA pattern: one tab stop, arrows and Home/End move f
   fireEvent.keyDown(screen.getByRole("tab", { name: "About" }), { key: "Home" });
   expect(accounts).toHaveFocus();
   fireEvent.keyDown(accounts, { key: "ArrowRight" });
-  expect(screen.getByRole("tab", { name: "Mappings" })).toHaveAttribute("aria-selected", "true");
+  expect(screen.getByRole("tab", { name: "Profiles" })).toHaveAttribute("aria-selected", "true");
 });
 
 test("Review saves the bump broadcast setting and passes it up to the app", async () => {
