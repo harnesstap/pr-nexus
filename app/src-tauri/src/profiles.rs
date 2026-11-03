@@ -264,6 +264,7 @@ pub mod commands;
 mod tests {
     use std::sync::Arc;
 
+    use pr_nexus_core::domain::AuthMode;
     use pr_nexus_core::profiles::{DEFAULT_ID, ReuseItems};
 
     use super::ReuseFrom;
@@ -368,5 +369,91 @@ mod tests {
             config::load(&state.store).unwrap().slack_send_mode,
             SlackSendMode::Automatic
         );
+    }
+
+    fn follow_gh(state: &AppState) -> String {
+        let mut account = crate::state::github_account(&state.store).unwrap().unwrap();
+        account.auth_mode = AuthMode::GhCli;
+        account.keychain_key = None;
+        state.store.upsert_account(account.clone()).unwrap();
+        account.login
+    }
+
+    fn reuse_github() -> [ReuseFrom; 1] {
+        [ReuseFrom {
+            profile: DEFAULT_ID.into(),
+            items: ReuseItems {
+                github: true,
+                ..ReuseItems::default()
+            },
+        }]
+    }
+
+    #[test]
+    fn a_copied_gh_account_gets_a_fixed_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(&dir);
+        let login = follow_gh(&state);
+        let asked = std::cell::RefCell::new(Vec::new());
+        let created = commands::create_with(&state, "Acme Labs", &reuse_github(), &|user| {
+            asked.borrow_mut().push(user.to_owned());
+            Ok("acme-fixed".into())
+        })
+        .unwrap();
+        assert_eq!(asked.into_inner(), vec![login.clone()]);
+
+        let account = crate::state::github_account(&state.store).unwrap().unwrap();
+        assert_eq!(account.login, login);
+        assert_eq!(account.auth_mode, AuthMode::Pat);
+        let key = format!("github:{}", account.external_id);
+        assert_eq!(account.keychain_key.as_deref(), Some(key.as_str()));
+        assert_eq!(
+            state
+                .vault
+                .global()
+                .get(&format!("profile/{}/{key}", created.id))
+                .unwrap()
+                .as_deref(),
+            Some("acme-fixed")
+        );
+        assert_eq!(
+            state.vault.get(&key).unwrap().as_deref(),
+            Some("acme-fixed")
+        );
+
+        // The default profile keeps following gh's active account.
+        state.switch_profile(DEFAULT_ID).unwrap();
+        let default = crate::state::github_account(&state.store).unwrap().unwrap();
+        assert_eq!(default.auth_mode, AuthMode::GhCli);
+        assert_eq!(default.keychain_key, None);
+        assert_eq!(state.vault.get(&key).unwrap(), None);
+    }
+
+    #[test]
+    fn a_gh_failure_creates_no_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(&dir);
+        follow_gh(&state);
+        let err = commands::create_with(&state, "Acme Labs", &reuse_github(), &|_| {
+            Err(crate::error::AppError::new(
+                "unauthorized",
+                "gh is not logged in",
+            ))
+        });
+        assert!(err.is_err());
+        assert_eq!(commands::list(&state).unwrap().len(), 1);
+        assert_eq!(state.profile(), DEFAULT_ID);
+    }
+
+    #[test]
+    fn a_copied_stored_token_is_not_read_from_gh() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(&dir);
+        commands::create_with(&state, "Acme Labs", &reuse_github(), &|_| {
+            panic!("gh must not be asked for an account with its own token")
+        })
+        .unwrap();
+        let account = crate::state::github_account(&state.store).unwrap().unwrap();
+        assert_eq!(account.auth_mode, AuthMode::Pat);
     }
 }

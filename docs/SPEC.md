@@ -1435,7 +1435,13 @@ the store and reloads every view.
 - **GitHub.** The default profile keeps following `gh`'s active account.
   Another profile stores its own token, pasted or read with
   `gh auth token --user <login>` for an account listed by
-  `gh auth status`. The app never runs `gh auth switch`.
+  `gh auth status`. Copying the default profile's GitHub account into a
+  new profile stores a fixed token too: the one
+  `gh auth token --user <login>` returns for that login when the profile
+  is created, under the new profile's `profile/<id>/` keys. The new
+  profile never follows a later change of gh's active account; if gh
+  can't give that token, no profile is created. The app never runs
+  `gh auth switch`.
 - **Adding a profile** reuses the setup wizard. Its first step offers the
   GitHub account, Slack workspaces, templates, send policy and projects
   of any existing profiles. Picked items are copied, not linked: later

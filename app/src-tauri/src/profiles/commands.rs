@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use pr_nexus_core::domain::AccountKind;
+use pr_nexus_core::domain::{AccountKind, AuthMode};
 use pr_nexus_core::profiles::DEFAULT_ID;
 use serde::Serialize;
 use tauri::State;
@@ -108,11 +108,67 @@ pub fn reuse_options(state: &AppState, id: &str) -> Result<ReuseOptions, AppErro
 /// Creates a profile from `reuse`, copies the secrets it needs, and
 /// makes it active so the wizard continues in it.
 pub fn create(state: &AppState, name: &str, reuse: &[ReuseFrom]) -> Result<ProfileDto, AppError> {
+    create_with(
+        state,
+        name,
+        reuse,
+        &|login| match pr_nexus_providers::github::read_gh_token_for(Some(login)) {
+            pr_nexus_providers::github::GhProbe::Ready { token } => Ok(token),
+            pr_nexus_providers::github::GhProbe::Unavailable { reason } => {
+                Err(AppError::new("unauthorized", reason))
+            }
+        },
+    )
+}
+
+/// Reads the token of one gh account (`gh auth token --user <login>`).
+pub type GhTokenFor<'a> = &'a dyn Fn(&str) -> Result<String, AppError>;
+
+/// [`create`] with the gh token reader passed in, for tests.
+///
+/// A GitHub account copied from a profile that follows gh's active
+/// account (only the default one does) gets a fixed token in the new
+/// profile: the token gh holds for that login now, saved under the new
+/// profile's keys. Later `gh` account changes never move the new profile
+/// to another account (§8.4).
+pub fn create_with(
+    state: &AppState,
+    name: &str,
+    reuse: &[ReuseFrom],
+    gh_token_for: GhTokenFor<'_>,
+) -> Result<ProfileDto, AppError> {
+    // Read the token before anything is created, so a gh failure leaves
+    // no half-made profile behind.
+    let mut pinned = None;
+    for from in reuse.iter().filter(|from| from.items.github) {
+        let source = state.profiles.resolve(&from.profile)?;
+        let store = state.profiles.store(&source.id)?;
+        if let Some(account) = crate::state::github_account(store)?
+            .filter(|account| account.auth_mode == AuthMode::GhCli)
+        {
+            let token = gh_token_for(&account.login)?;
+            pinned = Some((account.external_id, token));
+        }
+    }
     let (profile, secrets) = state.profiles.create(name, reuse)?;
     for (source, keys) in secrets {
         state.vault.copy_between(&source, &profile.id, &keys)?;
     }
     state.switch_profile(&profile.id)?;
+    if let Some((external_id, token)) = pinned {
+        let account = state
+            .store
+            .list_accounts()?
+            .into_iter()
+            .find(|a| a.kind == AccountKind::GitHub && a.external_id == external_id);
+        if let Some(mut account) = account {
+            let key = format!("github:{external_id}");
+            state.vault.set(&key, &token)?;
+            account.auth_mode = AuthMode::Pat;
+            account.keychain_key = Some(key);
+            state.store.upsert_account(account)?;
+        }
+    }
     Ok(ProfileDto {
         id: profile.id.clone(),
         name: profile.name,
