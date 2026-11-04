@@ -817,6 +817,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
             key={reviewRow.id}
             api={api}
             row={reviewRow}
+            onNotice={setNotice}
             onClose={() => setReviewRow(null)}
             onReady={(id) => {
               changeDraft(id, false);
@@ -834,6 +835,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
           <BulkDialog
             api={api}
             prIds={bulkIds}
+            onNotice={setNotice}
             onReady={(id) => {
               changeDraft(id, false);
               changeDraft(id, "saved");

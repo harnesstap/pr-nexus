@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
+import type { Toast } from "../list/model";
 import type { Api, ListRow, PrDetail, ReviewPreview, ReviewTarget, SlackIndicator, TargetChoice } from "../api";
 import { ReviewDialog, withNote } from "./ReviewDialog";
 
@@ -264,4 +265,21 @@ test("a title with underscores previews as inline code with no Markdown warning"
   expect(preview).toHaveTextContent("review feat: return location_ip_hash in geolocate response?");
   expect(preview.querySelector("code")).toHaveTextContent(/^feat: return location_ip_hash in geolocate response$/);
   expect(screen.queryByText(/Markdown characters/)).not.toBeInTheDocument();
+});
+
+test("Copy message copies the previewed text with the note, without sending", async () => {
+  const writeText = vi.fn<(text: string) => Promise<void>>(() => Promise.resolve());
+  Object.assign(navigator, { clipboard: { writeText } });
+  const { api, calls } = fake();
+  const notices: Toast[] = [];
+  let closed = false;
+  render(<ReviewDialog api={api} row={row} onClose={() => (closed = true)} onOpen={() => undefined} onSent={() => undefined} onNotice={(toast) => notices.push(toast)} />);
+  await screen.findByLabelText("Message preview");
+  fireEvent.change(screen.getByRole("textbox", { name: "Note" }), { target: { value: "Start with the login flow" } });
+  fireEvent.click(screen.getByRole("button", { name: "Copy message" }));
+  await waitFor(() => expect(writeText).toHaveBeenLastCalledWith("Review please · #platform\n\nStart with the login flow\n"));
+  expect(notices.at(-1)).toEqual({ text: "Message copied" });
+  expect(calls.sent).toHaveLength(0);
+  expect(closed).toBe(false);
+  expect(screen.getByRole("dialog")).toBeInTheDocument();
 });
