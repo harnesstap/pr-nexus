@@ -374,6 +374,8 @@ export interface BulkRequest {
   pr_ids: number[];
   target: ReviewTarget | null;
   single_top_level: ChannelKey[];
+  /** Name channels from the session cache only, so the first render is instant. */
+  cached_names?: boolean;
 }
 
 export interface BulkPr {
@@ -407,6 +409,8 @@ export interface BulkPreview {
   skipped: { pr: BulkPr; detail: string }[];
   /** Selected PRs that are still drafts; they are sent anyway. */
   pr_warnings: PrWarning[];
+  /** With `cached_names`: a channel name may still change; preview again live before sending. */
+  names_pending?: boolean;
 }
 
 export interface BulkOutcome {

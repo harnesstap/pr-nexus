@@ -13,6 +13,7 @@ use pr_nexus_core::domain::{
 };
 use pr_nexus_core::error::CoreError;
 use pr_nexus_core::ownership;
+use pr_nexus_core::providers::VcsProvider;
 use pr_nexus_core::review::batch::{
     self, BatchInput, BatchOptions, BatchPlan, MessagePlanKind, Pace, Route, Skip,
 };
@@ -23,7 +24,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::commands::{SlackIndicator, indicator};
 use crate::error::AppError;
-use crate::services::prs::pr_detail;
 use crate::services::review::ChatSource;
 use crate::slack::{
     PrWarning, ReviewTarget, any_usable, load_pr, mark_rejected, signed_in_account, targets_for,
@@ -45,6 +45,11 @@ pub struct BulkRequest {
     /// Channels switched to "one top-level request for all" (D5).
     #[serde(default)]
     pub single_top_level: Vec<ChannelKey>,
+    /// Name channels from the session cache only (no Slack reads), so the
+    /// dialog draws at once; `names_pending` then says whether a second,
+    /// live preview could still rename a card.
+    #[serde(default)]
+    pub cached_names: bool,
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq, Eq)]
@@ -91,6 +96,9 @@ pub struct BulkPreview {
     pub skipped: Vec<BulkSkip>,
     /// One per selected PR that is still a draft; drafts are sent anyway.
     pub pr_warnings: Vec<PrWarning>,
+    /// Some card names a channel whose Slack name isn't known yet (only
+    /// with `cached_names`): preview again without it before sending.
+    pub names_pending: bool,
 }
 
 #[derive(Serialize)]
@@ -123,7 +131,18 @@ pub fn send(
     request: &BulkRequest,
     fingerprints: &[String],
 ) -> Result<BulkResult, AppError> {
-    let (plan, prs, _) = plan_request(state, chats, request)?;
+    send_with_vcs(state, chats, &LiveVcs, request, fingerprints)
+}
+
+/// [`send`] resolving owners through `vcs`.
+pub fn send_with_vcs(
+    state: &AppState,
+    chats: &dyn ChatSource,
+    vcs: &dyn VcsSource,
+    request: &BulkRequest,
+    fingerprints: &[String],
+) -> Result<BulkResult, AppError> {
+    let (plan, prs, _) = plan_request(state, chats, vcs, request, Fresh::Always)?;
     send_plan(state, chats, plan, &prs, fingerprints)
 }
 
@@ -136,7 +155,7 @@ pub fn send_card(
     request: &BulkRequest,
     fingerprint: &str,
 ) -> Result<BulkResult, AppError> {
-    let (mut plan, prs, _) = plan_request(state, chats, request)?;
+    let (mut plan, prs, _) = plan_request(state, chats, &LiveVcs, request, Fresh::Always)?;
     plan.cards.retain(|card| card.fingerprint() == fingerprint);
     if plan.cards.is_empty() {
         return Err(AppError::new(
@@ -253,18 +272,157 @@ impl Pace for RealPace {
 /// Gate, route, and plan. Returns the PRs that were looked up for the DTOs.
 /// Gate, plan and route without posting: the bottom bar's preview.
 pub fn preview(state: &AppState, request: &BulkRequest) -> Result<BulkPreview, AppError> {
-    preview_with(state, &crate::services::review::LiveChats, request)
+    preview_with(
+        state,
+        &crate::services::review::LiveChats,
+        &LiveVcs,
+        request,
+    )
 }
 
-/// [`preview`] reading channel names through `chats` (§7.9: the channel id
-/// is the truth, the stored name only a fallback when Slack can't say).
+/// [`preview`] reading channel names through `chats` and owners through
+/// `vcs` (§7.9: the channel id is the truth, the stored name only a
+/// fallback when Slack can't say).
 pub fn preview_with(
     state: &AppState,
     chats: &dyn ChatSource,
+    vcs: &dyn VcsSource,
     request: &BulkRequest,
 ) -> Result<BulkPreview, AppError> {
-    let (plan, prs, moved) = plan_request(state, chats, request)?;
-    preview_dto(state, &plan, &prs, &moved)
+    let started = std::time::Instant::now();
+    let (plan, prs, moved) = plan_request(state, chats, vcs, request, Fresh::Cached)?;
+    let preview = preview_dto(state, &plan, &prs, &moved, request.cached_names)?;
+    tracing::debug!(
+        prs = request.pr_ids.len(),
+        cards = preview.cards.len(),
+        cached_names = request.cached_names,
+        ms = started.elapsed().as_millis() as u64,
+        "bulk preview"
+    );
+    Ok(preview)
+}
+
+/// Where owner lookups get their GitHub client.
+pub trait VcsSource: Sync {
+    fn vcs(&self, state: &AppState) -> Result<Box<dyn VcsProvider>, AppError>;
+}
+
+/// GitHub (the fixture provider in demo mode).
+pub struct LiveVcs;
+
+impl VcsSource for LiveVcs {
+    fn vcs(&self, state: &AppState) -> Result<Box<dyn VcsProvider>, AppError> {
+        crate::commands::vcs_client(state)
+    }
+}
+
+/// How long a PR's resolved owners are reused by the preview (same head
+/// and base). Send always resolves again.
+pub(crate) const OWNERS_TTL: std::time::Duration = std::time::Duration::from_secs(2 * 60);
+/// Owner resolutions in flight at once (each a GitHub GraphQL probe, plus
+/// files and team members when the cache is stale).
+pub(crate) const OWNER_LOOKUPS: usize = 4;
+
+/// Whether owners may come from the session cache.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Fresh {
+    /// Preview: reuse owners resolved in the last [`OWNERS_TTL`].
+    Cached,
+    /// Send: resolve again.
+    Always,
+}
+
+/// Owner teams and blocked reason, as the detail panel resolves them.
+type Owners = (Option<String>, Vec<String>);
+
+/// Remember `detail` as `pr`'s owners for the next preview.
+pub(crate) fn remember_owners(
+    state: &AppState,
+    pr: &PullRequest,
+    detail: &crate::commands::PrDetail,
+) {
+    let (blocked, teams) = owners_of(detail);
+    crate::slack::lock(&state.owners).insert(
+        pr.id.0,
+        crate::state::OwnersEntry {
+            head_sha: pr.head_sha.clone(),
+            base_ref: pr.base_ref.clone(),
+            at: std::time::Instant::now(),
+            blocked,
+            teams,
+        },
+    );
+}
+
+fn owners_of(detail: &crate::commands::PrDetail) -> Owners {
+    let teams = if detail.mandatory_teams.is_empty() {
+        detail.candidate_teams.clone()
+    } else {
+        detail.mandatory_teams.clone()
+    };
+    let blocked = (detail.readiness == "blocked")
+        .then(|| without_draft(&detail.readiness_notes))
+        .flatten();
+    (blocked, teams)
+}
+
+/// Owners for each of `prs`, in order: fresh cache entries as they are,
+/// the rest resolved through one shared client, [`OWNER_LOOKUPS`] at a time.
+fn resolve_owners(
+    state: &AppState,
+    vcs: &dyn VcsSource,
+    prs: &[PullRequest],
+    fresh: Fresh,
+) -> Result<Vec<Result<Owners, AppError>>, AppError> {
+    let flag = settings::blocked_review_required_is_ready(&state.store)?;
+    let cached = |pr: &PullRequest| -> Option<Owners> {
+        if fresh == Fresh::Always {
+            return None;
+        }
+        let owners = crate::slack::lock(&state.owners);
+        let entry = owners.get(&pr.id.0)?;
+        (entry.at.elapsed() < OWNERS_TTL
+            && entry.head_sha == pr.head_sha
+            && entry.base_ref == pr.base_ref)
+            .then(|| (entry.blocked.clone(), entry.teams.clone()))
+    };
+    let mut out: Vec<Option<Result<Owners, AppError>>> =
+        prs.iter().map(|pr| cached(pr).map(Ok)).collect();
+    let missing: Vec<&PullRequest> = prs
+        .iter()
+        .zip(&out)
+        .filter(|(_, hit)| hit.is_none())
+        .map(|(pr, _)| pr)
+        .collect();
+    if !missing.is_empty() {
+        let started = std::time::Instant::now();
+        let resolved: Vec<Result<Owners, AppError>> = match vcs.vcs(state) {
+            Ok(provider) => crate::parallel::bounded_map(&missing, OWNER_LOOKUPS, |pr| {
+                let report =
+                    ownership::resolve(&state.store, provider.as_ref(), pr, flag, Utc::now())?;
+                let detail = crate::commands::detail_dto(pr.id, report);
+                remember_owners(state, pr, &detail);
+                Ok(owners_of(&detail))
+            }),
+            Err(err) => missing
+                .iter()
+                .map(|_| Err(AppError::new(&err.kind, err.message.clone())))
+                .collect(),
+        };
+        tracing::debug!(
+            prs = missing.len(),
+            ms = started.elapsed().as_millis() as u64,
+            "bulk preview owners"
+        );
+        let mut resolved = resolved.into_iter();
+        for slot in out.iter_mut().filter(|slot| slot.is_none()) {
+            *slot = resolved.next();
+        }
+    }
+    Ok(out
+        .into_iter()
+        .map(|slot| slot.expect("every PR has owners or an error"))
+        .collect())
 }
 
 /// A PR whose active request lives in a channel its teams are no longer
@@ -282,7 +440,9 @@ struct Moved {
 fn plan_request(
     state: &AppState,
     chats: &dyn ChatSource,
+    vcs: &dyn VcsSource,
     request: &BulkRequest,
+    fresh: Fresh,
 ) -> Result<(BatchPlan, Vec<PullRequest>, Vec<Moved>), AppError> {
     if request.pr_ids.is_empty() {
         return Err(AppError::new(
@@ -290,57 +450,69 @@ fn plan_request(
             "Select at least one pull request",
         ));
     }
-    let resolve = |target: ReviewTarget| crate::slack::resolve_target(state, chats, target);
-    let override_target = request
-        .target
-        .clone()
-        .map(validate_target)
-        .transpose()?
-        .map(resolve);
+    let names = if request.cached_names {
+        crate::slack::Names::Cached
+    } else {
+        crate::slack::Names::Live
+    };
+    let override_target = match request.target.clone().map(validate_target).transpose()? {
+        Some(target) => crate::slack::resolve_targets(state, chats, vec![target], names).pop(),
+        None => None,
+    };
     let flag = settings::blocked_review_required_is_ready(&state.store)?;
     let mut prs = Vec::new();
-    let mut inputs = Vec::new();
-    let mut skipped = Vec::new();
     let mut seen = BTreeSet::new();
-    let mut moved = Vec::new();
     for &id in &request.pr_ids {
-        if !seen.insert(id) {
-            continue;
+        if seen.insert(id) {
+            prs.push(load_pr(&state.store, id)?);
         }
-        let pr = load_pr(&state.store, id)?;
-        prs.push(pr.clone());
+    }
+    let eligible = |pr: &PullRequest| -> Result<(), String> {
+        if pr.state != PrState::Open {
+            return Err("Not open".into());
+        }
+        if !pr.involvement.contains(Involvement::AUTHOR) {
+            return Err("Not authored by you".into());
+        }
+        Ok(())
+    };
+    // Every GitHub lookup up front, in parallel; the rest is local.
+    let to_resolve: Vec<PullRequest> = if override_target.is_some() {
+        Vec::new()
+    } else {
+        prs.iter()
+            .filter(|pr| eligible(pr).is_ok())
+            .cloned()
+            .collect()
+    };
+    let mut owners = resolve_owners(state, vcs, &to_resolve, fresh)?.into_iter();
+
+    struct Planned {
+        pr: PullRequest,
+        teams: Vec<String>,
+        choices: Vec<crate::slack::TargetChoice>,
+    }
+    let mut skipped = Vec::new();
+    let mut planned = Vec::new();
+    for pr in &prs {
         let skip = |detail: String| Skip {
             pr: pr.id,
             title: pr.title.clone(),
             channel: None,
             detail,
         };
-        if pr.state != PrState::Open {
-            skipped.push(skip("Not open".into()));
-            continue;
-        }
-        if !pr.involvement.contains(Involvement::AUTHOR) {
-            skipped.push(skip("Not authored by you".into()));
+        if let Err(detail) = eligible(pr) {
+            skipped.push(skip(detail));
             continue;
         }
         let (blocked, teams) = if override_target.is_some() {
             (
-                blocked_reasons(ownership::cached_readiness(&state.store, &pr, flag)?),
+                blocked_reasons(ownership::cached_readiness(&state.store, pr, flag)?),
                 Vec::new(),
             )
         } else {
-            match pr_detail(state, pr.id.0) {
-                Ok(detail) => {
-                    let teams = if detail.mandatory_teams.is_empty() {
-                        detail.candidate_teams
-                    } else {
-                        detail.mandatory_teams
-                    };
-                    let blocked = (detail.readiness == "blocked")
-                        .then(|| without_draft(&detail.readiness_notes))
-                        .flatten();
-                    (blocked, teams)
-                }
+            match owners.next().expect("one owner result per eligible PR") {
+                Ok(owners) => owners,
                 Err(err) => {
                     skipped.push(skip(format!("Could not resolve owners: {}", err.message)));
                     continue;
@@ -355,19 +527,39 @@ fn plan_request(
             }));
             continue;
         }
+        let choices = if override_target.is_some() {
+            Vec::new()
+        } else {
+            targets_for(&state.store, pr, &teams)?
+        };
+        planned.push(Planned {
+            pr: pr.clone(),
+            teams,
+            choices,
+        });
+    }
+    // Name every routed channel at once: each distinct channel is read
+    // from Slack once, in parallel, and then comes from the session cache.
+    let all: Vec<ReviewTarget> = planned
+        .iter()
+        .flat_map(|p| p.choices.iter().map(|choice| choice.target.clone()))
+        .collect();
+    let mut resolved = crate::slack::resolve_targets(state, chats, all, names).into_iter();
+    for p in &mut planned {
+        for choice in &mut p.choices {
+            choice.target = resolved.next().expect("one name per target");
+        }
+    }
+
+    let mut inputs = Vec::new();
+    let mut moved = Vec::new();
+    for Planned { pr, teams, choices } in planned {
         let routes: Vec<Route> = match &override_target {
             Some(target) => vec![Route {
                 target: core_target(target),
                 teams: teams.clone(),
             }],
             None => {
-                let choices: Vec<_> = targets_for(&state.store, &pr, &teams)?
-                    .into_iter()
-                    .map(|mut choice| {
-                        choice.target = resolve(choice.target);
-                        choice
-                    })
-                    .collect();
                 // Never bump a thread in a channel the team left: the card
                 // would name the mapped channel and post to the old one.
                 let (previous, choices): (Vec<_>, Vec<_>) = choices
@@ -386,23 +578,27 @@ fn plan_request(
                     }
                 }
                 choices
+                    .into_iter()
+                    .map(|choice| Route {
+                        target: core_target(&choice.target),
+                        teams: if choice.teams.is_empty() {
+                            teams.clone()
+                        } else {
+                            choice.teams
+                        },
+                    })
+                    .collect()
             }
-            .into_iter()
-            .map(|choice| Route {
-                target: core_target(&choice.target),
-                teams: if choice.teams.is_empty() {
-                    teams.clone()
-                } else {
-                    choice.teams
-                },
-            })
-            .collect(),
         };
         if routes.is_empty() {
-            skipped.push(skip(
-                "No mapped channel for its teams. Request it alone, or send all to one channel."
-                    .into(),
-            ));
+            skipped.push(Skip {
+                pr: pr.id,
+                title: pr.title.clone(),
+                channel: None,
+                detail:
+                    "No mapped channel for its teams. Request it alone, or send all to one channel."
+                        .into(),
+            });
             continue;
         }
         inputs.push(BatchInput { pr, routes });
@@ -456,6 +652,7 @@ fn preview_dto(
     plan: &BatchPlan,
     prs: &[PullRequest],
     moved: &[Moved],
+    cached_names: bool,
 ) -> Result<BulkPreview, AppError> {
     let workspaces = route::workspaces(&state.store)?;
     let mut cards = Vec::new();
@@ -505,8 +702,17 @@ fn preview_dto(
         });
     }
     let pr_warnings = prs.iter().flat_map(crate::slack::pr_warnings).collect();
+    let names_pending = cached_names
+        && crate::slack::names_pending(
+            state,
+            &cards
+                .iter()
+                .map(|card| card.target.clone())
+                .collect::<Vec<_>>(),
+        );
     Ok(BulkPreview {
         cards,
+        names_pending,
         pr_warnings,
         skipped: plan
             .skipped

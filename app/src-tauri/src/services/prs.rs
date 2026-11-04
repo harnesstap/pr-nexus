@@ -28,7 +28,9 @@ pub fn pr_detail(state: &AppState, id: i64) -> Result<PrDetail, AppError> {
     let report = with_vcs(state, |provider| {
         ownership::resolve(&state.store, provider, &pr, flag, Utc::now())
     })?;
-    Ok(detail_dto(pr.id, report))
+    let detail = detail_dto(pr.id, report);
+    crate::services::bulk::remember_owners(state, &pr, &detail);
+    Ok(detail)
 }
 
 /// PR Nexus's own statuses, as the list's filter menu and quick filters

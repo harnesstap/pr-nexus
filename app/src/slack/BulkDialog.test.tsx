@@ -246,3 +246,40 @@ test("Copy message shows an error toast when the clipboard fails", async () => {
   await waitFor(() => expect(notices.at(-1)).toEqual({ text: "Couldn't copy to the clipboard: Clipboard is not available", error: true }));
   expect(calls.sends).toHaveLength(0);
 });
+
+test("draws the cards from cached names at once, then swaps in Slack's names before Send", async () => {
+  const { api } = fake();
+  let finishNames: (planned: BulkPreview) => void = () => undefined;
+  const requests: BulkRequest[] = [];
+  const slow: Api = {
+    ...api,
+    bulkPreview: (request: BulkRequest) => {
+      requests.push(request);
+      if (request.cached_names) {
+        return Promise.resolve({ cards: [{ ...card(false), target: { ...platform, channel_name: "old-name" } }], skipped: [], pr_warnings: [], names_pending: true });
+      }
+      return new Promise<BulkPreview>((resolve) => {
+        finishNames = resolve;
+      });
+    },
+  };
+  render(<BulkDialog api={slow} prIds={[1, 2]} onClose={() => undefined} onSent={() => undefined} onOpen={() => undefined} />);
+  // Cards are on screen while Slack is still being asked for the name.
+  expect(await screen.findByText("Bump #42")).toBeInTheDocument();
+  expect(screen.getByText(/#old-name/)).toBeInTheDocument();
+  expect(screen.getByRole("status")).toHaveTextContent("Checking channel names on Slack…");
+  expect(screen.getByRole("button", { name: "Send 2 messages" })).toBeDisabled();
+  expect(requests.map((r) => r.cached_names)).toEqual([true, false]);
+  finishNames({ cards: [card(false)], skipped: [], pr_warnings: [] });
+  expect(await screen.findByText(/#platform/)).toBeInTheDocument();
+  expect(screen.queryByText(/#old-name/)).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Send 2 messages" })).toBeEnabled();
+});
+
+test("skips the Slack round when every name is already cached", async () => {
+  const { api, calls } = fake();
+  render(<BulkDialog api={api} prIds={[1, 2]} onClose={() => undefined} onSent={() => undefined} onOpen={() => undefined} />);
+  expect(await screen.findByText("Bump #42")).toBeInTheDocument();
+  expect(calls.previews).toHaveLength(1);
+  expect(calls.previews[0].cached_names).toBe(true);
+});

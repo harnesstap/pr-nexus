@@ -144,8 +144,13 @@ pub struct AppState {
     /// One lazy Slack MCP session per connected workspace account.
     pub chats: Mutex<HashMap<i64, Arc<dyn ChatProvider>>>,
     /// Channel names read from Slack by id, keyed by (team or workspace,
-    /// channel id). The id is the truth; a stored name is only a fallback.
-    pub channel_names: Mutex<HashMap<(String, String), String>>,
+    /// channel id), with when they were read. `None` is a failed lookup,
+    /// kept briefly so a dead workspace isn't retried on every preview.
+    /// The id is the truth; a stored name is only a fallback.
+    pub channel_names: Mutex<HashMap<(String, String), NameEntry>>,
+    /// Owners and blocked reason per PR from the last GitHub resolution,
+    /// keyed by PR id, for the bulk preview (short TTL, see `services::bulk`).
+    pub owners: Mutex<HashMap<i64, OwnersEntry>>,
     /// The Slack sign-in in progress, if any.
     pub slack_cancel: Mutex<Option<CancelHandle>>,
     /// Startup `auth.test` result per Slack account (§7.11).
@@ -199,6 +204,7 @@ impl AppState {
             vault,
             chats: Mutex::new(HashMap::new()),
             channel_names: Mutex::new(HashMap::new()),
+            owners: Mutex::new(HashMap::new()),
             slack_cancel: Mutex::new(None),
             slack_tokens: Mutex::new(HashMap::new()),
             slack_proxy: crate::mcp::slack::SlackProxy::default(),
@@ -1284,4 +1290,22 @@ mod tests {
         assert_eq!(state.sync.lock().unwrap().reviews.state, "loading");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
+}
+
+/// A channel-name lookup result and when it was made.
+#[derive(Debug, Clone)]
+pub struct NameEntry {
+    pub name: Option<String>,
+    pub at: std::time::Instant,
+}
+
+/// A PR's owner teams and blocked reason, valid for its head and base.
+#[derive(Debug, Clone)]
+pub struct OwnersEntry {
+    pub head_sha: String,
+    pub base_ref: String,
+    pub at: std::time::Instant,
+    /// `Some` when readiness is blocked for a reason other than draft.
+    pub blocked: Option<String>,
+    pub teams: Vec<String>,
 }

@@ -1,0 +1,3 @@
+kind: Changed
+body: 'The bulk Slack preview now opens almost at once. Owners of all selected pull requests are resolved in parallel through one GitHub client and reused for 2 minutes, channel names come from a session cache first and are checked on Slack in the background (one read per channel, in parallel), and failed name lookups are no longer retried on every toggle. Send waits for the channel check and still posts to the channel ids.'
+time: 2026-11-04T03:00:00.000000-10:00

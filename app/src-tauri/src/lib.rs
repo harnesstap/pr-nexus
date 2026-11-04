@@ -10,6 +10,7 @@ mod live;
 mod logging;
 mod mapping_file;
 mod mcp;
+mod parallel;
 mod preferences;
 mod profiles;
 mod project_info;

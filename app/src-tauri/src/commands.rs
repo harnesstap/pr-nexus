@@ -1200,11 +1200,20 @@ pub(crate) fn with_vcs<T>(
     if state.demo {
         return Ok(work(&crate::demo::DemoProvider)?);
     }
+    let client = vcs_client(state)?;
+    Ok(work(client.as_ref())?)
+}
+
+/// One GitHub client (one token read, one connection pool) to share across
+/// several calls, or the fixture provider in demo mode.
+pub(crate) fn vcs_client(state: &AppState) -> Result<Box<dyn VcsProvider>, AppError> {
+    if state.demo {
+        return Ok(Box::new(crate::demo::DemoProvider));
+    }
     let account = state::github_account(&state.store)?
         .ok_or_else(|| AppError::new("unauthorized", "Connect GitHub first"))?;
     let token = state::resolve_github_token(state, Some(&account))?;
-    let client = GithubClient::new(account.id, token)?;
-    Ok(work(&client)?)
+    Ok(Box::new(GithubClient::new(account.id, token)?))
 }
 
 /// The detail panel's cards (§7.2). With `refresh: false` this only reads
