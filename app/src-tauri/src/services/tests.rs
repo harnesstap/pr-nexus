@@ -509,6 +509,14 @@ fn pr_with_team(state: &AppState) -> (i64, String) {
         if !requested.is_empty() {
             return None;
         }
+        let stored = crate::slack::load_pr(&state.store, item.row.id).ok()?;
+        if stored.state != pr_nexus_core::domain::PrState::Open
+            || !stored
+                .involvement
+                .contains(pr_nexus_core::domain::Involvement::AUTHOR)
+        {
+            return None;
+        }
         let detail = prs::pr_detail(state, item.row.id).ok()?;
         if detail.readiness == "blocked" {
             return None;
@@ -568,12 +576,18 @@ fn remapped_team_gets_a_new_request_in_the_mapped_channel() {
     )
     .unwrap();
     map_team(state, &team, "C0ACME0002", "new-channel");
-    slack.posts.lock().unwrap().clear();
+    let before = slack.posts.lock().unwrap().len();
 
     let request: BulkRequest =
         serde_json::from_value(serde_json::json!({ "pr_ids": [pr] })).unwrap();
     let preview = bulk::preview(state, &request).unwrap();
-    assert_eq!(preview.cards.len(), 1, "{:?}", preview.cards);
+    assert_eq!(
+        preview.cards.len(),
+        1,
+        "{:?} {:?}",
+        preview.cards,
+        serde_json::to_string(&preview.skipped).unwrap()
+    );
     let card = &preview.cards[0];
     assert_eq!(card.target.channel_id, "C0ACME0002");
     assert_eq!(card.target.channel_name, "new-channel");
@@ -593,9 +607,12 @@ fn remapped_team_gets_a_new_request_in_the_mapped_channel() {
     .unwrap();
     assert!(result.results.iter().all(|r| r.outcome == "sent"));
     let posts = slack.posts.lock().unwrap();
-    assert_eq!(posts.len(), 1);
-    assert_eq!(posts[0].0, "C0ACME0002", "posted where the card said");
-    assert!(posts[0].1.is_none(), "a new top-level request, not a bump");
+    assert_eq!(posts.len(), before + 1);
+    assert_eq!(posts[before].0, "C0ACME0002", "posted where the card said");
+    assert!(
+        posts[before].1.is_none(),
+        "a new top-level request, not a bump"
+    );
 }
 
 /// The single-PR dialog opens on the mapped channel (a new request); the old
@@ -624,7 +641,7 @@ fn remapped_team_keeps_the_old_thread_as_an_explicit_pick() {
     )
     .unwrap();
     map_team(state, &team, "C0ACME0002", "new-channel");
-    slack.posts.lock().unwrap().clear();
+    let before = slack.posts.lock().unwrap().len();
 
     let stored = crate::slack::load_pr(&state.store, pr).unwrap();
     let choices =
@@ -647,8 +664,8 @@ fn remapped_team_keeps_the_old_thread_as_an_explicit_pick() {
     assert_eq!(bump.target.channel_name, "old-channel");
     review::send(state, &slack, pr, choices[1].target.clone(), &[team], None).unwrap();
     let posts = slack.posts.lock().unwrap();
-    assert_eq!(posts[0].0, "C0ACME0001");
-    assert!(posts[0].1.is_some(), "a reply in the old thread");
+    assert_eq!(posts[before].0, "C0ACME0001");
+    assert!(posts[before].1.is_some(), "a reply in the old thread");
 }
 
 /// Teams still mapped where the request lives keep bumping it.
@@ -672,7 +689,12 @@ fn unchanged_mapping_still_bumps_the_tracked_thread() {
     let request: BulkRequest =
         serde_json::from_value(serde_json::json!({ "pr_ids": [pr] })).unwrap();
     let preview = bulk::preview(state, &request).unwrap();
-    assert_eq!(preview.cards.len(), 1);
+    assert_eq!(
+        preview.cards.len(),
+        1,
+        "{}",
+        serde_json::to_string(&preview.skipped).unwrap()
+    );
     assert_eq!(preview.cards[0].target.channel_id, "C0ACME0001");
     assert_eq!(preview.cards[0].messages[0].action, "bump");
     assert!(preview.cards[0].notes.is_empty());
