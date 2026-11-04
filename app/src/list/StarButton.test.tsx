@@ -3,7 +3,7 @@ import { expect, test, vi } from "vitest";
 import type { JiraLinkDto, ProjectDto } from "../api";
 import { JiraChip, ProjectInfo } from "./JiraChips";
 import { GitHubRowButton, StarButton } from "./StarButton";
-import { StarredChip } from "./QuickFilters";
+import { QuickFilters } from "./QuickFilters";
 
 test("the star toggles without reaching the row underneath", () => {
   const onToggle = vi.fn();
@@ -67,7 +67,7 @@ test("the row GitHub button opens the PR without bubbling to the row", () => {
 
 test("the Starred chip shows its count and toggles", () => {
   const onChange = vi.fn();
-  render(<StarredChip on={false} count={3} onChange={onChange} />);
-  fireEvent.click(screen.getByRole("button", { name: "Starred only (3)" }));
+  render(<QuickFilters active={null} counts={null} onChange={vi.fn()} starred={false} starredCount={3} onStarredChange={onChange} />);
+  fireEvent.click(screen.getByRole("button", { name: "Starred (3)" }));
   expect(onChange).toHaveBeenCalledWith(true);
 });

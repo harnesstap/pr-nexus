@@ -3,7 +3,7 @@ import type { ListRow, ProjectDto } from "../api";
 import { AlertIcon, ChevronDownIcon, ChevronRightIcon, ClockIcon, CloseIcon, CommentIcon, CopyIcon, DraftIcon, FolderPlusIcon, FunnelIcon, MoreIcon, SearchIcon, SlackLogo } from "../icons";
 import { Tooltip } from "../Tooltip";
 import { ReviewerAvatars } from "./ReviewerAvatars";
-import { QuickFilters, StarredChip } from "./QuickFilters";
+import { QuickFilters } from "./QuickFilters";
 import { AddToProjectMenu } from "./AddToProjectMenu";
 import { GitHubRowButton, StarButton } from "./StarButton";
 import { ProjectInfo } from "./JiraChips";
@@ -560,13 +560,23 @@ export function PrList({
           <p className="text-sm text-slate-400">{page ? summaryText(page.summary, viewKey, syncProgress) : (syncProgress ?? "\u00a0")}</p>
         </div>
       </header>
-      {/* One toolbar row for every list command: controls share one 32px height and never wrap. Narrow widths
-          (container queries) shrink the search, drop text labels, then the plain PR count, before anything overlaps. */}
+      {/* One toolbar row for every list command, quick filter chips included: controls share one height and never
+          wrap. Narrow widths (container queries) shrink the search, drop text labels, then the plain PR count; chips
+          that still do not fit fold into More (N). */}
       <div className="@container border-y border-slate-800 px-4 py-2 text-sm text-slate-300">
         <div role="toolbar" aria-label="List toolbar" className="flex h-8 min-w-0 flex-nowrap items-center gap-2">
           <TriCheckbox label="Select all" state={global} onToggle={() => setSelected(toggleGlobal(ids, selected))} />
           <span className={`shrink-0 whitespace-nowrap ${checkState(ids, selected) === "none" && hidden === 0 ? "hidden @4xl:inline" : ""}`}>{header}</span>
+          <QuickFilters
+            active={view.filters.quick}
+            counts={page?.quick ?? null}
+            onChange={(quick) => onViewChange({ ...view, filters: { ...view.filters, quick } })}
+            starred={view.filters.starred}
+            starredCount={page ? new Set(list.entries.flatMap((entry) => (entry.row?.starred ? [entry.row.id] : []))).size : null}
+            onStarredChange={(starred) => onViewChange({ ...view, filters: { ...view.filters, starred } })}
+          />
           {filtersActive(view.filters) && (
+            <Tooltip label="Clear filters" detail="Turn off every filter, quick filter chips and Starred included">
             <button
               type="button"
               aria-label="Clear filters"
@@ -574,10 +584,11 @@ export function PrList({
               onClick={() => onViewChange(resetFilters(view))}
             >
               <CloseIcon />
-              <span className="hidden @3xl:inline">Clear filters</span>
+              <span className="hidden @7xl:inline">Clear filters</span>
             </button>
+            </Tooltip>
           )}
-          <label className="ml-auto flex h-8 min-w-28 max-w-md flex-1 items-center gap-2 rounded-md border border-slate-700 bg-slate-900 px-2.5 text-sm focus-within:border-violet-400">
+          <label className="flex h-8 w-44 min-w-28 shrink items-center @5xl:w-56 @7xl:w-72 gap-2 rounded-md border border-slate-700 bg-slate-900 px-2.5 text-sm focus-within:border-violet-400">
             <SearchIcon className="shrink-0 text-slate-500" />
             <input {...plainText}
               ref={searchRef}
@@ -594,16 +605,6 @@ export function PrList({
             )}
           </label>
           <SortPicker view={view} onViewChange={onViewChange} />
-          <QuickFilters
-            active={view.filters.quick}
-            counts={page?.quick ?? null}
-            onChange={(quick) => onViewChange({ ...view, filters: { ...view.filters, quick } })}
-          />
-          <StarredChip
-            on={view.filters.starred}
-            count={page ? new Set(list.entries.flatMap((entry) => (entry.row?.starred ? [entry.row.id] : []))).size : null}
-            onChange={(starred) => onViewChange({ ...view, filters: { ...view.filters, starred } })}
-          />
           <FilterMenu view={view} orgs={page?.orgs ?? []} menu={menu} setMenu={setMenu} onViewChange={onViewChange} />
         </div>
       </div>

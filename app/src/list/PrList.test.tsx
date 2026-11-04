@@ -285,7 +285,7 @@ test("rows show labelled threads, a review pill, and the Slack request status", 
   expect(screen.queryByLabelText("0 unresolved of 0 review threads")).not.toBeInTheDocument();
   expect(screen.queryByText("0/0")).not.toBeInTheDocument();
   expect(screen.getByText("Approved")).toBeInTheDocument();
-  expect(screen.getByText("Changes requested")).toBeInTheDocument();
+  expect(within(screen.getByRole("region", { name: "Pull requests" })).getByText("Changes requested")).toBeInTheDocument();
   fireEvent.click(requested);
   expect(onOpen).toHaveBeenCalledWith(slack.permalink);
   expect(screen.queryByRole("button", { name: /^Open Slack request for Quiet one/ })).not.toBeInTheDocument();
@@ -845,9 +845,9 @@ test("quick filters show counts, filter one at a time and clear on a second clic
   ];
   await show(<Harness rows={quickRows} />);
   const group = screen.getByRole("group", { name: "Quick filters" });
-  const ready = within(group).getByRole("button", { name: "Ready to merge (1)" });
+  const ready = within(group).getByRole("button", { name: "Ready (1)" });
   expect(within(group).getByRole("button", { name: "Draft (1)" })).toHaveAttribute("aria-pressed", "false");
-  expect(within(group).getByRole("button", { name: "Review declined (0)" })).toBeInTheDocument();
+  expect(within(group).getByRole("button", { name: "Changes requested (0)" })).toBeInTheDocument();
 
   fireEvent.click(ready);
   await settle();
@@ -858,16 +858,25 @@ test("quick filters show counts, filter one at a time and clear on a second clic
   fireEvent.click(screen.getByRole("checkbox", { name: "Select all" }));
   expect(screen.getByText("1 selected")).toBeInTheDocument();
 
-  fireEvent.click(within(group).getByRole("button", { name: "CI errors or conflicts (1)" }));
+  fireEvent.click(within(group).getByRole("button", { name: "CI or conflicts (1)" }));
   await settle();
   expect(ready).toHaveAttribute("aria-pressed", "false");
   expect(screen.getByRole("checkbox", { name: "Select Broken build" })).toBeInTheDocument();
   expect(screen.queryByRole("checkbox", { name: "Select Ship it" })).not.toBeInTheDocument();
 
-  fireEvent.click(within(group).getByRole("button", { name: "CI errors or conflicts (1)" }));
+  fireEvent.click(within(group).getByRole("button", { name: "CI or conflicts (1)" }));
   await settle();
   expect(screen.getByRole("checkbox", { name: "Select Draft work" })).toBeInTheDocument();
   expect(screen.getByRole("checkbox", { name: "Select Ship it" })).toBeInTheDocument();
+
+  // The toolbar's single Clear filters also turns chips off; there is no chip-only Clear.
+  fireEvent.click(within(group).getByRole("button", { name: "Draft (1)" }));
+  await settle();
+  expect(within(group).queryByRole("button", { name: /Clear/ })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
+  await settle();
+  expect(within(group).getByRole("button", { name: "Draft (1)" })).toHaveAttribute("aria-pressed", "false");
+  expect(screen.queryByRole("button", { name: "Clear filters" })).toBeNull();
 });
 
 test("a row shows who still has to review, and a row without requests shows no stack", async () => {
@@ -898,7 +907,7 @@ test("with the panel open, rows go compact: wrapped title, status dot and Slack 
   expect(title).toBeDefined();
   expect(title).toHaveAccessibleDescription(/^#\d+ /);
   for (const pill of ["Review pending", "Approved", "Changes requested"]) {
-    expect(screen.queryByText(pill)).not.toBeInTheDocument();
+    expect(within(screen.getByRole("region", { name: "Pull requests" })).queryByText(pill)).not.toBeInTheDocument();
   }
   const reviewedRow = rows.find((item) => item.review_decision !== null);
   if (reviewedRow) {
@@ -917,7 +926,7 @@ test("every list command sits on the one toolbar row, the header keeps only the 
   expect(inToolbar.getByText("3 open PRs")).toBeInTheDocument();
   expect(inToolbar.getByRole("textbox", { name: "Search" })).toBeInTheDocument();
   expect(inToolbar.getByRole("combobox", { name: "Sort by" })).toBeInTheDocument();
-  expect(inToolbar.getByRole("group", { name: "Quick filters" })).toBeInTheDocument();
+  expect(inToolbar.getByRole("group", { name: "Quick filters" }).className).toContain("flex-nowrap");
   expect(inToolbar.getByRole("button", { name: "Filter menu" })).toBeInTheDocument();
   expect(toolbar.className).toContain("flex-nowrap");
   const header = container.querySelector("header") as HTMLElement;
