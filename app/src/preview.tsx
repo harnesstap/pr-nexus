@@ -392,6 +392,20 @@ if (screenName === "remapped") {
       pr_warnings: [],
     });
 }
+// ?screen=mapping-mismatch shows Settings → Mappings with a row whose saved
+// channel name is not the name Slack gives for its channel id.
+if (screenName === "mapping-mismatch") {
+  const row = (slug: string, name: string, id: string) => ({
+    row: { github_org: "acme", team_slug: slug, team_name: "", slack_workspace: "acme", slack_team_id: "T0ACME0001", slack_channel_name: name, slack_channel_id: id },
+    source: "user" as const,
+    disabled: false,
+    has_imported: false,
+  });
+  const real: Record<string, string> = { C0ACME0001: "web-reviews", C0ACME0002: "new-channel" };
+  previewApi.listMappings = () => Promise.resolve([row("api", "old-channel", "C0ACME0002"), row("web", "web-reviews", "C0ACME0001")]);
+  previewApi.slackChannelNames = (channels) => Promise.resolve(channels.map((channel) => real[channel.channel_id] ?? null));
+  previewApi.slackWorkspaces = () => Promise.resolve([{ id: 1, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false, team_id: "T0ACME0001", enabled: true, priority: 0 }]);
+}
 const root = document.getElementById("root");
 if (!root) {
   throw new Error("root element missing");
@@ -413,6 +427,10 @@ createRoot(root).render(
     ) : screenName === "remapped" ? (
       <div className="min-h-screen bg-slate-950 text-slate-200">
         <BulkDialog api={previewApi} prIds={[1, 2, 3, 4, 5]} onClose={() => undefined} onSent={() => undefined} onOpen={() => undefined} />
+      </div>
+    ) : screenName === "mapping-mismatch" ? (
+      <div className="min-h-screen bg-slate-950 px-6 py-8 text-slate-200">
+        <SettingsScreen api={previewApi} boot={boot} onBoot={() => undefined} accounts={null} tab="mappings" onTabChange={() => undefined} onRerunSetup={() => undefined} />
       </div>
     ) : screenName === "profile-reuse" ? (
       <div className="min-h-screen bg-slate-950 px-6 py-8 text-slate-200">

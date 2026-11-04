@@ -417,7 +417,8 @@ impl ChatProvider for SlackMcpChatProvider {
     }
 
     /// Read-only visibility probe before a send (§7.11): a member ID reads
-    /// the profile, a channel or DM reads its newest message.
+    /// the profile, a channel or DM reads its newest message. The name comes
+    /// from the read's `Channel:` header, else it is the id.
     fn channel_info(&self, channel_id: &str) -> Result<ChatChannel, ProviderError> {
         if channel_id.starts_with(['U', 'W']) {
             let name = self.user_name(channel_id)?;
@@ -429,10 +430,14 @@ impl ChatProvider for SlackMcpChatProvider {
         let mut args = JsonObject::new();
         args.insert("channel_id".into(), json!(channel_id));
         args.insert("limit".into(), json!(1));
-        self.read(READ_CHANNEL, args)?;
+        let output = self.read(READ_CHANNEL, args)?;
+        // The read names the channel in its header; the id stands in when
+        // it does not (a DM, or an older server).
+        let name = schema::parse_read_channel_name(&output, channel_id)
+            .unwrap_or_else(|| channel_id.to_owned());
         Ok(ChatChannel {
             id: channel_id.to_owned(),
-            name: channel_id.to_owned(),
+            name,
         })
     }
 

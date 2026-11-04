@@ -143,6 +143,9 @@ pub struct AppState {
     pub vault: Arc<Vault>,
     /// One lazy Slack MCP session per connected workspace account.
     pub chats: Mutex<HashMap<i64, Arc<dyn ChatProvider>>>,
+    /// Channel names read from Slack by id, keyed by (team or workspace,
+    /// channel id). The id is the truth; a stored name is only a fallback.
+    pub channel_names: Mutex<HashMap<(String, String), String>>,
     /// The Slack sign-in in progress, if any.
     pub slack_cancel: Mutex<Option<CancelHandle>>,
     /// Startup `auth.test` result per Slack account (§7.11).
@@ -195,6 +198,7 @@ impl AppState {
             profile_id: std::sync::RwLock::new(profile.to_owned()),
             vault,
             chats: Mutex::new(HashMap::new()),
+            channel_names: Mutex::new(HashMap::new()),
             slack_cancel: Mutex::new(None),
             slack_tokens: Mutex::new(HashMap::new()),
             slack_proxy: crate::mcp::slack::SlackProxy::default(),

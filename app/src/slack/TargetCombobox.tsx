@@ -16,6 +16,10 @@ interface Props {
   /** `choice` is the suggestion picked, or null for a search result or an ID. */
   onSelect: (target: ReviewTarget, choice: TargetChoice | null) => void;
   label?: string;
+  /** Channels only (Settings → Mappings): people and DM ids are not offered. */
+  channelsOnly?: boolean;
+  /** "Enter an ID" takes the ID alone; the caller reads the name from Slack. */
+  nameFromId?: boolean;
 }
 
 type Option =
@@ -103,7 +107,16 @@ function describe(choice: TargetChoice) {
  * and labeled with the workspace. ARIA combobox with a listbox;
  * "Enter an ID" stays available when search is unsupported or fails.
  */
-export function TargetCombobox({ api, workspaces, suggestions, value, onSelect, label = "Channel or person" }: Props) {
+export function TargetCombobox({
+  api,
+  workspaces,
+  suggestions,
+  value,
+  onSelect,
+  label = "Channel or person",
+  channelsOnly = false,
+  nameFromId = false,
+}: Props) {
   const id = useId();
   const listId = `${id}-list`;
   const helpId = `${id}-help`;
@@ -131,7 +144,7 @@ export function TargetCombobox({ api, workspaces, suggestions, value, onSelect, 
     const wanted = (query ?? "").trim();
     const timer = window.setTimeout(() => {
       api
-        .searchSlackTargets(wanted)
+        .searchSlackTargets(channelsOnly && !wanted.startsWith("#") ? `#${wanted.replace(/^@/, "")}` : wanted)
         .then((items) => ({ items, error: null }))
         .catch((err: unknown) => ({ items: [], error: errorMessage(err) }))
         .then((next) => {
@@ -144,7 +157,7 @@ export function TargetCombobox({ api, workspaces, suggestions, value, onSelect, 
       cancel = true;
       window.clearTimeout(timer);
     };
-  }, [api, found, query, searchKey, enabled.length]);
+  }, [api, found, query, searchKey, enabled.length, channelsOnly]);
 
   const term = parsed.term.toLowerCase();
   const options: Option[] = [];
@@ -159,13 +172,16 @@ export function TargetCombobox({ api, workspaces, suggestions, value, onSelect, 
   }
   const order = enabled.map((item) => item.domain);
   for (const match of rankMatches(result?.items ?? [], query ?? "", order)) {
+    if (channelsOnly && match.kind !== "channel") {
+      continue;
+    }
     const key = keyOf(match.target);
     if (!seen.has(key)) {
       seen.add(key);
       options.push({ key, group: match.kind, target: match.target });
     }
   }
-  if (ID_PATTERN.test(parsed.term)) {
+  if (ID_PATTERN.test(parsed.term) && (!channelsOnly || /^[CG]/i.test(parsed.term))) {
     // No workspace: the send probes enabled workspaces in priority order.
     const target: ReviewTarget = { workspace: "", channel_id: parsed.term.toUpperCase(), channel_name: "" };
     if (!seen.has(keyOf(target))) {
@@ -214,7 +230,7 @@ export function TargetCombobox({ api, workspaces, suggestions, value, onSelect, 
     if (!channelId) {
       return;
     }
-    onSelect({ workspace: "", channel_id: channelId, channel_name: manualName.trim() }, null);
+    onSelect({ workspace: "", channel_id: channelId, channel_name: nameFromId ? "" : manualName.trim() }, null);
   }
 
   const input = "mt-1 w-full rounded border border-slate-700 bg-slate-950 px-2 py-1.5";
@@ -317,16 +333,22 @@ export function TargetCombobox({ api, workspaces, suggestions, value, onSelect, 
         </div>
       </div>
       <p id={helpId} className="text-xs text-slate-500">
-        Type # to search channels or @ to search people; a person gets a direct message. Code-owner channels are listed
-        first{several ? ", then results by workspace" : ""}.{" "}
+        {channelsOnly ? (
+          <>Type a channel name to search{several ? " every workspace" : ""}.</>
+        ) : (
+          <>
+            Type # to search channels or @ to search people; a person gets a direct message. Code-owner channels are listed
+            first{several ? ", then results by workspace" : ""}.
+          </>
+        )}{" "}
         <button type="button" className="underline" onClick={() => setManual((shown) => !shown)} aria-expanded={manual}>
           {manual ? "Hide ID entry" : "Enter an ID"}
         </button>
       </p>
       {manual && (
-        <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] items-end gap-2">
+        <div className={`grid items-end gap-2 ${nameFromId ? "grid-cols-[minmax(0,1fr)_auto]" : "grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]"}`}>
           <label className="block">
-            Channel, DM or member ID
+            {channelsOnly ? "Channel ID" : "Channel, DM or member ID"}
             <input
               {...plainText}
               className={input}
@@ -335,6 +357,7 @@ export function TargetCombobox({ api, workspaces, suggestions, value, onSelect, 
               onChange={(event) => setManualId(event.target.value)}
             />
           </label>
+          {!nameFromId && (
           <label className="block">
             Name
             <input
@@ -345,8 +368,9 @@ export function TargetCombobox({ api, workspaces, suggestions, value, onSelect, 
               onChange={(event) => setManualName(event.target.value)}
             />
           </label>
+          )}
           <button type="button" className="rounded border border-slate-600 px-3 py-1.5" onClick={useManual}>
-            Preview
+            {nameFromId ? "Use ID" : "Preview"}
           </button>
         </div>
       )}

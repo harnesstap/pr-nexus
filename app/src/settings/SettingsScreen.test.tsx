@@ -134,8 +134,9 @@ test("Mappings: badges, filter, inline edit and reset to imported", async () => 
   const counts: number[] = [];
   const api = fakeSettingsApi({
     listMappings: () => Promise.resolve(entries),
+    slackChannelNames: (channels) => Promise.resolve(channels.map((channel) => (channel.channel_id === "C0ACME0002" ? "web-team" : null))),
     saveMapping: (row, disabled) => {
-      calls.push(`save ${row.team_slug} #${row.slack_channel_name} ${disabled}`);
+      calls.push(`save ${row.team_slug} #${row.slack_channel_name} ${row.slack_channel_id} ${disabled}`);
       entries = entries.map((item) => (item.row.team_slug === row.team_slug ? { ...item, row, disabled, source: "user" } : item));
       return Promise.resolve();
     },
@@ -154,10 +155,14 @@ test("Mappings: badges, filter, inline edit and reset to imported", async () => 
   fireEvent.change(screen.getByRole("searchbox", { name: "Filter mappings" }), { target: { value: "#web" } });
   expect(within(table).queryByText("acme/api")).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Edit acme/web" }));
-  fireEvent.change(screen.getByRole("textbox", { name: "Channel name" }), { target: { value: "web-team" } });
+  // "Enter an ID" takes the id alone; the name comes from Slack with it.
+  fireEvent.click(screen.getByRole("button", { name: "Enter an ID" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Channel ID" }), { target: { value: "C0ACME0002" } });
+  fireEvent.click(screen.getByRole("button", { name: "Use ID" }));
+  await waitFor(() => expect(screen.getByRole("combobox", { name: "Slack channel" })).toHaveValue("#web-team"));
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
   expect(await screen.findByText("Saved acme/web.")).toBeInTheDocument();
-  expect(calls).toEqual(["save web #web-team false"]);
+  expect(calls).toEqual(["save web #web-team C0ACME0002 false"]);
   expect(counts).toEqual([3]);
 
   fireEvent.change(screen.getByRole("searchbox", { name: "Filter mappings" }), { target: { value: "" } });
@@ -174,7 +179,28 @@ test("Mappings: a failed save keeps the row open with the error", async () => {
   fireEvent.click(await screen.findByRole("button", { name: "Edit acme/web" }));
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
   expect(await screen.findByRole("alert")).toHaveTextContent(/must look like/);
-  expect(screen.getByRole("textbox", { name: "Channel name" })).toBeInTheDocument();
+  expect(screen.getByRole("combobox", { name: "Slack channel" })).toBeInTheDocument();
+});
+
+test("Mappings: a saved name that is not the id's channel is flagged, not rewritten", async () => {
+  const saved: string[] = [];
+  const api = fakeSettingsApi({
+    listMappings: () => Promise.resolve([entry({ slug: "web" }), entry({ slug: "api" })]),
+    // Slack names the shared id "api-reviews": the web row's saved name is stale.
+    slackChannelNames: (channels) => Promise.resolve(channels.map(() => "api-reviews")),
+    saveMapping: (row) => {
+      saved.push(row.team_slug);
+      return Promise.resolve();
+    },
+  }) as Api;
+  render(<Harness api={api} start="mappings" />);
+  const warning = await screen.findByText(/Saved name #web-reviews doesn't match this channel \(#api-reviews\)/);
+  expect(warning).toBeInTheDocument();
+  expect(screen.getAllByText(/doesn't match this channel/)).toHaveLength(1);
+  expect(screen.getByText("#web-reviews")).toBeInTheDocument();
+  expect(saved).toEqual([]);
+  fireEvent.click(screen.getByRole("button", { name: "Pick the channel again for acme/web" }));
+  expect(screen.getByRole("combobox", { name: "Slack channel" })).toBeInTheDocument();
 });
 
 test("Import: Apply stays disabled until a preview of the same CSV, and the diff lists changes", async () => {

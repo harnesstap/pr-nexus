@@ -74,9 +74,15 @@ impl ChatProvider for FakeChat {
         Err(ProviderError::Unsupported("fake".into()))
     }
     fn channel_info(&self, channel_id: &str) -> Result<ChatChannel, ProviderError> {
+        // Slack knows one channel's name; any other read gives only the id,
+        // like a probe that can't name the channel.
+        let name = match channel_id {
+            "C0ACME0002" => "new-channel",
+            other => other,
+        };
         Ok(ChatChannel {
             id: channel_id.into(),
-            name: "team-reviews".into(),
+            name: name.into(),
         })
     }
     fn post(&self, message: &OutgoingMessage<'_>) -> Result<PostedMessage, ProviderError> {
@@ -562,6 +568,45 @@ fn map_team(state: &AppState, team: &str, channel_id: &str, channel_name: &str) 
         Utc::now(),
     )
     .unwrap();
+}
+
+/// The channel id is the truth: a mapping saved with a stale name still
+/// previews (bulk and single) under the name Slack gives for the id, and a
+/// channel Slack can't name keeps its stored name.
+#[test]
+fn preview_names_the_channel_from_its_id() {
+    let fx = fixture("remap-name");
+    let state = &fx.state;
+    connect_fake_workspace(state);
+    let slack = Arc::new(FakeSlack::default());
+    let (pr, team) = pr_with_team(state);
+    map_team(state, &team, "C0ACME0002", "stale-name");
+
+    let request: BulkRequest =
+        serde_json::from_value(serde_json::json!({ "pr_ids": [pr] })).unwrap();
+    let preview = bulk::preview_with(state, &slack, &request).unwrap();
+    assert_eq!(preview.cards.len(), 1, "{:?}", preview.cards);
+    assert_eq!(preview.cards[0].target.channel_id, "C0ACME0002");
+    assert_eq!(preview.cards[0].target.channel_name, "new-channel");
+
+    let single = review::preview_with(
+        state,
+        &slack,
+        pr,
+        ReviewTarget {
+            channel_id: "C0ACME0002".into(),
+            channel_name: "stale-name".into(),
+            ..channel()
+        },
+    )
+    .unwrap();
+    assert_eq!(single.target.channel_name, "new-channel");
+
+    let unnamed = review::preview_with(state, &slack, pr, channel()).unwrap();
+    assert_eq!(
+        unnamed.target.channel_name, "team-reviews",
+        "stored fallback"
+    );
 }
 
 /// Bug: after a team was remapped, the bulk card named the new channel and

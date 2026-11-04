@@ -199,6 +199,28 @@ pub struct ReadMessage {
     pub text: String,
 }
 
+/// The channel name from a `slack_read_channel` result's first
+/// `Channel: #name (C…)` line, when it names `channel_id`. `None` for a DM
+/// or when the line is missing (§7.11: the name is read from the id).
+pub fn parse_read_channel_name(output: &ToolOutput, channel_id: &str) -> Option<String> {
+    let mut body = String::new();
+    for value in output.json_values() {
+        collect_strings(&value, &mut body);
+    }
+    if body.trim().is_empty() {
+        body = output.text.clone();
+    }
+    let line = body
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("Channel:"))?;
+    let (name, id, _) = parse_author(line);
+    if id.as_deref() != Some(channel_id) {
+        return None;
+    }
+    let name = name?.trim().trim_start_matches('#').trim().to_owned();
+    (!name.is_empty() && name != "DM" && name != channel_id).then_some(name)
+}
+
 /// Parse a `slack_read_channel` result. The server returns JSON text
 /// `{"messages": "<blocks>"}` where each block is
 /// `=== Message from <name> (<user id>) at <time> ===` then `Message TS: <ts>`
@@ -617,6 +639,24 @@ mod tests {
         )
         .unwrap();
         assert_eq!(prose.ts, "1700000000.000100");
+    }
+
+    #[test]
+    fn read_channel_header_names_the_channel() {
+        let named = ToolOutput {
+            text: r#"{"messages":"Channel: #new-channel (C0ACME0002)\n\n=== Message from Ada (U0ACME0001) at 2026-01-01 10:00:00 UTC ===\nMessage TS: 1700000000.000100\nHi"}"#.into(),
+            ..ToolOutput::default()
+        };
+        assert_eq!(
+            parse_read_channel_name(&named, "C0ACME0002").as_deref(),
+            Some("new-channel")
+        );
+        assert_eq!(parse_read_channel_name(&named, "C0ACME0001"), None);
+        let dm = ToolOutput {
+            text: r#"{"messages":"Channel: DM (D0123456789)\n"}"#.into(),
+            ..ToolOutput::default()
+        };
+        assert_eq!(parse_read_channel_name(&dm, "D0123456789"), None);
     }
 
     #[test]

@@ -413,7 +413,14 @@ pub async fn review_targets(
     blocking::run(move || {
         let state = app.inner().as_ref();
         let pr = load_pr(&state.store, pr_id)?;
-        targets_for(&state.store, &pr, &teams)
+        let choices = targets_for(&state.store, &pr, &teams)?;
+        Ok(choices
+            .into_iter()
+            .map(|mut choice| {
+                choice.target = resolve_target(state, &review::LiveChats, choice.target);
+                choice
+            })
+            .collect())
     })
     .await
 }
@@ -594,6 +601,41 @@ pub async fn slack_search_targets(
         search_all(&workspaces, term, channels, members, |ws| {
             chat_for(state, &ws.team_id)
         })
+    })
+    .await
+}
+
+/// One channel to name for Settings → Mappings.
+#[derive(Debug, Deserialize)]
+pub struct ChannelRef {
+    pub workspace: String,
+    #[serde(default)]
+    pub team_id: Option<String>,
+    pub channel_id: String,
+}
+
+/// The current Slack name of each channel id, in order; `null` when Slack
+/// can't say (offline, not visible, or the read gives no name). Read-only.
+#[tauri::command]
+pub async fn slack_channel_names(
+    app: Shared<'_>,
+    channels: Vec<ChannelRef>,
+) -> Result<Vec<Option<String>>, AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        Ok(channels
+            .iter()
+            .map(|channel| {
+                channel_name(
+                    state,
+                    &review::LiveChats,
+                    &channel.workspace,
+                    channel.team_id.as_deref(),
+                    channel.channel_id.trim(),
+                )
+            })
+            .collect())
     })
     .await
 }
@@ -1100,6 +1142,59 @@ fn demo_matches<'a>(
         .iter()
         .copied()
         .filter(move |(_, name)| name.to_lowercase().contains(&query))
+}
+
+/// The channel's current name, read from Slack by its id (cached per
+/// workspace). `None` when the lookup fails, the app is offline, or Slack
+/// gives no name; callers then keep the stored name.
+pub(crate) fn channel_name(
+    state: &AppState,
+    chats: &dyn review::ChatSource,
+    workspace: &str,
+    team_id: Option<&str>,
+    channel_id: &str,
+) -> Option<String> {
+    if !(channel_id.starts_with('C') || channel_id.starts_with('G')) {
+        return None;
+    }
+    let scope = team_id
+        .filter(|team| !team.is_empty())
+        .unwrap_or(workspace)
+        .to_ascii_lowercase();
+    let key = (scope, channel_id.to_owned());
+    if let Some(name) = lock(&state.channel_names).get(&key) {
+        return Some(name.clone());
+    }
+    let route = team_id.filter(|team| !team.is_empty()).unwrap_or(workspace);
+    let info = chats
+        .chat(state, route)
+        .ok()?
+        .channel_info(channel_id)
+        .ok()?;
+    let name = info.name.trim().trim_start_matches('#').to_owned();
+    if name.is_empty() || name == channel_id || info.id != channel_id {
+        return None;
+    }
+    lock(&state.channel_names).insert(key, name.clone());
+    Some(name)
+}
+
+/// `target` with its channel name read from the id (see [`channel_name`]).
+pub(crate) fn resolve_target(
+    state: &AppState,
+    chats: &dyn review::ChatSource,
+    mut target: ReviewTarget,
+) -> ReviewTarget {
+    if let Some(name) = channel_name(
+        state,
+        chats,
+        &target.workspace,
+        target.team_id.as_deref(),
+        &target.channel_id,
+    ) {
+        target.channel_name = name;
+    }
+    target
 }
 
 pub(crate) fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {

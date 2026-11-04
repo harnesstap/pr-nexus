@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
-import type { Api, ExportMode, ImportMode, ImportPreview, MappingEntry, MappingFile, MappingRow, SlackWorkspace } from "../api";
+import type { Api, ExportMode, ImportMode, ImportPreview, MappingEntry, MappingFile, MappingRow, ReviewTarget, SlackWorkspace } from "../api";
 import { errorMessage } from "../api";
 import { MappingFileButton } from "../mapping/MappingFileButton";
+import { TargetCombobox } from "../slack/TargetCombobox";
 import { WorkspaceSelect } from "../slack/WorkspaceSelect";
+import { applyPick, channelRef, nameMismatch, rowTarget } from "./channelPick";
 import { chosenWorkspace, csvHasWorkspaceColumn, rememberWorkspace } from "../slack/workspaces";
 import { MAPPING_FIELDS, matchesMapping } from "./tabs";
 import { plainText } from "../textInput";
@@ -40,6 +42,8 @@ export function MappingSettings({ api, skippedInSetup, onCountChange, workspaces
   const [editing, setEditing] = useState<{ row: MappingRow; disabled: boolean; isNew: boolean } | null>(null);
   const [rowError, setRowError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  /** Slack's name for each row's channel id (`org/slug`), null when unknown. */
+  const [names, setNames] = useState<Record<string, string | null>>({});
 
   useEffect(() => {
     let cancel = false;
@@ -59,6 +63,27 @@ export function MappingSettings({ api, skippedInSetup, onCountChange, workspaces
       cancel = true;
     };
   }, [api]);
+
+  // The id is the truth: read each channel's name from Slack to flag rows
+  // whose saved name is another channel's. Read-only; nothing is rewritten.
+  useEffect(() => {
+    const rows = (entries ?? []).filter((entry) => !entry.disabled && entry.row.slack_channel_id.trim()).map((entry) => entry.row);
+    if (rows.length === 0) {
+      return;
+    }
+    let cancel = false;
+    api
+      .slackChannelNames(rows.map(channelRef))
+      .then((found) => {
+        if (!cancel) {
+          setNames(Object.fromEntries(rows.map((row, index) => [`${row.github_org}/${row.team_slug}`, found[index] ?? null])));
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancel = true;
+    };
+  }, [api, entries]);
 
   // Slack may have been connected in Accounts since boot.
   useEffect(() => {
@@ -176,6 +201,7 @@ export function MappingSettings({ api, skippedInSetup, onCountChange, workspaces
             <tbody>
               {editing?.isNew && (
                 <EditRow
+                  api={api}
                   editing={editing}
                   workspaces={workspaces}
                   onConnectSlack={onConnectSlack}
@@ -187,12 +213,15 @@ export function MappingSettings({ api, skippedInSetup, onCountChange, workspaces
               )}
               {visible.map((entry) => {
                 const key = `${entry.row.github_org}/${entry.row.team_slug}`;
+                const mismatch = entry.disabled ? null : nameMismatch(entry.row, names[key]);
                 const isEditing = editing && !editing.isNew && `${editing.row.github_org}/${editing.row.team_slug}` === key;
                 if (isEditing) {
                   return (
                     <EditRow
                       key={key}
+                      api={api}
                       original={entry.row}
+                      resolved={names[key]}
                       editing={editing}
                       workspaces={workspaces}
                       onConnectSlack={onConnectSlack}
@@ -218,6 +247,22 @@ export function MappingSettings({ api, skippedInSetup, onCountChange, workspaces
                           #{entry.row.slack_channel_name || entry.row.slack_channel_id}
                           {entry.row.slack_channel_id && entry.row.slack_channel_name && (
                             <span className="ml-1 font-mono text-xs text-slate-500">{entry.row.slack_channel_id}</span>
+                          )}
+                          {mismatch && (
+                            <p role="status" className="mt-1 max-w-64 text-xs whitespace-normal text-amber-300">
+                              Saved name #{entry.row.slack_channel_name.replace(/^#/, "")} doesn't match this channel (#{mismatch}).{" "}
+                              <button
+                                type="button"
+                                aria-label={`Pick the channel again for ${key}`}
+                                className="underline"
+                                onClick={() => {
+                                  setRowError(null);
+                                  setEditing({ row: entry.row, disabled: entry.disabled, isNew: false });
+                                }}
+                              >
+                                Pick the channel again
+                              </button>
+                            </p>
                           )}
                         </>
                       )}
@@ -274,20 +319,10 @@ export function MappingSettings({ api, skippedInSetup, onCountChange, workspaces
   );
 }
 
-/**
- * True when the channel name was edited but the id still is the saved one:
- * messages go by id, so they would keep reaching the old channel (§7.11).
- */
-export function staleChannelId(original: MappingRow | undefined, row: MappingRow): boolean {
-  if (!original || !original.slack_channel_id.trim()) {
-    return false;
-  }
-  const name = (value: string) => value.trim().replace(/^#/, "").toLowerCase();
-  return row.slack_channel_id.trim() === original.slack_channel_id.trim() && name(row.slack_channel_name) !== name(original.slack_channel_name);
-}
-
 function EditRow({
+  api,
   original,
+  resolved,
   editing,
   workspaces,
   onConnectSlack,
@@ -296,7 +331,10 @@ function EditRow({
   onSave,
   onCancel,
 }: {
+  api: Pick<Api, "searchSlackTargets" | "slackChannelNames">;
   original?: MappingRow;
+  /** Slack's name for the saved channel id, when known. */
+  resolved?: string | null;
   editing: { row: MappingRow; disabled: boolean; isNew: boolean };
   workspaces: SlackWorkspace[];
   onConnectSlack?: () => void;
@@ -306,6 +344,31 @@ function EditRow({
   onCancel: () => void;
 }) {
   const set = (field: keyof MappingRow, value: string) => onChange({ ...editing, row: { ...editing.row, [field]: value } });
+  const [lookup, setLookup] = useState<string | null>(null);
+  const mismatch = original && original.slack_channel_id === editing.row.slack_channel_id ? nameMismatch(editing.row, resolved) : null;
+
+  // One pick sets the id and the name together; an ID typed by hand gets its
+  // name from Slack, or keeps none (sends still go by id).
+  function pick(target: ReviewTarget) {
+    const next = { ...editing, row: applyPick(editing.row, target) };
+    onChange(next);
+    setLookup(null);
+    if (next.row.slack_channel_name) {
+      return;
+    }
+    setLookup("Reading the channel name from Slack…");
+    api
+      .slackChannelNames([channelRef(next.row)])
+      .then(([name]) => {
+        if (name) {
+          onChange({ ...next, row: { ...next.row, slack_channel_name: name } });
+          setLookup(null);
+        } else {
+          setLookup("Slack did not name this channel; messages still go to this ID.");
+        }
+      })
+      .catch(() => setLookup("Slack did not name this channel; messages still go to this ID."));
+  }
   return (
     <tr className="border-t border-slate-800 bg-slate-900/60 align-top">
       <td className="py-2 pr-2">
@@ -333,11 +396,22 @@ function EditRow({
         />
       </td>
       <td className="py-2 pr-2">
-        <input {...plainText} aria-label="Channel name" placeholder="team-reviews" className={`${box} w-36`} value={editing.row.slack_channel_name} onChange={(e) => set("slack_channel_name", e.target.value)} />
-        <input {...plainText} aria-label="Channel id" placeholder="C0123456789" className={`${box} mt-1 w-36 font-mono text-xs`} value={editing.row.slack_channel_id} onChange={(e) => set("slack_channel_id", e.target.value)} />
-        {staleChannelId(original, editing.row) && (
-          <p role="status" className="mt-1 max-w-44 text-xs whitespace-normal text-amber-300">
-            The channel id is still {original!.slack_channel_id} (#{original!.slack_channel_name || original!.slack_channel_id}). Messages go by id: paste the new channel's id, unless the channel was only renamed.
+        <div className="w-64 text-xs">
+          <TargetCombobox
+            api={api}
+            workspaces={workspaces}
+            suggestions={[]}
+            value={rowTarget(editing.row)}
+            onSelect={(target) => pick(target)}
+            label="Slack channel"
+            channelsOnly
+            nameFromId
+          />
+        </div>
+        {lookup && <p className="mt-1 max-w-64 text-xs whitespace-normal text-slate-400">{lookup}</p>}
+        {mismatch && (
+          <p role="status" className="mt-1 max-w-64 text-xs whitespace-normal text-amber-300">
+            Saved name #{editing.row.slack_channel_name.replace(/^#/, "")} doesn't match this channel (#{mismatch}). Pick the channel again.
           </p>
         )}
       </td>

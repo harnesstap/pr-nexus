@@ -28,6 +28,7 @@ type SettingsApi = Pick<
   | "appInfo"
   | "checkUpdate"
   | "slackWorkspaces"
+  | "slackChannelNames"
   | "pickMappingFile"
   | "mcpSettings"
   | "saveMcpSettings"
@@ -252,6 +253,7 @@ export function fakeSettingsApi(overrides: Partial<SettingsApi> = {}): SettingsA
       }),
     checkUpdate: () => Promise.resolve(null),
     pickMappingFile: () => Promise.resolve(null),
+    slackChannelNames: (channels) => Promise.resolve(channels.map(() => null)),
     ...withoutConnect(fakeMcp()),
     slackWorkspaces: () => Promise.resolve([]),
     ...overrides,

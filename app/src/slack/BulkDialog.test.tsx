@@ -75,6 +75,8 @@ test("previews every message per channel, switches to one top-level request, and
   expect(screen.getByText("#42 was bumped 2h ago.")).toBeInTheDocument();
   expect(screen.getByText(/Not open/)).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Send 2 messages" })).toBeEnabled();
+  // The card names the channel; its raw id is only in the name's tooltip.
+  expect(screen.queryByText("C0123456789")).not.toBeInTheDocument();
 
   fireEvent.click(screen.getByRole("checkbox", { name: "One top-level request for all" }));
   expect(await screen.findByText("Two PRs please")).toBeInTheDocument();

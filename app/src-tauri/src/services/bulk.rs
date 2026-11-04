@@ -123,7 +123,7 @@ pub fn send(
     request: &BulkRequest,
     fingerprints: &[String],
 ) -> Result<BulkResult, AppError> {
-    let (plan, prs, _) = plan_request(state, request)?;
+    let (plan, prs, _) = plan_request(state, chats, request)?;
     send_plan(state, chats, plan, &prs, fingerprints)
 }
 
@@ -136,7 +136,7 @@ pub fn send_card(
     request: &BulkRequest,
     fingerprint: &str,
 ) -> Result<BulkResult, AppError> {
-    let (mut plan, prs, _) = plan_request(state, request)?;
+    let (mut plan, prs, _) = plan_request(state, chats, request)?;
     plan.cards.retain(|card| card.fingerprint() == fingerprint);
     if plan.cards.is_empty() {
         return Err(AppError::new(
@@ -253,7 +253,17 @@ impl Pace for RealPace {
 /// Gate, route, and plan. Returns the PRs that were looked up for the DTOs.
 /// Gate, plan and route without posting: the bottom bar's preview.
 pub fn preview(state: &AppState, request: &BulkRequest) -> Result<BulkPreview, AppError> {
-    let (plan, prs, moved) = plan_request(state, request)?;
+    preview_with(state, &crate::services::review::LiveChats, request)
+}
+
+/// [`preview`] reading channel names through `chats` (§7.9: the channel id
+/// is the truth, the stored name only a fallback when Slack can't say).
+pub fn preview_with(
+    state: &AppState,
+    chats: &dyn ChatSource,
+    request: &BulkRequest,
+) -> Result<BulkPreview, AppError> {
+    let (plan, prs, moved) = plan_request(state, chats, request)?;
     preview_dto(state, &plan, &prs, &moved)
 }
 
@@ -271,6 +281,7 @@ struct Moved {
 
 fn plan_request(
     state: &AppState,
+    chats: &dyn ChatSource,
     request: &BulkRequest,
 ) -> Result<(BatchPlan, Vec<PullRequest>, Vec<Moved>), AppError> {
     if request.pr_ids.is_empty() {
@@ -279,7 +290,13 @@ fn plan_request(
             "Select at least one pull request",
         ));
     }
-    let override_target = request.target.clone().map(validate_target).transpose()?;
+    let resolve = |target: ReviewTarget| crate::slack::resolve_target(state, chats, target);
+    let override_target = request
+        .target
+        .clone()
+        .map(validate_target)
+        .transpose()?
+        .map(resolve);
     let flag = settings::blocked_review_required_is_ready(&state.store)?;
     let mut prs = Vec::new();
     let mut inputs = Vec::new();
@@ -344,7 +361,13 @@ fn plan_request(
                 teams: teams.clone(),
             }],
             None => {
-                let choices = targets_for(&state.store, &pr, &teams)?;
+                let choices: Vec<_> = targets_for(&state.store, &pr, &teams)?
+                    .into_iter()
+                    .map(|mut choice| {
+                        choice.target = resolve(choice.target);
+                        choice
+                    })
+                    .collect();
                 // Never bump a thread in a channel the team left: the card
                 // would name the mapped channel and post to the old one.
                 let (previous, choices): (Vec<_>, Vec<_>) = choices

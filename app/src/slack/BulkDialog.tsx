@@ -4,6 +4,7 @@ import type { Api, BulkCard, BulkPreview, BulkRequest, BulkResult, ChannelKey, R
 import { channelLabel, errorMessage } from "../api";
 import { DraftWarning } from "./DraftWarning";
 import { TargetCombobox } from "./TargetCombobox";
+import { Tooltip } from "../Tooltip";
 import { BULK_CONCURRENCY, mapLimit } from "../mapLimit";
 
 interface Props {
@@ -233,10 +234,10 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen, onReady }: Pro
                   >
                     <header className="flex items-center justify-between gap-2">
                       <h3 className="font-medium">
-                        {[targetWorkspaceName(card.target), channelLabel(card.target)].filter(Boolean).join(" · ")}
-                        <span className="ml-2 font-mono text-xs font-normal text-slate-500" aria-label="Channel id">
-                          {card.target.channel_id}
-                        </span>
+                        {targetWorkspaceName(card.target) && `${targetWorkspaceName(card.target)} · `}
+                        <Tooltip label={`Channel ID ${card.target.channel_id}`} align="start">
+                          <span tabIndex={0}>{channelLabel(card.target)}</span>
+                        </Tooltip>
                       </h3>
                       {(card.can_switch || card.single_top_level) && (
                         <label className="flex items-center gap-1 text-xs text-slate-300">
