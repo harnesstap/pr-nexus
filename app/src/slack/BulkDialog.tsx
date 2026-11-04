@@ -5,6 +5,10 @@ import { channelLabel, errorMessage } from "../api";
 import { DraftWarning } from "./DraftWarning";
 import { TargetCombobox } from "./TargetCombobox";
 import { BULK_CONCURRENCY, mapLimit } from "../mapLimit";
+import { CheckIcon, CopyIcon } from "../icons";
+import { copyText } from "../list/markdown";
+import type { Toast } from "../list/model";
+import { Tooltip } from "../Tooltip";
 
 interface Props {
   api: Api;
@@ -16,6 +20,8 @@ interface Props {
   onOpen: (url: string) => void;
   /** Called for each PR "Mark all ready" took out of draft. */
   onReady?: (id: number) => void;
+  /** Shows a toast, e.g. after "Copy message". */
+  onNotice?: (toast: Toast) => void;
 }
 
 const ACTION_LABEL = {
@@ -33,7 +39,7 @@ function sameKey(a: ChannelKey, b: ChannelKey) {
  * before anything is posted. Send posts one message at a time and reports a
  * result per PR and channel; nothing already posted is rolled back.
  */
-export function BulkDialog({ api, prIds, onClose, onSent, onOpen, onReady }: Props) {
+export function BulkDialog({ api, prIds, onClose, onSent, onOpen, onReady, onNotice }: Props) {
   const [ids, setIds] = useState(prIds);
   const [oneChannel, setOneChannel] = useState(false);
   const [target, setTarget] = useState<ReviewTarget | null>(null);
@@ -261,9 +267,12 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen, onReady }: Pro
                             </>
                           )}
                         </p>
-                        <pre aria-label="Message preview" className="whitespace-pre-wrap rounded bg-slate-950 p-3 text-xs">
-                          {message.text}
-                        </pre>
+                        <div className="relative">
+                          <pre aria-label="Message preview" className="whitespace-pre-wrap rounded bg-slate-950 p-3 pr-10 text-xs">
+                            {message.text}
+                          </pre>
+                          <CopyMessageButton text={message.text} onNotice={onNotice} />
+                        </div>
                       </div>
                     ))}
                     {card.warnings.map((warning) => (
@@ -323,6 +332,46 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen, onReady }: Pro
         </footer>
       </div>
     </div>
+  );
+}
+
+const COPIED_MS = 1500;
+
+/**
+ * Copies one planned message so it can be posted by hand. Copying is not
+ * sending: nothing is posted, tracked or recorded, and the dialog stays open.
+ */
+function CopyMessageButton({ text, onNotice }: { text: string; onNotice?: (toast: Toast) => void }) {
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) {
+      return;
+    }
+    const timer = setTimeout(() => setCopied(false), COPIED_MS);
+    return () => clearTimeout(timer);
+  }, [copied]);
+
+  function copy() {
+    copyText(text).then(
+      () => {
+        setCopied(true);
+        onNotice?.({ text: "Message copied" });
+      },
+      (reason: unknown) => onNotice?.({ text: `Couldn't copy to the clipboard: ${reason instanceof Error ? reason.message : String(reason)}`, error: true }),
+    );
+  }
+
+  return (
+    <Tooltip label={copied ? "Copied" : "Copy message"} align="end" className="absolute right-1.5 top-1.5">
+      <button
+        type="button"
+        aria-label="Copy message"
+        className="cursor-pointer rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-400"
+        onClick={copy}
+      >
+        {copied ? <CheckIcon size={14} className="text-emerald-300" /> : <CopyIcon size={14} />}
+      </button>
+    </Tooltip>
   );
 }
 
