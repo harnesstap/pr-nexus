@@ -77,11 +77,11 @@ export function mcpClientSnippet(client: McpClient, url: string, token: string, 
     case "opencode":
       return {
         where: found
-          ? `Merge into ${found}. OpenCode 1.x: put the server directly under "mcp", without "servers".`
-          : 'Merge into ~/.config/opencode/opencode.jsonc (or opencode.json), or into opencode.jsonc in a project. OpenCode 1.x: put the server directly under "mcp", without "servers".',
+          ? `Merge into ${found}.`
+          : "Merge into ~/.config/opencode/opencode.jsonc (or opencode.json), or into opencode.jsonc in a project.",
         text: json({
           $schema: "https://opencode.ai/config.json",
-          mcp: { servers: { [NAME]: { type: "remote", url, oauth: false, headers: { Authorization: bearer } } } },
+          mcp: { [NAME]: { type: "remote", url, enabled: true, oauth: false, headers: { Authorization: bearer } } },
         }),
       };
   }

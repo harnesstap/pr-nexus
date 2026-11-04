@@ -41,11 +41,13 @@ describe("mcpClientSnippet", () => {
     ]);
   });
 
-  it("OpenCode: mcp.servers entry of type remote (OpenCode 2)", () => {
+  it("OpenCode: mcp entry of type remote", () => {
     const parsed = JSON.parse(mcpClientSnippet("opencode", URL, TOKEN).text);
-    expect(parsed.mcp.servers["pr-nexus"]).toEqual({
+    expect(parsed.mcp.servers).toBeUndefined();
+    expect(parsed.mcp["pr-nexus"]).toEqual({
       type: "remote",
       url: URL,
+      enabled: true,
       oauth: false,
       headers: { Authorization: "Bearer pnx_example" },
     });

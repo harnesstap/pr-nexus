@@ -129,7 +129,7 @@ pub fn config_path(client: Client, env: &Env) -> PathBuf {
 
 /// OpenCode's global config files, the one OpenCode reads last first: it
 /// merges `opencode.json` then `opencode.jsonc` (so `.jsonc` wins), and
-/// OpenCode 1.x also read a legacy `config.json` before both. A new file is
+/// Older OpenCode releases also read a legacy `config.json` before both. A new file is
 /// `opencode.jsonc`, like `opencode` itself creates.
 const OPENCODE_FILES: [&str; 3] = ["opencode.jsonc", "opencode.json", "config.json"];
 
@@ -204,59 +204,29 @@ fn json_entry(client: Client, url: &str, token: &str) -> (&'static str, Value) {
         ),
         Client::Opencode => (
             "mcp",
-            json!({ "type": "remote", "url": url, "oauth": false, "headers": { "Authorization": auth } }),
+            json!({
+                "type": "remote",
+                "url": url,
+                "enabled": true,
+                "oauth": false,
+                "headers": { "Authorization": auth },
+            }),
         ),
         Client::Codex => unreachable!("Codex uses TOML"),
     }
 }
 
-/// OpenCode 1.x entry, used only in files that already list 1.x servers
-/// directly under `mcp`.
-fn opencode_v1_entry(url: &str, token: &str) -> Value {
-    json!({ "type": "remote", "url": url, "enabled": true, "headers": { "Authorization": bearer(token) } })
-}
-
-/// A file in the OpenCode 1.x shape: servers sit directly under `mcp`
-/// (OpenCode 2 nests them under `mcp.servers`). An old `pr-nexus` entry on
-/// its own does not count, so it is moved to the 2.x place.
-fn opencode_is_v1(map: &Map<String, Value>) -> bool {
-    let Some(Value::Object(mcp)) = map.get("mcp") else {
-        return false;
-    };
-    !mcp.contains_key("servers")
-        && mcp
-            .iter()
-            .any(|(name, value)| name != ENTRY && value.get("type").is_some())
-}
-
-/// Where the entry goes and what it holds, plus whether an old OpenCode 1.x
-/// `mcp.pr-nexus` should be removed.
+/// Where the entry goes and what it holds.
 struct JsonPlan {
     keys: Vec<&'static str>,
     wanted: Value,
-    drop_v1_entry: bool,
 }
 
-fn json_plan(client: Client, map: &Map<String, Value>, url: &str, token: &str) -> JsonPlan {
+fn json_plan(client: Client, url: &str, token: &str) -> JsonPlan {
     let (parent, wanted) = json_entry(client, url, token);
-    if client != Client::Opencode {
-        return JsonPlan {
-            keys: vec![parent, ENTRY],
-            wanted,
-            drop_v1_entry: false,
-        };
-    }
-    if opencode_is_v1(map) {
-        return JsonPlan {
-            keys: vec!["mcp", ENTRY],
-            wanted: opencode_v1_entry(url, token),
-            drop_v1_entry: false,
-        };
-    }
     JsonPlan {
-        keys: vec!["mcp", "servers", ENTRY],
+        keys: vec![parent, ENTRY],
         wanted,
-        drop_v1_entry: map.get("mcp").and_then(|mcp| mcp.get(ENTRY)).is_some(),
     }
 }
 
@@ -323,11 +293,6 @@ fn cst_value(value: &Value) -> CstInputValue {
 
 /// Applies `plan` to a parsed object: what the file must read as afterwards.
 fn apply_plan(map: &mut Map<String, Value>, plan: &JsonPlan, path: &Path) -> Result<(), String> {
-    if plan.drop_v1_entry
-        && let Some(Value::Object(mcp)) = map.get_mut("mcp")
-    {
-        mcp.shift_remove(ENTRY);
-    }
     let (last, parents) = plan.keys.split_last().expect("keys are never empty");
     let mut current = map;
     for key in parents {
@@ -367,14 +332,6 @@ fn edit_jsonc(
     let top: CstObject = root
         .object_value()
         .ok_or_else(|| format!("{} is not a JSON object; left unchanged.", path.display()))?;
-    if plan.drop_v1_entry
-        && let Some(old) = top
-            .get("mcp")
-            .and_then(|mcp| mcp.object_value())
-            .and_then(|mcp| mcp.get(ENTRY))
-    {
-        old.remove();
-    }
     let (last, parents) = plan.keys.split_last().expect("keys are never empty");
     let mut current = top;
     for key in parents {
@@ -448,13 +405,10 @@ pub fn status(client: Client, path: &Path, url: &str, token: &str) -> ClientStat
     let Ok(map) = parse_json(path, &text) else {
         return ClientStatus::Unreadable;
     };
-    let plan = json_plan(client, &map, url, token);
+    let plan = json_plan(client, url, token);
     match lookup(&map, &plan.keys) {
-        None if plan.drop_v1_entry => ClientStatus::Outdated,
         None => ClientStatus::NotAdded,
-        Some(current) if !plan.drop_v1_entry && json_matches(client, current, &plan.wanted) => {
-            ClientStatus::Added
-        }
+        Some(current) if json_matches(client, current, &plan.wanted) => ClientStatus::Added,
         Some(_) => ClientStatus::Outdated,
     }
 }
@@ -507,7 +461,7 @@ pub fn merged(
     }
     let text = existing.unwrap_or("");
     let before = parse_json(path, text)?;
-    let plan = json_plan(client, &before, url, token);
+    let plan = json_plan(client, url, token);
     let mut expected = before;
     apply_plan(&mut expected, &plan, path)?;
     if !text.trim().is_empty() {
@@ -800,18 +754,17 @@ mod tests {
         assert!(!message.contains("ExitStatus"));
     }
 
-    /// A real-looking OpenCode 2 file: comments, trailing commas, other servers.
+    /// A real-looking OpenCode file: comments, trailing commas, other servers.
     const OPENCODE_JSONC: &str = r#"{
   "$schema": "https://opencode.ai/config.json",
   // my default model
   "model": "acme/model-large",
   /* block comment */
   "mcp": {
-    "servers": {
-      "acme-docs": {
-        "type": "remote",
-        "url": "https://mcp.acme.test/mcp", // keep me
-      },
+    "acme-docs": {
+      "type": "remote",
+      "url": "https://mcp.acme.test/mcp", // keep me
+      "enabled": true,
     },
   },
 }
@@ -821,10 +774,7 @@ mod tests {
     fn parses_jsonc_with_comments_and_trailing_commas() {
         let map = parse_json(Path::new("opencode.jsonc"), OPENCODE_JSONC).unwrap();
         assert_eq!(map["model"], "acme/model-large");
-        assert_eq!(
-            map["mcp"]["servers"]["acme-docs"]["url"],
-            "https://mcp.acme.test/mcp"
-        );
+        assert_eq!(map["mcp"]["acme-docs"]["url"], "https://mcp.acme.test/mcp");
     }
 
     #[test]
@@ -851,13 +801,19 @@ mod tests {
             assert!(text.contains(kept), "{kept} lost:\n{text}");
         }
         assert!(text.starts_with("{\n  \"$schema\""), "{text}");
+        assert!(!text.contains("\"servers\""), "{text}");
         let map = parse_json(&path, &text).unwrap();
-        let entry = &map["mcp"]["servers"]["pr-nexus"];
-        assert_eq!(entry["type"], "remote");
-        assert_eq!(entry["url"], URL);
-        assert_eq!(entry["oauth"], false);
-        assert_eq!(entry["headers"]["Authorization"], "Bearer pnx_example");
-        assert_eq!(map["mcp"]["servers"]["acme-docs"]["type"], "remote");
+        assert_eq!(
+            map["mcp"]["pr-nexus"],
+            json!({
+                "type": "remote",
+                "url": URL,
+                "enabled": true,
+                "oauth": false,
+                "headers": { "Authorization": "Bearer pnx_example" },
+            })
+        );
+        assert_eq!(map["mcp"]["acme-docs"]["type"], "remote");
         assert_eq!(
             status(Client::Opencode, &path, URL, TOKEN),
             ClientStatus::Added
@@ -877,7 +833,7 @@ mod tests {
     }
 
     #[test]
-    fn opencode_adds_mcp_servers_to_a_file_without_mcp() {
+    fn opencode_adds_mcp_to_a_file_without_it() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("opencode.jsonc");
         let before = "{\n  // theme\n  \"model\": \"acme/model\",\n}\n";
@@ -887,45 +843,23 @@ mod tests {
         assert!(text.contains("// theme"), "{text}");
         let map = parse_json(&path, &text).unwrap();
         assert_eq!(map["model"], "acme/model");
-        assert_eq!(map["mcp"]["servers"]["pr-nexus"]["url"], URL);
+        assert_eq!(map["mcp"]["pr-nexus"]["url"], URL);
+        assert_eq!(map["mcp"]["pr-nexus"]["enabled"], true);
     }
 
     #[test]
-    fn opencode_v1_files_keep_the_v1_shape() {
+    fn opencode_entry_without_enabled_is_outdated() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("opencode.json");
-        let before = r#"{"mcp":{"acme-docs":{"type":"remote","url":"https://mcp.acme.test/mcp","enabled":true}}}"#;
-        fs::write(&path, before).unwrap();
-        install_file(Client::Opencode, &path, URL, TOKEN).unwrap();
-        let map = parse_json(&path, &fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(map["mcp"]["pr-nexus"]["enabled"], true);
-        assert_eq!(map["mcp"]["pr-nexus"]["url"], URL);
-        assert!(map["mcp"].get("servers").is_none());
-        assert_eq!(
-            status(Client::Opencode, &path, URL, TOKEN),
-            ClientStatus::Added
+        let old = format!(
+            r#"{{"mcp":{{"pr-nexus":{{"type":"remote","url":"{URL}","headers":{{"Authorization":"Bearer {TOKEN}"}}}}}}}}"#
         );
-    }
-
-    #[test]
-    fn opencode_moves_an_old_v1_entry_to_mcp_servers() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("opencode.jsonc");
-        let before = format!(
-            "{{\n  // mine\n  \"mcp\": {{\n    \"pr-nexus\": {}\n  }}\n}}\n",
-            opencode_v1_entry(URL, TOKEN)
-        );
-        fs::write(&path, &before).unwrap();
+        fs::write(&path, old).unwrap();
         assert_eq!(
             status(Client::Opencode, &path, URL, TOKEN),
             ClientStatus::Outdated
         );
         install_file(Client::Opencode, &path, URL, TOKEN).unwrap();
-        let text = fs::read_to_string(&path).unwrap();
-        assert!(text.contains("// mine"), "{text}");
-        let map = parse_json(&path, &text).unwrap();
-        assert!(map["mcp"].get("pr-nexus").is_none(), "{text}");
-        assert_eq!(map["mcp"]["servers"]["pr-nexus"]["url"], URL);
         assert_eq!(
             status(Client::Opencode, &path, URL, TOKEN),
             ClientStatus::Added
@@ -943,7 +877,7 @@ mod tests {
             "{text}"
         );
         assert_eq!(
-            parse_json(&path, &text).unwrap()["mcp"]["servers"]["pr-nexus"]["url"],
+            parse_json(&path, &text).unwrap()["mcp"]["pr-nexus"]["url"],
             URL
         );
     }

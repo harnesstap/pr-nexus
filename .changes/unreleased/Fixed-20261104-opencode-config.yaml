@@ -1,3 +1,3 @@
 kind: Fixed
-body: 'OpenCode: Add to OpenCode works with opencode.jsonc and the OpenCode 2 format (mcp.servers). All JSON client files may now hold comments and trailing commas, which are kept. Open config file falls back to the text editor when no app opens the file, with a plain error otherwise.'
+body: 'OpenCode: Add to OpenCode works with opencode.jsonc (found first, then opencode.json) and writes enabled and oauth: false in the entry. All JSON client files may now hold comments and trailing commas, which are kept. Open config file falls back to the text editor when no app opens the file, with a plain error otherwise.'
 time: 2026-11-04T03:07:19.000000-10:00
