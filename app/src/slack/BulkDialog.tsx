@@ -362,16 +362,18 @@ function CopyMessageButton({ text, onNotice }: { text: string; onNotice?: (toast
   }
 
   return (
-    <Tooltip label={copied ? "Copied" : "Copy message"} align="end" className="absolute right-1.5 top-1.5">
-      <button
-        type="button"
-        aria-label="Copy message"
-        className="cursor-pointer rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-400"
-        onClick={copy}
-      >
-        {copied ? <CheckIcon size={14} className="text-emerald-300" /> : <CopyIcon size={14} />}
-      </button>
-    </Tooltip>
+    <div className="absolute right-1.5 top-1.5">
+      <Tooltip label={copied ? "Copied" : "Copy message"} align="end">
+        <button
+          type="button"
+          aria-label="Copy message"
+          className="cursor-pointer rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-400"
+          onClick={copy}
+        >
+          {copied ? <CheckIcon size={14} className="text-emerald-300" /> : <CopyIcon size={14} />}
+        </button>
+      </Tooltip>
+    </div>
   );
 }
 
