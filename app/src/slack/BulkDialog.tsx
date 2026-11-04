@@ -234,6 +234,9 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen, onReady }: Pro
                     <header className="flex items-center justify-between gap-2">
                       <h3 className="font-medium">
                         {[targetWorkspaceName(card.target), channelLabel(card.target)].filter(Boolean).join(" · ")}
+                        <span className="ml-2 font-mono text-xs font-normal text-slate-500" aria-label="Channel id">
+                          {card.target.channel_id}
+                        </span>
                       </h3>
                       {(card.can_switch || card.single_top_level) && (
                         <label className="flex items-center gap-1 text-xs text-slate-300">
@@ -265,6 +268,11 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen, onReady }: Pro
                           {message.text}
                         </pre>
                       </div>
+                    ))}
+                    {(card.notes ?? []).map((note) => (
+                      <p key={note} className="mt-1 text-xs text-sky-300">
+                        {note}
+                      </p>
                     ))}
                     {card.warnings.map((warning) => (
                       <p key={warning} className="mt-1 text-xs text-amber-300">

@@ -324,7 +324,8 @@ export interface ReviewTarget {
 export interface TargetChoice {
   target: ReviewTarget;
   teams: string[];
-  source: "request" | "mapping";
+  /** `previous`: an active request in a channel the teams are no longer mapped to. */
+  source: "request" | "mapping" | "previous";
 }
 
 /** A target picker search result (§7.11): a channel, or a member who gets a DM. */
@@ -390,6 +391,8 @@ export interface BulkCard {
   single_top_level: boolean;
   can_switch: boolean;
   fingerprint: string;
+  /** E.g. "Channel changed since the last request": a new request here, not a bump. Absent in older fixtures. */
+  notes?: string[];
 }
 
 export interface BulkPreview {

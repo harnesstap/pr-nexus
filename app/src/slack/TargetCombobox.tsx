@@ -91,6 +91,9 @@ function describe(choice: TargetChoice) {
   if (choice.source === "request") {
     return "open request";
   }
+  if (choice.source === "previous") {
+    return "old thread · no longer mapped";
+  }
   return choice.teams.join(", ");
 }
 

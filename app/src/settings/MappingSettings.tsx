@@ -192,6 +192,7 @@ export function MappingSettings({ api, skippedInSetup, onCountChange, workspaces
                   return (
                     <EditRow
                       key={key}
+                      original={entry.row}
                       editing={editing}
                       workspaces={workspaces}
                       onConnectSlack={onConnectSlack}
@@ -273,7 +274,20 @@ export function MappingSettings({ api, skippedInSetup, onCountChange, workspaces
   );
 }
 
+/**
+ * True when the channel name was edited but the id still is the saved one:
+ * messages go by id, so they would keep reaching the old channel (§7.11).
+ */
+export function staleChannelId(original: MappingRow | undefined, row: MappingRow): boolean {
+  if (!original || !original.slack_channel_id.trim()) {
+    return false;
+  }
+  const name = (value: string) => value.trim().replace(/^#/, "").toLowerCase();
+  return row.slack_channel_id.trim() === original.slack_channel_id.trim() && name(row.slack_channel_name) !== name(original.slack_channel_name);
+}
+
 function EditRow({
+  original,
   editing,
   workspaces,
   onConnectSlack,
@@ -282,6 +296,7 @@ function EditRow({
   onSave,
   onCancel,
 }: {
+  original?: MappingRow;
   editing: { row: MappingRow; disabled: boolean; isNew: boolean };
   workspaces: SlackWorkspace[];
   onConnectSlack?: () => void;
@@ -320,6 +335,11 @@ function EditRow({
       <td className="py-2 pr-2">
         <input {...plainText} aria-label="Channel name" placeholder="team-reviews" className={`${box} w-36`} value={editing.row.slack_channel_name} onChange={(e) => set("slack_channel_name", e.target.value)} />
         <input {...plainText} aria-label="Channel id" placeholder="C0123456789" className={`${box} mt-1 w-36 font-mono text-xs`} value={editing.row.slack_channel_id} onChange={(e) => set("slack_channel_id", e.target.value)} />
+        {staleChannelId(original, editing.row) && (
+          <p role="status" className="mt-1 max-w-44 text-xs whitespace-normal text-amber-300">
+            The channel id is still {original!.slack_channel_id} (#{original!.slack_channel_name || original!.slack_channel_id}). Messages go by id: paste the new channel's id, unless the channel was only renamed.
+          </p>
+        )}
       </td>
       <td className="py-2 pr-2">
         <label className="flex items-center gap-1 text-xs">

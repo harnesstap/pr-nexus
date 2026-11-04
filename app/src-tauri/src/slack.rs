@@ -76,7 +76,9 @@ pub struct TargetChoice {
     pub target: ReviewTarget,
     /// Teams whose mapping points here, `org/slug`.
     pub teams: Vec<String>,
-    /// `request` when an active request lives in this channel, else `mapping`.
+    /// `request` when an active request lives in this channel and it is still
+    /// mapped, `mapping` for a mapped channel without one, `previous` for an
+    /// active request in a channel the teams are no longer mapped to.
     pub source: String,
 }
 
@@ -417,41 +419,28 @@ pub async fn review_targets(
 }
 
 /// Active requests first, then the mapping rows of `teams` (`org/slug`).
+///
+/// §7.11 remap rule: when the teams have a mapping and an active request
+/// lives in a channel none of those mappings point to any more (the team was
+/// remapped since the request), that request is not a default. It is listed
+/// after the mapped channels with source `previous`, so the dialogs open on
+/// a new request in the mapped channel and the old thread stays one explicit
+/// pick away. Bulk leaves `previous` channels out (see `services::bulk`).
 pub(crate) fn targets_for(
     store: &Store,
     pr: &PullRequest,
     teams: &[String],
 ) -> Result<Vec<TargetChoice>, AppError> {
     let workspaces = route::workspaces(store)?;
-    let mut choices: Vec<TargetChoice> = Vec::new();
-    for request in store.list_review_requests(pr.id)? {
-        if request.status != pr_nexus_core::domain::RequestStatus::Active {
-            continue;
-        }
-        push_choice(
-            &mut choices,
-            labeled(
-                &workspaces,
-                ReviewTarget {
-                    workspace: request.workspace,
-                    team_id: request.team_id,
-                    workspace_name: String::new(),
-                    channel_id: request.channel_id,
-                    channel_name: request.channel_name,
-                },
-            ),
-            None,
-            "request",
-        );
-    }
     let rows = store.list_mappings()?;
+    let mut mapped: Vec<TargetChoice> = Vec::new();
     for team in teams {
         let Some((org, slug)) = team.trim_start_matches('@').split_once('/') else {
             continue;
         };
         if let Some(row) = lookup_mapping(&rows, org, slug, "") {
             push_choice(
-                &mut choices,
+                &mut mapped,
                 labeled(
                     &workspaces,
                     ReviewTarget {
@@ -467,7 +456,57 @@ pub(crate) fn targets_for(
             );
         }
     }
-    Ok(choices)
+    let mut current: Vec<TargetChoice> = Vec::new();
+    let mut previous: Vec<TargetChoice> = Vec::new();
+    for request in store.list_review_requests(pr.id)? {
+        if request.status != pr_nexus_core::domain::RequestStatus::Active {
+            continue;
+        }
+        let target = labeled(
+            &workspaces,
+            ReviewTarget {
+                workspace: request.workspace,
+                team_id: request.team_id,
+                workspace_name: String::new(),
+                channel_id: request.channel_id,
+                channel_name: request.channel_name,
+            },
+        );
+        let still_mapped = mapped.is_empty()
+            || mapped
+                .iter()
+                .any(|choice| same_channel(&choice.target, &target));
+        if still_mapped {
+            push_choice(&mut current, target, None, "request");
+        } else {
+            push_choice(&mut previous, target, None, "previous");
+        }
+    }
+    for choice in mapped {
+        if let Some(existing) = current
+            .iter_mut()
+            .find(|existing| same_channel(&existing.target, &choice.target))
+        {
+            for team in choice.teams {
+                if !existing.teams.contains(&team) {
+                    existing.teams.push(team);
+                }
+            }
+            continue;
+        }
+        current.push(choice);
+    }
+    current.extend(previous);
+    Ok(current)
+}
+
+/// Same channel: same ID and same team when both know it, else same domain.
+fn same_channel(a: &ReviewTarget, b: &ReviewTarget) -> bool {
+    a.channel_id == b.channel_id
+        && match (&a.team_id, &b.team_id) {
+            (Some(x), Some(y)) => x == y,
+            _ => a.workspace.eq_ignore_ascii_case(&b.workspace),
+        }
 }
 
 /// `target` with the name of the workspace it names, else its domain.

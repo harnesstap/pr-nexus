@@ -487,3 +487,153 @@ fn branch_status_and_update_go_through_the_demo_provider() {
     let err = super::branch::update_branch(state, id, "squash").unwrap_err();
     assert_eq!(err.kind, "validation");
 }
+
+/// An open PR of the seed whose owners resolve to at least one team, and
+/// that team (`org/slug`).
+fn pr_with_team(state: &AppState) -> (i64, String) {
+    prs::list_prs(
+        state,
+        &PrFilter {
+            state: Some(PrStateFilter::Open),
+            ..PrFilter::default()
+        },
+    )
+    .unwrap()
+    .items
+    .iter()
+    .find_map(|item| {
+        let detail = prs::pr_detail(state, item.row.id).ok()?;
+        if detail.readiness == "blocked" {
+            return None;
+        }
+        let teams = if detail.mandatory_teams.is_empty() {
+            detail.candidate_teams
+        } else {
+            detail.mandatory_teams
+        };
+        teams.first().cloned().map(|team| (item.row.id, team))
+    })
+    .expect("a seeded PR with an owning team")
+}
+
+fn map_team(state: &AppState, team: &str, channel_id: &str, channel_name: &str) {
+    let (org, slug) = team.trim_start_matches('@').split_once('/').unwrap();
+    pr_nexus_core::mapping::save_user_mapping(
+        &state.store,
+        pr_nexus_core::mapping::CsvRow {
+            github_org: org.into(),
+            team_slug: slug.into(),
+            team_name: String::new(),
+            slack_channel_name: channel_name.into(),
+            slack_channel_id: channel_id.into(),
+            slack_workspace: "acme".into(),
+            slack_team_id: "T0ACME0001".into(),
+        },
+        false,
+        Utc::now(),
+    )
+    .unwrap();
+}
+
+/// Bug: after a team was remapped, the bulk card named the new channel and
+/// the send bumped the tracked thread in the old one. Now the preview and
+/// the send both target the newly mapped channel, as a new request.
+#[test]
+fn remapped_team_gets_a_new_request_in_the_mapped_channel() {
+    let fx = fixture("remap-bulk");
+    let state = &fx.state;
+    connect_fake_workspace(state);
+    let slack = Arc::new(FakeSlack::default());
+    let (pr, team) = pr_with_team(state);
+    map_team(state, &team, "C0ACME0001", "old-channel");
+    let old = ReviewTarget {
+        channel_name: "old-channel".into(),
+        ..channel()
+    };
+    review::send(state, &slack, pr, old.clone(), &[team.clone()], None).unwrap();
+    map_team(state, &team, "C0ACME0002", "new-channel");
+    slack.posts.lock().unwrap().clear();
+
+    let request: BulkRequest =
+        serde_json::from_value(serde_json::json!({ "pr_ids": [pr] })).unwrap();
+    let preview = bulk::preview(state, &request).unwrap();
+    assert_eq!(preview.cards.len(), 1, "{:?}", preview.cards);
+    let card = &preview.cards[0];
+    assert_eq!(card.target.channel_id, "C0ACME0002");
+    assert_eq!(card.target.channel_name, "new-channel");
+    assert_eq!(card.messages.len(), 1);
+    assert_eq!(card.messages[0].action, "request");
+    assert!(card.warnings.is_empty(), "{:?}", card.warnings);
+    assert_eq!(card.notes.len(), 1);
+    assert!(card.notes[0].contains("#new-channel"), "{}", card.notes[0]);
+    assert!(card.notes[0].contains("#old-channel"), "{}", card.notes[0]);
+
+    let result = bulk::send(state, &slack, &request, &[card.fingerprint.clone()]).unwrap();
+    assert!(result.results.iter().all(|r| r.outcome == "sent"));
+    let posts = slack.posts.lock().unwrap();
+    assert_eq!(posts.len(), 1);
+    assert_eq!(posts[0].0, "C0ACME0002", "posted where the card said");
+    assert!(posts[0].1.is_none(), "a new top-level request, not a bump");
+}
+
+/// The single-PR dialog opens on the mapped channel (a new request); the old
+/// thread stays an explicit pick, and picking it previews a bump that names
+/// the old channel, where the send then goes.
+#[test]
+fn remapped_team_keeps_the_old_thread_as_an_explicit_pick() {
+    let fx = fixture("remap-single");
+    let state = &fx.state;
+    connect_fake_workspace(state);
+    let slack = Arc::new(FakeSlack::default());
+    let (pr, team) = pr_with_team(state);
+    map_team(state, &team, "C0ACME0001", "old-channel");
+    let old = ReviewTarget {
+        channel_name: "old-channel".into(),
+        ..channel()
+    };
+    review::send(state, &slack, pr, old.clone(), &[team.clone()], None).unwrap();
+    map_team(state, &team, "C0ACME0002", "new-channel");
+    slack.posts.lock().unwrap().clear();
+
+    let stored = crate::slack::load_pr(&state.store, pr).unwrap();
+    let choices = crate::slack::targets_for(&state.store, &stored, &[team.clone()]).unwrap();
+    let sources: Vec<(&str, &str)> = choices
+        .iter()
+        .map(|c| (c.target.channel_id.as_str(), c.source.as_str()))
+        .collect();
+    assert_eq!(
+        sources,
+        [("C0ACME0002", "mapping"), ("C0ACME0001", "previous")]
+    );
+
+    let fresh = review::preview(state, pr, choices[0].target.clone()).unwrap();
+    assert_eq!(fresh.action, "request");
+    assert_eq!(fresh.target.channel_name, "new-channel");
+
+    let bump = review::preview(state, pr, choices[1].target.clone()).unwrap();
+    assert_eq!(bump.action, "bump");
+    assert_eq!(bump.target.channel_name, "old-channel");
+    review::send(state, &slack, pr, choices[1].target.clone(), &[team], None).unwrap();
+    let posts = slack.posts.lock().unwrap();
+    assert_eq!(posts[0].0, "C0ACME0001");
+    assert!(posts[0].1.is_some(), "a reply in the old thread");
+}
+
+/// Teams still mapped where the request lives keep bumping it.
+#[test]
+fn unchanged_mapping_still_bumps_the_tracked_thread() {
+    let fx = fixture("remap-none");
+    let state = &fx.state;
+    connect_fake_workspace(state);
+    let slack = Arc::new(FakeSlack::default());
+    let (pr, team) = pr_with_team(state);
+    map_team(state, &team, "C0ACME0001", "team-reviews");
+    review::send(state, &slack, pr, channel(), &[team.clone()], None).unwrap();
+    let request: BulkRequest =
+        serde_json::from_value(serde_json::json!({ "pr_ids": [pr] })).unwrap();
+    let preview = bulk::preview(state, &request).unwrap();
+    assert_eq!(preview.cards.len(), 1);
+    assert_eq!(preview.cards[0].target.channel_id, "C0ACME0001");
+    assert_eq!(preview.cards[0].messages[0].action, "bump");
+    assert!(preview.cards[0].notes.is_empty());
+}

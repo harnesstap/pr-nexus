@@ -748,6 +748,8 @@ There is never a separate Request button and Bump button. **In the list**, rows 
 
 The preview decides per channel. A PR with an active request in one channel and a newly needed owner team in another channel gets a bump in the first and a request in the second.
 
+**Remapped channel.** Channels are matched by channel id, never by name. When a team's mapping now points to another channel than the one holding the PR's active request, the default is a **new top-level request in the mapped channel**; the old thread is not bumped. The preview (single and bulk, both modes, and the MCP `request_reviews` tool, which shares the bulk planner) says so on the card: "Channel changed since the last request: new request in #new for #N. The old thread in #old is not bumped." In the single dialog the old thread stays available as an explicit pick (`old thread · no longer mapped`); picking it shows a bump whose header names the old channel. Every header, 24 h warning and send uses the same target (`channel_id` + workspace), and Send re-plans and refuses a preview whose fingerprint no longer matches. The mapping editor warns when a row's channel name is changed but its channel id is not, since sends go by id.
+
 | | Request (per channel) | Bump (per channel) |
 |---|---|---|
 | When | no active row for this (PR, workspace, channel), or the user picks "new top-level message instead" in the preview | an active row exists for this (PR, workspace, channel) |
