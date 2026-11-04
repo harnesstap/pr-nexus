@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import type { ListRow, ProjectDto } from "../api";
-import { AlertIcon, ChevronDownIcon, ChevronRightIcon, ClockIcon, CloseIcon, CommentIcon, CopyIcon, DraftIcon, FolderPlusIcon, FunnelIcon, MoreIcon, SearchIcon, SlackLogo } from "../icons";
+import { AlertIcon, ChevronDownIcon, ChevronRightIcon, ClockIcon, CloseIcon, CommentIcon, DraftIcon, FunnelIcon, MoreIcon, SearchIcon, SlackLogo } from "../icons";
 import { Tooltip } from "../Tooltip";
 import { ReviewerAvatars } from "./ReviewerAvatars";
 import { NextActionBadge } from "./NextActionBadge";
 import { QuickFilters } from "./QuickFilters";
 import { AddToProjectMenu } from "./AddToProjectMenu";
+import { SelectionBar } from "./SelectionBar";
 import { GitHubRowButton, StarButton } from "./StarButton";
 import { ProjectInfo } from "./JiraChips";
 import { isTypingTarget, wantsRowEnter } from "./keys";
@@ -850,79 +851,30 @@ export function PrList({
         )}
       </div>
       {selected.size > 0 && (
-        <div className="pointer-events-none absolute inset-x-0 bottom-4 flex justify-center">
-          <div
-            role="region"
-            aria-label="Selection actions"
-            className="pointer-events-auto flex items-center gap-4 rounded-lg border border-slate-700 bg-slate-900 px-5 py-2.5 text-sm shadow-lg"
-          >
-            <span aria-live="polite" className="text-slate-300">
-              {activeIds.length} selected{hidden > 0 ? ` · ${hidden} hidden by filters, not included` : ""}
-            </span>
-            <span aria-hidden="true" className="h-6 w-px bg-slate-700" />
-            <Tooltip label="Request / bump on Slack" shortcut={hint("request")} detail="Preview the review request for each selected PR before anything is sent" side="top">
-              <button
-                type="button"
-                className="flex items-center gap-2 rounded-md bg-violet-600 px-4 py-1.5 font-medium text-white hover:bg-violet-500 disabled:bg-violet-500/40"
-                disabled={activeIds.length === 0}
-                onClick={requestSelection}
-              >
-                <SlackLogo size={16} />
-                Request / bump on Slack
-              </button>
-            </Tooltip>
-            <div className="relative">
-              <Tooltip label="Add to project" shortcut={hint("project")} detail="Link the selected PRs to a project, or start a new one with them" side="top">
-                <button
-                  type="button"
-                  aria-haspopup="menu"
-                  aria-expanded={addMenu}
-                  className="flex items-center gap-2 rounded-md border border-slate-700 px-4 py-1.5 text-slate-200 hover:bg-slate-800"
-                  onClick={() => setAddMenu((open) => !open)}
-                >
-                  <FolderPlusIcon />
-                  Add to project
-                </button>
-              </Tooltip>
-              {addMenu && (
-                <AddToProjectMenu
-                  projects={projects}
-                  count={activeIds.length}
-                  onClose={() => setAddMenu(false)}
-                  onPick={(projectId) => {
-                    setAddMenu(false);
-                    onLinkPrs(projectId, activeIds);
-                  }}
-                  onCreate={async (name) => {
-                    await onCreateProjectWithPrs(name, activeIds);
-                    setAddMenu(false);
-                  }}
-                />
-              )}
-            </div>
-            <Tooltip label="Copy as Markdown" shortcut={hint("copyMarkdown")} detail="Copy the selected PRs as a Markdown list of links" side="top">
-              <button
-                type="button"
-                className="flex items-center gap-2 rounded-md border border-slate-700 px-4 py-1.5 text-slate-200 hover:bg-slate-800"
-                disabled={activeIds.length === 0}
-                onClick={copySelectionAsMarkdown}
-              >
-                <CopyIcon />
-                Copy as Markdown
-              </button>
-            </Tooltip>
-            <Tooltip label="Clear selection" shortcut={hint("clear")} detail="Unselect every PR in this view" side="top">
-              <button
-                type="button"
-                aria-label="Clear selection"
-                className="flex items-center rounded-md border border-slate-700 p-2 text-slate-200 hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-violet-400"
-                onClick={() => setSelected(new Set())}
-              >
-                <CloseIcon />
-              </button>
-            </Tooltip>
-          </div>
-        </div>
+        <SelectionBar
+          count={activeIds.length}
+          hidden={hidden}
+          addMenuOpen={addMenu}
+          onToggleAddMenu={() => setAddMenu((open) => !open)}
+          addMenu={
+            <AddToProjectMenu
+              projects={projects}
+              count={activeIds.length}
+              onClose={() => setAddMenu(false)}
+              onPick={(projectId) => {
+                setAddMenu(false);
+                onLinkPrs(projectId, activeIds);
+              }}
+              onCreate={async (name) => {
+                await onCreateProjectWithPrs(name, activeIds);
+                setAddMenu(false);
+              }}
+            />
+          }
+          onRequest={requestSelection}
+          onCopy={copySelectionAsMarkdown}
+          onClear={() => setSelected(new Set())}
+        />
       )}
       {deleteFor?.projectId !== null && deleteFor && (
         <dialog open className="rounded border border-slate-700 bg-slate-900 p-4 text-sm">

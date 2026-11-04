@@ -1053,3 +1053,45 @@ test("Copy as Markdown shows an error toast when the clipboard fails", async () 
   await settle();
   expect(onNotice).toHaveBeenCalledWith(expect.objectContaining({ error: true }));
 });
+
+test("a narrow list folds secondary actions into More, and they still work from the menu and shortcuts", async () => {
+  const writeText = vi.fn(() => Promise.resolve());
+  Object.assign(navigator, { clipboard: { writeText } });
+  const client = vi
+    .spyOn(HTMLElement.prototype, "clientWidth", "get")
+    .mockReturnValue(600);
+  try {
+    await show(<Harness rows={[row({ id: 41, title: "Narrow one" })]} />);
+    fireEvent.click(
+      screen.getAllByRole("checkbox", { name: /^Select Narrow one/ })[0],
+    );
+    const bar = screen.getByRole("region", { name: "Selection actions" });
+    expect(bar.getAttribute("data-layout")).toBe("more");
+    expect(
+      within(bar).queryByRole("button", { name: /Copy as Markdown/ }),
+    ).toBeNull();
+    // The Slack button and Clear stay visible.
+    expect(
+      within(bar).getByRole("button", { name: "Request / bump on Slack" }),
+    ).toBeTruthy();
+    expect(
+      within(bar).getByRole("button", { name: "Clear selection" }),
+    ).toBeTruthy();
+    fireEvent.click(within(bar).getByRole("button", { name: "More actions" }));
+    const menu = within(bar).getByRole("menu", { name: "More actions" });
+    expect(
+      within(menu).getByRole("menuitem", { name: /Add to project/ }),
+    ).toBeTruthy();
+    fireEvent.click(
+      within(menu).getByRole("menuitem", { name: /Copy as Markdown/ }),
+    );
+    await settle();
+    expect(writeText).toHaveBeenCalledTimes(1);
+
+    fireEvent.keyDown(window, { key: "C", metaKey: true, shiftKey: true });
+    await settle();
+    expect(writeText).toHaveBeenCalledTimes(2);
+  } finally {
+    client.mockRestore();
+  }
+});

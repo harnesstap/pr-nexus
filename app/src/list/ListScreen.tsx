@@ -1,3 +1,4 @@
+import { createPortal } from "react-dom";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Api, Bootstrap, ListRow, ProjectDto, RemoteReviewFilter, ReplacedLinkDto } from "../api";
 import { errorMessage } from "../api";
@@ -105,6 +106,8 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
   const [bulkIds, setBulkIds] = useState<number[] | null>(null);
   const listActions = useRef<ListActions | null>(null);
   const [notice, setNotice] = useState<Toast | null>(null);
+  /** The list column; with a selection, toasts sit just above its bar, clear of the detail panel. */
+  const [listColumn, setListColumn] = useState<HTMLDivElement | null>(null);
   /** The bulk run's summary, shown as a toast once its dialog closes. */
   const [bulkSummary, setBulkSummary] = useState<string | null>(null);
   const view = views[viewKey] ?? defaultView();
@@ -504,6 +507,10 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
     }
   }
 
+  const toastAbove = selection.length > 0 && listColumn !== null;
+  /** Floats the toast above the selection bar, in the list column, when there is one. */
+  const placeToast = (toast: ReactNode) => (toastAbove ? createPortal(toast, listColumn) : toast);
+
   return (
     <div className="flex h-screen bg-slate-950 text-slate-100">
       <aside className="flex w-60 shrink-0 flex-col border-r border-slate-800 bg-slate-950">
@@ -721,7 +728,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
           </div>
         ) : (
           <div className="flex min-h-0 flex-1">
-            <div className="flex min-w-0 flex-1 flex-col">
+            <div ref={setListColumn} className="relative flex min-w-0 flex-1 flex-col">
               <PrList
                 loadPage={loadPage}
                 version={version}
@@ -783,10 +790,11 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
             )}
           </div>
         )}
-        {notice && (
+        {notice &&
+          placeToast(
           <p
             role="status"
-            className={`fixed ${selection.length > 0 ? "bottom-20" : "bottom-6"} right-6 z-50 flex items-center gap-3 rounded border ${notice.error ? "border-rose-700" : "border-emerald-700"} bg-slate-900 px-4 py-2 text-sm text-slate-100 shadow-lg`}
+            className={`${toastAbove ? "absolute bottom-20 left-1/2 max-w-[calc(100%-2rem)] -translate-x-1/2" : "fixed bottom-6 right-6"} z-50 flex items-center gap-3 rounded border ${notice.error ? "border-rose-700" : "border-emerald-700"} bg-slate-900 px-4 py-2 text-sm text-slate-100 shadow-lg`}
           >
             {notice.text}
             {notice.link && (
@@ -810,7 +818,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
               </button>
             </Tooltip>
           </p>
-        )}
+          )}
         {error && <p className="px-4 py-2 text-sm text-rose-300">{error}</p>}
         {reviewRow && (
           <ReviewDialog
