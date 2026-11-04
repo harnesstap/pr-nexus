@@ -762,7 +762,7 @@ Because bumps use `reply_broadcast=true` by default (`review.bump_broadcast`, §
 Both kinds open the same **preview modal** (wireframe and mockup in §8.2):
 - one card per `workspace · #channel`, with a **Change channel** dropdown (the picker) and a **Save as mapping correction** checkbox (checked by default; unchecked = only for this message);
 - each card is labeled **Request** or **Bump**. A request renders as a new message. A bump renders as a **thread reply under the existing message** (root excerpt plus "Open thread ↗");
-- a Slack-style rendering of the exact text (§7.6), unescaped;
+- a Slack-style rendering of the exact text (§7.6), unescaped, with an icon-only **Copy message** button at its top-right corner. In the single-PR dialog it copies the shown text including the optional note; it works like the bulk dialog's button (§7.9): a check and a "Message copied" toast, nothing sent or recorded, the dialog stays open;
 - inline warnings for PRs skipped for that channel (`acme/web#91 skipped: CI failing`) and approved teams skipped (with the reviewer's login);
 - gate notes: Unknown reasons with the confirm checkbox;
 - the GitHub option "Also request <team> as reviewer on GitHub" (default off, D7);

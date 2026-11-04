@@ -248,7 +248,8 @@ const api: Api = {
   slackRemoveWorkspace: () => Promise.resolve(),
   slackSetWorkspaceEnabled: () => Promise.resolve([]),
   slackSetWorkspaceOrder: () => Promise.resolve([]),
-  reviewTargets: () => Promise.resolve([]),
+  reviewTargets: (_prId: number, teams: string[]) =>
+    Promise.resolve([{ target: { workspace: "acme", channel_id: "C0123456789", channel_name: "web-reviews" }, teams, source: "mapping" as const }]),
   searchSlackTargets: (query: string) => {
     const workspace = "acme";
     const term = query.replace(/^[#@]/, "").trim().toLowerCase();
@@ -261,11 +262,11 @@ const api: Api = {
       .filter(({ item }) => item.name.toLowerCase().includes(term))
       .map(({ kind, item }) => ({ kind, target: { workspace, channel_id: item.id, channel_name: item.name } })));
   },
-  reviewPreview: (_prId: number, target: ReviewTarget) =>
+  reviewPreview: (prId: number, target: ReviewTarget) =>
     Promise.resolve({
       target,
       action: "request" as const,
-      text: "Hi, could you review this?",
+      text: demoBulkPreview([prId], target).cards[0]?.messages[0]?.text ?? "Hi, could you review this?",
       warnings: [],
       pr_warnings: [],
       signed_in: true,

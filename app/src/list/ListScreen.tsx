@@ -817,6 +817,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
             key={reviewRow.id}
             api={api}
             row={reviewRow}
+            onNotice={setNotice}
             onClose={() => setReviewRow(null)}
             onReady={(id) => {
               changeDraft(id, false);

@@ -1,3 +1,3 @@
 kind: Added
-body: 'The "Request / bump on Slack" dialog has a Copy message icon on each message preview, so you can copy the text and post it in Slack yourself. Copying sends nothing and records nothing.'
+body: 'The Slack request/bump dialogs (one PR or several) have a Copy message icon on each message preview, so you can copy the text and post it in Slack yourself. Copying sends nothing and records nothing.'
 time: 2026-11-03T23:30:00.000000-10:00
