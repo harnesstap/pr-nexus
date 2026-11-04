@@ -13,6 +13,7 @@ import { recordSeenVersion } from "./changelog/changelog";
 import { RELEASES } from "./changelog/data";
 import { SettingsScreen } from "./settings/SettingsScreen";
 import { BulkDialog } from "./slack/BulkDialog";
+import { ReviewDialog } from "./slack/ReviewDialog";
 import { FAKE_SLACK_WORKSPACES, fakeMcp, fakeSettingsApi, sampleActivity } from "./settings/fakes";
 import { AgentsSettings } from "./settings/AgentsSettings";
 import { McpActivity } from "./settings/McpActivity";
@@ -460,6 +461,36 @@ function slackScopesApi(): Parameters<typeof AgentsSettings>[0]["api"] {
 if (screenName === "slack-scopes") {
   window.setTimeout(() => document.querySelector<HTMLButtonElement>('button[aria-label^="Sign in again"]')?.click(), 800);
 }
+// ?screen=request-review-suggest&case=mapped|search|name-only|empty|manual shows the
+// single-PR review dialog for a PR owned by @acme/data (mapped to #acme-data):
+// preselected, "#" typed, a mapping without an ID, a search with no match, and a bad ID.
+const suggestCase = new URLSearchParams(window.location.search).get("case") ?? "mapped";
+const suggestRow = { id: 1, number: 549, title: "Reject budgets below one sampling unit", url: "https://github.com/acme/data-service/pull/549", repo: "acme/data-service", state: "open", is_draft: false, slack: null } as unknown as Parameters<typeof ReviewDialog>[0]["row"];
+if (screenName === "request-review-suggest") {
+  const acmeData = { workspace: "acme", team_id: "T0ACME0001", workspace_name: "Acme", channel_id: suggestCase === "name-only" ? "" : "C0ACME0001", channel_name: "acme-data" };
+  previewApi.prDetail = () => Promise.resolve({ ...mockDetail(1), mandatory_teams: ["@acme/data"], candidate_teams: [] });
+  previewApi.reviewTargets = (_id: number, teams: string[]) =>
+    Promise.resolve(suggestCase === "empty" || suggestCase === "manual" ? [] : [{ target: acmeData, teams, source: suggestCase === "name-only" ? ("unresolved" as const) : ("mapping" as const) }]);
+  previewApi.slackWorkspaces = () => Promise.resolve([{ id: 1, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false, team_id: "T0ACME0001", enabled: true, priority: 0 }]);
+  const type = (selector: string, value: string) => {
+    const input = document.querySelector<HTMLInputElement>(selector);
+    if (!input) return;
+    input.focus();
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  };
+  window.setTimeout(() => {
+    if (suggestCase === "search" || suggestCase === "name-only") type('input[role="combobox"]', "#");
+    if (suggestCase === "empty") type('input[role="combobox"]', "#nope");
+    if (suggestCase === "manual") {
+      [...document.querySelectorAll("button")].find((b) => b.textContent === "Enter an ID")?.click();
+      window.setTimeout(() => {
+        type('input[placeholder="C0123456789"]', "C12");
+        [...document.querySelectorAll("button")].find((b) => b.textContent === "Preview")?.click();
+      }, 200);
+    }
+  }, 600);
+}
 const root = document.getElementById("root");
 if (!root) {
   throw new Error("root element missing");
@@ -478,6 +509,10 @@ createRoot(root).render(
         }}
         onFinished={() => undefined}
       />
+    ) : screenName === "request-review-suggest" ? (
+      <div className="min-h-screen bg-slate-950 text-slate-200">
+        <ReviewDialog api={previewApi} row={suggestRow} onClose={() => undefined} onSent={() => undefined} onOpen={() => undefined} />
+      </div>
     ) : screenName === "remapped" ? (
       <div className="min-h-screen bg-slate-950 text-slate-200">
         <BulkDialog api={previewApi} prIds={[1, 2, 3, 4, 5]} onClose={() => undefined} onSent={() => undefined} onOpen={() => undefined} />

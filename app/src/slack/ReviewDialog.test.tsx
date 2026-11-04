@@ -115,8 +115,9 @@ test("without a mapping the channel is entered by hand and errors are shown", as
   fireEvent.click(screen.getByRole("button", { name: "Enter an ID" }));
   fireEvent.change(screen.getByRole("textbox", { name: "Channel, DM or member ID" }), { target: { value: "C1" } });
   fireEvent.click(screen.getByRole("button", { name: "Preview" }));
-  expect(await screen.findByText(/such as C0123456789/)).toBeInTheDocument();
+  expect(await screen.findByRole("alert")).toHaveTextContent("That isn't a Slack ID");
   fireEvent.change(screen.getByRole("textbox", { name: "Channel, DM or member ID" }), { target: { value: "C0123456789" } });
+  expect(screen.queryByRole("alert")).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Preview" }));
   expect(await screen.findByLabelText("Message preview")).toHaveTextContent("hand");
   expect(screen.getByRole("button", { name: "Send request" })).toBeEnabled();
@@ -282,4 +283,70 @@ test("Copy message copies the previewed text with the note, without sending", as
   expect(calls.sent).toHaveLength(0);
   expect(closed).toBe(false);
   expect(screen.getByRole("dialog")).toBeInTheDocument();
+});
+
+const acmeData: TargetChoice = {
+  target: { workspace: "acme", channel_id: "C0ACME0001", channel_name: "acme-data" },
+  teams: ["@acme/data"],
+  source: "mapping",
+};
+const nameOnly: TargetChoice = {
+  target: { workspace: "acme", channel_id: "", channel_name: "acme-data" },
+  teams: ["@acme/data"],
+  source: "unresolved",
+};
+
+test("opening the dialog preselects the code-owner channel and '#' lists it first, with no ID error", async () => {
+  const { api } = fake({
+    prDetail: () => Promise.resolve({ mandatory_teams: ["@acme/data"], candidate_teams: [] } as unknown as PrDetail),
+    reviewTargets: () => Promise.resolve([acmeData]),
+    searchSlackTargets: () => Promise.resolve([]),
+  });
+  render(<ReviewDialog api={api} row={row} onClose={() => undefined} onOpen={() => undefined} onSent={() => undefined} />);
+  const box = await screen.findByRole("combobox", { name: "Channel or person" });
+  await waitFor(() => expect(box).toHaveValue("#acme-data"));
+  fireEvent.change(box, { target: { value: "#" } });
+  expect(screen.getAllByRole("option")[0]).toHaveTextContent("#acme-data");
+  expect(screen.queryByText(/Enter a Slack channel ID/)).toBeNull();
+  expect(screen.getByRole("button", { name: "Send request" })).toBeEnabled();
+});
+
+test("a mapping without a channel ID never prefills '#' or shows an ID error; picking it searches by name", async () => {
+  const searched: string[] = [];
+  const previewed: ReviewTarget[] = [];
+  const { api } = fake({
+    reviewTargets: () => Promise.resolve([nameOnly]),
+    reviewPreview: (_id, target) => {
+      previewed.push(target);
+      return Promise.reject({ kind: "validation", message: "Enter a Slack channel ID such as C0123456789" });
+    },
+    searchSlackTargets: (query: string) => {
+      searched.push(query);
+      return Promise.resolve([{ kind: "channel" as const, target: acmeData.target }]);
+    },
+  });
+  render(<ReviewDialog api={api} row={row} onClose={() => undefined} onOpen={() => undefined} onSent={() => undefined} />);
+  expect(await screen.findByText(/has no channel ID yet/)).toBeInTheDocument();
+  const box = screen.getByRole("combobox", { name: "Channel or person" });
+  expect(box).toHaveValue("");
+  expect(previewed).toEqual([]);
+  expect(screen.queryByText(/Enter a Slack channel ID/)).toBeNull();
+  fireEvent.focus(box);
+  fireEvent.click(screen.getByRole("option", { name: /acme-data/ }));
+  await waitFor(() => expect(searched).toEqual(["#acme-data"]));
+});
+
+test("search with no results shows a grey hint, not an ID error", async () => {
+  const { api } = fake({ reviewTargets: () => Promise.resolve([]), searchSlackTargets: () => Promise.resolve([]) });
+  render(<ReviewDialog api={api} row={row} onClose={() => undefined} onOpen={() => undefined} onSent={() => undefined} />);
+  const box = await screen.findByRole("combobox", { name: "Channel or person" });
+  fireEvent.change(box, { target: { value: "#nope" } });
+  expect(await screen.findByText("No channel found. Try another name, or enter an ID.")).toBeInTheDocument();
+  expect(screen.queryByText(/Enter a Slack channel ID/)).toBeNull();
+});
+
+test("failing owners are explained instead of an empty list", async () => {
+  const { api } = fake({ prDetail: () => Promise.reject(new Error("GitHub is unreachable")), reviewTargets: () => Promise.resolve([]) });
+  render(<ReviewDialog api={api} row={row} onClose={() => undefined} onOpen={() => undefined} onSent={() => undefined} />);
+  expect(await screen.findByText(/Couldn't read this PR's code owners/)).toBeInTheDocument();
 });

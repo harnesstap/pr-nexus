@@ -562,6 +562,23 @@ fn plan_request(
             None => {
                 // Never bump a thread in a channel the team left: the card
                 // would name the mapped channel and post to the old one.
+                let (unresolved, choices): (Vec<_>, Vec<_>) = choices
+                    .into_iter()
+                    .partition(|choice| choice.source == "unresolved");
+                if choices.iter().all(|choice| choice.source == "previous")
+                    && let Some(first) = unresolved.first()
+                {
+                    skipped.push(Skip {
+                        pr: pr.id,
+                        title: pr.title.clone(),
+                        channel: None,
+                        detail: format!(
+                            "Its team's channel #{} has no channel ID yet. Add the ID in Settings → Mappings, or request it alone.",
+                            first.target.channel_name
+                        ),
+                    });
+                    continue;
+                }
                 let (previous, choices): (Vec<_>, Vec<_>) = choices
                     .into_iter()
                     .partition(|choice| choice.source == "previous");
