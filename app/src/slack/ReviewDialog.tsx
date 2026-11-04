@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { Api, ListRow, ReviewPreview, ReviewTarget, SlackIndicator, SlackWorkspace, TargetChoice } from "../api";
-import { channelLabel, errorMessage } from "../api";
+import { channelLabel, errorMessage, isSendable } from "../api";
 import { plainText } from "../textInput";
 import type { Toast } from "../list/model";
 import { CopyMessageButton } from "./CopyMessageButton";
@@ -43,6 +43,8 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNot
   const [chosen, setChosen] = useState<TargetChoice | null>(null);
   const [preview, setPreview] = useState<ReviewPreview | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** Why no channel is suggested, in plain words (owners or channels failed to load). */
+  const [hint, setHint] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [note, setNote] = useState("");
   /** Set once "Mark ready for review" took it out of draft here. */
@@ -66,19 +68,35 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNot
     let cancel = false;
     void (async () => {
       try {
-        const [detail, signedIn] = await Promise.all([api.prDetail(row.id).catch(() => null), api.slackWorkspaces()]);
+        const [detail, signedIn] = await Promise.all([
+          api.prDetail(row.id).catch((err: unknown) => {
+            if (!cancel) {
+              setHint(`Couldn't read this PR's code owners, so no channel is suggested (${errorMessage(err)}). Search for one above.`);
+            }
+            return null;
+          }),
+          api.slackWorkspaces().catch(() => []),
+        ]);
         const wanted = detail ? (detail.mandatory_teams.length > 0 ? detail.mandatory_teams : detail.candidate_teams) : [];
-        const found = await api.reviewTargets(row.id, wanted);
+        const found = await api.reviewTargets(row.id, wanted).catch((err: unknown) => {
+          if (!cancel) {
+            setHint(`Couldn't load the code-owner channels (${errorMessage(err)}). Search for one above.`);
+          }
+          return [] as TargetChoice[];
+        });
         if (cancel) {
           return;
         }
         setTeams(wanted);
         setWorkspaces(signedIn);
         setChoices(found);
-        if (found.length > 0) {
-          setTarget(found[0].target);
-          setChosen(found[0]);
-          const next = await api.reviewPreview(row.id, found[0].target);
+        // Preselect only a channel with a real ID: a name-only mapping is a
+        // suggestion to search for, never a target to preview (§7.11).
+        const first = found.find((choice) => choice.source !== "unresolved" && isSendable(choice.target));
+        if (first) {
+          setTarget(first.target);
+          setChosen(first);
+          const next = await api.reviewPreview(row.id, first.target);
           if (!cancel) {
             setPreview(next);
           }
@@ -107,6 +125,9 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNot
   }, [onClose]);
 
   function choose(next: ReviewTarget, choice: TargetChoice | null) {
+    if (!isSendable(next)) {
+      return;
+    }
     setTarget(next);
     setChosen(choice);
     void loadPreview(next);
@@ -183,8 +204,17 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNot
               value={target}
               onSelect={choose}
             />
-            {choices.length === 0 && (
+            {hint ? (
+              <p className="text-xs text-slate-400">{hint}</p>
+            ) : choices.length === 0 ? (
               <p className="text-xs text-slate-400">No mapped channel for this PR's teams. Search for one above.</p>
+            ) : (
+              !target &&
+              choices.some((choice) => choice.source === "unresolved") && (
+                <p className="text-xs text-slate-400">
+                  The code-owner channel has no channel ID yet. Pick it above to search Slack for it, or add the ID in Settings → Mappings.
+                </p>
+              )
             )}
             {preview && (
               <div className="space-y-2">

@@ -1,6 +1,6 @@
 import { useEffect, useId, useState } from "react";
 import type { Api, ReviewTarget, SlackWorkspace, TargetChoice, TargetMatch } from "../api";
-import { channelLabel, errorMessage } from "../api";
+import { channelLabel, errorMessage, SLACK_ID_PATTERN } from "../api";
 import { plainText } from "../textInput";
 import { targetWorkspaceName } from "./workspaces";
 
@@ -39,7 +39,7 @@ const GROUP_LABEL = {
   id: "Slack ID",
 } as const;
 
-const ID_PATTERN = /^[CGDUW][A-Z0-9]{8,}$/i;
+const ID_PATTERN = SLACK_ID_PATTERN;
 
 /** `#term` → channels, `@term` → people, a bare term → both. */
 export function parseQuery(query: string): { channels: boolean; members: boolean; term: string } {
@@ -95,6 +95,9 @@ function describe(choice: TargetChoice) {
   if (choice.source === "request") {
     return "open request";
   }
+  if (choice.source === "unresolved") {
+    return `${choice.teams.join(", ")} · no channel ID yet, pick to search`;
+  }
   if (choice.source === "previous") {
     return "old thread · no longer mapped";
   }
@@ -127,10 +130,13 @@ export function TargetCombobox({
   const [manual, setManual] = useState(false);
   const [manualId, setManualId] = useState("");
   const [manualName, setManualName] = useState("");
+  /** Set once the typed ID was left or submitted; only then is it checked. */
+  const [manualTouched, setManualTouched] = useState(false);
 
   const enabled = workspaces.filter((item) => item.enabled !== false);
   const several = enabled.length > 1;
-  const text = query ?? (value ? channelLabel(value) : "");
+  // A target without an ID (e.g. a name-only mapping) never fills the field.
+  const text = query ?? (value && value.channel_id.trim() ? channelLabel(value) : "");
   const parsed = parseQuery(query ?? "");
   const searchKey = parsed.term ? (query ?? "").trim() : "";
   const result = searchKey ? found[searchKey] : undefined;
@@ -192,6 +198,13 @@ export function TargetCombobox({
   const optionId = (index: number) => `${id}-option-${index}`;
 
   function choose(option: Option) {
+    if (option.group === "suggested" && !option.target.channel_id.trim()) {
+      // No ID to send to: search Slack for the mapped name instead.
+      setQuery(`#${option.target.channel_name}`);
+      setActive(0);
+      setOpen(true);
+      return;
+    }
     setQuery(null);
     setOpen(false);
     setActive(0);
@@ -225,9 +238,12 @@ export function TargetCombobox({
     }
   }
 
+  const manualInvalid = manualTouched && manualId.trim() !== "" && !ID_PATTERN.test(manualId.trim());
+
   function useManual() {
     const channelId = manualId.trim().toUpperCase();
-    if (!channelId) {
+    setManualTouched(true);
+    if (!channelId || !ID_PATTERN.test(channelId)) {
       return;
     }
     onSelect({ workspace: "", channel_id: channelId, channel_name: nameFromId ? "" : manualName.trim() }, null);
@@ -325,7 +341,13 @@ export function TargetCombobox({
               )}
               {!searching && !result?.error && options.length === 0 && (
                 <li role="presentation" className="px-2 py-1 text-xs text-slate-400">
-                  {parsed.term ? "No matches." : "Type # for channels or @ for people."}
+                  {parsed.term
+                    ? parsed.channels && !parsed.members
+                      ? "No channel found. Try another name, or enter an ID."
+                      : parsed.members && !parsed.channels
+                        ? "No one found. Try another name, or enter an ID."
+                        : "Nothing found. Try another name, or enter an ID."
+                    : "Type # for channels or @ for people."}
                 </li>
               )}
             </ul>
@@ -354,7 +376,12 @@ export function TargetCombobox({
               className={input}
               placeholder="C0123456789"
               value={manualId}
-              onChange={(event) => setManualId(event.target.value)}
+              aria-invalid={manualInvalid}
+              onChange={(event) => {
+                setManualId(event.target.value);
+                setManualTouched(false);
+              }}
+              onBlur={() => setManualTouched(true)}
             />
           </label>
           {!nameFromId && (
@@ -372,6 +399,13 @@ export function TargetCombobox({
           <button type="button" className="rounded border border-slate-600 px-3 py-1.5" onClick={useManual}>
             {nameFromId ? "Use ID" : "Preview"}
           </button>
+          {manualInvalid && (
+            <p role="alert" className="col-span-full text-xs text-rose-300">
+              {channelsOnly
+                ? "That isn't a channel ID. It starts with C or G, like C0123456789 (channel details → About)."
+                : "That isn't a Slack ID. A channel ID starts with C (channel details → About), a DM with D, a person with U."}
+            </p>
+          )}
         </div>
       )}
     </div>

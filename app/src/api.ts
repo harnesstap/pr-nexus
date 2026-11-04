@@ -324,8 +324,12 @@ export interface ReviewTarget {
 export interface TargetChoice {
   target: ReviewTarget;
   teams: string[];
-  /** `previous`: an active request in a channel the teams are no longer mapped to. */
-  source: "request" | "mapping" | "previous";
+  /**
+   * `previous`: an active request in a channel the teams are no longer mapped to.
+   * `unresolved`: the mapping names a channel but has no ID yet; never preselected,
+   * picking it searches Slack for the name.
+   */
+  source: "request" | "mapping" | "previous" | "unresolved";
 }
 
 /** A target picker search result (§7.11): a channel, or a member who gets a DM. */
@@ -1138,6 +1142,14 @@ export function channelLabel(target: { channel_id: string; channel_name: string 
     return name && name !== target.channel_id ? `DM · ${name}` : "DM";
   }
   return `#${name || target.channel_id}`;
+}
+
+/** A Slack channel, DM or member ID (`C…`, `G…`, `D…`, `U…`, `W…`). */
+export const SLACK_ID_PATTERN = /^[CGDUW][A-Z0-9]{8,}$/i;
+
+/** A target that can be previewed and sent to: it has a real Slack ID. */
+export function isSendable(target: { channel_id: string }): boolean {
+  return SLACK_ID_PATTERN.test(target.channel_id.trim());
 }
 
 export function errorMessage(err: unknown): string {

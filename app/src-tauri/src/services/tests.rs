@@ -1035,3 +1035,27 @@ fn many_prs_resolve_in_bounded_parallel() {
         ]
     );
 }
+
+/// A mapping that names a channel but has no ID yet is listed as
+/// `unresolved`: never an empty-ID target to preselect or preview (§7.11).
+#[test]
+fn a_name_only_mapping_is_an_unresolved_suggestion() {
+    let fx = fixture("name-only");
+    let state = &fx.state;
+    connect_fake_workspace(state);
+    let (pr, team) = pr_with_team(state);
+    map_team(state, &team, "", "acme-data");
+    let stored = crate::slack::load_pr(&state.store, pr).unwrap();
+    let choices =
+        crate::slack::targets_for(&state.store, &stored, std::slice::from_ref(&team)).unwrap();
+    assert_eq!(choices.len(), 1);
+    assert_eq!(choices[0].source, "unresolved");
+    assert_eq!(choices[0].target.channel_name, "acme-data");
+    assert!(choices[0].target.channel_id.is_empty());
+
+    map_team(state, &team, "C0ACME0001", "acme-data");
+    let choices =
+        crate::slack::targets_for(&state.store, &stored, std::slice::from_ref(&team)).unwrap();
+    assert_eq!(choices[0].source, "mapping");
+    assert_eq!(choices[0].target.channel_id, "C0ACME0001");
+}

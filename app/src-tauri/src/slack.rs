@@ -78,7 +78,9 @@ pub struct TargetChoice {
     pub teams: Vec<String>,
     /// `request` when an active request lives in this channel and it is still
     /// mapped, `mapping` for a mapped channel without one, `previous` for an
-    /// active request in a channel the teams are no longer mapped to.
+    /// active request in a channel the teams are no longer mapped to,
+    /// `unresolved` for a mapping that names a channel but has no ID yet
+    /// (never preselected or sent to; the picker searches for it by name).
     pub source: String,
 }
 
@@ -440,11 +442,45 @@ pub(crate) fn targets_for(
     let workspaces = route::workspaces(store)?;
     let rows = store.list_mappings()?;
     let mut mapped: Vec<TargetChoice> = Vec::new();
+    let mut unresolved: Vec<TargetChoice> = Vec::new();
     for team in teams {
         let Some((org, slug)) = team.trim_start_matches('@').split_once('/') else {
             continue;
         };
         if let Some(row) = lookup_mapping(&rows, org, slug, "") {
+            if row.slack_channel_id.trim().is_empty() {
+                // A name-only row (CSV or wizard import) can't be sent to:
+                // list it so the picker can search for it by name, but
+                // never preselect or route to it (§7.11).
+                let name = row.slack_channel_name.trim().trim_start_matches('#');
+                if name.is_empty() {
+                    continue;
+                }
+                if let Some(existing) = unresolved
+                    .iter_mut()
+                    .find(|choice| choice.target.channel_name.eq_ignore_ascii_case(name))
+                {
+                    if !existing.teams.contains(team) {
+                        existing.teams.push(team.clone());
+                    }
+                } else {
+                    unresolved.push(TargetChoice {
+                        target: labeled(
+                            &workspaces,
+                            ReviewTarget {
+                                workspace: row.slack_workspace.clone(),
+                                team_id: row.slack_team_id.clone(),
+                                workspace_name: String::new(),
+                                channel_id: String::new(),
+                                channel_name: name.to_owned(),
+                            },
+                        ),
+                        teams: vec![team.clone()],
+                        source: "unresolved".into(),
+                    });
+                }
+                continue;
+            }
             push_choice(
                 &mut mapped,
                 labeled(
@@ -502,6 +538,7 @@ pub(crate) fn targets_for(
         }
         current.push(choice);
     }
+    current.extend(unresolved);
     current.extend(previous);
     Ok(current)
 }

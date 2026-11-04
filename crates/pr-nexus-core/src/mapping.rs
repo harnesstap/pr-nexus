@@ -421,6 +421,19 @@ fn pick_layer<'a>(
     rows: &'a [TeamChannelMapping],
     pred: impl Fn(&TeamChannelMapping) -> bool,
 ) -> LayerPick<'a> {
+    // A CSV row with neither channel ID nor name (e.g. a team list with
+    // blank channel columns) maps nowhere: skip it so it can't shadow a
+    // real mapping or surface as an empty "#" target (§7.11).
+    let pred = |row: &TeamChannelMapping| {
+        pred(row)
+            && (row.disabled
+                || !row.slack_channel_id.trim().is_empty()
+                || !row
+                    .slack_channel_name
+                    .trim()
+                    .trim_start_matches('#')
+                    .is_empty())
+    };
     if let Some(user) = rows
         .iter()
         .find(|row| row.layer == MappingLayer::User && pred(row))
@@ -700,6 +713,38 @@ mod tests {
             note: String::new(),
             updated_at: now(),
         }
+    }
+
+    #[test]
+    fn a_blank_channel_row_never_wins_the_lookup() {
+        // A team list imported with blank channel columns must not shadow
+        // the real channel or come back as an empty target.
+        let rows = vec![
+            stored(
+                MappingLayer::Imported,
+                "acme",
+                "data",
+                "",
+                "acme",
+                "C0ACME0001",
+                "acme-data",
+                false,
+            ),
+            stored(MappingLayer::User, "acme", "data", "", "", "", "", false),
+            stored(
+                MappingLayer::Imported,
+                "acme",
+                "web",
+                "",
+                "",
+                "",
+                "#",
+                false,
+            ),
+        ];
+        let hit = lookup_mapping(&rows, "acme", "data", "").expect("the real row");
+        assert_eq!(hit.slack_channel_id, "C0ACME0001");
+        assert!(lookup_mapping(&rows, "acme", "web", "").is_none());
     }
 
     #[test]
