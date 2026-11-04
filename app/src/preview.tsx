@@ -13,7 +13,8 @@ import { recordSeenVersion } from "./changelog/changelog";
 import { RELEASES } from "./changelog/data";
 import { SettingsScreen } from "./settings/SettingsScreen";
 import { BulkDialog } from "./slack/BulkDialog";
-import { fakeMcp, fakeSettingsApi, sampleActivity } from "./settings/fakes";
+import { FAKE_SLACK_WORKSPACES, fakeMcp, fakeSettingsApi, sampleActivity } from "./settings/fakes";
+import { AgentsSettings } from "./settings/AgentsSettings";
 import { McpActivity } from "./settings/McpActivity";
 
 const steps = [
@@ -441,6 +442,17 @@ if (screenName === "mapping-mismatch") {
   previewApi.slackChannelNames = (channels) => Promise.resolve(channels.map((channel) => real[channel.channel_id] ?? null));
   previewApi.slackWorkspaces = () => Promise.resolve([{ id: 1, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false, team_id: "T0ACME0001", enabled: true, priority: 0 }]);
 }
+// ?screen=slack-scopes shows Settings → Agents after Sign in again, when the
+// Slack app still does not list the new scopes (the button is clicked for you).
+function slackScopesApi(): Parameters<typeof AgentsSettings>[0]["api"] {
+  const stale = [FAKE_SLACK_WORKSPACES[0]!, { ...FAKE_SLACK_WORKSPACES[1]!, scopes_missing: ["reactions:read", "files:read", "canvases:read", "lists:read"] }];
+  const fake = fakeMcp({ enabled: true, slack_reads: true }, [], stale);
+  fake.slackConnect = () => Promise.resolve(stale[1]);
+  return fake;
+}
+if (screenName === "slack-scopes") {
+  window.setTimeout(() => document.querySelector<HTMLButtonElement>('button[aria-label^="Sign in again"]')?.click(), 800);
+}
 const root = document.getElementById("root");
 if (!root) {
   throw new Error("root element missing");
@@ -474,6 +486,10 @@ createRoot(root).render(
     ) : settingsScene === "profiles" ? (
       <div className="min-h-screen bg-slate-950 px-6 py-8 text-slate-200">
         <SettingsScreen api={previewApi} boot={boot} onBoot={() => undefined} accounts={null} tab="profiles" onTabChange={() => undefined} onRerunSetup={() => undefined} />
+      </div>
+    ) : screenName === "slack-scopes" ? (
+      <div className="min-h-screen bg-slate-950 px-6 py-8 text-slate-200">
+        <AgentsSettings api={slackScopesApi()} />
       </div>
     ) : activityPreview === "stats" || activityPreview === "log" ? (
       <div className="min-h-screen max-w-3xl bg-slate-950 px-6 py-8 text-sm text-slate-200">

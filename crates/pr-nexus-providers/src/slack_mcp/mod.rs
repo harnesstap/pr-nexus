@@ -171,3 +171,24 @@ pub enum SlackAuthError {
     #[error("Could not save the Slack token in the keychain: {0}")]
     Store(String),
 }
+
+#[cfg(test)]
+mod manifest_tests {
+    /// Slack grants only the user scopes the app lists, so an app made from
+    /// the "Create your Slack app" manifest must list every requested scope.
+    #[test]
+    fn manifest_lists_every_requested_user_scope() {
+        let manifest: serde_json::Value =
+            serde_json::from_str(include_str!("../../../../assets/slack-app-manifest.json"))
+                .unwrap();
+        let listed: Vec<&str> = manifest["oauth_config"]["scopes"]["user"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|s| s.as_str())
+            .collect();
+        for scope in super::USER_SCOPES {
+            assert!(listed.contains(scope), "manifest lacks {scope}");
+        }
+    }
+}

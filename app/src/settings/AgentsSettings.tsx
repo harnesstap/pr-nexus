@@ -26,6 +26,9 @@ export function AgentsSettings({ api }: Props) {
   const [confirming, setConfirming] = useState(false);
   const [workspaces, setWorkspaces] = useState<SlackWorkspace[]>([]);
   const [reauthing, setReauthing] = useState<string | null>(null);
+  // Workspaces signed in again that still lack scopes: the Slack app itself
+  // does not list them, so another sign-in alone cannot help.
+  const [notGranted, setNotGranted] = useState<string[]>([]);
 
   useEffect(() => {
     let cancel = false;
@@ -81,7 +84,11 @@ export function AgentsSettings({ api }: Props) {
     api
       .slackConnect()
       .then(() => api.slackWorkspaces())
-      .then((list) => setWorkspaces(list))
+      .then((list) => {
+        setWorkspaces(list);
+        const stillMissing = list.some((ws) => ws.team_id === teamId && (ws.scopes_missing ?? []).length > 0);
+        setNotGranted((prev) => (stillMissing ? [...prev.filter((id) => id !== teamId), teamId] : prev.filter((id) => id !== teamId)));
+      })
       .catch((err: unknown) => setError(errorMessage(err)))
       .finally(() => {
         setBusy(false);
@@ -200,6 +207,7 @@ export function AgentsSettings({ api }: Props) {
                 selected={settings.slack_workspaces}
                 disabled={busy}
                 reauthing={reauthing}
+                notGranted={notGranted}
                 onChange={(slack_workspaces) => save({ slack_workspaces })}
                 onReauth={reauth}
               />
@@ -372,10 +380,12 @@ interface PickerProps {
   reauthing: string | null;
   onChange: (teamIds: string[]) => void;
   onReauth: (teamId: string) => void;
+  /** Team IDs where a new sign-in still did not get every scope. */
+  notGranted?: string[];
 }
 
 /** The Slack workspaces agents may see. None is ticked until the user picks. */
-function SlackWorkspacePicker({ workspaces, selected, disabled, reauthing, onChange, onReauth }: PickerProps) {
+function SlackWorkspacePicker({ workspaces, selected, disabled, reauthing, notGranted = [], onChange, onReauth }: PickerProps) {
   if (workspaces.length === 0) {
     return <p className="ml-11 mt-2 text-xs text-slate-400">No Slack workspace connected yet. Connect one in Settings → Slack.</p>;
   }
@@ -405,11 +415,19 @@ function SlackWorkspacePicker({ workspaces, selected, disabled, reauthing, onCha
               </label>
               {!unavailable && missing.length > 0 && (
                 <>
-                  <Tooltip label="Missing permissions" detail={missing.join(", ")} align="start">
-                    <span id={noteId} className="text-xs text-amber-300">
-                      — needs new Slack permissions for reactions, files, canvases and lists
+                  {notGranted.includes(ws.team_id) ? (
+                    <span id={noteId} className="basis-full text-xs text-amber-300">
+                      Slack did not give these permissions: <code>{missing.join(", ")}</code>. Your Slack app does not
+                      list them. Open your app on api.slack.com, go to OAuth &amp; Permissions, add them under User Token
+                      Scopes, then sign in again.
                     </span>
-                  </Tooltip>
+                  ) : (
+                    <Tooltip label="Missing permissions" detail={missing.join(", ")} align="start">
+                      <span id={noteId} className="text-xs text-amber-300">
+                        — needs new Slack permissions for reactions, files, canvases and lists
+                      </span>
+                    </Tooltip>
+                  )}
                   <button
                     type="button"
                     className="rounded px-2 py-0.5 text-xs text-sky-300 hover:bg-slate-800 disabled:opacity-50"
