@@ -172,3 +172,32 @@ test("Mark all ready takes every draft out of draft and clears the warning", asy
   expect(screen.queryByTestId("draft-badge")).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Send 2 messages" })).toBeEnabled();
 });
+
+test("Mark all ready runs up to four at once, clears each as it finishes and reports failures", async () => {
+  const { api } = fake();
+  const ids = [1, 2, 3, 4, 5, 6];
+  const pending = new Map<number, { resolve: () => void; reject: (err: Error) => void }>();
+  const ready: number[] = [];
+  const withDrafts: Api = {
+    ...api,
+    bulkPreview: (request: BulkRequest) => api.bulkPreview(request).then((planned) => ({ ...planned, pr_warnings: ids.map((id) => draft(id, 40 + id)) })),
+    setPrDraft: (id: number) =>
+      new Promise<Awaited<ReturnType<Api["setPrDraft"]>>>((resolve, reject) => {
+        pending.set(id, { resolve: () => resolve({} as Awaited<ReturnType<Api["setPrDraft"]>>), reject });
+      }),
+  };
+  render(<BulkDialog api={withDrafts} prIds={[1, 2]} onClose={() => undefined} onSent={() => undefined} onOpen={() => undefined} onReady={(id) => ready.push(id)} />);
+  await screen.findByText("Bump #42");
+  fireEvent.click(screen.getByRole("button", { name: "Mark all ready" }));
+  await waitFor(() => expect([...pending.keys()]).toEqual([1, 2, 3, 4]));
+  pending.get(2)?.resolve();
+  await waitFor(() => expect(ready).toEqual([2]));
+  await waitFor(() => expect([...pending.keys()]).toEqual([1, 2, 3, 4, 5]));
+  pending.get(1)?.reject(new Error("GitHub said no"));
+  await waitFor(() => expect(pending.has(6)).toBe(true));
+  for (const id of [3, 4, 5, 6]) {
+    pending.get(id)?.resolve();
+  }
+  await waitFor(() => expect(screen.getByText("Couldn't mark ready for review: #41: GitHub said no")).toBeInTheDocument());
+  expect(ready.sort()).toEqual([2, 3, 4, 5, 6]);
+});

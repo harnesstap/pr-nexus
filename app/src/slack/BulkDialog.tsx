@@ -4,6 +4,7 @@ import type { Api, BulkCard, BulkPreview, BulkRequest, BulkResult, ChannelKey, R
 import { channelLabel, errorMessage } from "../api";
 import { DraftWarning } from "./DraftWarning";
 import { TargetCombobox } from "./TargetCombobox";
+import { BULK_CONCURRENCY, mapLimit } from "../mapLimit";
 
 interface Props {
   api: Api;
@@ -138,20 +139,18 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen, onReady }: Pro
     }
   }
 
-  /** Same call as the merge card's "Mark ready for review", once per draft. */
+  /** Same call as the merge card's "Mark ready for review", once per draft, a few at a time. */
   async function markAllReady() {
     setMarking(true);
     setError(null);
-    const failed: string[] = [];
-    for (const warning of drafts) {
-      try {
-        await api.setPrDraft(warning.pr_id, false);
-        setReadied((current) => [...current, warning.pr_id]);
-        onReady?.(warning.pr_id);
-      } catch (err) {
-        failed.push(`#${warning.number}: ${errorMessage(err)}`);
-      }
-    }
+    const results = await mapLimit(drafts, BULK_CONCURRENCY, async (warning) => {
+      await api.setPrDraft(warning.pr_id, false);
+      setReadied((current) => [...current, warning.pr_id]);
+      onReady?.(warning.pr_id);
+    });
+    const failed = results.flatMap((result, index) =>
+      result.status === "rejected" ? [`#${drafts[index].number}: ${errorMessage(result.reason)}`] : [],
+    );
     if (failed.length > 0) {
       setError(`Couldn't mark ready for review: ${failed.join("; ")}`);
     }
