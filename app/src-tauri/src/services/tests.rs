@@ -502,6 +502,13 @@ fn pr_with_team(state: &AppState) -> (i64, String) {
     .items
     .iter()
     .find_map(|item| {
+        let requested = state
+            .store
+            .list_review_requests(pr_nexus_core::domain::PrId(item.row.id))
+            .ok()?;
+        if !requested.is_empty() {
+            return None;
+        }
         let detail = prs::pr_detail(state, item.row.id).ok()?;
         if detail.readiness == "blocked" {
             return None;
