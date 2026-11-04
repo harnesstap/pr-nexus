@@ -7,7 +7,7 @@ import { MCP_CLIENTS, isMcpClient, mcpClientSnippet, type McpClient } from "./mc
 const CLIENT_KEY = "pr-nexus.mcp-client-tab";
 
 /** Clients that only read their MCP config at launch. */
-const NEEDS_RESTART: ReadonlySet<McpClient> = new Set(["claude-desktop", "cursor", "codex", "opencode"]);
+const NEEDS_RESTART: ReadonlySet<McpClient> = new Set(["claude-desktop", "cursor", "codex"]);
 
 function readClient(): McpClient {
   try {
@@ -42,7 +42,7 @@ const STATUS_TEXT: Record<McpClientState["status"], string> = {
   not_added: "Not added",
   added: "Added",
   outdated: "Added, but outdated",
-  unreadable: "Config file can't be read; copy the snippet instead",
+  unreadable: "Can't read the config file. Fix it, or copy the snippet.",
 };
 
 /** "Client config" in Settings → Agents: one tab per MCP client, each with its own snippet. */
@@ -52,9 +52,10 @@ export function McpClientConfig({ api, url, tokenMasked, tokenVersion, fixedPort
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [restartFor, setRestartFor] = useState<McpClient | null>(null);
-  const shown = mcpClientSnippet(client, url, tokenMasked);
   const label = MCP_CLIENTS.find((c) => c.id === client)?.label ?? client;
   const state = states.find((s) => s.client === client);
+  const found = state?.exists ? state.display_path : undefined;
+  const shown = mcpClientSnippet(client, url, tokenMasked, found);
 
   useEffect(() => {
     let live = true;
@@ -102,7 +103,7 @@ export function McpClientConfig({ api, url, tokenMasked, tokenVersion, fixedPort
           type="button"
           aria-label="Copy client config"
           className="rounded px-2 py-0.5 text-xs hover:bg-slate-800"
-          onClick={() => onCopy(`${label} config`, (token) => mcpClientSnippet(client, url, token).text)}
+          onClick={() => onCopy(`${label} config`, (token) => mcpClientSnippet(client, url, token, found).text)}
         >
           Copy with token
         </button>

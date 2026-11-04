@@ -428,7 +428,10 @@ pub async fn mcp_add_to_client(
     .await
 }
 
-/// Opens the client's config file, or reveals its folder when the file is missing.
+/// Opens the client's config file, or reveals its folder when the file is
+/// missing. When the system opener fails on a file (no app is set for
+/// `.jsonc` on macOS, for example), it falls back to the text editor
+/// (`open -t` on macOS, Notepad on Windows); a plain-English error otherwise.
 #[tauri::command]
 pub async fn mcp_open_client_config(
     app: tauri::AppHandle,
@@ -437,16 +440,37 @@ pub async fn mcp_open_client_config(
     use tauri_plugin_opener::OpenerExt;
     let env = client_env()?;
     let path = clients::config_path(client, &env);
-    let opener = app.opener();
-    let result = if path.exists() {
-        opener.open_path(path.display().to_string(), None::<&str>)
+    let (target, is_folder) = if path.exists() {
+        (path.clone(), false)
     } else if let Some(dir) = path.parent().filter(|dir| dir.exists()) {
-        opener.open_path(dir.display().to_string(), None::<&str>)
+        (dir.to_path_buf(), true)
     } else {
         return Err(AppError::new(
             "validation",
-            format!("{} does not exist yet", path.display()),
+            format!("{} does not exist yet", clients::display_path(&path, &env)),
         ));
     };
-    result.map_err(|err| AppError::new("validation", err.to_string()))
+    blocking::run(move || {
+        let Err(err) = app
+            .opener()
+            .open_path(target.display().to_string(), None::<&str>)
+        else {
+            return Ok(());
+        };
+        tracing::warn!(error = %err, "opening a client config failed");
+        if !is_folder
+            && let Some((program, args)) = clients::text_editor_command(env.os, &target)
+            && std::process::Command::new(program)
+                .args(args)
+                .status()
+                .is_ok_and(|status| status.success())
+        {
+            return Ok(());
+        }
+        Err(AppError::new(
+            "validation",
+            clients::open_failed_message(&clients::display_path(&target, &env), is_folder),
+        ))
+    })
+    .await
 }

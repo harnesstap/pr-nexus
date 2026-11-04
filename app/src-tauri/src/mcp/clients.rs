@@ -3,15 +3,20 @@
 //! Each MCP client keeps its servers in its own file and format. Adding
 //! touches only the `pr-nexus` entry under the client's parent key, leaves
 //! the rest of the file alone, writes `<file>.bak-pr-nexus` first and
-//! replaces the file atomically. A file that does not parse is never
-//! rewritten. Claude Code is the exception: its `~/.claude.json` is only
-//! read; adding goes through `claude mcp add`.
+//! replaces the file atomically. JSON files are read as JSONC (comments and
+//! trailing commas) and edited in place, so comments and formatting stay.
+//! A file that does not parse is never rewritten. Claude Code is the
+//! exception: its `~/.claude.json` is only read; adding goes through
+//! `claude mcp add`.
 
+use std::ffi::OsString;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use jsonc_parser::ParseOptions;
+use jsonc_parser::cst::{CstInputValue, CstObject, CstRootNode};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
@@ -67,6 +72,8 @@ pub struct Env {
     pub home: PathBuf,
     /// `%APPDATA%` on Windows.
     pub appdata: Option<PathBuf>,
+    /// `$XDG_CONFIG_HOME`, which OpenCode uses instead of `~/.config` when set.
+    pub xdg_config: Option<PathBuf>,
 }
 
 impl Env {
@@ -78,6 +85,10 @@ impl Env {
             os: Os::current(),
             home,
             appdata: std::env::var_os("APPDATA").map(PathBuf::from),
+            xdg_config: std::env::var_os("XDG_CONFIG_HOME")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+                .filter(|path| path.is_absolute()),
         })
     }
 
@@ -106,15 +117,38 @@ pub fn config_path(client: Client, env: &Env) -> PathBuf {
         Client::Vscode => env.app_support().join("Code").join("User").join("mcp.json"),
         Client::Codex => env.home.join(".codex").join("config.toml"),
         Client::Opencode => {
-            let dir = env.home.join(".config").join("opencode");
-            let jsonc = dir.join("opencode.jsonc");
-            let json = dir.join("opencode.json");
-            if jsonc.exists() && !json.exists() {
-                jsonc
-            } else {
-                json
-            }
+            let dir = opencode_dir(env);
+            OPENCODE_FILES
+                .iter()
+                .map(|name| dir.join(name))
+                .find(|path| path.is_file())
+                .unwrap_or_else(|| dir.join(OPENCODE_FILES[0]))
         }
+    }
+}
+
+/// OpenCode's global config files, the one OpenCode reads last first: it
+/// merges `opencode.json` then `opencode.jsonc` (so `.jsonc` wins), and
+/// Older OpenCode releases also read a legacy `config.json` before both. A new file is
+/// `opencode.jsonc`, like `opencode` itself creates.
+const OPENCODE_FILES: [&str; 3] = ["opencode.jsonc", "opencode.json", "config.json"];
+
+/// `$XDG_CONFIG_HOME/opencode`, else `~/.config/opencode`, on every OS.
+fn opencode_dir(env: &Env) -> PathBuf {
+    env.xdg_config
+        .clone()
+        .unwrap_or_else(|| env.home.join(".config"))
+        .join("opencode")
+}
+
+/// The path with the home folder shown as `~`, for labels.
+pub fn display_path(path: &Path, env: &Env) -> String {
+    match path.strip_prefix(&env.home) {
+        Ok(rest) if !rest.as_os_str().is_empty() => {
+            let sep = if env.os == Os::Windows { '\\' } else { '/' };
+            format!("~{sep}{}", rest.display())
+        }
+        _ => path.display().to_string(),
     }
 }
 
@@ -135,6 +169,8 @@ pub struct ClientState {
     pub client: Client,
     pub status: ClientStatus,
     pub path: String,
+    /// `path` with the home folder as `~`, for the help text.
+    pub display_path: String,
     pub exists: bool,
 }
 
@@ -168,10 +204,36 @@ fn json_entry(client: Client, url: &str, token: &str) -> (&'static str, Value) {
         ),
         Client::Opencode => (
             "mcp",
-            json!({ "type": "remote", "url": url, "enabled": true, "headers": { "Authorization": auth } }),
+            json!({
+                "type": "remote",
+                "url": url,
+                "enabled": true,
+                "oauth": false,
+                "headers": { "Authorization": auth },
+            }),
         ),
         Client::Codex => unreachable!("Codex uses TOML"),
     }
+}
+
+/// Where the entry goes and what it holds.
+struct JsonPlan {
+    keys: Vec<&'static str>,
+    wanted: Value,
+}
+
+fn json_plan(client: Client, url: &str, token: &str) -> JsonPlan {
+    let (parent, wanted) = json_entry(client, url, token);
+    JsonPlan {
+        keys: vec![parent, ENTRY],
+        wanted,
+    }
+}
+
+fn lookup<'a>(map: &'a Map<String, Value>, keys: &[&str]) -> Option<&'a Value> {
+    let (first, rest) = keys.split_first()?;
+    rest.iter()
+        .try_fold(map.get(*first)?, |value, key| value.get(*key))
 }
 
 fn read_optional(path: &Path) -> Result<Option<String>, String> {
@@ -182,18 +244,118 @@ fn read_optional(path: &Path) -> Result<Option<String>, String> {
     }
 }
 
+/// JSON with comments and trailing commas, as VS Code, Cursor and OpenCode accept.
+fn jsonc_options() -> ParseOptions {
+    ParseOptions {
+        allow_comments: true,
+        allow_trailing_commas: true,
+        ..ParseOptions::default()
+    }
+}
+
+fn parse_root(path: &Path, text: &str) -> Result<CstRootNode, String> {
+    CstRootNode::parse(text, &jsonc_options()).map_err(|err| {
+        format!(
+            "{} has a syntax error ({err}); left unchanged. Fix the file or copy the snippet instead.",
+            path.display()
+        )
+    })
+}
+
+/// Reads a JSON or JSONC file into its object.
 fn parse_json(path: &Path, text: &str) -> Result<Map<String, Value>, String> {
     if text.trim().is_empty() {
         return Ok(Map::new());
     }
-    match serde_json::from_str::<Value>(text) {
-        Ok(Value::Object(map)) => Ok(map),
-        Ok(_) => Err(format!(
+    match parse_root(path, text)?.to_serde_value() {
+        Some(Value::Object(map)) => Ok(map),
+        _ => Err(format!(
             "{} is not a JSON object; left unchanged.",
             path.display()
         )),
-        Err(err) => Err(format!(
-            "{} is not plain JSON ({err}). Comments and trailing commas are not supported; left unchanged. Copy the snippet instead.",
+    }
+}
+
+fn cst_value(value: &Value) -> CstInputValue {
+    match value {
+        Value::Null => CstInputValue::Null,
+        Value::Bool(b) => CstInputValue::Bool(*b),
+        Value::Number(n) => CstInputValue::Number(n.to_string()),
+        Value::String(s) => CstInputValue::String(s.clone()),
+        Value::Array(items) => CstInputValue::Array(items.iter().map(cst_value).collect()),
+        Value::Object(map) => CstInputValue::Object(
+            map.iter()
+                .map(|(key, value)| (key.clone(), cst_value(value)))
+                .collect(),
+        ),
+    }
+}
+
+/// Applies `plan` to a parsed object: what the file must read as afterwards.
+fn apply_plan(map: &mut Map<String, Value>, plan: &JsonPlan, path: &Path) -> Result<(), String> {
+    let (last, parents) = plan.keys.split_last().expect("keys are never empty");
+    let mut current = map;
+    for key in parents {
+        let next = current
+            .entry(*key)
+            .or_insert_with(|| Value::Object(Map::new()));
+        current = match next {
+            Value::Object(inner) => inner,
+            _ => {
+                return Err(format!(
+                    "{key} in {} is not an object; left unchanged.",
+                    path.display()
+                ));
+            }
+        };
+    }
+    current.insert((*last).to_owned(), plan.wanted.clone());
+    Ok(())
+}
+
+/// Edits the file text in place: only the entry changes, comments and
+/// formatting stay. The result is parsed again and must equal the old
+/// content plus the entry, or nothing is written.
+fn edit_jsonc(
+    path: &Path,
+    text: &str,
+    plan: &JsonPlan,
+    expected: &Map<String, Value>,
+) -> Result<String, String> {
+    let not_object = |key: &str| {
+        format!(
+            "{key} in {} is not an object; left unchanged.",
+            path.display()
+        )
+    };
+    let root = parse_root(path, text)?;
+    let top: CstObject = root
+        .object_value()
+        .ok_or_else(|| format!("{} is not a JSON object; left unchanged.", path.display()))?;
+    let (last, parents) = plan.keys.split_last().expect("keys are never empty");
+    let mut current = top;
+    for key in parents {
+        current = match current.get(key) {
+            Some(prop) => prop.object_value().ok_or_else(|| not_object(key))?,
+            None => current
+                .object_value_or_create(key)
+                .ok_or_else(|| not_object(key))?,
+        };
+    }
+    match current.get(last) {
+        Some(prop) => prop.set_value(cst_value(&plan.wanted)),
+        None => {
+            current.append(last, cst_value(&plan.wanted));
+        }
+    }
+    let mut out = root.to_string();
+    if text.ends_with('\n') && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    match parse_json(path, &out) {
+        Ok(after) if &after == expected => Ok(out),
+        _ => Err(format!(
+            "Could not add the entry to {} without changing other settings; left unchanged. Copy the snippet instead.",
             path.display()
         )),
     }
@@ -243,10 +405,10 @@ pub fn status(client: Client, path: &Path, url: &str, token: &str) -> ClientStat
     let Ok(map) = parse_json(path, &text) else {
         return ClientStatus::Unreadable;
     };
-    let (parent, wanted) = json_entry(client, url, token);
-    match map.get(parent).and_then(|servers| servers.get(ENTRY)) {
+    let plan = json_plan(client, url, token);
+    match lookup(&map, &plan.keys) {
         None => ClientStatus::NotAdded,
-        Some(current) if json_matches(client, current, &wanted) => ClientStatus::Added,
+        Some(current) if json_matches(client, current, &plan.wanted) => ClientStatus::Added,
         Some(_) => ClientStatus::Outdated,
     }
 }
@@ -297,22 +459,53 @@ pub fn merged(
         servers.insert(ENTRY, toml_edit::Item::Table(entry));
         return Ok(doc.to_string());
     }
-    let mut map = parse_json(path, existing.unwrap_or(""))?;
-    let (parent, wanted) = json_entry(client, url, token);
-    let servers = map
-        .entry(parent)
-        .or_insert_with(|| Value::Object(Map::new()));
-    let Value::Object(servers) = servers else {
-        return Err(format!(
-            "{parent} in {} is not an object; left unchanged.",
-            path.display()
-        ));
-    };
-    servers.insert(ENTRY.to_owned(), wanted);
-    let mut text =
-        serde_json::to_string_pretty(&Value::Object(map)).map_err(|err| err.to_string())?;
-    text.push('\n');
-    Ok(text)
+    let text = existing.unwrap_or("");
+    let before = parse_json(path, text)?;
+    let plan = json_plan(client, url, token);
+    let mut expected = before;
+    apply_plan(&mut expected, &plan, path)?;
+    if !text.trim().is_empty() {
+        return edit_jsonc(path, text, &plan, &expected);
+    }
+    if client == Client::Opencode {
+        let mut with_schema = Map::new();
+        with_schema.insert(
+            "$schema".to_owned(),
+            json!("https://opencode.ai/config.json"),
+        );
+        with_schema.extend(expected);
+        expected = with_schema;
+    }
+    let mut out =
+        serde_json::to_string_pretty(&Value::Object(expected)).map_err(|err| err.to_string())?;
+    out.push('\n');
+    Ok(out)
+}
+
+/// What to try when the system opener fails on an existing file, usually
+/// because no app is set for its extension (`.jsonc` on macOS): macOS opens
+/// it in the default text editor, Windows in Notepad. Linux has no such
+/// fallback beyond `xdg-open`.
+pub fn text_editor_command(os: Os, path: &Path) -> Option<(&'static str, Vec<OsString>)> {
+    match os {
+        Os::Mac => Some((
+            "/usr/bin/open",
+            vec!["-t".into(), path.as_os_str().to_owned()],
+        )),
+        Os::Windows => Some(("notepad.exe", vec![path.as_os_str().to_owned()])),
+        Os::Linux => None,
+    }
+}
+
+/// The plain-English error when neither the opener nor the text editor worked.
+pub fn open_failed_message(shown: &str, is_folder: bool) -> String {
+    if is_folder {
+        format!("Could not open the folder {shown}. Open it yourself, or copy the snippet instead.")
+    } else {
+        format!(
+            "Could not open {shown}. No app is set to open this kind of file. Open it in a text editor yourself, or copy the snippet instead."
+        )
+    }
 }
 
 pub fn backup_path(path: &Path) -> PathBuf {
@@ -438,6 +631,7 @@ pub fn state(client: Client, env: &Env, url: &str, token: &str) -> ClientState {
         client,
         status: status(client, &path, url, token),
         exists: path.exists(),
+        display_path: display_path(&path, env),
         path: path.display().to_string(),
     }
 }
@@ -454,6 +648,7 @@ mod tests {
             os,
             home: dir.to_path_buf(),
             appdata: Some(dir.join("AppData")),
+            xdg_config: None,
         }
     }
 
@@ -497,17 +692,210 @@ mod tests {
         );
         assert_eq!(
             config_path(Client::Opencode, &linux),
-            Path::new("/h/.config/opencode/opencode.json")
+            Path::new("/h/.config/opencode/opencode.jsonc")
+        );
+        assert_eq!(
+            config_path(Client::Opencode, &mac),
+            Path::new("/h/.config/opencode/opencode.jsonc")
         );
     }
 
     #[test]
-    fn opencode_uses_an_existing_jsonc() {
+    fn opencode_picks_the_file_opencode_reads_last() {
         let dir = tempfile::tempdir().unwrap();
-        let e = env(dir.path(), Os::Linux);
-        fs::create_dir_all(dir.path().join(".config/opencode")).unwrap();
-        fs::write(dir.path().join(".config/opencode/opencode.jsonc"), "{}").unwrap();
-        assert!(config_path(Client::Opencode, &e).ends_with("opencode.jsonc"));
+        let e = env(dir.path(), Os::Mac);
+        let oc = dir.path().join(".config/opencode");
+        fs::create_dir_all(&oc).unwrap();
+        assert_eq!(config_path(Client::Opencode, &e), oc.join("opencode.jsonc"));
+        fs::write(oc.join("config.json"), "{}").unwrap();
+        assert_eq!(config_path(Client::Opencode, &e), oc.join("config.json"));
+        fs::write(oc.join("opencode.json"), "{}").unwrap();
+        assert_eq!(config_path(Client::Opencode, &e), oc.join("opencode.json"));
+        fs::write(oc.join("opencode.jsonc"), "{}").unwrap();
+        assert_eq!(config_path(Client::Opencode, &e), oc.join("opencode.jsonc"));
+    }
+
+    #[test]
+    fn opencode_follows_xdg_config_home() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut e = env(dir.path(), Os::Linux);
+        e.xdg_config = Some(dir.path().join("xdg"));
+        assert_eq!(
+            config_path(Client::Opencode, &e),
+            dir.path().join("xdg/opencode/opencode.jsonc")
+        );
+    }
+
+    #[test]
+    fn display_path_uses_a_tilde() {
+        let e = env(Path::new("/Users/acme"), Os::Mac);
+        assert_eq!(
+            display_path(Path::new("/Users/acme/.config/opencode/opencode.jsonc"), &e),
+            "~/.config/opencode/opencode.jsonc"
+        );
+        assert_eq!(display_path(Path::new("/etc/x.json"), &e), "/etc/x.json");
+    }
+
+    #[test]
+    fn open_falls_back_to_a_text_editor() {
+        let file = Path::new("/Users/acme/.config/opencode/opencode.jsonc");
+        let (program, args) = text_editor_command(Os::Mac, file).unwrap();
+        assert_eq!(program, "/usr/bin/open");
+        assert_eq!(
+            args,
+            vec![OsString::from("-t"), file.as_os_str().to_owned()]
+        );
+        let (program, args) = text_editor_command(Os::Windows, file).unwrap();
+        assert_eq!(program, "notepad.exe");
+        assert_eq!(args, vec![file.as_os_str().to_owned()]);
+        assert!(text_editor_command(Os::Linux, file).is_none());
+        let message = open_failed_message("~/.config/opencode/opencode.jsonc", false);
+        assert!(message.starts_with("Could not open ~/.config/opencode/opencode.jsonc."));
+        assert!(!message.contains("ExitStatus"));
+    }
+
+    /// A real-looking OpenCode file: comments, trailing commas, other servers.
+    const OPENCODE_JSONC: &str = r#"{
+  "$schema": "https://opencode.ai/config.json",
+  // my default model
+  "model": "acme/model-large",
+  /* block comment */
+  "mcp": {
+    "acme-docs": {
+      "type": "remote",
+      "url": "https://mcp.acme.test/mcp", // keep me
+      "enabled": true,
+    },
+  },
+}
+"#;
+
+    #[test]
+    fn parses_jsonc_with_comments_and_trailing_commas() {
+        let map = parse_json(Path::new("opencode.jsonc"), OPENCODE_JSONC).unwrap();
+        assert_eq!(map["model"], "acme/model-large");
+        assert_eq!(map["mcp"]["acme-docs"]["url"], "https://mcp.acme.test/mcp");
+    }
+
+    #[test]
+    fn opencode_merge_keeps_comments_and_formatting() {
+        let dir = tempfile::tempdir().unwrap();
+        let e = env(dir.path(), Os::Mac);
+        let oc = dir.path().join(".config/opencode");
+        fs::create_dir_all(&oc).unwrap();
+        fs::write(oc.join("opencode.jsonc"), OPENCODE_JSONC).unwrap();
+        let path = config_path(Client::Opencode, &e);
+        assert!(path.ends_with("opencode.jsonc"));
+        assert_eq!(
+            status(Client::Opencode, &path, URL, TOKEN),
+            ClientStatus::NotAdded
+        );
+        install_file(Client::Opencode, &path, URL, TOKEN).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        for kept in [
+            "// my default model",
+            "/* block comment */",
+            "// keep me",
+            "\"acme/model-large\"",
+        ] {
+            assert!(text.contains(kept), "{kept} lost:\n{text}");
+        }
+        assert!(text.starts_with("{\n  \"$schema\""), "{text}");
+        assert!(!text.contains("\"servers\""), "{text}");
+        let map = parse_json(&path, &text).unwrap();
+        assert_eq!(
+            map["mcp"]["pr-nexus"],
+            json!({
+                "type": "remote",
+                "url": URL,
+                "enabled": true,
+                "oauth": false,
+                "headers": { "Authorization": "Bearer pnx_example" },
+            })
+        );
+        assert_eq!(map["mcp"]["acme-docs"]["type"], "remote");
+        assert_eq!(
+            status(Client::Opencode, &path, URL, TOKEN),
+            ClientStatus::Added
+        );
+        assert_eq!(
+            fs::read_to_string(backup_path(&path)).unwrap(),
+            OPENCODE_JSONC
+        );
+        // Updating again only swaps the entry.
+        install_file(Client::Opencode, &path, URL, "pnx_new").unwrap();
+        let again = fs::read_to_string(&path).unwrap();
+        assert!(
+            again.contains("// keep me") && again.contains("Bearer pnx_new"),
+            "{again}"
+        );
+        assert_eq!(again.matches("pr-nexus").count(), 1, "{again}");
+    }
+
+    #[test]
+    fn opencode_adds_mcp_to_a_file_without_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("opencode.jsonc");
+        let before = "{\n  // theme\n  \"model\": \"acme/model\",\n}\n";
+        fs::write(&path, before).unwrap();
+        install_file(Client::Opencode, &path, URL, TOKEN).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("// theme"), "{text}");
+        let map = parse_json(&path, &text).unwrap();
+        assert_eq!(map["model"], "acme/model");
+        assert_eq!(map["mcp"]["pr-nexus"]["url"], URL);
+        assert_eq!(map["mcp"]["pr-nexus"]["enabled"], true);
+    }
+
+    #[test]
+    fn opencode_entry_without_enabled_is_outdated() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("opencode.json");
+        let old = format!(
+            r#"{{"mcp":{{"pr-nexus":{{"type":"remote","url":"{URL}","headers":{{"Authorization":"Bearer {TOKEN}"}}}}}}}}"#
+        );
+        fs::write(&path, old).unwrap();
+        assert_eq!(
+            status(Client::Opencode, &path, URL, TOKEN),
+            ClientStatus::Outdated
+        );
+        install_file(Client::Opencode, &path, URL, TOKEN).unwrap();
+        assert_eq!(
+            status(Client::Opencode, &path, URL, TOKEN),
+            ClientStatus::Added
+        );
+    }
+
+    #[test]
+    fn new_opencode_file_has_the_schema() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = config_path(Client::Opencode, &env(dir.path(), Os::Linux));
+        install_file(Client::Opencode, &path, URL, TOKEN).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(
+            text.starts_with("{\n  \"$schema\": \"https://opencode.ai/config.json\""),
+            "{text}"
+        );
+        assert_eq!(
+            parse_json(&path, &text).unwrap()["mcp"]["pr-nexus"]["url"],
+            URL
+        );
+    }
+
+    #[test]
+    fn vscode_and_cursor_files_with_comments_are_edited_in_place() {
+        for client in [Client::Vscode, Client::Cursor] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = config_path(client, &env(dir.path(), Os::Linux));
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let before = "{\n  // work servers\n  \"inputs\": [],\n}\n";
+            fs::write(&path, before).unwrap();
+            assert_eq!(status(client, &path, URL, TOKEN), ClientStatus::NotAdded);
+            install_file(client, &path, URL, TOKEN).unwrap();
+            let text = fs::read_to_string(&path).unwrap();
+            assert!(text.contains("// work servers"), "{text}");
+            assert_eq!(status(client, &path, URL, TOKEN), ClientStatus::Added);
+        }
     }
 
     #[test]
@@ -586,7 +974,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = config_path(Client::Opencode, &env(dir.path(), Os::Linux));
         fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let before = "{\n  // my servers\n  \"mcp\": {},\n}\n";
+        let before = "{\n  // my servers\n  \"mcp\": {\n}\n";
         fs::write(&path, before).unwrap();
         assert_eq!(
             status(Client::Opencode, &path, URL, TOKEN),

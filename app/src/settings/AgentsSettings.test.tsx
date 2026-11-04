@@ -354,6 +354,8 @@ test("adds pr-nexus to a client and shows its status", async () => {
 
   fireEvent.click(screen.getByRole("tab", { name: "OpenCode" }));
   expect(screen.getByRole("button", { name: "Add to OpenCode" })).toBeDisabled();
+  expect(screen.getByRole("status", { name: "OpenCode status" })).toHaveTextContent("Can't read the config file. Fix it, or copy the snippet.");
+  expect(screen.getByText(/^Merge into ~\/\.config\/opencode\/opencode\.jsonc\./)).toBeInTheDocument();
   window.localStorage.clear();
 });
 
