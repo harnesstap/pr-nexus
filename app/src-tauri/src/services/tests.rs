@@ -844,6 +844,13 @@ impl VcsProvider for CountingClient {
     fn rate_limit(&self) -> Result<RateBudget, ProviderError> {
         crate::demo::DemoProvider.rate_limit()
     }
+    fn request_team_review(
+        &self,
+        pr: &PullRequest,
+        teams: &[TeamRef],
+    ) -> Result<(), ProviderError> {
+        crate::demo::DemoProvider.request_team_review(pr, teams)
+    }
 }
 
 impl bulk::VcsSource for Arc<CountingGithub> {
