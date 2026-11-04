@@ -633,6 +633,48 @@ mod tests {
     }
 
     #[test]
+    fn batch_request_payload_has_no_markdown_list_markers() {
+        let (slack, fake) = provider(text(
+            "https://acme.slack.com/archives/C0TEAM/p1700000000000100",
+        ));
+        let message = pr_nexus_core::review::message::build(
+            pr_nexus_core::review::message::MessageMode::Request,
+            &[
+                (
+                    "feat: run tests against a mock",
+                    "https://github.com/acme/svc/pull/545",
+                ),
+                (
+                    "perf: run test features in parallel",
+                    "https://github.com/acme/svc/pull/547",
+                ),
+            ],
+            None,
+            Some("note"),
+        )
+        .unwrap();
+        slack
+            .post(&OutgoingMessage {
+                channel_id: "C0TEAM",
+                text: &message,
+                thread_ts: None,
+                reply_broadcast: false,
+                unfurl_app_links: true,
+            })
+            .unwrap();
+        let calls = fake.calls.lock().unwrap();
+        assert_eq!(
+            calls[0].1["message"],
+            json!(
+                "Hello team\nCould someone please review these pull requests?\n\
+                 • `feat: run tests against a mock`\nhttps://github.com/acme/svc/pull/545\n\
+                 • `perf: run test features in parallel`\nhttps://github.com/acme/svc/pull/547\n\
+                 Thanks!\n\nnote\n"
+            )
+        );
+    }
+
+    #[test]
     fn bump_replies_in_thread_with_broadcast() {
         let (slack, fake) = provider(text(
             "https://acme.slack.com/archives/C0TEAM/p1700000500000200?thread_ts=1700000000.000100",

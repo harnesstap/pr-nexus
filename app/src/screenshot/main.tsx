@@ -56,7 +56,7 @@ const templateDefaults: Record<string, string> = {
   batch_request: "Hello team\nCould someone please review these pull requests?{who}\n{items}\nThanks!",
   single_remind: "Hello, I'm still looking for a review on {title} when you have a moment :pray:\n{url}\nThanks!",
   batch_remind: "Hello, I'm still looking for a review on these pull requests when you have a moment :pray:\n{items}\nThanks!",
-  item: "- {title}\n{url}",
+  item: "• {title}\n{url}",
 };
 const samplePrs = [
   ["`fix: handle user_id in 'parser'`", "https://github.com/acme/widgets/pull/42"],
@@ -165,7 +165,7 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     const picked = rows.filter((item) => request.pr_ids.includes(item.id));
     const prs = picked.map((item) => ({ pr_id: item.id, number: item.number, title: item.title, repo: item.repo }));
     const text = `Hello team\nCould someone please review these pull requests? (Ada Park)\n${picked
-      .map((item) => `- \`${item.title}\`\nhttps://github.com/${item.repo}/pull/${item.number}`)
+      .map((item) => `• \`${item.title}\`\nhttps://github.com/${item.repo}/pull/${item.number}`)
       .join("\n")}\nThanks!\n`;
     const target = request.target ?? reviewChoices[0].target;
     return {

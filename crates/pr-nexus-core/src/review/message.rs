@@ -116,11 +116,34 @@ fn append_extra(lines: &mut Vec<String>, extra: Option<&str>) {
 }
 
 fn finish(lines: Vec<String>) -> String {
-    let mut text = lines.join("\n");
+    let mut text = slack_bullets(&lines.join("\n"));
     let end = text.trim_end().len();
     text.truncate(end);
     text.push('\n');
     text
+}
+
+/// Turn Markdown list markers into Slack-native bullets.
+///
+/// `slack_send_message` converts its text from Markdown on the server. A
+/// `- item` line right after a paragraph line is not parsed as a list item
+/// there: Slack glued it to the previous line with a stray `*`, while the
+/// next item became a real bullet. A leading `- ` or `* ` (after optional
+/// indentation) therefore becomes `• `, which every converter leaves as
+/// plain text, so Slack shows exactly what the preview shows. This also
+/// covers custom templates and the note.
+pub fn slack_bullets(text: &str) -> String {
+    text.split('\n')
+        .map(|line| {
+            let rest = line.trim_start_matches([' ', '\t']);
+            let indent = &line[..line.len() - rest.len()];
+            match rest.strip_prefix("- ").or_else(|| rest.strip_prefix("* ")) {
+                Some(item) => format!("{indent}• {item}"),
+                None => line.to_string(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Wrap a trimmed title in a Slack inline code span so Markdown characters
@@ -414,9 +437,12 @@ mod tests {
                 env!("CARGO_MANIFEST_DIR"),
                 fixture.name
             );
-            let expected = std::fs::read(&path).unwrap_or_else(|err| {
+            // The fixtures are the script's output; the wire text differs
+            // only by Slack-native bullets (see `slack_bullets`).
+            let expected = std::fs::read_to_string(&path).unwrap_or_else(|err| {
                 panic!("read {}: {err}", fixture.name);
             });
+            let expected = slack_bullets(&expected).into_bytes();
             let actual = build(
                 fixture.mode,
                 fixture.items,
@@ -571,8 +597,60 @@ mod tests {
             Some("keep *bold* here"),
         )
         .unwrap();
-        assert!(text.contains("- `one_two`\nhttps://github.com/acme/widgets/pull/1\n"));
-        assert!(text.contains("- `three`\nhttps://github.com/acme/widgets/pull/2\n"));
+        assert!(text.contains("• `one_two`\nhttps://github.com/acme/widgets/pull/1\n"));
+        assert!(text.contains("• `three`\nhttps://github.com/acme/widgets/pull/2\n"));
         assert!(text.ends_with("Thanks!\n\nkeep *bold* here\n"));
+    }
+
+    #[test]
+    fn batch_items_are_slack_bullets_not_markdown_list_markers() {
+        let text = build(
+            MessageMode::Request,
+            &[
+                (
+                    "feat:[ACME-1] run integration tests against apimock",
+                    "https://github.com/acme/svc/pull/545",
+                ),
+                (
+                    "perf:[ACME-1] run integration test features in parallel",
+                    "https://github.com/acme/svc/pull/547",
+                ),
+            ],
+            None,
+            Some("Start with the first one"),
+        )
+        .unwrap();
+        assert_eq!(
+            text,
+            "Hello team\nCould someone please review these pull requests?\n\
+             • `feat:[ACME-1] run integration tests against apimock`\nhttps://github.com/acme/svc/pull/545\n\
+             • `perf:[ACME-1] run integration test features in parallel`\nhttps://github.com/acme/svc/pull/547\n\
+             Thanks!\n\nStart with the first one\n"
+        );
+        assert!(
+            !text
+                .lines()
+                .any(|l| l.starts_with("- ") || l.starts_with("* "))
+        );
+    }
+
+    #[test]
+    fn custom_templates_and_notes_with_list_markers_are_normalized() {
+        let mut templates = MessageTemplates::default();
+        templates.set(TemplateKind::Item, "  * {title} {url}".into());
+        let text = build_with(
+            &templates,
+            MessageMode::Remind,
+            &[
+                ("a", "https://github.com/acme/w/pull/1"),
+                ("b", "https://github.com/acme/w/pull/2"),
+            ],
+            None,
+            Some("- check tests\n-not a list\n* also"),
+        )
+        .unwrap();
+        assert!(text.contains("  • `a` https://github.com/acme/w/pull/1\n  • `b`"));
+        assert!(text.ends_with("\n\n• check tests\n-not a list\n• also\n"));
+        assert_eq!(slack_bullets("x - y\n`- z`"), "x - y\n`- z`");
     }
 }
