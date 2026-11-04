@@ -4,6 +4,7 @@ import type { Api, BulkCard, BulkPreview, BulkRequest, BulkResult, ChannelKey, R
 import { channelLabel, errorMessage } from "../api";
 import { DraftWarning } from "./DraftWarning";
 import { TargetCombobox } from "./TargetCombobox";
+import { Tooltip } from "../Tooltip";
 import { BULK_CONCURRENCY, mapLimit } from "../mapLimit";
 import type { Toast } from "../list/model";
 import { CopyMessageButton } from "./CopyMessageButton";
@@ -237,7 +238,10 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen, onReady, onNot
                   >
                     <header className="flex items-center justify-between gap-2">
                       <h3 className="font-medium">
-                        {[targetWorkspaceName(card.target), channelLabel(card.target)].filter(Boolean).join(" · ")}
+                        {targetWorkspaceName(card.target) && `${targetWorkspaceName(card.target)} · `}
+                        <Tooltip label={`Channel ID ${card.target.channel_id}`} align="start">
+                          <span tabIndex={0}>{channelLabel(card.target)}</span>
+                        </Tooltip>
                       </h3>
                       {(card.can_switch || card.single_top_level) && (
                         <label className="flex items-center gap-1 text-xs text-slate-300">
@@ -272,6 +276,11 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen, onReady, onNot
                           <CopyMessageButton text={message.text} onNotice={onNotice} />
                         </div>
                       </div>
+                    ))}
+                    {(card.notes ?? []).map((note) => (
+                      <p key={note} className="mt-1 text-xs text-sky-300">
+                        {note}
+                      </p>
                     ))}
                     {card.warnings.map((warning) => (
                       <p key={warning} className="mt-1 text-xs text-amber-300">

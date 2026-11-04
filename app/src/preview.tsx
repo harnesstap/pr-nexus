@@ -11,6 +11,7 @@ import { Wizard } from "./wizard/Wizard";
 import { recordSeenVersion } from "./changelog/changelog";
 import { RELEASES } from "./changelog/data";
 import { SettingsScreen } from "./settings/SettingsScreen";
+import { BulkDialog } from "./slack/BulkDialog";
 import { fakeSettingsApi } from "./settings/fakes";
 
 const steps = [
@@ -394,6 +395,43 @@ if (changelogPreview === "modal") {
 const previewApi: Api = changelogPreview
   ? { ...api, appInfo: () => api.appInfo().then((info) => ({ ...info, version: latest })) }
   : api;
+// ?screen=remapped shows the bulk preview after a team moved to another channel:
+// a new request in the mapped channel, with a note that the old thread is not bumped.
+if (screenName === "remapped") {
+  const prs = [1, 2, 3, 4, 5].map((n) => ({ pr_id: n, number: 100 + n, title: `Change ${n}`, repo: "acme/web" }));
+  previewApi.slackWorkspaces = () => Promise.resolve([{ id: 1, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false, team_id: "T0ACME0001", enabled: true, priority: 0 }]);
+  previewApi.bulkPreview = () =>
+    Promise.resolve({
+      cards: [
+        {
+          target: { workspace: "acme", team_id: "T0ACME0001", workspace_name: "Acme", channel_id: "C0ACME0002", channel_name: "new-channel" },
+          messages: [{ action: "request", prs, text: "Hi team, could you review these PRs?\n" + prs.map((pr) => `• acme/web#${pr.number} ${pr.title}`).join("\n"), permalink: null }],
+          warnings: [],
+          signed_in: true,
+          single_top_level: false,
+          can_switch: false,
+          fingerprint: "preview",
+          notes: [`Channel changed since the last request: new request in #new-channel for ${prs.map((pr) => `#${pr.number}`).join(", ")}. The old thread in #old-channel is not bumped.`],
+        },
+      ],
+      skipped: [],
+      pr_warnings: [],
+    });
+}
+// ?screen=mapping-mismatch shows Settings → Mappings with a row whose saved
+// channel name is not the name Slack gives for its channel id.
+if (screenName === "mapping-mismatch") {
+  const row = (slug: string, name: string, id: string) => ({
+    row: { github_org: "acme", team_slug: slug, team_name: "", slack_workspace: "acme", slack_team_id: "T0ACME0001", slack_channel_name: name, slack_channel_id: id },
+    source: "user" as const,
+    disabled: false,
+    has_imported: false,
+  });
+  const real: Record<string, string> = { C0ACME0001: "web-reviews", C0ACME0002: "new-channel" };
+  previewApi.listMappings = () => Promise.resolve([row("api", "old-channel", "C0ACME0002"), row("web", "web-reviews", "C0ACME0001")]);
+  previewApi.slackChannelNames = (channels) => Promise.resolve(channels.map((channel) => real[channel.channel_id] ?? null));
+  previewApi.slackWorkspaces = () => Promise.resolve([{ id: 1, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false, team_id: "T0ACME0001", enabled: true, priority: 0 }]);
+}
 const root = document.getElementById("root");
 if (!root) {
   throw new Error("root element missing");
@@ -412,6 +450,14 @@ createRoot(root).render(
         }}
         onFinished={() => undefined}
       />
+    ) : screenName === "remapped" ? (
+      <div className="min-h-screen bg-slate-950 text-slate-200">
+        <BulkDialog api={previewApi} prIds={[1, 2, 3, 4, 5]} onClose={() => undefined} onSent={() => undefined} onOpen={() => undefined} />
+      </div>
+    ) : screenName === "mapping-mismatch" ? (
+      <div className="min-h-screen bg-slate-950 px-6 py-8 text-slate-200">
+        <SettingsScreen api={previewApi} boot={boot} onBoot={() => undefined} accounts={null} tab="mappings" onTabChange={() => undefined} onRerunSetup={() => undefined} />
+      </div>
     ) : screenName === "profile-reuse" ? (
       <div className="min-h-screen bg-slate-950 px-6 py-8 text-slate-200">
         <ProfileReuse api={api} profiles={previewProfiles} onCreated={() => undefined} onCancel={() => undefined} />

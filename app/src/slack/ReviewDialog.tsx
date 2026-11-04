@@ -146,6 +146,8 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNot
   }
 
   const bump = preview?.action === "bump";
+  /** Old threads in channels the teams were remapped away from (§7.11). */
+  const previous = (choices ?? []).filter((choice) => choice.source === "previous");
   const draft =
     !markedReady && ((row.state === "open" && row.is_draft) || (preview?.pr_warnings ?? []).some((warning) => warning.kind === "draft"));
   return (
@@ -188,7 +190,7 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNot
               <div className="space-y-2">
                 <p className="text-xs text-slate-400">
                   {bump
-                    ? `Bump in the existing thread${preview.broadcast ? ", also sent to the channel" : " only"} (${preview.bump_count} earlier bump${preview.bump_count === 1 ? "" : "s"}).`
+                    ? `Bump in the existing thread${preview.broadcast ? ", also sent to the channel" : " only"} (${preview.bump_count} earlier bump${preview.bump_count === 1 ? "" : "s"}) · ${[channelLabel(preview.target), preview.target.workspace_name].filter(Boolean).join(" · ")}.`
                     : `New message in ${[channelLabel(preview.target), preview.target.workspace_name].filter(Boolean).join(" · ")}.`}
                   {bump && preview.permalink && (
                     <>
@@ -215,6 +217,15 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNot
                     className="mt-1 block w-full resize-y rounded-md border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-slate-100 placeholder:text-slate-600 focus:border-violet-500 focus:outline-none"
                   />
                 </label>
+                {previous.length > 0 && chosen?.source !== "previous" && (
+                  <p className="text-xs text-sky-300">
+                    Channel changed since the last request: new request in {channelLabel(preview.target)}. To bump the old thread in{" "}
+                    {previous.map((choice) => channelLabel(choice.target)).join(", ")} instead, pick it above.
+                  </p>
+                )}
+                {chosen?.source === "previous" && (
+                  <p className="text-xs text-sky-300">This channel is no longer mapped to the PR's teams; the bump goes to the old thread here.</p>
+                )}
                 {preview.warnings.map((warning) => (
                   <p key={warning} className="text-xs text-amber-300">
                     {warning}

@@ -324,10 +324,18 @@ export interface ReviewTarget {
 export interface TargetChoice {
   target: ReviewTarget;
   teams: string[];
-  source: "request" | "mapping";
+  /** `previous`: an active request in a channel the teams are no longer mapped to. */
+  source: "request" | "mapping" | "previous";
 }
 
 /** A target picker search result (§7.11): a channel, or a member who gets a DM. */
+/** A channel id to name, with the workspace that sees it. */
+export interface ChannelRef {
+  workspace: string;
+  team_id?: string | null;
+  channel_id: string;
+}
+
 export interface TargetMatch {
   target: ReviewTarget;
   kind: "channel" | "member";
@@ -390,6 +398,8 @@ export interface BulkCard {
   single_top_level: boolean;
   can_switch: boolean;
   fingerprint: string;
+  /** E.g. "Channel changed since the last request": a new request here, not a bump. Absent in older fixtures. */
+  notes?: string[];
 }
 
 export interface BulkPreview {
@@ -817,6 +827,8 @@ export interface Api {
   /** `#term` channels, `@term` members, a bare term both; scoped to one workspace. */
   /** Searches every enabled workspace in priority order; merged and labeled. */
   searchSlackTargets(query: string): Promise<TargetMatch[]>;
+  /** Current Slack name of each channel id, in order; null when Slack can't say. Read-only. */
+  slackChannelNames(channels: ChannelRef[]): Promise<(string | null)[]>;
   /** `note` is appended after a blank line; see `withNote`. */
   sendReview(prId: number, target: ReviewTarget, teams: string[], note?: string): Promise<SlackIndicator>;
   bulkPreview(request: BulkRequest): Promise<BulkPreview>;
@@ -965,6 +977,7 @@ export const tauriApi: Api = {
   reviewTargets: (prId, teams) => invoke("review_targets", { prId, teams }),
   reviewPreview: (prId, target) => invoke("review_preview", { prId, target }),
   searchSlackTargets: (query) => invoke("slack_search_targets", { query }),
+  slackChannelNames: (channels) => invoke("slack_channel_names", { channels }),
   sendReview: (prId, target, teams, note) => invoke("send_review", { prId, target, teams, note: note?.trim() ? note : null }),
   bulkPreview: (request) => invoke("bulk_preview", { request }),
   sendBulk: (request, fingerprints) => invoke("send_bulk", { request, fingerprints }),

@@ -76,7 +76,9 @@ pub struct TargetChoice {
     pub target: ReviewTarget,
     /// Teams whose mapping points here, `org/slug`.
     pub teams: Vec<String>,
-    /// `request` when an active request lives in this channel, else `mapping`.
+    /// `request` when an active request lives in this channel and it is still
+    /// mapped, `mapping` for a mapped channel without one, `previous` for an
+    /// active request in a channel the teams are no longer mapped to.
     pub source: String,
 }
 
@@ -411,47 +413,41 @@ pub async fn review_targets(
     blocking::run(move || {
         let state = app.inner().as_ref();
         let pr = load_pr(&state.store, pr_id)?;
-        targets_for(&state.store, &pr, &teams)
+        let choices = targets_for(&state.store, &pr, &teams)?;
+        Ok(choices
+            .into_iter()
+            .map(|mut choice| {
+                choice.target = resolve_target(state, &review::LiveChats, choice.target);
+                choice
+            })
+            .collect())
     })
     .await
 }
 
 /// Active requests first, then the mapping rows of `teams` (`org/slug`).
+///
+/// §7.11 remap rule: when the teams have a mapping and an active request
+/// lives in a channel none of those mappings point to any more (the team was
+/// remapped since the request), that request is not a default. It is listed
+/// after the mapped channels with source `previous`, so the dialogs open on
+/// a new request in the mapped channel and the old thread stays one explicit
+/// pick away. Bulk leaves `previous` channels out (see `services::bulk`).
 pub(crate) fn targets_for(
     store: &Store,
     pr: &PullRequest,
     teams: &[String],
 ) -> Result<Vec<TargetChoice>, AppError> {
     let workspaces = route::workspaces(store)?;
-    let mut choices: Vec<TargetChoice> = Vec::new();
-    for request in store.list_review_requests(pr.id)? {
-        if request.status != pr_nexus_core::domain::RequestStatus::Active {
-            continue;
-        }
-        push_choice(
-            &mut choices,
-            labeled(
-                &workspaces,
-                ReviewTarget {
-                    workspace: request.workspace,
-                    team_id: request.team_id,
-                    workspace_name: String::new(),
-                    channel_id: request.channel_id,
-                    channel_name: request.channel_name,
-                },
-            ),
-            None,
-            "request",
-        );
-    }
     let rows = store.list_mappings()?;
+    let mut mapped: Vec<TargetChoice> = Vec::new();
     for team in teams {
         let Some((org, slug)) = team.trim_start_matches('@').split_once('/') else {
             continue;
         };
         if let Some(row) = lookup_mapping(&rows, org, slug, "") {
             push_choice(
-                &mut choices,
+                &mut mapped,
                 labeled(
                     &workspaces,
                     ReviewTarget {
@@ -467,7 +463,57 @@ pub(crate) fn targets_for(
             );
         }
     }
-    Ok(choices)
+    let mut current: Vec<TargetChoice> = Vec::new();
+    let mut previous: Vec<TargetChoice> = Vec::new();
+    for request in store.list_review_requests(pr.id)? {
+        if request.status != pr_nexus_core::domain::RequestStatus::Active {
+            continue;
+        }
+        let target = labeled(
+            &workspaces,
+            ReviewTarget {
+                workspace: request.workspace,
+                team_id: request.team_id,
+                workspace_name: String::new(),
+                channel_id: request.channel_id,
+                channel_name: request.channel_name,
+            },
+        );
+        let still_mapped = mapped.is_empty()
+            || mapped
+                .iter()
+                .any(|choice| same_channel(&choice.target, &target));
+        if still_mapped {
+            push_choice(&mut current, target, None, "request");
+        } else {
+            push_choice(&mut previous, target, None, "previous");
+        }
+    }
+    for choice in mapped {
+        if let Some(existing) = current
+            .iter_mut()
+            .find(|existing| same_channel(&existing.target, &choice.target))
+        {
+            for team in choice.teams {
+                if !existing.teams.contains(&team) {
+                    existing.teams.push(team);
+                }
+            }
+            continue;
+        }
+        current.push(choice);
+    }
+    current.extend(previous);
+    Ok(current)
+}
+
+/// Same channel: same ID and same team when both know it, else same domain.
+fn same_channel(a: &ReviewTarget, b: &ReviewTarget) -> bool {
+    a.channel_id == b.channel_id
+        && match (&a.team_id, &b.team_id) {
+            (Some(x), Some(y)) => x == y,
+            _ => a.workspace.eq_ignore_ascii_case(&b.workspace),
+        }
 }
 
 /// `target` with the name of the workspace it names, else its domain.
@@ -555,6 +601,41 @@ pub async fn slack_search_targets(
         search_all(&workspaces, term, channels, members, |ws| {
             chat_for(state, &ws.team_id)
         })
+    })
+    .await
+}
+
+/// One channel to name for Settings → Mappings.
+#[derive(Debug, Deserialize)]
+pub struct ChannelRef {
+    pub workspace: String,
+    #[serde(default)]
+    pub team_id: Option<String>,
+    pub channel_id: String,
+}
+
+/// The current Slack name of each channel id, in order; `null` when Slack
+/// can't say (offline, not visible, or the read gives no name). Read-only.
+#[tauri::command]
+pub async fn slack_channel_names(
+    app: Shared<'_>,
+    channels: Vec<ChannelRef>,
+) -> Result<Vec<Option<String>>, AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        Ok(channels
+            .iter()
+            .map(|channel| {
+                channel_name(
+                    state,
+                    &review::LiveChats,
+                    &channel.workspace,
+                    channel.team_id.as_deref(),
+                    channel.channel_id.trim(),
+                )
+            })
+            .collect())
     })
     .await
 }
@@ -1061,6 +1142,59 @@ fn demo_matches<'a>(
         .iter()
         .copied()
         .filter(move |(_, name)| name.to_lowercase().contains(&query))
+}
+
+/// The channel's current name, read from Slack by its id (cached per
+/// workspace). `None` when the lookup fails, the app is offline, or Slack
+/// gives no name; callers then keep the stored name.
+pub(crate) fn channel_name(
+    state: &AppState,
+    chats: &dyn review::ChatSource,
+    workspace: &str,
+    team_id: Option<&str>,
+    channel_id: &str,
+) -> Option<String> {
+    if !(channel_id.starts_with('C') || channel_id.starts_with('G')) {
+        return None;
+    }
+    let scope = team_id
+        .filter(|team| !team.is_empty())
+        .unwrap_or(workspace)
+        .to_ascii_lowercase();
+    let key = (scope, channel_id.to_owned());
+    if let Some(name) = lock(&state.channel_names).get(&key) {
+        return Some(name.clone());
+    }
+    let route = team_id.filter(|team| !team.is_empty()).unwrap_or(workspace);
+    let info = chats
+        .chat(state, route)
+        .ok()?
+        .channel_info(channel_id)
+        .ok()?;
+    let name = info.name.trim().trim_start_matches('#').to_owned();
+    if name.is_empty() || name == channel_id || info.id != channel_id {
+        return None;
+    }
+    lock(&state.channel_names).insert(key, name.clone());
+    Some(name)
+}
+
+/// `target` with its channel name read from the id (see [`channel_name`]).
+pub(crate) fn resolve_target(
+    state: &AppState,
+    chats: &dyn review::ChatSource,
+    mut target: ReviewTarget,
+) -> ReviewTarget {
+    if let Some(name) = channel_name(
+        state,
+        chats,
+        &target.workspace,
+        target.team_id.as_deref(),
+        &target.channel_id,
+    ) {
+        target.channel_name = name;
+    }
+    target
 }
 
 pub(crate) fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {

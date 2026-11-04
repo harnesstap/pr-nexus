@@ -74,6 +74,9 @@ pub struct BulkCard {
     pub single_top_level: bool,
     pub can_switch: bool,
     pub fingerprint: String,
+    /// Why this card is not what the last request suggests, e.g. the team was
+    /// remapped since: a new request here, not a bump in the old thread.
+    pub notes: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq, Eq)]
@@ -120,7 +123,7 @@ pub fn send(
     request: &BulkRequest,
     fingerprints: &[String],
 ) -> Result<BulkResult, AppError> {
-    let (plan, prs) = plan_request(state, request)?;
+    let (plan, prs, _) = plan_request(state, chats, request)?;
     send_plan(state, chats, plan, &prs, fingerprints)
 }
 
@@ -133,7 +136,7 @@ pub fn send_card(
     request: &BulkRequest,
     fingerprint: &str,
 ) -> Result<BulkResult, AppError> {
-    let (mut plan, prs) = plan_request(state, request)?;
+    let (mut plan, prs, _) = plan_request(state, chats, request)?;
     plan.cards.retain(|card| card.fingerprint() == fingerprint);
     if plan.cards.is_empty() {
         return Err(AppError::new(
@@ -250,26 +253,56 @@ impl Pace for RealPace {
 /// Gate, route, and plan. Returns the PRs that were looked up for the DTOs.
 /// Gate, plan and route without posting: the bottom bar's preview.
 pub fn preview(state: &AppState, request: &BulkRequest) -> Result<BulkPreview, AppError> {
-    let (plan, prs) = plan_request(state, request)?;
-    preview_dto(state, &plan, &prs)
+    preview_with(state, &crate::services::review::LiveChats, request)
+}
+
+/// [`preview`] reading channel names through `chats` (§7.9: the channel id
+/// is the truth, the stored name only a fallback when Slack can't say).
+pub fn preview_with(
+    state: &AppState,
+    chats: &dyn ChatSource,
+    request: &BulkRequest,
+) -> Result<BulkPreview, AppError> {
+    let (plan, prs, moved) = plan_request(state, chats, request)?;
+    preview_dto(state, &plan, &prs, &moved)
+}
+
+/// A PR whose active request lives in a channel its teams are no longer
+/// mapped to (§7.9 remap rule): it is planned as a new request in the
+/// mapped channel, and its card says so.
+#[derive(Debug, Clone)]
+struct Moved {
+    pr: PrId,
+    /// Mapped channel the PR is planned in.
+    to: (String, String),
+    /// Label of the channel the old thread lives in.
+    from: String,
 }
 
 fn plan_request(
     state: &AppState,
+    chats: &dyn ChatSource,
     request: &BulkRequest,
-) -> Result<(BatchPlan, Vec<PullRequest>), AppError> {
+) -> Result<(BatchPlan, Vec<PullRequest>, Vec<Moved>), AppError> {
     if request.pr_ids.is_empty() {
         return Err(AppError::new(
             "validation",
             "Select at least one pull request",
         ));
     }
-    let override_target = request.target.clone().map(validate_target).transpose()?;
+    let resolve = |target: ReviewTarget| crate::slack::resolve_target(state, chats, target);
+    let override_target = request
+        .target
+        .clone()
+        .map(validate_target)
+        .transpose()?
+        .map(resolve);
     let flag = settings::blocked_review_required_is_ready(&state.store)?;
     let mut prs = Vec::new();
     let mut inputs = Vec::new();
     let mut skipped = Vec::new();
     let mut seen = BTreeSet::new();
+    let mut moved = Vec::new();
     for &id in &request.pr_ids {
         if !seen.insert(id) {
             continue;
@@ -327,17 +360,43 @@ fn plan_request(
                 target: core_target(target),
                 teams: teams.clone(),
             }],
-            None => targets_for(&state.store, &pr, &teams)?
-                .into_iter()
-                .map(|choice| Route {
-                    target: core_target(&choice.target),
-                    teams: if choice.teams.is_empty() {
-                        teams.clone()
-                    } else {
-                        choice.teams
-                    },
-                })
-                .collect(),
+            None => {
+                let choices: Vec<_> = targets_for(&state.store, &pr, &teams)?
+                    .into_iter()
+                    .map(|mut choice| {
+                        choice.target = resolve(choice.target);
+                        choice
+                    })
+                    .collect();
+                // Never bump a thread in a channel the team left: the card
+                // would name the mapped channel and post to the old one.
+                let (previous, choices): (Vec<_>, Vec<_>) = choices
+                    .into_iter()
+                    .partition(|choice| choice.source == "previous");
+                for old in &previous {
+                    for to in choices.iter().filter(|choice| choice.source == "mapping") {
+                        moved.push(Moved {
+                            pr: pr.id,
+                            to: (
+                                to.target.workspace.trim().to_ascii_lowercase(),
+                                to.target.channel_id.clone(),
+                            ),
+                            from: crate::slack::to_core(&old.target).label(),
+                        });
+                    }
+                }
+                choices
+            }
+            .into_iter()
+            .map(|choice| Route {
+                target: core_target(&choice.target),
+                teams: if choice.teams.is_empty() {
+                    teams.clone()
+                } else {
+                    choice.teams
+                },
+            })
+            .collect(),
         };
         if routes.is_empty() {
             skipped.push(skip(
@@ -364,7 +423,7 @@ fn plan_request(
             .collect(),
     };
     let plan = batch::plan_batch(&state.store, &inputs, skipped, &options, Utc::now())?;
-    Ok((plan, prs))
+    Ok((plan, prs, moved))
 }
 
 fn blocked_reasons(readiness: Readiness) -> Option<String> {
@@ -396,6 +455,7 @@ fn preview_dto(
     state: &AppState,
     plan: &BatchPlan,
     prs: &[PullRequest],
+    moved: &[Moved],
 ) -> Result<BulkPreview, AppError> {
     let workspaces = route::workspaces(&state.store)?;
     let mut cards = Vec::new();
@@ -441,6 +501,7 @@ fn preview_dto(
             single_top_level: card.single_top_level,
             can_switch: card.can_switch,
             fingerprint: card.fingerprint(),
+            notes: moved_notes(card, moved),
         });
     }
     let pr_warnings = prs.iter().flat_map(crate::slack::pr_warnings).collect();
@@ -456,6 +517,41 @@ fn preview_dto(
             })
             .collect(),
     })
+}
+
+/// "Channel changed since the last request" for the PRs of `card` whose
+/// old thread lives elsewhere, one line per old channel.
+fn moved_notes(card: &batch::ChannelCard, moved: &[Moved]) -> Vec<String> {
+    let key = (
+        card.target.workspace.trim().to_ascii_lowercase(),
+        card.target.channel_id.clone(),
+    );
+    let mut by_from: Vec<(String, Vec<String>)> = Vec::new();
+    for message in &card.messages {
+        if !matches!(message.kind, MessagePlanKind::Request) {
+            continue;
+        }
+        for item in &message.items {
+            for m in moved.iter().filter(|m| m.pr == item.pr.id && m.to == key) {
+                let number = format!("#{}", item.pr.number);
+                match by_from.iter_mut().find(|(from, _)| *from == m.from) {
+                    Some((_, list)) if !list.contains(&number) => list.push(number),
+                    Some(_) => {}
+                    None => by_from.push((m.from.clone(), vec![number])),
+                }
+            }
+        }
+    }
+    by_from
+        .into_iter()
+        .map(|(from, prs)| {
+            format!(
+                "Channel changed since the last request: new request in {} for {}. The old thread in {from} is not bumped.",
+                card.target.label(),
+                prs.join(", ")
+            )
+        })
+        .collect()
 }
 
 /// Point every fresh card that posts a new request at the first enabled

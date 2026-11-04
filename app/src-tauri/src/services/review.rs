@@ -42,8 +42,19 @@ pub fn preview(
     pr_id: i64,
     target: ReviewTarget,
 ) -> Result<ReviewPreview, AppError> {
+    preview_with(state, &LiveChats, pr_id, target)
+}
+
+/// [`preview`] reading channel names through `chats`: the channel id is the
+/// truth and its name comes from Slack, the stored name only as a fallback.
+pub fn preview_with(
+    state: &AppState,
+    chats: &dyn ChatSource,
+    pr_id: i64,
+    target: ReviewTarget,
+) -> Result<ReviewPreview, AppError> {
     let pr = load_pr(&state.store, pr_id)?;
-    let target = validate_target(target)?;
+    let target = crate::slack::resolve_target(state, chats, validate_target(target)?);
     let plan = plan(state, &pr, &target)?;
     let workspaces = route::workspaces(&state.store)?;
     let (action, bump_count, permalink, signed_in) = match &plan.action {
@@ -89,7 +100,7 @@ pub fn send(
     note: Option<&str>,
 ) -> Result<SlackIndicator, AppError> {
     let pr = load_pr(&state.store, pr_id)?;
-    let target = validate_target(target)?;
+    let target = crate::slack::resolve_target(state, chats, validate_target(target)?);
     let plan = lifecycle::with_note(plan(state, &pr, &target)?, note);
     let teams_json = serde_json::to_string(teams).unwrap_or_else(|_| "[]".into());
     let mut send = |chat: &dyn ChatProvider, target: &Target| {

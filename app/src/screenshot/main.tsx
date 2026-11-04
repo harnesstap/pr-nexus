@@ -200,6 +200,7 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     };
   },
   slack_search_targets: (args) => searchTargets(String(args.query ?? "")),
+  slack_channel_names: (args) => (Array.isArray(args.channels) ? args.channels.map(() => null) : []),
   set_pr_draft: (args) => {
     const row = rows.find((item) => item.id === args.id);
     if (row) {
