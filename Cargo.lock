@@ -3261,7 +3261,7 @@ dependencies = [
 
 [[package]]
 name = "pr-nexus"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -3295,7 +3295,7 @@ dependencies = [
 
 [[package]]
 name = "pr-nexus-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "bitflags 2.13.2",
  "chrono",
@@ -3313,7 +3313,7 @@ dependencies = [
 
 [[package]]
 name = "pr-nexus-providers"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "async-trait",
  "chrono",

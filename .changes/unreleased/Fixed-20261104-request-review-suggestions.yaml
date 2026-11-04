@@ -1,3 +1,0 @@
-kind: Fixed
-body: 'Request review on Slack: the dialog no longer opens on an empty "#" target with a channel ID error. A team mapping with a channel name but no ID is now a suggestion that searches for the channel, a mapping row with no channel at all is ignored, and the code-owner channel with an ID is preselected. Search never shows the ID error; no results show a grey hint, and the ID is checked only in Enter an ID. Bulk and request_reviews skip such PRs with a clear reason.'
-time: 2026-11-04T03:50:00.000000-10:00
