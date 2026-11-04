@@ -15,6 +15,7 @@ import { SettingsScreen } from "./settings/SettingsScreen";
 import { BulkDialog } from "./slack/BulkDialog";
 import { fakeMcp, fakeSettingsApi, sampleActivity } from "./settings/fakes";
 import { McpActivity } from "./settings/McpActivity";
+import { McpClientConfig } from "./settings/McpClientConfig";
 
 const steps = [
   "choose_vcs",
@@ -397,6 +398,12 @@ const screenName = new URLSearchParams(window.location.search).get("screen");
 const changelogPreview = new URLSearchParams(window.location.search).get("changelog");
 // ?activity=stats (or log) shows Settings → Agents → Activity on that sub-tab.
 const activityPreview = new URLSearchParams(window.location.search).get("activity");
+// `?mcp-clients=found` shows the OpenCode tab with an existing opencode.jsonc;
+// `?mcp-clients=missing` shows it before the file exists.
+const mcpClientsScene = new URLSearchParams(window.location.search).get("mcp-clients");
+if (mcpClientsScene) {
+  window.localStorage.setItem("pr-nexus.mcp-client-tab", "opencode");
+}
 const latest = RELEASES[0]?.version ?? "0.1.0";
 if (changelogPreview === "modal") {
   recordSeenVersion(RELEASES.length > 1 ? RELEASES[RELEASES.length - 1].version! : "0.0.0");
@@ -478,6 +485,17 @@ createRoot(root).render(
     ) : activityPreview === "stats" || activityPreview === "log" ? (
       <div className="min-h-screen max-w-3xl bg-slate-950 px-6 py-8 text-sm text-slate-200">
         <McpActivity api={fakeMcp({}, sampleActivity())} initialView={activityPreview} />
+      </div>
+    ) : mcpClientsScene ? (
+      <div className="min-h-screen max-w-3xl bg-slate-950 px-6 py-8 text-sm text-slate-200">
+        <McpClientConfig
+          api={fakeMcp({ enabled: true }, [], [], [], mcpClientsScene === "found" ? { opencode: "added" } : {})}
+          url="http://127.0.0.1:47800/mcp"
+          tokenMasked="pnx_••••••••••••beef"
+          tokenVersion="1"
+          fixedPort
+          onCopy={() => undefined}
+        />
       </div>
     ) : changelogPreview === "tab" ? (
       <div className="min-h-screen bg-slate-950 px-6 py-8 text-slate-200">

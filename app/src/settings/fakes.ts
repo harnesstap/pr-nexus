@@ -73,7 +73,7 @@ export const FAKE_CLIENT_PATHS: Record<McpClientId, string> = {
   cursor: "~/.cursor/mcp.json",
   vscode: "~/Library/Application Support/Code/User/mcp.json",
   codex: "~/.codex/config.toml",
-  opencode: "~/.config/opencode/opencode.json",
+  opencode: "~/.config/opencode/opencode.jsonc",
 };
 
 /** Two made-up workspaces: `acme`, and `acme-labs` on an Enterprise Grid. */
@@ -197,7 +197,8 @@ export function fakeMcp(
   };
   const clientState = (client: McpClientId): McpClientState => {
     const status = clients[client] ?? "not_added";
-    return { client, status, path: FAKE_CLIENT_PATHS[client], exists: status !== "not_added" };
+    const shown = FAKE_CLIENT_PATHS[client];
+    return { client, status, path: shown.replace(/^~/, "/Users/acme"), display_path: shown, exists: status !== "not_added" };
   };
   return {
     mcpSettings: () => Promise.resolve(view()),
@@ -229,7 +230,7 @@ export function fakeMcp(
         : Promise.reject(new Error("Turn the server on first")),
     mcpAddToClient: (client) => {
       if (clients[client] === "unreadable") {
-        return Promise.reject(new Error(`${FAKE_CLIENT_PATHS[client]} is not plain JSON; left unchanged.`));
+        return Promise.reject(new Error(`${FAKE_CLIENT_PATHS[client]} has a syntax error; left unchanged.`));
       }
       clients = { ...clients, [client]: "added" };
       return Promise.resolve(clientState(client));

@@ -23,6 +23,8 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 toml_edit = "0.25"
+# JSONC (comments, trailing commas) read and edited in place, see src/mcp/clients.rs.
+jsonc-parser = { version = "0.34", features = ["cst", "serde_json"] }
 tauri = { version = "2.12", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"

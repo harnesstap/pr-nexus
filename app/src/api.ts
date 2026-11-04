@@ -757,6 +757,8 @@ export interface McpClientState {
   client: McpClientId;
   status: "not_added" | "added" | "outdated" | "unreadable";
   path: string;
+  /** `path` with the home folder as `~`, for the help text. */
+  display_path: string;
   exists: boolean;
 }
 

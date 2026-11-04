@@ -41,14 +41,21 @@ describe("mcpClientSnippet", () => {
     ]);
   });
 
-  it("OpenCode: mcp entry of type remote", () => {
+  it("OpenCode: mcp.servers entry of type remote (OpenCode 2)", () => {
     const parsed = JSON.parse(mcpClientSnippet("opencode", URL, TOKEN).text);
-    expect(parsed.mcp["pr-nexus"]).toEqual({
+    expect(parsed.mcp.servers["pr-nexus"]).toEqual({
       type: "remote",
       url: URL,
-      enabled: true,
+      oauth: false,
       headers: { Authorization: "Bearer pnx_example" },
     });
+  });
+
+  it("OpenCode: names the file it found, and .jsonc when none", () => {
+    expect(mcpClientSnippet("opencode", URL, TOKEN, "~/.config/opencode/opencode.jsonc").where).toMatch(
+      /^Merge into ~\/\.config\/opencode\/opencode\.jsonc\./,
+    );
+    expect(mcpClientSnippet("opencode", URL, TOKEN).where).toContain("~/.config/opencode/opencode.jsonc");
   });
 
   it("every client says where the snippet goes", () => {

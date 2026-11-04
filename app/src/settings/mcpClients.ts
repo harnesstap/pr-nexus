@@ -29,7 +29,11 @@ function tomlString(value: string): string {
   return JSON.stringify(value);
 }
 
-export function mcpClientSnippet(client: McpClient, url: string, token: string): McpClientSnippet {
+/**
+ * `found` is the client's config file when it exists (home as `~`), so the
+ * help text names the real file, e.g. `~/.config/opencode/opencode.jsonc`.
+ */
+export function mcpClientSnippet(client: McpClient, url: string, token: string, found?: string): McpClientSnippet {
   const bearer = `Bearer ${token}`;
   switch (client) {
     case "claude-desktop":
@@ -72,10 +76,12 @@ export function mcpClientSnippet(client: McpClient, url: string, token: string):
       };
     case "opencode":
       return {
-        where: "Merge into opencode.json (project root, or ~/.config/opencode/opencode.json).",
+        where: found
+          ? `Merge into ${found}. OpenCode 1.x: put the server directly under "mcp", without "servers".`
+          : 'Merge into ~/.config/opencode/opencode.jsonc (or opencode.json), or into opencode.jsonc in a project. OpenCode 1.x: put the server directly under "mcp", without "servers".',
         text: json({
           $schema: "https://opencode.ai/config.json",
-          mcp: { [NAME]: { type: "remote", url, enabled: true, headers: { Authorization: bearer } } },
+          mcp: { servers: { [NAME]: { type: "remote", url, oauth: false, headers: { Authorization: bearer } } } },
         }),
       };
   }
