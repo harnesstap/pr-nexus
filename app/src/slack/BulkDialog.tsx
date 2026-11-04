@@ -5,6 +5,8 @@ import { channelLabel, errorMessage } from "../api";
 import { DraftWarning } from "./DraftWarning";
 import { TargetCombobox } from "./TargetCombobox";
 import { BULK_CONCURRENCY, mapLimit } from "../mapLimit";
+import type { Toast } from "../list/model";
+import { CopyMessageButton } from "./CopyMessageButton";
 
 interface Props {
   api: Api;
@@ -16,6 +18,8 @@ interface Props {
   onOpen: (url: string) => void;
   /** Called for each PR "Mark all ready" took out of draft. */
   onReady?: (id: number) => void;
+  /** Shows a toast, e.g. after "Copy message". */
+  onNotice?: (toast: Toast) => void;
 }
 
 const ACTION_LABEL = {
@@ -33,7 +37,7 @@ function sameKey(a: ChannelKey, b: ChannelKey) {
  * before anything is posted. Send posts one message at a time and reports a
  * result per PR and channel; nothing already posted is rolled back.
  */
-export function BulkDialog({ api, prIds, onClose, onSent, onOpen, onReady }: Props) {
+export function BulkDialog({ api, prIds, onClose, onSent, onOpen, onReady, onNotice }: Props) {
   const [ids, setIds] = useState(prIds);
   const [oneChannel, setOneChannel] = useState(false);
   const [target, setTarget] = useState<ReviewTarget | null>(null);
@@ -261,9 +265,12 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen, onReady }: Pro
                             </>
                           )}
                         </p>
-                        <pre aria-label="Message preview" className="whitespace-pre-wrap rounded bg-slate-950 p-3 text-xs">
-                          {message.text}
-                        </pre>
+                        <div className="relative">
+                          <pre aria-label="Message preview" className="whitespace-pre-wrap rounded bg-slate-950 p-3 pr-10 text-xs">
+                            {message.text}
+                          </pre>
+                          <CopyMessageButton text={message.text} onNotice={onNotice} />
+                        </div>
                       </div>
                     ))}
                     {card.warnings.map((warning) => (

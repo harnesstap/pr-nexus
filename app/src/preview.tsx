@@ -1,6 +1,6 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import type { Api, Bootstrap, ContextThread, ProfileDto, ProjectDto, ReviewTarget } from "./api";
+import type { Api, Bootstrap, BulkPreview, ContextThread, ProfileDto, ProjectDto, ReviewTarget } from "./api";
 import { ProfileReuse } from "./wizard/ProfileReuse";
 import { mockBranch, mockDetail, mockOverview } from "./detail/mock";
 import "./index.css";
@@ -182,6 +182,31 @@ const rows: SearchRow[] = [
   }),
 ];
 
+/** Demo plan for the bulk Slack dialog: one card per acme channel, or one card for "All to one channel". */
+function demoBulkPreview(ids: number[], target: ReviewTarget | null): BulkPreview {
+  const prs = rows.filter((item) => ids.includes(item.id)).map((item) => ({ pr_id: item.id, number: item.number, title: item.title, repo: item.repo }));
+  const text = (list: typeof prs) =>
+    `Hello team\nCould someone please review ${list.length === 1 ? "this pull request" : "these pull requests"}?\n${list.map((pr) => `• \`${pr.title}\`\nhttps://github.com/${pr.repo}/pull/${pr.number}`).join("\n")}\nThanks!`;
+  const card = (channel: ReviewTarget, list: typeof prs) => ({
+    target: channel,
+    messages: [{ action: "request" as const, prs: list, text: text(list), permalink: null }],
+    warnings: [],
+    signed_in: true,
+    single_top_level: false,
+    can_switch: false,
+    fingerprint: `demo-${channel.channel_id}`,
+  });
+  if (target) {
+    return { cards: [card(target, prs)], skipped: [], pr_warnings: [] };
+  }
+  const half = Math.ceil(prs.length / 2);
+  const cards = [
+    card({ workspace: "acme", channel_id: "C0123456789", channel_name: "web-reviews" }, prs.slice(0, half)),
+    card({ workspace: "acme", channel_id: "C0987654321", channel_name: "platform" }, prs.slice(half)),
+  ].filter((item) => item.messages[0]!.prs.length > 0);
+  return { cards, skipped: [], pr_warnings: [] };
+}
+
 const previewThreads: ContextThread[] = [
   {
     workspace: "acme",
@@ -223,7 +248,8 @@ const api: Api = {
   slackRemoveWorkspace: () => Promise.resolve(),
   slackSetWorkspaceEnabled: () => Promise.resolve([]),
   slackSetWorkspaceOrder: () => Promise.resolve([]),
-  reviewTargets: () => Promise.resolve([]),
+  reviewTargets: (_prId: number, teams: string[]) =>
+    Promise.resolve([{ target: { workspace: "acme", channel_id: "C0123456789", channel_name: "web-reviews" }, teams, source: "mapping" as const }]),
   searchSlackTargets: (query: string) => {
     const workspace = "acme";
     const term = query.replace(/^[#@]/, "").trim().toLowerCase();
@@ -236,11 +262,11 @@ const api: Api = {
       .filter(({ item }) => item.name.toLowerCase().includes(term))
       .map(({ kind, item }) => ({ kind, target: { workspace, channel_id: item.id, channel_name: item.name } })));
   },
-  reviewPreview: (_prId: number, target: ReviewTarget) =>
+  reviewPreview: (prId: number, target: ReviewTarget) =>
     Promise.resolve({
       target,
       action: "request" as const,
-      text: "Hi, could you review this?",
+      text: demoBulkPreview([prId], target).cards[0]?.messages[0]?.text ?? "Hi, could you review this?",
       warnings: [],
       pr_warnings: [],
       signed_in: true,
@@ -248,7 +274,7 @@ const api: Api = {
       permalink: null,
       broadcast: true,
     }),
-  bulkPreview: () => Promise.resolve({ cards: [], skipped: [], pr_warnings: [] }),
+  bulkPreview: (request) => Promise.resolve(demoBulkPreview(request.pr_ids, request.target)),
   sendBulk: () => Promise.resolve({ batch_id: "bulk-1", results: [], indicators: [] }),
   sendReview: (_prId: number, target: ReviewTarget) =>
     Promise.resolve({

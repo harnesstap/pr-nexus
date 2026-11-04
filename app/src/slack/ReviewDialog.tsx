@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import type { Api, ListRow, ReviewPreview, ReviewTarget, SlackIndicator, SlackWorkspace, TargetChoice } from "../api";
 import { channelLabel, errorMessage } from "../api";
 import { plainText } from "../textInput";
+import type { Toast } from "../list/model";
+import { CopyMessageButton } from "./CopyMessageButton";
 import { DraftWarning } from "./DraftWarning";
 import { Mrkdwn } from "./mrkdwn";
 import { TargetCombobox } from "./TargetCombobox";
@@ -15,6 +17,8 @@ interface Props {
   onOpen: (url: string) => void;
   /** Called after "Mark ready for review" took the PR out of draft. */
   onReady?: (id: number) => void;
+  /** Shows a toast, e.g. after "Copy message". */
+  onNotice?: (toast: Toast) => void;
 }
 
 /**
@@ -30,7 +34,7 @@ export function withNote(text: string, note: string): string {
  * Request or bump review on Slack for one PR (§7.11). Shows the exact text
  * before anything is posted; Send is the only call that reaches Slack.
  */
-export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady }: Props) {
+export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNotice }: Props) {
   const [teams, setTeams] = useState<string[]>([]);
   const [choices, setChoices] = useState<TargetChoice[] | null>(null);
   const [workspaces, setWorkspaces] = useState<SlackWorkspace[]>([]);
@@ -195,8 +199,9 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady }: Pro
                     </>
                   )}
                 </p>
-                <div className="rounded border border-slate-800 bg-slate-950 p-3">
+                <div className="relative rounded border border-slate-800 bg-slate-950 p-3 pr-10">
                   <Mrkdwn label="Message preview" text={withNote(preview.text, note)} onOpen={onOpen} />
+                  <CopyMessageButton text={withNote(preview.text, note)} onNotice={onNotice} />
                 </div>
                 <label className="block text-xs text-slate-400">
                   Note (optional, added after a blank line)

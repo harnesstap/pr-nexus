@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
+import type { Toast } from "../list/model";
 import type { Api, BulkCard, BulkPreview, BulkRequest, BulkResult } from "../api";
 import { BulkDialog } from "./BulkDialog";
 
@@ -200,4 +201,46 @@ test("Mark all ready runs up to four at once, clears each as it finishes and rep
   }
   await waitFor(() => expect(screen.getByText("Couldn't mark ready for review: #41: GitHub said no")).toBeInTheDocument());
   expect(ready.sort()).toEqual([2, 3, 4, 5, 6]);
+});
+
+test("Copy message copies each destination's text without sending, in both modes", async () => {
+  const writeText = vi.fn<(text: string) => Promise<void>>(() => Promise.resolve());
+  Object.assign(navigator, { clipboard: { writeText } });
+  const { api, calls } = fake();
+  const notices: Toast[] = [];
+  let closed = false;
+  render(<BulkDialog api={api} prIds={[1, 2]} onClose={() => (closed = true)} onSent={() => undefined} onOpen={() => undefined} onNotice={(toast) => notices.push(toast)} />);
+  await screen.findByText("Bump #42");
+  const buttons = screen.getAllByRole("button", { name: "Copy message" });
+  expect(buttons).toHaveLength(2);
+  fireEvent.click(buttons[1]!);
+  await waitFor(() => expect(writeText).toHaveBeenLastCalledWith("Please review #43"));
+  expect(notices.at(-1)).toEqual({ text: "Message copied" });
+  fireEvent.click(buttons[0]!);
+  await waitFor(() => expect(writeText).toHaveBeenLastCalledWith("Bump #42"));
+
+  fireEvent.click(screen.getByRole("radio", { name: "All to one channel" }));
+  fireEvent.click(screen.getByRole("button", { name: "Enter an ID" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Channel, DM or member ID" }), { target: { value: "D0123456789" } });
+  fireEvent.change(screen.getByRole("textbox", { name: "Name" }), { target: { value: "me" } });
+  fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+  await screen.findByRole("region", { name: "DM · me" });
+  fireEvent.click(screen.getByRole("button", { name: "Copy message" }));
+  await waitFor(() => expect(writeText).toHaveBeenLastCalledWith("Two PRs please"));
+
+  expect(calls.sends).toHaveLength(0);
+  expect(closed).toBe(false);
+  expect(screen.getByRole("dialog")).toBeInTheDocument();
+});
+
+test("Copy message shows an error toast when the clipboard fails", async () => {
+  Object.assign(navigator, { clipboard: { writeText: vi.fn(() => Promise.reject(new Error("denied"))) } });
+  Object.assign(document, { execCommand: vi.fn(() => false) });
+  const { api, calls } = fake();
+  const notices: Toast[] = [];
+  render(<BulkDialog api={api} prIds={[1, 2]} onClose={() => undefined} onSent={() => undefined} onOpen={() => undefined} onNotice={(toast) => notices.push(toast)} />);
+  await screen.findByText("Bump #42");
+  fireEvent.click(screen.getAllByRole("button", { name: "Copy message" })[0]!);
+  await waitFor(() => expect(notices.at(-1)).toEqual({ text: "Couldn't copy to the clipboard: Clipboard is not available", error: true }));
+  expect(calls.sends).toHaveLength(0);
 });
