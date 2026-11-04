@@ -8,7 +8,7 @@ const DEFAULTS: Record<TemplateKind, string> = {
   batch_request: "Hello team\nCould someone please review these pull requests?{who}\n{items}\nThanks!",
   single_remind: "Hello, I'm still looking for a review on {title} when you have a moment :pray:\n{url}\nThanks!",
   batch_remind: "Hello, I'm still looking for a review on these pull requests when you have a moment :pray:\n{items}\nThanks!",
-  item: "- {title}\n{url}",
+  item: "• {title}\n{url}",
 };
 
 /** Stands in for the backend: unknown placeholders and a missing {url} are refused. */

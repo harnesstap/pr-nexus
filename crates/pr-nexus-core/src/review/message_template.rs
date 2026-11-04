@@ -15,7 +15,7 @@ pub const DEFAULT_BATCH_REQUEST: &str =
     "Hello team\nCould someone please review these pull requests?{who}\n{items}\nThanks!";
 pub const DEFAULT_SINGLE_REMIND: &str = "Hello, I'm still looking for a review on {title} when you have a moment :pray:\n{url}\nThanks!";
 pub const DEFAULT_BATCH_REMIND: &str = "Hello, I'm still looking for a review on these pull requests when you have a moment :pray:\n{items}\nThanks!";
-pub const DEFAULT_ITEM: &str = "- {title}\n{url}";
+pub const DEFAULT_ITEM: &str = "• {title}\n{url}";
 
 /// One editable template.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -417,7 +417,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             text,
-            "2 PRs (alice):\n* `one_two` -> https://github.com/acme/widgets/pull/1\n* `use 'x'` -> https://github.com/acme/widgets/pull/2\n\nnote\n"
+            "2 PRs (alice):\n• `one_two` -> https://github.com/acme/widgets/pull/1\n• `use 'x'` -> https://github.com/acme/widgets/pull/2\n\nnote\n"
         );
     }
 
