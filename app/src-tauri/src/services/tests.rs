@@ -550,7 +550,15 @@ fn remapped_team_gets_a_new_request_in_the_mapped_channel() {
         channel_name: "old-channel".into(),
         ..channel()
     };
-    review::send(state, &slack, pr, old.clone(), &[team.clone()], None).unwrap();
+    review::send(
+        state,
+        &slack,
+        pr,
+        old.clone(),
+        std::slice::from_ref(&team),
+        None,
+    )
+    .unwrap();
     map_team(state, &team, "C0ACME0002", "new-channel");
     slack.posts.lock().unwrap().clear();
 
@@ -568,7 +576,13 @@ fn remapped_team_gets_a_new_request_in_the_mapped_channel() {
     assert!(card.notes[0].contains("#new-channel"), "{}", card.notes[0]);
     assert!(card.notes[0].contains("#old-channel"), "{}", card.notes[0]);
 
-    let result = bulk::send(state, &slack, &request, &[card.fingerprint.clone()]).unwrap();
+    let result = bulk::send(
+        state,
+        &slack,
+        &request,
+        std::slice::from_ref(&card.fingerprint),
+    )
+    .unwrap();
     assert!(result.results.iter().all(|r| r.outcome == "sent"));
     let posts = slack.posts.lock().unwrap();
     assert_eq!(posts.len(), 1);
@@ -591,12 +605,21 @@ fn remapped_team_keeps_the_old_thread_as_an_explicit_pick() {
         channel_name: "old-channel".into(),
         ..channel()
     };
-    review::send(state, &slack, pr, old.clone(), &[team.clone()], None).unwrap();
+    review::send(
+        state,
+        &slack,
+        pr,
+        old.clone(),
+        std::slice::from_ref(&team),
+        None,
+    )
+    .unwrap();
     map_team(state, &team, "C0ACME0002", "new-channel");
     slack.posts.lock().unwrap().clear();
 
     let stored = crate::slack::load_pr(&state.store, pr).unwrap();
-    let choices = crate::slack::targets_for(&state.store, &stored, &[team.clone()]).unwrap();
+    let choices =
+        crate::slack::targets_for(&state.store, &stored, std::slice::from_ref(&team)).unwrap();
     let sources: Vec<(&str, &str)> = choices
         .iter()
         .map(|c| (c.target.channel_id.as_str(), c.source.as_str()))
@@ -628,7 +651,15 @@ fn unchanged_mapping_still_bumps_the_tracked_thread() {
     let slack = Arc::new(FakeSlack::default());
     let (pr, team) = pr_with_team(state);
     map_team(state, &team, "C0ACME0001", "team-reviews");
-    review::send(state, &slack, pr, channel(), &[team.clone()], None).unwrap();
+    review::send(
+        state,
+        &slack,
+        pr,
+        channel(),
+        std::slice::from_ref(&team),
+        None,
+    )
+    .unwrap();
     let request: BulkRequest =
         serde_json::from_value(serde_json::json!({ "pr_ids": [pr] })).unwrap();
     let preview = bulk::preview(state, &request).unwrap();
