@@ -20,7 +20,19 @@
         "groups:read",
         "channels:history",
         "groups:history",
-        "users:read"
+        "users:read",
+        "search:read.mpim",
+        "search:read.im",
+        "search:read.files",
+        "mpim:read",
+        "im:read",
+        "mpim:history",
+        "im:history",
+        "reactions:read",
+        "emoji:read",
+        "files:read",
+        "canvases:read",
+        "lists:read"
       ],
       "user_optional": [
         "search:read.private"

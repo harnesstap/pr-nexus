@@ -217,6 +217,21 @@ test("a workspace missing new scopes offers Sign in again, which clears the note
   expect(connect).toHaveBeenCalledTimes(1);
 });
 
+test("when Slack still does not grant the scopes, the note names them and says where to add them", async () => {
+  const stale = [FAKE_SLACK_WORKSPACES[0], { ...FAKE_SLACK_WORKSPACES[1], scopes_missing: ["reactions:read", "canvases:read"] }];
+  const api = fakeMcp({ enabled: true, slack_reads: true }, [], stale);
+  // The Slack app does not list the scopes: signing in again changes nothing.
+  vi.spyOn(api, "slackConnect").mockResolvedValue(stale[1]!);
+  render(<AgentsSettings api={api} />);
+  const again = await screen.findByRole("button", { name: "Sign in again to Acme Labs" });
+  fireEvent.click(again);
+  await vi.waitFor(() =>
+    expect(screen.getByRole("button", { name: "Sign in again to Acme Labs" })).toHaveAccessibleDescription(
+      /Slack did not give these permissions: reactions:read, canvases:read\. .*User Token Scopes/,
+    ),
+  );
+});
+
 function proposal(id: number, patch: Partial<SlackProposal> = {}): SlackProposal {
   return {
     id,
