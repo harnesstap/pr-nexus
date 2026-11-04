@@ -22,7 +22,7 @@ use crate::slack::{
 use crate::state::AppState;
 
 /// Where Slack sessions come from. `key` is a team ID, else a domain.
-pub trait ChatSource {
+pub trait ChatSource: Sync {
     fn chat(&self, state: &AppState, key: &str) -> Result<Arc<dyn ChatProvider>, AppError>;
 }
 

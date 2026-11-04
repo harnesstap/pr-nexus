@@ -413,14 +413,13 @@ pub async fn review_targets(
     blocking::run(move || {
         let state = app.inner().as_ref();
         let pr = load_pr(&state.store, pr_id)?;
-        let choices = targets_for(&state.store, &pr, &teams)?;
-        Ok(choices
-            .into_iter()
-            .map(|mut choice| {
-                choice.target = resolve_target(state, &review::LiveChats, choice.target);
-                choice
-            })
-            .collect())
+        let mut choices = targets_for(&state.store, &pr, &teams)?;
+        let targets: Vec<_> = choices.iter().map(|choice| choice.target.clone()).collect();
+        let resolved = resolve_targets(state, &review::LiveChats, targets, Names::Live);
+        for (choice, target) in choices.iter_mut().zip(resolved) {
+            choice.target = target;
+        }
+        Ok(choices)
     })
     .await
 }
@@ -624,9 +623,10 @@ pub async fn slack_channel_names(
     let app = blocking::Handle::new(&app);
     blocking::run(move || {
         let state = app.inner().as_ref();
-        Ok(channels
-            .iter()
-            .map(|channel| {
+        Ok(crate::parallel::bounded_map(
+            &channels,
+            NAME_LOOKUPS,
+            |channel| {
                 channel_name(
                     state,
                     &review::LiveChats,
@@ -634,8 +634,8 @@ pub async fn slack_channel_names(
                     channel.team_id.as_deref(),
                     channel.channel_id.trim(),
                 )
-            })
-            .collect())
+            },
+        ))
     })
     .await
 }
@@ -1144,16 +1144,24 @@ fn demo_matches<'a>(
         .filter(move |(_, name)| name.to_lowercase().contains(&query))
 }
 
-/// The channel's current name, read from Slack by its id (cached per
-/// workspace). `None` when the lookup fails, the app is offline, or Slack
-/// gives no name; callers then keep the stored name.
-pub(crate) fn channel_name(
-    state: &AppState,
-    chats: &dyn review::ChatSource,
-    workspace: &str,
-    team_id: Option<&str>,
-    channel_id: &str,
-) -> Option<String> {
+/// How long a name read from Slack is trusted before it is read again.
+pub(crate) const NAME_TTL: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+/// How long a failed lookup is remembered, so an offline or expired
+/// workspace isn't retried on every preview.
+pub(crate) const MISS_TTL: std::time::Duration = std::time::Duration::from_secs(2 * 60);
+/// Name lookups in flight at once (one Slack MCP read each).
+pub(crate) const NAME_LOOKUPS: usize = 4;
+
+/// Whether a resolution may ask Slack or only reads the session cache.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Names {
+    /// Cache, else the stored name: never touches the network.
+    Cached,
+    /// Cache, else one Slack read per channel.
+    Live,
+}
+
+fn name_key(workspace: &str, team_id: Option<&str>, channel_id: &str) -> Option<(String, String)> {
     if !(channel_id.starts_with('C') || channel_id.starts_with('G')) {
         return None;
     }
@@ -1161,40 +1169,127 @@ pub(crate) fn channel_name(
         .filter(|team| !team.is_empty())
         .unwrap_or(workspace)
         .to_ascii_lowercase();
-    let key = (scope, channel_id.to_owned());
-    if let Some(name) = lock(&state.channel_names).get(&key) {
-        return Some(name.clone());
+    Some((scope, channel_id.to_owned()))
+}
+
+/// The fresh cache entry for a channel: `Some(Some(name))` a known name,
+/// `Some(None)` a recent failed lookup, `None` nothing fresh.
+fn cached_name(state: &AppState, key: &(String, String)) -> Option<Option<String>> {
+    let names = lock(&state.channel_names);
+    let entry = names.get(key)?;
+    let ttl = if entry.name.is_some() {
+        NAME_TTL
+    } else {
+        MISS_TTL
+    };
+    (entry.at.elapsed() < ttl).then(|| entry.name.clone())
+}
+
+/// The channel's current name, read from Slack by its id and cached for
+/// the session ([`NAME_TTL`], failures [`MISS_TTL`]). `None` when the
+/// lookup fails, the app is offline, or Slack gives no name; callers then
+/// keep the stored name.
+pub(crate) fn channel_name(
+    state: &AppState,
+    chats: &dyn review::ChatSource,
+    workspace: &str,
+    team_id: Option<&str>,
+    channel_id: &str,
+) -> Option<String> {
+    let key = name_key(workspace, team_id, channel_id)?;
+    if let Some(hit) = cached_name(state, &key) {
+        return hit;
     }
     let route = team_id.filter(|team| !team.is_empty()).unwrap_or(workspace);
-    let info = chats
+    let started = std::time::Instant::now();
+    let name = chats
         .chat(state, route)
-        .ok()?
-        .channel_info(channel_id)
-        .ok()?;
-    let name = info.name.trim().trim_start_matches('#').to_owned();
-    if name.is_empty() || name == channel_id || info.id != channel_id {
-        return None;
-    }
-    lock(&state.channel_names).insert(key, name.clone());
-    Some(name)
+        .ok()
+        .and_then(|chat| chat.channel_info(channel_id).ok())
+        .and_then(|info| {
+            let name = info.name.trim().trim_start_matches('#').to_owned();
+            (!name.is_empty() && name != channel_id && info.id == channel_id).then_some(name)
+        });
+    tracing::debug!(
+        channel = channel_id,
+        found = name.is_some(),
+        ms = started.elapsed().as_millis() as u64,
+        "slack channel name lookup"
+    );
+    lock(&state.channel_names).insert(
+        key,
+        crate::state::NameEntry {
+            name: name.clone(),
+            at: std::time::Instant::now(),
+        },
+    );
+    name
 }
 
 /// `target` with its channel name read from the id (see [`channel_name`]).
 pub(crate) fn resolve_target(
     state: &AppState,
     chats: &dyn review::ChatSource,
-    mut target: ReviewTarget,
+    target: ReviewTarget,
 ) -> ReviewTarget {
-    if let Some(name) = channel_name(
-        state,
-        chats,
-        &target.workspace,
-        target.team_id.as_deref(),
-        &target.channel_id,
-    ) {
-        target.channel_name = name;
+    resolve_targets(state, chats, vec![target], Names::Live)
+        .pop()
+        .expect("one target in, one out")
+}
+
+/// `targets` with their names read from their ids. Each distinct channel
+/// not in the cache is read once, at most [`NAME_LOOKUPS`] at a time; with
+/// [`Names::Cached`] nothing is read and unknown names stay as stored.
+pub(crate) fn resolve_targets(
+    state: &AppState,
+    chats: &dyn review::ChatSource,
+    mut targets: Vec<ReviewTarget>,
+    names: Names,
+) -> Vec<ReviewTarget> {
+    let key = |target: &ReviewTarget| {
+        name_key(
+            &target.workspace,
+            target.team_id.as_deref(),
+            &target.channel_id,
+        )
+    };
+    if names == Names::Live {
+        let mut seen = std::collections::BTreeSet::new();
+        let missing: Vec<&ReviewTarget> = targets
+            .iter()
+            .filter(|target| {
+                key(target).is_some_and(|k| cached_name(state, &k).is_none() && seen.insert(k))
+            })
+            .collect();
+        crate::parallel::bounded_map(&missing, NAME_LOOKUPS, |target| {
+            channel_name(
+                state,
+                chats,
+                &target.workspace,
+                target.team_id.as_deref(),
+                &target.channel_id,
+            )
+        });
     }
-    target
+    for target in &mut targets {
+        if let Some(Some(name)) = key(target).and_then(|k| cached_name(state, &k)) {
+            target.channel_name = name;
+        }
+    }
+    targets
+}
+
+/// Some target's name is neither cached nor known to be unknown: a live
+/// resolution could still change it.
+pub(crate) fn names_pending(state: &AppState, targets: &[ReviewTarget]) -> bool {
+    targets.iter().any(|target| {
+        name_key(
+            &target.workspace,
+            target.team_id.as_deref(),
+            &target.channel_id,
+        )
+        .is_some_and(|k| cached_name(state, &k).is_none())
+    })
 }
 
 pub(crate) fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {

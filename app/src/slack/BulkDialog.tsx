@@ -1,5 +1,5 @@
 import { targetWorkspaceName } from "./workspaces";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Api, BulkCard, BulkPreview, BulkRequest, BulkResult, ChannelKey, ReviewTarget, SlackWorkspace } from "../api";
 import { channelLabel, errorMessage } from "../api";
 import { DraftWarning } from "./DraftWarning";
@@ -46,6 +46,10 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen, onReady, onNot
   const [single, setSingle] = useState<ChannelKey[]>([]);
   const [preview, setPreview] = useState<BulkPreview | null>(null);
   const [loading, setLoading] = useState(true);
+  /** Cards are drawn; channel names are still being read from Slack. */
+  const [naming, setNaming] = useState(false);
+  /** Bumped by every new plan, so a slow answer for an older one is dropped. */
+  const generation = useRef(0);
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [result, setResult] = useState<BulkResult | null>(null);
@@ -62,20 +66,60 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen, onReady, onNot
     [ids, oneChannel, target, single],
   );
 
-  const load = useCallback(
+  /**
+   * Plans from local data first (cached channel names) and draws the cards,
+   * then, only when a name is still unknown, plans again with Slack and
+   * swaps in the named cards. Send waits for the second answer.
+   */
+  const plan = useCallback(
     async (body: BulkRequest) => {
-      setLoading(true);
-      setError(null);
-      setPreview(null);
+      const run = ++generation.current;
+      const current = () => run === generation.current;
+      let first: BulkPreview;
       try {
-        setPreview(await api.bulkPreview(body));
+        first = await api.bulkPreview({ ...body, cached_names: true });
       } catch (err) {
-        setError(errorMessage(err));
+        if (current()) {
+          setError(errorMessage(err));
+          setLoading(false);
+        }
+        return;
+      }
+      if (!current()) {
+        return;
+      }
+      setPreview(first);
+      setLoading(false);
+      if (!first.names_pending) {
+        return;
+      }
+      setNaming(true);
+      try {
+        const named = await api.bulkPreview({ ...body, cached_names: false });
+        if (current()) {
+          setPreview(named);
+        }
+      } catch {
+        // Keep the stored names: Send plans again and posts to the ids.
       } finally {
-        setLoading(false);
+        if (current()) {
+          setNaming(false);
+        }
       }
     },
     [api],
+  );
+
+  /** A new plan after a toggle or a retry: clears the old cards first. */
+  const replan = useCallback(
+    (body: BulkRequest) => {
+      setLoading(true);
+      setNaming(false);
+      setError(null);
+      setPreview(null);
+      void plan(body);
+    },
+    [plan],
   );
 
   useEffect(() => {
@@ -87,15 +131,14 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen, onReady, onNot
       }
       setWorkspaces(signedIn);
     })();
-    api
-      .bulkPreview({ pr_ids: prIds, target: null, single_top_level: [] })
-      .then((planned) => !cancel && setPreview(planned))
-      .catch((err: unknown) => !cancel && setError(errorMessage(err)))
-      .finally(() => !cancel && setLoading(false));
+    void (async () => {
+      await plan({ pr_ids: prIds, target: null, single_top_level: [] });
+    })();
     return () => {
       cancel = true;
+      generation.current += 1;
     };
-  }, [api, prIds]);
+  }, [api, prIds, plan]);
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
@@ -112,13 +155,13 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen, onReady, onNot
     const key = { workspace: card.target.workspace, channel_id: card.target.channel_id };
     const next = single.some((item) => sameKey(item, key)) ? single.filter((item) => !sameKey(item, key)) : [...single, key];
     setSingle(next);
-    void load(request({ single: next }));
+    replan(request({ single: next }));
   }
 
   function routeMode(next: boolean) {
     setOneChannel(next);
     if (!next) {
-      void load(request({ oneChannel: false }));
+      replan(request({ oneChannel: false }));
     } else {
       setPreview(null);
     }
@@ -169,7 +212,7 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen, onReady, onNot
     const failed = [...new Set(result.results.filter((item) => item.outcome === "failed").map((item) => item.pr.pr_id))];
     setIds(failed);
     setResult(null);
-    void load(request({ ids: failed }));
+    replan(request({ ids: failed }));
   }
 
   const drafts = (preview?.pr_warnings ?? []).filter((warning) => warning.kind === "draft" && !readied.includes(warning.pr_id));
@@ -215,7 +258,7 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen, onReady, onNot
                   value={target}
                   onSelect={(next) => {
                     setTarget(next);
-                    void load(request({ oneChannel: true, target: next }));
+                    replan(request({ oneChannel: true, target: next }));
                   }}
                 />
               </div>
@@ -227,6 +270,11 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen, onReady, onNot
               </DraftWarning>
             )}
             {loading && <p className="mt-4 text-slate-400">Planning messages…</p>}
+            {naming && (
+              <p role="status" className="mt-2 text-xs text-slate-400">
+                Checking channel names on Slack…
+              </p>
+            )}
             {preview && (
               <div className="mt-4 space-y-3">
                 {preview.cards.length === 0 && <p className="text-slate-400">Nothing to send.</p>}
@@ -329,7 +377,7 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen, onReady, onNot
               <button
                 type="button"
                 className="rounded bg-violet-500 px-3 py-1.5 font-medium text-white disabled:opacity-40"
-                disabled={!preview || messageCount === 0 || unsigned.length > 0 || sending || marking}
+                disabled={!preview || naming || messageCount === 0 || unsigned.length > 0 || sending || marking}
                 onClick={() => void send()}
               >
                 {sending ? "Sending…" : `Send ${messageCount} message${messageCount === 1 ? "" : "s"}${drafts.length > 0 ? " anyway" : ""}`}

@@ -2,13 +2,17 @@
 //! what it would post; nothing here talks to a network.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use chrono::Utc;
 use pr_nexus_core::domain::{Account, AccountId, AccountKind, AuthMode, ChatKind};
+use pr_nexus_core::domain::{ProviderRef, PullRequest, TeamRef, VcsKind};
 use pr_nexus_core::error::ProviderError;
 use pr_nexus_core::providers::{
-    ChatChannel, ChatProvider, ChatUser, OutgoingMessage, Page, PostedMessage,
+    ChatChannel, ChatProvider, ChatUser, OutgoingMessage, OwnershipInputs, OwnershipProbe, Page,
+    PostedMessage, PrQuery, RateBudget, SyncedPullRequest, TeamMembers, VcsProvider, VcsUser,
 };
 
 use super::bulk::{self, BulkRequest};
@@ -54,6 +58,32 @@ fn pr_id(state: &AppState, number: u64) -> i64 {
 #[derive(Default)]
 struct FakeSlack {
     posts: Mutex<Vec<(String, Option<String>, String)>>,
+    /// Channel ids read by id, in order.
+    lookups: Mutex<Vec<String>>,
+    /// How long each read takes.
+    delay: Duration,
+    calls: Concurrency,
+}
+
+/// Calls in flight now, and the most seen at once.
+#[derive(Default)]
+struct Concurrency {
+    now: AtomicUsize,
+    peak: AtomicUsize,
+}
+
+impl Concurrency {
+    fn run<T>(&self, delay: Duration, work: impl FnOnce() -> T) -> T {
+        let now = self.now.fetch_add(1, Ordering::SeqCst) + 1;
+        self.peak.fetch_max(now, Ordering::SeqCst);
+        std::thread::sleep(delay);
+        let out = work();
+        self.now.fetch_sub(1, Ordering::SeqCst);
+        out
+    }
+    fn peak(&self) -> usize {
+        self.peak.load(Ordering::SeqCst)
+    }
 }
 
 struct FakeChat {
@@ -74,16 +104,18 @@ impl ChatProvider for FakeChat {
         Err(ProviderError::Unsupported("fake".into()))
     }
     fn channel_info(&self, channel_id: &str) -> Result<ChatChannel, ProviderError> {
-        // Slack knows one channel's name; any other read gives only the id,
-        // like a probe that can't name the channel.
+        self.slack.lookups.lock().unwrap().push(channel_id.into());
+        // Slack knows two channels' names; any other read gives only the
+        // id, like a probe that can't name the channel.
         let name = match channel_id {
             "C0ACME0002" => "new-channel",
+            "C0ACME0003" => "docs-reviews",
             other => other,
         };
-        Ok(ChatChannel {
+        Ok(self.slack.calls.run(self.slack.delay, || ChatChannel {
             id: channel_id.into(),
             name: name.into(),
-        })
+        }))
     }
     fn post(&self, message: &OutgoingMessage<'_>) -> Result<PostedMessage, ProviderError> {
         let mut posts = self.slack.posts.lock().unwrap();
@@ -584,7 +616,7 @@ fn preview_names_the_channel_from_its_id() {
 
     let request: BulkRequest =
         serde_json::from_value(serde_json::json!({ "pr_ids": [pr] })).unwrap();
-    let preview = bulk::preview_with(state, &slack, &request).unwrap();
+    let preview = bulk::preview_with(state, &slack, &bulk::LiveVcs, &request).unwrap();
     assert_eq!(preview.cards.len(), 1, "{:?}", preview.cards);
     assert_eq!(preview.cards[0].target.channel_id, "C0ACME0002");
     assert_eq!(preview.cards[0].target.channel_name, "new-channel");
@@ -757,4 +789,240 @@ fn unchanged_mapping_still_bumps_the_tracked_thread() {
     assert_eq!(preview.cards[0].target.channel_id, "C0ACME0001");
     assert_eq!(preview.cards[0].messages[0].action, "bump");
     assert!(preview.cards[0].notes.is_empty());
+}
+
+/// GitHub as the demo provider answers it, counting ownership probes and
+/// how many run at once.
+#[derive(Default)]
+struct CountingGithub {
+    probes: AtomicUsize,
+    clients: AtomicUsize,
+    delay: Duration,
+    calls: Concurrency,
+}
+
+struct CountingClient(Arc<CountingGithub>);
+
+impl VcsProvider for CountingClient {
+    fn kind(&self) -> VcsKind {
+        VcsKind::GitHub
+    }
+    fn viewer(&self) -> Result<VcsUser, ProviderError> {
+        crate::demo::DemoProvider.viewer()
+    }
+    fn search_pull_requests(&self, q: &PrQuery) -> Result<Vec<SyncedPullRequest>, ProviderError> {
+        crate::demo::DemoProvider.search_pull_requests(q)
+    }
+    fn refresh_pull_requests(
+        &self,
+        ids: &[ProviderRef],
+    ) -> Result<Vec<SyncedPullRequest>, ProviderError> {
+        crate::demo::DemoProvider.refresh_pull_requests(ids)
+    }
+    fn pull_request_status(
+        &self,
+        ids: &[ProviderRef],
+    ) -> Result<Vec<pr_nexus_core::providers::PrStatus>, ProviderError> {
+        crate::demo::DemoProvider.pull_request_status(ids)
+    }
+    fn ownership_probe(&self, pr: &PullRequest) -> Result<OwnershipProbe, ProviderError> {
+        self.0.probes.fetch_add(1, Ordering::SeqCst);
+        self.0.calls.run(self.0.delay, || {
+            crate::demo::DemoProvider.ownership_probe(pr)
+        })
+    }
+    fn ownership_inputs(
+        &self,
+        pr: &PullRequest,
+        probe: &OwnershipProbe,
+    ) -> Result<OwnershipInputs, ProviderError> {
+        crate::demo::DemoProvider.ownership_inputs(pr, probe)
+    }
+    fn team_members(&self, team: &TeamRef) -> Result<TeamMembers, ProviderError> {
+        crate::demo::DemoProvider.team_members(team)
+    }
+    fn rate_limit(&self) -> Result<RateBudget, ProviderError> {
+        crate::demo::DemoProvider.rate_limit()
+    }
+}
+
+impl bulk::VcsSource for Arc<CountingGithub> {
+    fn vcs(&self, _: &AppState) -> Result<Box<dyn VcsProvider>, AppError> {
+        self.clients.fetch_add(1, Ordering::SeqCst);
+        Ok(Box::new(CountingClient(Arc::clone(self))))
+    }
+}
+
+fn probes(github: &CountingGithub) -> usize {
+    github.probes.load(Ordering::SeqCst)
+}
+
+fn lookups(slack: &FakeSlack) -> usize {
+    slack.lookups.lock().unwrap().len()
+}
+
+/// Forget what earlier calls (e.g. the detail panel) left in the session
+/// caches.
+fn cold_caches(state: &AppState) {
+    state.owners.lock().unwrap().clear();
+    state.channel_names.lock().unwrap().clear();
+}
+
+/// A second preview (a toggle, a re-open) asks neither GitHub nor Slack;
+/// Send still resolves owners again but reuses the channel name.
+#[test]
+fn second_preview_makes_no_network_calls() {
+    let fx = fixture("preview-cache");
+    let state = &fx.state;
+    connect_fake_workspace(state);
+    let slack = Arc::new(FakeSlack::default());
+    let github = Arc::new(CountingGithub::default());
+    let (pr, team) = pr_with_team(state);
+    map_team(state, &team, "C0ACME0002", "stale-name");
+    cold_caches(state);
+
+    let request: BulkRequest =
+        serde_json::from_value(serde_json::json!({ "pr_ids": [pr] })).unwrap();
+    let first = bulk::preview_with(state, &slack, &github, &request).unwrap();
+    assert_eq!(first.cards[0].target.channel_name, "new-channel");
+    assert_eq!((probes(&github), lookups(&slack)), (1, 1));
+
+    let again = bulk::preview_with(state, &slack, &github, &request).unwrap();
+    assert_eq!(again.cards[0].target, first.cards[0].target);
+    assert_eq!(
+        (probes(&github), lookups(&slack)),
+        (1, 1),
+        "all from the cache"
+    );
+
+    let result = bulk::send_with_vcs(
+        state,
+        &slack,
+        &github,
+        &request,
+        std::slice::from_ref(&again.cards[0].fingerprint),
+    )
+    .unwrap();
+    assert!(result.results.iter().all(|r| r.outcome == "sent"));
+    assert_eq!(probes(&github), 2, "send re-validates owners");
+    assert_eq!(lookups(&slack), 1, "the name stays cached");
+    assert_eq!(slack.posts.lock().unwrap()[0].0, "C0ACME0002");
+}
+
+/// With `cached_names` the preview never waits on Slack: unknown names
+/// keep the stored one and `names_pending` asks for a live pass, which
+/// renames the card to what Slack says for the id.
+#[test]
+fn cached_names_preview_skips_slack_and_flags_pending() {
+    let fx = fixture("preview-pending");
+    let state = &fx.state;
+    connect_fake_workspace(state);
+    let slack = Arc::new(FakeSlack::default());
+    let (pr, team) = pr_with_team(state);
+    map_team(state, &team, "C0ACME0002", "stale-name");
+    cold_caches(state);
+
+    let quick: BulkRequest =
+        serde_json::from_value(serde_json::json!({ "pr_ids": [pr], "cached_names": true }))
+            .unwrap();
+    let draft = bulk::preview_with(state, &slack, &bulk::LiveVcs, &quick).unwrap();
+    assert_eq!(lookups(&slack), 0);
+    assert!(draft.names_pending);
+    assert_eq!(draft.cards[0].target.channel_id, "C0ACME0002");
+    assert_eq!(draft.cards[0].target.channel_name, "stale-name");
+
+    let live: BulkRequest = serde_json::from_value(serde_json::json!({ "pr_ids": [pr] })).unwrap();
+    let named = bulk::preview_with(state, &slack, &bulk::LiveVcs, &live).unwrap();
+    assert!(!named.names_pending);
+    assert_eq!(named.cards[0].target.channel_name, "new-channel");
+    assert_eq!(
+        named.cards[0].fingerprint, draft.cards[0].fingerprint,
+        "same id, same plan"
+    );
+
+    let reopened = bulk::preview_with(state, &slack, &bulk::LiveVcs, &quick).unwrap();
+    assert!(!reopened.names_pending);
+    assert_eq!(reopened.cards[0].target.channel_name, "new-channel");
+    assert_eq!(lookups(&slack), 1);
+}
+
+/// Owners of several PRs resolve through one client, a bounded number at
+/// a time; channel names are read once per channel, in parallel.
+#[test]
+fn many_prs_resolve_in_bounded_parallel() {
+    let fx = fixture("preview-parallel");
+    let state = &fx.state;
+    connect_fake_workspace(state);
+    let slack = Arc::new(FakeSlack {
+        delay: Duration::from_millis(40),
+        ..FakeSlack::default()
+    });
+    let github = Arc::new(CountingGithub {
+        delay: Duration::from_millis(40),
+        ..CountingGithub::default()
+    });
+    let ids: Vec<i64> = prs::list_prs(state, &PrFilter::default())
+        .unwrap()
+        .items
+        .iter()
+        .map(|item| item.row.id)
+        .collect();
+    assert!(ids.len() >= 5, "the seed has several PRs");
+    let (_, team) = pr_with_team(state);
+    map_team(state, &team, "C0ACME0002", "stale-name");
+    cold_caches(state);
+
+    let request: BulkRequest =
+        serde_json::from_value(serde_json::json!({ "pr_ids": ids })).unwrap();
+    bulk::preview_with(state, &slack, &github, &request).unwrap();
+    assert_eq!(
+        github.clients.load(Ordering::SeqCst),
+        1,
+        "one shared client"
+    );
+    assert!(probes(&github) >= 2, "{}", probes(&github));
+    let peak = github.calls.peak();
+    assert!(
+        (2..=bulk::OWNER_LOOKUPS).contains(&peak),
+        "owner lookups overlap but stay bounded: {peak}"
+    );
+
+    // Five targets over two channels in two workspaces: two reads, at once.
+    let target = |workspace: &str, id: &str| ReviewTarget {
+        workspace: workspace.into(),
+        team_id: None,
+        workspace_name: String::new(),
+        channel_id: id.into(),
+        channel_name: "stored".into(),
+    };
+    slack.lookups.lock().unwrap().clear();
+    let targets = vec![
+        target("acme", "C0ACME0002"),
+        target("acme-labs", "C0ACME0003"),
+        target("acme", "C0ACME0002"),
+        target("acme-labs", "C0ACME0003"),
+        target("acme", "C0ACME0002"),
+    ];
+    let named = crate::slack::resolve_targets(state, &slack, targets, crate::slack::Names::Live);
+    let mut read = slack.lookups.lock().unwrap().clone();
+    read.sort();
+    assert_eq!(read, ["C0ACME0002", "C0ACME0003"]);
+    assert_eq!(
+        slack.calls.peak(),
+        2,
+        "the two channels are read in parallel"
+    );
+    assert_eq!(
+        named
+            .iter()
+            .map(|t| t.channel_name.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "new-channel",
+            "docs-reviews",
+            "new-channel",
+            "docs-reviews",
+            "new-channel"
+        ]
+    );
 }
