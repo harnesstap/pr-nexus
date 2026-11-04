@@ -547,6 +547,7 @@ fn remapped_team_gets_a_new_request_in_the_mapped_channel() {
     let (pr, team) = pr_with_team(state);
     map_team(state, &team, "C0ACME0001", "old-channel");
     let old = ReviewTarget {
+        channel_id: "C0ACME0001".into(),
         channel_name: "old-channel".into(),
         ..channel()
     };
@@ -602,6 +603,7 @@ fn remapped_team_keeps_the_old_thread_as_an_explicit_pick() {
     let (pr, team) = pr_with_team(state);
     map_team(state, &team, "C0ACME0001", "old-channel");
     let old = ReviewTarget {
+        channel_id: "C0ACME0001".into(),
         channel_name: "old-channel".into(),
         ..channel()
     };
