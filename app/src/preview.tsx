@@ -186,7 +186,7 @@ const rows: SearchRow[] = [
 function demoBulkPreview(ids: number[], target: ReviewTarget | null): BulkPreview {
   const prs = rows.filter((item) => ids.includes(item.id)).map((item) => ({ pr_id: item.id, number: item.number, title: item.title, repo: item.repo }));
   const text = (list: typeof prs) =>
-    `Hello team\nCould someone please review ${list.length === 1 ? "this pull request" : "these pull requests"}?\n${list.map((pr) => `- ${pr.title}\nhttps://github.com/${pr.repo}/pull/${pr.number}`).join("\n")}\nThanks!`;
+    `Hello team\nCould someone please review ${list.length === 1 ? "this pull request" : "these pull requests"}?\n${list.map((pr) => `• \`${pr.title}\`\nhttps://github.com/${pr.repo}/pull/${pr.number}`).join("\n")}\nThanks!`;
   const card = (channel: ReviewTarget, list: typeof prs) => ({
     target: channel,
     messages: [{ action: "request" as const, prs: list, text: text(list), permalink: null }],
