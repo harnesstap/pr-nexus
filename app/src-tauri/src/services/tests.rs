@@ -502,13 +502,6 @@ fn pr_with_team(state: &AppState) -> (i64, String) {
     .items
     .iter()
     .find_map(|item| {
-        let requested = state
-            .store
-            .list_review_requests(pr_nexus_core::domain::PrId(item.row.id))
-            .ok()?;
-        if !requested.is_empty() {
-            return None;
-        }
         let stored = crate::slack::load_pr(&state.store, item.row.id).ok()?;
         if stored.state != pr_nexus_core::domain::PrState::Open
             || !stored
@@ -527,6 +520,27 @@ fn pr_with_team(state: &AppState) -> (i64, String) {
             detail.mandatory_teams
         };
         teams.first().cloned().map(|team| (item.row.id, team))
+    })
+    .map(|(pr, team)| {
+        // Start from no tracked thread: dismiss the demo's seeded request.
+        let requests = state
+            .store
+            .list_review_requests(pr_nexus_core::domain::PrId(pr))
+            .unwrap();
+        for request in requests
+            .iter()
+            .filter(|r| r.status == pr_nexus_core::domain::RequestStatus::Active)
+        {
+            state
+                .store
+                .close_review_request(
+                    request.id,
+                    pr_nexus_core::domain::CloseReason::Dismissed,
+                    Utc::now(),
+                )
+                .unwrap();
+        }
+        (pr, team)
     })
     .expect("a seeded PR with an owning team")
 }
