@@ -1,3 +1,0 @@
-kind: Added
-body: 'Profiles: keep separate GitHub accounts, Slack workspaces, projects, templates, send policy and activity side by side, and switch between them. Your current setup becomes the default profile (a backup of the old database is kept). MCP tools act on the active profile and take an optional `profile`; `list_profiles` lists them.'
-time: 2026-11-02T12:00:00.000000000-10:00

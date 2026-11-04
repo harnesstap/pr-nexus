@@ -1,3 +1,0 @@
-kind: Changed
-body: 'Quick filters are now compact labelled chips (Draft, No review, CI or conflicts, Changes requested, Ready, Starred) with small counts, inline in the one-row list toolbar. Chips that do not fit fold into More (N), active ones stay visible, empty ones are muted, and Clear filters clears them too.'
-time: 2026-11-02T21:40:00.000000000-10:00

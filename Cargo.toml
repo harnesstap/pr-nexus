@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/pr-nexus-core", "crates/pr-nexus-providers", "app/src-tauri"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.90"
 license = "MIT"

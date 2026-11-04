@@ -1,3 +1,0 @@
-kind: Fixed
-body: 'Settings → Agents: "needs new Slack permissions" no longer loops on Sign in again. The "Create your Slack app" manifest now lists the agent read scopes, and when a new sign-in still lacks scopes, the note names them and says to add them under User Token Scopes on the Slack app''s OAuth & Permissions page.'
-time: 2026-11-04T03:00:00.000000-10:00

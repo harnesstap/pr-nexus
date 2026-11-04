@@ -1,3 +1,0 @@
-kind: Fixed
-body: After a team is remapped to another Slack channel, the review preview no longer shows the new channel while bumping the old thread. The default is a new request in the mapped channel with a note on the card, and the old thread stays an explicit pick. Channel names are now read from Slack by channel id (the stored name is only a fallback), the bulk card shows the id only in a tooltip, the mapping editor sets a row's channel with one picker, and Settings flags rows whose saved name is not their channel's.
-time: 2026-11-03T23:20:00.000000-10:00

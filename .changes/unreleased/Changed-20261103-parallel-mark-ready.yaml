@@ -1,3 +1,0 @@
-kind: Changed
-body: 'Mark all ready in the Slack bulk dialog now takes drafts out of draft in parallel (up to 4 at a time) instead of one after another; each PR clears as soon as it is done and failures are still listed.'
-time: 2026-11-03T23:12:00.000000000-10:00
