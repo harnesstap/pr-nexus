@@ -13,7 +13,8 @@ import { recordSeenVersion } from "./changelog/changelog";
 import { RELEASES } from "./changelog/data";
 import { SettingsScreen } from "./settings/SettingsScreen";
 import { BulkDialog } from "./slack/BulkDialog";
-import { fakeSettingsApi } from "./settings/fakes";
+import { fakeMcp, fakeSettingsApi, sampleActivity } from "./settings/fakes";
+import { McpActivity } from "./settings/McpActivity";
 
 const steps = [
   "choose_vcs",
@@ -394,6 +395,8 @@ const screenName = new URLSearchParams(window.location.search).get("screen");
 // ?changelog=modal opens "What's new" as after an update from the oldest embedded release;
 // ?changelog=tab shows Settings → Changelog.
 const changelogPreview = new URLSearchParams(window.location.search).get("changelog");
+// ?activity=stats (or log) shows Settings → Agents → Activity on that sub-tab.
+const activityPreview = new URLSearchParams(window.location.search).get("activity");
 const latest = RELEASES[0]?.version ?? "0.1.0";
 if (changelogPreview === "modal") {
   recordSeenVersion(RELEASES.length > 1 ? RELEASES[RELEASES.length - 1].version! : "0.0.0");
@@ -471,6 +474,10 @@ createRoot(root).render(
     ) : settingsScene === "profiles" ? (
       <div className="min-h-screen bg-slate-950 px-6 py-8 text-slate-200">
         <SettingsScreen api={previewApi} boot={boot} onBoot={() => undefined} accounts={null} tab="profiles" onTabChange={() => undefined} onRerunSetup={() => undefined} />
+      </div>
+    ) : activityPreview === "stats" || activityPreview === "log" ? (
+      <div className="min-h-screen max-w-3xl bg-slate-950 px-6 py-8 text-sm text-slate-200">
+        <McpActivity api={fakeMcp({}, sampleActivity())} initialView={activityPreview} />
       </div>
     ) : changelogPreview === "tab" ? (
       <div className="min-h-screen bg-slate-950 px-6 py-8 text-slate-200">

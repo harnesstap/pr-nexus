@@ -255,7 +255,8 @@ async fn tools_list_has_the_read_tools_with_schemas() {
             "list_projects",
             "get_project",
             "list_prs",
-            "get_pr"
+            "get_pr",
+            "get_review_stats"
         ]
     );
     for tool in tools {

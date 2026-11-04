@@ -311,6 +311,7 @@ pub fn summarize(tool: &str, arguments: &Map<String, Value>, result: Option<&Val
         "get_project" => format!("read {}", project()),
         "list_prs" => "listed pull requests".to_owned(),
         "get_pr" => format!("read {}", pr()),
+        "get_review_stats" => "read review stats".to_owned(),
         "create_project" => match result.and_then(|value| value.pointer("/project/id")) {
             Some(id) => format!("created project {id}"),
             None => "create a project".to_owned(),

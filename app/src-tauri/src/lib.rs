@@ -17,6 +17,7 @@ pub mod services;
 mod slack;
 mod slack_link;
 mod state;
+mod stats;
 mod templates;
 
 use std::sync::Arc;
@@ -120,6 +121,7 @@ pub fn run() {
             project_info::pr_note,
             project_info::set_pr_note,
             project_info::set_pr_starred,
+            stats::review_stats,
             context::pr_slack_context,
             context::pr_slack_mentions,
             context::save_slack_mentions,

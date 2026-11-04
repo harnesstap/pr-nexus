@@ -142,7 +142,56 @@ fn read_tools() -> Vec<ToolSpec> {
             input_schema: schema_for_type::<GetPrArgs>,
             handler: get_pr,
         },
+        ToolSpec {
+            name: "get_review_stats",
+            title: "Get review stats",
+            description: "Review statistics for the user's own pull requests created in the last `days` (7, 30 or 90; \
+                default 30), optionally narrowed to one `repo` (owner/name) or `org`: `first_review` (median and \
+                average seconds from ready for review to the first review by someone else, bots excluded), \
+                `slack_to_first_review`, `opened`, `merged`, `waiting`, `reminders` and `reviewers` (requests, \
+                responded, response_rate, median_response_secs). Reads what the app's Stats view last fetched; \
+                `stats` is null until the user opened that view.",
+            capability: Capability::Reads,
+            destructive: false,
+            idempotent: true,
+            input_schema: schema_for_type::<ReviewStatsArgs>,
+            handler: get_review_stats,
+        },
     ]
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct ReviewStatsArgs {
+    /// The period in days: 7, 30 or 90. Default 30.
+    pub days: u32,
+    /// Only this repository, as `owner/name`.
+    pub repo: Option<String>,
+    /// Only repositories of this organization or user.
+    pub org: Option<String>,
+}
+
+impl Default for ReviewStatsArgs {
+    fn default() -> Self {
+        Self {
+            days: 30,
+            repo: None,
+            org: None,
+        }
+    }
+}
+
+fn get_review_stats(state: &AppState, arguments: JsonObject) -> Result<Value, AppError> {
+    let args: ReviewStatsArgs = parse(arguments)?;
+    let stats = crate::services::stats::cached_review_stats(
+        state,
+        args.days,
+        pr_nexus_core::stats::StatsFilter {
+            repo: args.repo,
+            org: args.org,
+        },
+    )?;
+    Ok(json!({ "stats": stats }))
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]

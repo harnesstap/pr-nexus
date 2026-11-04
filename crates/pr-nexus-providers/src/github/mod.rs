@@ -16,6 +16,7 @@ mod overview;
 mod ownership;
 mod parse;
 pub mod search;
+mod stats;
 
 pub use notifications::{SCOPE_UNAVAILABLE, TOKEN_TYPE_UNAVAILABLE};
 
@@ -506,6 +507,14 @@ impl VcsProvider for GithubClient {
         method: pr_nexus_core::branch::UpdateMethod,
     ) -> Result<(), ProviderError> {
         branch::update(self, pr, expected_head, method)
+    }
+
+    fn review_timelines(
+        &self,
+        queries: &[String],
+        on_progress: &mut dyn FnMut(usize, u64),
+    ) -> Result<pr_nexus_core::stats::StatsFetch, ProviderError> {
+        stats::fetch(self, queries, on_progress)
     }
 
     fn rate_limit(&self) -> Result<RateBudget, ProviderError> {

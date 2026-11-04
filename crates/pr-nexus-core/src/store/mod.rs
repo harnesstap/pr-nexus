@@ -18,6 +18,7 @@ mod pull_requests;
 pub(crate) use pull_requests::cap_body;
 mod reviews;
 mod row;
+mod stats;
 mod time;
 
 pub use listing::ListFacts;

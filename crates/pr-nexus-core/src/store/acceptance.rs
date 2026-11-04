@@ -1126,3 +1126,45 @@ fn notes_and_stars_round_trip_and_stars_outlive_the_row() {
     assert!(store.list_facts(account.id).unwrap().starred.is_empty());
     assert!(store.set_pr_starred(PrId(999_999), true, at()).is_err());
 }
+
+#[test]
+fn slack_request_facts_list_requests_on_recent_prs() {
+    let (_dir, store) = open_temp();
+    let (_gh, _repo, pr) = seed_pr(&store, "NODE_STATS", PrState::Open);
+    store
+        .insert_review_request(ReviewRequest {
+            team_id: None,
+            id: crate::domain::ReviewRequestId(0),
+            pr: pr.id,
+            root: ProviderRef {
+                account: AccountId(0),
+                id: "C100:1.000200".to_owned(),
+            },
+            workspace: "acme".to_owned(),
+            channel_id: "C100".to_owned(),
+            channel_name: "team-widgets".to_owned(),
+            root_ts: "1.000200".to_owned(),
+            permalink: None,
+            requested_at: at(),
+            last_bumped_at: Some(at()),
+            bump_count: 2,
+            status: RequestStatus::Active,
+            closed_at: None,
+            source: RequestSource::App,
+        })
+        .unwrap();
+    let facts = store
+        .slack_request_facts(pr.created_at - chrono::Duration::days(1))
+        .unwrap();
+    assert_eq!(facts.len(), 1);
+    assert_eq!(facts[0].repo, "acme/widgets");
+    assert_eq!(facts[0].number, pr.number);
+    assert_eq!(
+        (facts[0].channel.as_str(), facts[0].bump_count),
+        ("team-widgets", 2)
+    );
+    let later = store
+        .slack_request_facts(pr.created_at + chrono::Duration::days(1))
+        .unwrap();
+    assert!(later.is_empty());
+}

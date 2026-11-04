@@ -7,6 +7,7 @@ pub mod project_info;
 pub mod projects;
 pub mod prs;
 pub mod review;
+pub mod stats;
 
 #[cfg(test)]
 mod tests;
