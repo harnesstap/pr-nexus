@@ -1,4 +1,5 @@
 import type { ListRow, ProjectDto } from "../api";
+import { attentionRank } from "./nextAction";
 import { waitingSince } from "./rowCues";
 import {
   AUTHOR,
@@ -177,7 +178,7 @@ export function pageFromRows(rows: readonly SearchRow[], projects: readonly Proj
 
   // Starred rows are pinned above the rest, each part in the chosen order (as `listing::page`).
   const ordered = [...shown].sort(
-    (left, right) => Number(right.starred) - Number(left.starred) || compare(left, right, request.ordering, request.direction),
+    (left, right) => Number(right.starred) - Number(left.starred) || compare(left, right, request.ordering, request.direction, { viewKey: request.view_key, now }),
   );
   const keepEmpty = keptEmpty(live, request.view_key, filters, terms.length > 0);
   const groups = group(ordered, live, request, keepEmpty);
@@ -374,14 +375,23 @@ function statusTitle(readiness: ListRow["readiness"]): string {
   return readiness === "ready" ? "Ready" : readiness === "blocked" ? "Blocked" : "Unknown";
 }
 
-function compare(left: ListRow, right: ListRow, ordering: Ordering, direction: Direction): number {
+/** What the "Needs attention" rank depends on besides the row. */
+interface RankContext {
+  viewKey: string;
+  now: Date;
+}
+
+function compare(left: ListRow, right: ListRow, ordering: Ordering, direction: Direction, context: RankContext = { viewKey: "mine", now: new Date(0) }): number {
   const sign = direction === "asc" ? 1 : -1;
-  const delta = rank(left, ordering) - rank(right, ordering);
+  const delta = rank(left, ordering, context) - rank(right, ordering, context);
   return delta !== 0 ? delta * sign : left.id - right.id;
 }
 
-function rank(row: ListRow, ordering: Ordering): number {
+function rank(row: ListRow, ordering: Ordering, context: RankContext): number {
   switch (ordering) {
+    case "attention":
+      // Descending: the most urgent next action first, the oldest PR first within it.
+      return attentionRank(row, context.viewKey, context.now);
     case "updated":
       return new Date(row.updated_at).getTime();
     case "created":

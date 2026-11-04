@@ -1134,7 +1134,29 @@ Approved mockups (AI-generated; style references, not pixel specs):
 
 **Rows have no action buttons.** A row is selected only with its checkbox (or `x`). The **only** Slack action in the list is the floating bar's **Request / bump on Slack**, which decides request vs bump per PR and per channel from `review_requests` (§7.7, §7.9).
 
-Row content, each part toggled under **Show**: number and title; `owner/repo`; CI (colored dot + label); review-decision pill (`✓ Approved`, `● Review pending`, `✕ Changes requested`); 💬 unresolved thread count (default on; icon + number, tooltip and accessible label `N unresolved of M review threads`, dimmed at 0; never a bare `0/0`); owning teams; last activity; project badges (`+1` when in several projects); the **Slack request indicator**. Layout matches the mockup: title and repo on the left, then aligned review, threads, and Slack columns.
+Row content, each part toggled under **Show**: number and title; `owner/repo`; CI (colored dot + label); **next-action badge** (below); 💬 unresolved thread count (default on; icon + number, tooltip and accessible label `N unresolved of M review threads`, dimmed at 0; never a bare `0/0`); owning teams; last activity; project badges (`+1` when in several projects); the **Slack request indicator**. Layout matches the mockup: title and repo on the left, then aligned next-action, threads, and Slack columns.
+
+**Next-action badge.** Each row says what should happen next, computed by the pure `nextAction(row, viewKey, now)` (`app/src/list/nextAction.ts`, mirrored by `next_action` in `listing.rs`). It is read from the author's side, except in To review and for rows where I am a requested reviewer but not the author. The first matching rule wins; priorities are this table's order, top first, and drive **Needs attention**.
+
+| Action | Badge | Side | Rule | Click |
+|---|---|---|---|---|
+| conflicts | Resolve conflicts (rose) | author | merge conflicts | opens the PR |
+| ci_failing | Fix CI (rose) | author | checks `failure` or `error` | opens `/checks` |
+| changes_requested | Address review (amber) | author | changes requested | opens the PR |
+| ready_to_merge | Ready to merge (emerald) | author | approved, CI not pending | opens details |
+| review_overdue | Review now (rose) | reviewer | waiting more than 48 h (`waitingSince`, else created) | opens `/files` |
+| draft | Mark ready (slate) | author | draft | opens details |
+| request_review | Request review (sky) | author | no reviewer requested and no Slack request | Slack request dialog |
+| nudge | Follow up (amber, Slack mark) | author | last Slack request or bump at least `NUDGE_HOURS` (24 h) old, or no Slack request and waiting more than 48 h | Slack dialog (bump) |
+| review | Review (violet) | reviewer | otherwise | opens `/files` |
+| checks_running | Checks running (slate) | author | approved, CI pending | opens `/checks` |
+| waiting_review | Waiting for review (slate) | author | otherwise | none |
+| waiting_author | Waiting on author (slate) | reviewer | changes requested, conflicts or failing CI | none |
+| reviewed | Approved (slate) | reviewer | approved | none |
+| author_draft | Draft (slate) | reviewer | draft | none |
+| done | Merged / Closed (slate) | both | not open (checked first) | none |
+
+Author rules run in the order conflicts, CI, changes requested, draft, approved, request review, nudge, waiting; reviewer rules in the order draft, waiting on author, approved, overdue, review. A clickable badge is a button with a pointer cursor; the others are labelled images. Every badge has a tooltip giving the reason (`Checks are failing`, `Requested on Slack 2d ago`), also its accessible name `Label: reason`. Compact rows show the badge without its label.
 
 **Slack request indicator** (from the newest active `review_requests` row):
 - Slack icon plus the newest event and its age: `Requested · 2d ago`, or `Bumped · 5h ago` once `last_bumped_at` is set. Tooltip: `workspace · #channel`, the request age, and the bump count. With several active channels: `Requested 2d ago · 2 channels`, with a hover list.
@@ -1147,7 +1169,7 @@ Row content, each part toggled under **Show**: number and title; `owner/repo`; C
  [⏷]
  ┌──────────────────────────────┐   ┌─────────────────┐
  │ Grouping          Project  › │──▶│ ✓ Project       │
- │ Ordering          Updated  › │   │   Repository    │
+ │ Ordering   Needs attention › │   │   Repository    │
  │ Show                       › │   │   Org           │
  ├──────────────────────────────┤   │   Status        │
  │ Filters               Reset  │   │   Updated       │
@@ -1161,7 +1183,7 @@ Row content, each part toggled under **Show**: number and title; `owner/repo`; C
 ```
 
 - **Grouping:** Project (default), Repository, Org, Status (readiness), Updated (Today / This week / Older). Many-to-many PRs appear in each project group.
-- **Ordering:** Updated (default, desc), Created, Last Slack request, Readiness, Number; each with asc/desc.
+- **Ordering:** Needs attention (default for new installs, always desc: badge priority, then oldest first; a saved ordering is kept), Updated (desc), Created, Last Slack request, Readiness, Number; each with asc/desc.
 - **Show:** toggles for the row parts listed above.
 - **Filters:** multi-select submenus, each listing values with counts:
   - Org: tracked orgs only;

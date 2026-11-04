@@ -1,0 +1,3 @@
+kind: Added
+body: 'Each PR row shows its next action instead of "Review pending": Fix CI, Resolve conflicts, Address review, Ready to merge, Follow up, Review now and more, each with a tooltip saying why and a click that opens the checks, the files or the Slack request. A new "Needs attention" sort orders PRs by that urgency, then by age; it is the default for new installs, and saved sorts are kept.'
+time: 2026-11-02T21:30:00.000000000-10:00

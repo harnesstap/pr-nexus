@@ -234,7 +234,7 @@ pub fn page(
 
     let ascending = request.direction == "asc";
     shown.sort_by(|left, right| {
-        let delta = rank(left, &request.ordering).cmp(&rank(right, &request.ordering));
+        let delta = rank(left, request, now_ms).cmp(&rank(right, request, now_ms));
         let delta = if ascending { delta } else { delta.reverse() };
         // Starred rows are pinned above the rest, each part in the chosen order.
         right
@@ -572,8 +572,10 @@ fn slack_kinds(item: &Item, now_ms: i64) -> Vec<&'static str> {
     kinds
 }
 
-fn rank(item: &Item, ordering: &str) -> i64 {
-    match ordering {
+fn rank(item: &Item, request: &PageRequest, now_ms: i64) -> i64 {
+    match request.ordering.as_str() {
+        // Descending puts the most urgent next action first, oldest first within it.
+        "attention" => attention_rank(item, &request.view_key, now_ms),
         "created" => item.created_ms,
         "slack" => item.slack_requested_ms,
         "readiness" => match item.row.readiness.as_str() {
@@ -608,6 +610,128 @@ fn waiting_since(item: &Item) -> Option<i64> {
     } else {
         item.created_ms
     })
+}
+
+/// The next step on a PR (§8.2), most urgent first: the "Needs attention"
+/// sort follows this order. Mirrors `NEXT_ACTIONS` in `app/src/list/nextAction.ts`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NextAction {
+    Conflicts,
+    CiFailing,
+    ChangesRequested,
+    ReadyToMerge,
+    ReviewOverdue,
+    Draft,
+    RequestReview,
+    Nudge,
+    Review,
+    ChecksRunning,
+    WaitingReview,
+    WaitingAuthor,
+    Reviewed,
+    AuthorDraft,
+    Done,
+}
+
+impl NextAction {
+    const ALL: [NextAction; 15] = [
+        Self::Conflicts,
+        Self::CiFailing,
+        Self::ChangesRequested,
+        Self::ReadyToMerge,
+        Self::ReviewOverdue,
+        Self::Draft,
+        Self::RequestReview,
+        Self::Nudge,
+        Self::Review,
+        Self::ChecksRunning,
+        Self::WaitingReview,
+        Self::WaitingAuthor,
+        Self::Reviewed,
+        Self::AuthorDraft,
+        Self::Done,
+    ];
+
+    /// Higher is more urgent.
+    fn priority(self) -> i64 {
+        let index = Self::ALL
+            .iter()
+            .position(|action| *action == self)
+            .unwrap_or(Self::ALL.len());
+        i64::try_from(Self::ALL.len() - index).unwrap_or(0)
+    }
+}
+
+/// `NUDGE_HOURS` in `nextAction.ts`: a Slack request or bump this old makes a reminder due.
+pub const NUDGE_HOURS: i64 = 24;
+/// Wider than any PR age in ms, so the action always wins over age.
+const ATTENTION_STEP: i64 = 10_000_000_000_000;
+
+/// Pure: mirrors `nextAction` in `nextAction.ts`.
+pub fn next_action(item: &Item, view_key: &str, now_ms: i64) -> NextAction {
+    let row = &item.row;
+    if row.state != "open" {
+        return NextAction::Done;
+    }
+    let reviewer = view_key == "to_review"
+        || (row.involvement & AUTHOR == 0 && row.involvement & REVIEW_REQUESTED != 0);
+    let ci = ci_bucket(&row.checks);
+    let decision = row.review_decision.as_deref();
+    if reviewer {
+        if row.is_draft {
+            return NextAction::AuthorDraft;
+        }
+        if decision == Some("changes_requested") || row.conflicts || ci == "failing" {
+            return NextAction::WaitingAuthor;
+        }
+        if decision == Some("approved") {
+            return NextAction::Reviewed;
+        }
+        let since = waiting_since(item).unwrap_or(item.created_ms);
+        return if now_ms - since > STALE_REVIEW_HOURS * HOUR_MS {
+            NextAction::ReviewOverdue
+        } else {
+            NextAction::Review
+        };
+    }
+    if row.conflicts {
+        return NextAction::Conflicts;
+    }
+    if ci == "failing" {
+        return NextAction::CiFailing;
+    }
+    if decision == Some("changes_requested") {
+        return NextAction::ChangesRequested;
+    }
+    if row.is_draft {
+        return NextAction::Draft;
+    }
+    if decision == Some("approved") {
+        return if ci == "pending" {
+            NextAction::ChecksRunning
+        } else {
+            NextAction::ReadyToMerge
+        };
+    }
+    if !row.reviewers_requested && row.slack.is_none() {
+        return NextAction::RequestReview;
+    }
+    let due = match (row.slack.is_some(), item.slack_stamp_ms) {
+        (true, Some(stamp)) => now_ms - stamp >= NUDGE_HOURS * HOUR_MS,
+        _ => waiting_since(item).is_some_and(|since| now_ms - since > STALE_REVIEW_HOURS * HOUR_MS),
+    };
+    if due {
+        NextAction::Nudge
+    } else {
+        NextAction::WaitingReview
+    }
+}
+
+/// Mirrors `attentionRank` in `nextAction.ts`.
+pub fn attention_rank(item: &Item, view_key: &str, now_ms: i64) -> i64 {
+    let since = waiting_since(item).unwrap_or(item.created_ms);
+    let age = (now_ms - since).clamp(0, ATTENTION_STEP - 1);
+    next_action(item, view_key, now_ms).priority() * ATTENTION_STEP + age
 }
 
 /// The age chip a row shows (§8.2). Mirrors `staleCue` in
@@ -1210,6 +1334,111 @@ mod tests {
         assert_eq!(keys, vec!["project:1"]);
         let page = super::page(&[], &projects, &request, None);
         assert!(page.sections.is_empty());
+    }
+
+    #[test]
+    fn next_action_follows_the_author_priority() {
+        let now_ms = now().timestamp_millis();
+        let mut base = item(1, &[], 1);
+        base.row.reviewers_requested = true;
+        base.created_ms = at(1).timestamp_millis();
+        let check = |edit: &dyn Fn(&mut Item), want: NextAction| {
+            let mut entry = base.clone();
+            edit(&mut entry);
+            assert_eq!(next_action(&entry, "mine", now_ms), want);
+        };
+        check(&|_| {}, NextAction::WaitingReview);
+        check(&|entry| entry.row.conflicts = true, NextAction::Conflicts);
+        check(
+            &|entry| {
+                entry.row.conflicts = true;
+                entry.row.checks = "failure".into();
+            },
+            NextAction::Conflicts,
+        );
+        check(
+            &|entry| entry.row.checks = "error".into(),
+            NextAction::CiFailing,
+        );
+        check(
+            &|entry| entry.row.review_decision = Some("changes_requested".into()),
+            NextAction::ChangesRequested,
+        );
+        check(
+            &|entry| entry.row.review_decision = Some("approved".into()),
+            NextAction::ReadyToMerge,
+        );
+        check(
+            &|entry| {
+                entry.row.review_decision = Some("approved".into());
+                entry.row.checks = "pending".into();
+            },
+            NextAction::ChecksRunning,
+        );
+        check(&|entry| entry.row.is_draft = true, NextAction::Draft);
+        check(
+            &|entry| entry.row.reviewers_requested = false,
+            NextAction::RequestReview,
+        );
+        check(
+            &|entry| entry.created_ms = at(49).timestamp_millis(),
+            NextAction::Nudge,
+        );
+        check(&|entry| entry.row.state = "merged".into(), NextAction::Done);
+    }
+
+    #[test]
+    fn next_action_reads_to_review_as_the_reviewer() {
+        let now_ms = now().timestamp_millis();
+        let mut entry = item(1, &[], 1);
+        entry.row.involvement = REVIEW_REQUESTED;
+        entry.created_ms = at(1).timestamp_millis();
+        assert_eq!(next_action(&entry, "to_review", now_ms), NextAction::Review);
+        entry.created_ms = at(49).timestamp_millis();
+        assert_eq!(
+            next_action(&entry, "to_review", now_ms),
+            NextAction::ReviewOverdue
+        );
+        assert_eq!(
+            next_action(&entry, "project:1", now_ms),
+            NextAction::ReviewOverdue
+        );
+        entry.row.checks = "failure".into();
+        assert_eq!(
+            next_action(&entry, "to_review", now_ms),
+            NextAction::WaitingAuthor
+        );
+        entry.row.is_draft = true;
+        assert_eq!(
+            next_action(&entry, "to_review", now_ms),
+            NextAction::AuthorDraft
+        );
+    }
+
+    #[test]
+    fn attention_ordering_puts_urgent_then_oldest_first() {
+        let mut items = vec![
+            item(1, &[], 1),
+            item(2, &[], 1),
+            item(3, &[], 1),
+            item(4, &[], 1),
+        ];
+        for entry in &mut items {
+            entry.row.reviewers_requested = true;
+        }
+        items[0].created_ms = at(2).timestamp_millis();
+        items[1].row.conflicts = true;
+        items[2].row.checks = "failure".into();
+        items[2].created_ms = at(5).timestamp_millis();
+        items[3].row.checks = "failure".into();
+        items[3].created_ms = at(30).timestamp_millis();
+        let mut req = request("repository");
+        req.ordering = "attention".into();
+        let order: Vec<i64> = row_ids(&page(&items, &[], &req, None))
+            .into_iter()
+            .flatten()
+            .collect();
+        assert_eq!(order, vec![2, 4, 3, 1]);
     }
 
     #[test]

@@ -3,6 +3,7 @@ import type { ListRow, ProjectDto } from "../api";
 import { AlertIcon, ChevronDownIcon, ChevronRightIcon, ClockIcon, CloseIcon, CommentIcon, CopyIcon, DraftIcon, FolderPlusIcon, FunnelIcon, MoreIcon, SearchIcon, SlackLogo } from "../icons";
 import { Tooltip } from "../Tooltip";
 import { ReviewerAvatars } from "./ReviewerAvatars";
+import { NextActionBadge } from "./NextActionBadge";
 import { QuickFilters } from "./QuickFilters";
 import { AddToProjectMenu } from "./AddToProjectMenu";
 import { GitHubRowButton, StarButton } from "./StarButton";
@@ -27,8 +28,6 @@ import {
   visibleSelection,
   renameError,
   resetFilters,
-  reviewLabel,
-  reviewTone,
   threadsLabel,
   toggleParent,
   type CheckState,
@@ -140,6 +139,7 @@ const GROUPINGS: { id: Grouping; label: string }[] = [
 ];
 
 const ORDERINGS: { id: Ordering; label: string }[] = [
+  { id: "attention", label: "Needs attention" },
   { id: "updated", label: "Updated" },
   { id: "created", label: "Created" },
   { id: "slack", label: "Last Slack request" },
@@ -778,7 +778,7 @@ export function PrList({
                       {onToggleStar && <StarButton starred={row.starred} title={row.title} onToggle={() => onToggleStar(row)} />}
                       <GitHubRowButton title={row.title} onOpen={() => onOpen(row.url)} />
                       {compact ? (
-                        <CompactRow row={row} view={view} now={now} onDetails={onDetails} onOpen={onOpen} />
+                        <CompactRow row={row} view={view} viewKey={viewKey} now={now} onDetails={onDetails} onOpen={onOpen} onRequestReview={onRequestReview} />
                       ) : (
                         <>
                           <div className="min-w-64 flex-1 overflow-hidden">
@@ -791,8 +791,8 @@ export function PrList({
                             </p>
                           </div>
                           {view.show.review && (
-                            <div className="flex w-36 shrink-0 items-center">
-                              <ReviewPill decision={row.review_decision} />
+                            <div className="flex w-40 shrink-0 items-center">
+                              <NextActionBadge row={row} viewKey={viewKey} now={now} onOpen={onOpen} onRequestReview={onRequestReview} onDetails={onDetails} />
                             </div>
                           )}
                           {view.show.review && (
@@ -1174,27 +1174,6 @@ function Dot({ tone }: { tone: Tone }) {
   return <span aria-hidden="true" className={`inline-block h-1.5 w-1.5 rounded-full bg-current ${TONE_TEXT[tone]}`} />;
 }
 
-function ReviewPill({ decision }: { decision: string | null }) {
-  const label = reviewLabel(decision);
-  if (!label) {
-    return null;
-  }
-  const tone = reviewTone(decision);
-  const mark = tone === "good" ? "✓" : tone === "bad" ? "✕" : null;
-  return (
-    <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-700 bg-slate-900 px-2 py-0.5 text-xs text-slate-200">
-      {mark ? (
-        <span aria-hidden="true" className={`text-[10px] font-bold ${TONE_TEXT[tone]}`}>
-          {mark}
-        </span>
-      ) : (
-        <Dot tone={tone} />
-      )}
-      {label}
-    </span>
-  );
-}
-
 function Threads({ row }: { row: ListRow }) {
   const text = commentsText(row.unresolved_threads, row.total_threads);
   if (text === null) {
@@ -1298,8 +1277,23 @@ function CiStatus({ checks }: { checks: string }) {
  * over two lines, repo and CI under it, and review, comments and Slack shrink
  * to icons with tooltips. Avatars are left to the detail panel.
  */
-function CompactRow({ row, view, now, onDetails, onOpen }: { row: ListRow; view: SavedView; now: Date; onDetails: (row: ListRow) => void; onOpen: (url: string) => void }) {
-  const review = view.show.review ? reviewLabel(row.review_decision) : null;
+function CompactRow({
+  row,
+  view,
+  viewKey,
+  now,
+  onDetails,
+  onOpen,
+  onRequestReview,
+}: {
+  row: ListRow;
+  view: SavedView;
+  viewKey: string;
+  now: Date;
+  onDetails: (row: ListRow) => void;
+  onOpen: (url: string) => void;
+  onRequestReview: (row: ListRow) => void;
+}) {
   const fullTitle = `#${row.number} ${row.title}`;
   return (
     <div className="flex min-w-0 flex-1 items-start gap-2">
@@ -1332,13 +1326,7 @@ function CompactRow({ row, view, now, onDetails, onOpen }: { row: ListRow; view:
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-1.5 pt-0.5 text-xs text-slate-400">
-        {review && (
-          <Tooltip label={review} align="end">
-            <span className="flex h-4 w-3 items-center justify-center" aria-label={review} role="img">
-              <Dot tone={reviewTone(row.review_decision)} />
-            </span>
-          </Tooltip>
-        )}
+        {view.show.review && <NextActionBadge row={row} viewKey={viewKey} now={now} compact onOpen={onOpen} onRequestReview={onRequestReview} onDetails={onDetails} />}
         {view.show.threads && <Threads row={row} />}
         <SlackCell row={row} now={now} showMissing={view.show.notRequested} onOpen={onOpen} />
       </div>
@@ -1346,7 +1334,7 @@ function CompactRow({ row, view, now, onDetails, onOpen }: { row: ListRow; view:
   );
 }
 
-const SORT_PICKS: Ordering[] = ["updated", "waiting", "bumped", "created", "slack", "readiness", "number"];
+const SORT_PICKS: Ordering[] = ["attention", "updated", "waiting", "bumped", "created", "slack", "readiness", "number"];
 
 /** Sort order, in the toolbar so "Waiting longest" and "Last bumped" are one click away. */
 function SortPicker({ view, onViewChange }: { view: SavedView; onViewChange: (view: SavedView) => void }) {
@@ -1359,8 +1347,8 @@ function SortPicker({ view, onViewChange }: { view: SavedView; onViewChange: (vi
         value={view.ordering}
         onChange={(event) => {
           const ordering = event.target.value as Ordering;
-          // Both stale sorts read top-down: longest wait, latest bump.
-          const direction: Direction = ordering === "waiting" || ordering === "bumped" ? "desc" : view.direction;
+          // The stale and attention sorts read top-down: most urgent, longest wait, latest bump.
+          const direction: Direction = ordering === "attention" || ordering === "waiting" || ordering === "bumped" ? "desc" : view.direction;
           onViewChange({ ...view, ordering, direction });
         }}
       >
