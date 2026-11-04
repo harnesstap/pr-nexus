@@ -1,3 +1,5 @@
+// @vitest-environment node
+// Spawns shell scripts only; no DOM needed, so skip the jsdom setup.
 import { execFile } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";

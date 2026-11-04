@@ -1,6 +1,10 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, expect, test, vi } from "vitest";
+
+// A small page keeps the multi-page tests to a few dozen rows; rendering 130
+// rows in dev-mode jsdom pushed them past the 5s timeout on busy CI runners.
+vi.mock("./paging", async (importOriginal) => ({ ...(await importOriginal<typeof import("./paging")>()), PAGE_SIZE: 10 }));
 import type { ListRow, ProjectDto } from "../api";
 import { PAGE_SIZE, pageFromRows, type PageDto, type PageRequest, type SearchRow } from "./paging";
 import { defaultView, type SavedView, type Toast } from "./model";
@@ -593,16 +597,9 @@ test("the header and the bulk bar follow the mockup wording", async () => {
   expect(within(bar).getByRole("button", { name: "Request / bump on Slack" })).toBeEnabled();
 });
 
-/** 130 open PRs in Auth: more than two pages of `PAGE_SIZE`. */
-/**
- * Tests over `many()` mount 50 to 130 full rows in development-mode React and
- * re-render them on every page. That is ~0.5 s on an idle machine and several
- * seconds on a busy CI runner, past Vitest's 5 s default. The budget is for
- * the CPU work; nothing here waits on a clock.
- */
-const LARGE_LIST_TIMEOUT = 30_000;
-
-function many(count = 130): SearchRow[] {
+/** Open PRs in Auth: more than two pages of `PAGE_SIZE`. */
+const MANY = PAGE_SIZE * 2 + 6;
+function many(count = MANY): SearchRow[] {
   return Array.from({ length: count }, (_, index) =>
     row({ id: index + 1, number: 1000 + index, title: `Change ${index + 1}`, project_ids: [1], updated_at: new Date(Date.UTC(2026, 9, 26, 11, 0, 0) - index * 60_000).toISOString() }),
   );
@@ -616,13 +613,13 @@ test("header counts, select-all and drag cover the full result, not just the loa
   const all = many();
   await show(<Harness rows={all} projects={[auth, billingFirst]} onLinkPrs={onLinkPrs} />);
   expect(screen.getAllByRole("article").length).toBeLessThan(PAGE_SIZE + 1);
-  expect(screen.getByText("130 open PRs")).toBeInTheDocument();
+  expect(screen.getByText(`${MANY} open PRs`)).toBeInTheDocument();
   const authSection = screen.getByRole("region", { name: "Auth" });
-  expect(within(authSection).getByText("(130)")).toBeInTheDocument();
+  expect(within(authSection).getByText(`(${MANY})`)).toBeInTheDocument();
 
   fireEvent.click(screen.getByRole("checkbox", { name: "Select all" }));
   const bar = screen.getByRole("region", { name: "Selection actions" });
-  expect(within(bar).getByText(/^130 selected/)).toBeInTheDocument();
+  expect(within(bar).getByText(new RegExp(`^${MANY} selected`))).toBeInTheDocument();
   expect(screen.getByRole("checkbox", { name: "Select all" })).toBeChecked();
 
   const transfer = dataTransfer();
@@ -634,13 +631,13 @@ test("header counts, select-all and drag cover the full result, not just the loa
   const [projectId, ids] = onLinkPrs.mock.calls[0] as [number, number[]];
   expect(projectId).toBe(2);
   expect([...ids].sort((a, b) => a - b)).toEqual(all.map((item) => item.id));
-}, LARGE_LIST_TIMEOUT);
+});
 
 test("the section checkbox selects every PR in the section, loaded or not", async () => {
   await show(<Harness rows={many()} />);
   fireEvent.click(screen.getByRole("checkbox", { name: "Select Auth" }));
-  expect(within(screen.getByRole("region", { name: "Selection actions" })).getByText(/^130 selected/)).toBeInTheDocument();
-}, LARGE_LIST_TIMEOUT);
+  expect(within(screen.getByRole("region", { name: "Selection actions" })).getByText(new RegExp(`^${MANY} selected`))).toBeInTheDocument();
+});
 
 test("infinite scroll loads the next page when the sentinel comes into view", async () => {
   const observers: Array<(items: Array<{ isIntersecting: boolean }>) => void> = [];
@@ -670,8 +667,8 @@ test("infinite scroll loads the next page when the sentinel comes into view", as
     };
     await show(<Harness rows={all} loadPage={loadPage} />);
     const first = screen.getAllByRole("article").length;
-    expect(first).toBeLessThan(130);
-    expect(screen.queryByText("Change 130")).not.toBeInTheDocument();
+    expect(first).toBeLessThan(MANY);
+    expect(screen.queryByText(`Change ${MANY}`)).not.toBeInTheDocument();
 
     await act(async () => observers.at(-1)!([{ isIntersecting: true }]));
     expect(screen.getByText("Loading more…")).toBeInTheDocument();
@@ -683,7 +680,7 @@ test("infinite scroll loads the next page when the sentinel comes into view", as
     await settle();
     expect(requests).toHaveLength(2);
     expect(screen.getAllByRole("article").length).toBeGreaterThan(first);
-    expect(screen.queryByText("Change 130")).not.toBeInTheDocument();
+    expect(screen.queryByText(`Change ${MANY}`)).not.toBeInTheDocument();
 
     // The last page removes the loading row.
     await act(async () => observers.at(-1)!([{ isIntersecting: true }]));
@@ -691,15 +688,15 @@ test("infinite scroll loads the next page when the sentinel comes into view", as
     await act(async () => release!());
     await settle();
     expect(requests).toHaveLength(3);
-    expect(screen.getByText("Change 130")).toBeInTheDocument();
-    expect(screen.getAllByRole("article")).toHaveLength(130);
+    expect(screen.getByText(`Change ${MANY}`)).toBeInTheDocument();
+    expect(screen.getAllByRole("article")).toHaveLength(MANY);
     expect(screen.queryByText("Loading more…")).not.toBeInTheDocument();
     // Each page reports counts over the full set, so the header never jumps.
-    expect(screen.getByText("130 open PRs")).toBeInTheDocument();
+    expect(screen.getByText(`${MANY} open PRs`)).toBeInTheDocument();
   } finally {
     vi.unstubAllGlobals();
   }
-}, LARGE_LIST_TIMEOUT);
+});
 
 test("a scroll near the bottom also loads more, as a fallback for the observer", async () => {
   await show(<Harness rows={many()} />);
@@ -708,7 +705,7 @@ test("a scroll near the bottom also loads more, as a fallback for the observer",
   fireEvent.scroll(region);
   await settle();
   expect(screen.getAllByRole("article").length).toBeGreaterThan(before);
-}, LARGE_LIST_TIMEOUT);
+});
 
 test("a slow search response that lands after a newer one is dropped", async () => {
   vi.useFakeTimers();
@@ -782,7 +779,7 @@ test("a sync refresh re-reads what is loaded in place, without a loading state",
   expect(refresh.cursor).toBeNull();
   expect(refresh.limit).toBeGreaterThan(PAGE_SIZE);
   expect(screen.getAllByRole("article").length).toBe(loaded);
-}, LARGE_LIST_TIMEOUT);
+});
 
 test("Add to project links the selection to a picked project", async () => {
   const onLinkPrs = vi.fn();

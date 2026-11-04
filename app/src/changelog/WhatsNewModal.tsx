@@ -1,4 +1,4 @@
-import { useEffect, useRef, type KeyboardEvent } from "react";
+import { useLayoutEffect, useRef, type KeyboardEvent } from "react";
 import { CloseButton } from "../CloseButton";
 import type { ChangelogRelease } from "./changelog";
 import { ReleaseNotes } from "./ReleaseNotes";
@@ -15,7 +15,9 @@ interface Props {
 /** "What's new" after an update: every release since the last one seen (§8.2). */
 export function WhatsNewModal({ current, releases, onClose, onFullChangelog }: Props) {
   const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
+  // Layout effect: focus moves in the same commit that shows the dialog, so
+  // nothing (a user or a test) can observe it opened with focus still on <body>.
+  useLayoutEffect(() => {
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     ref.current?.querySelector<HTMLElement>("[data-autofocus]")?.focus();
     return () => previous?.focus?.();

@@ -151,7 +151,8 @@ test("the description saves on blur and JIRA links add, reorder and remove", asy
 
   fireEvent.click(within(dialog).getByRole("button", { name: "Move ACME-1 down" }));
   await waitFor(() => expect(api.setJiraLinks).toHaveBeenCalledWith(1, [{ text: "https://acme-labs.atlassian.net/browse/ACME-2" }, { text: "ACME-1" }]));
-  expect(within(dialog).getByRole("button", { name: "Move ACME-2 up" })).toBeDisabled();
+  // setJiraLinks resolving and the reordered list rendering are separate steps.
+  await waitFor(() => expect(within(dialog).getByRole("button", { name: "Move ACME-2 up" })).toBeDisabled());
 
   fireEvent.change(within(dialog).getByRole("textbox", { name: "Add JIRA key or link" }), { target: { value: "ACME-3" } });
   fireEvent.click(within(dialog).getByRole("button", { name: "Add" }));
@@ -160,5 +161,5 @@ test("the description saves on blur and JIRA links add, reorder and remove", asy
 
   fireEvent.click(within(dialog).getByRole("button", { name: "Remove ACME-3" }));
   await waitFor(() => expect(api.removeJiraLink).toHaveBeenCalledWith(3));
-  expect(within(dialog).queryByText("ACME-3")).toBeNull();
+  await waitFor(() => expect(within(dialog).queryByText("ACME-3")).toBeNull());
 });
