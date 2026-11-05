@@ -11,13 +11,15 @@ interface Props {
   onChange: (next: PrOverview) => void;
   /** A short toast for the outcome, success or failure. */
   onNotice: (text: string) => void;
+  /** Called once GitHub confirmed the merge, after the notice. */
+  onMerged?: () => void;
 }
 
 /**
  * The merge controls: the method, a direct Merge (confirmed first) when it can
  * merge now, and GitHub auto-merge on or off (no confirmation).
  */
-export function AutoMerge({ api, prId, overview, onChange, onNotice }: Props) {
+export function AutoMerge({ api, prId, overview, onChange, onNotice, onMerged }: Props) {
   const view = autoMergeView(overview);
   const [method, setMethod] = useState<MergeMethod | null>(overview.auto_merge?.method ?? view.defaultMethod);
   const [busy, setBusy] = useState(false);
@@ -44,6 +46,7 @@ export function AutoMerge({ api, prId, overview, onChange, onNotice }: Props) {
       .then((fresh) => {
         onChange(fresh);
         onNotice(`Merged: ${METHOD_LABEL[next].toLowerCase()} done.`);
+        onMerged?.();
       })
       .catch((err: unknown) => onNotice(`Could not merge: ${errorMessage(err)}`))
       .finally(() => {

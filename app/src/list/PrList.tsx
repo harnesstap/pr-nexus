@@ -102,6 +102,8 @@ interface Props {
   onNotice?: (toast: Toast) => void;
   /** Draft flags changed in the app ahead of the reload, by PR id. */
   draftPatches?: Record<number, boolean>;
+  /** PRs just merged in the app: gone from the list before the reload lands. */
+  removedIds?: ReadonlySet<number>;
   /** Opens Settings, from the "no open PRs" empty state. */
   onOpenSettings?: () => void;
   /** Filled with the list's actions so the command palette reuses them. */
@@ -177,6 +179,7 @@ export function PrList({
   onBulkReview,
   onNotice,
   draftPatches,
+  removedIds,
   actionsRef,
   onOpenSettings,
 }: Props) {
@@ -194,7 +197,11 @@ export function PrList({
   const [addMenuFor, setAddMenuFor] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const commitRename = useRef(false);
-  const selected = useMemo(() => new Set(selectedByView[viewKey] ?? []), [selectedByView, viewKey]);
+  // A PR merged in the app drops out of the selection too.
+  const selected = useMemo(
+    () => new Set((selectedByView[viewKey] ?? []).filter((id) => !removedIds?.has(id))),
+    [selectedByView, viewKey, removedIds],
+  );
 
   const addMenu = addMenuFor === viewKey && selected.size > 0;
   const setAddMenu = (open: boolean | ((open: boolean) => boolean)) =>
@@ -237,17 +244,17 @@ export function PrList({
   const page = list.page;
   const sections = useMemo(
     () =>
-      shownSections(list.entries, page?.sections ?? []).map((section) =>
+      withoutRemoved(shownSections(list.entries, page?.sections ?? []), removedIds).map((section) =>
         draftPatches && Object.keys(draftPatches).length > 0
           ? { ...section, rows: section.rows.map((row) => (row.id in draftPatches ? { ...row, is_draft: draftPatches[row.id] } : row)) }
           : section,
       ),
-    [list.entries, page, draftPatches],
+    [list.entries, page, draftPatches, removedIds],
   );
   const currentProject = projectIdOf(viewKey);
   const flat = useMemo(() => sections.flatMap((section) => section.rows.map((row) => ({ section, row }))), [sections]);
   // Every matching id, loaded or not: select-all, counts and drag cover them all.
-  const ids = useMemo(() => pageIds(page?.sections ?? []), [page]);
+  const ids = useMemo(() => pageIds(page?.sections ?? []).filter((id) => !removedIds?.has(id)), [page, removedIds]);
   const hidden = hiddenSelectedCount(selected, ids);
   const global = checkState(ids, selected);
   // One source of truth for counts and bulk actions: the selected rows that match now.
@@ -1606,6 +1613,27 @@ function labelOf<T extends string>(options: { id: T; label: string }[], id: T): 
 type OrgCount = PageDto["orgs"][number];
 
 /** Loaded entries grouped under their section headers, with backend counts. */
+/** Drops PRs merged in the app from the shown sections, ahead of the reload. */
+export function withoutRemoved(sections: ShownSection[], removed: ReadonlySet<number> | undefined): ShownSection[] {
+  if (!removed || removed.size === 0) {
+    return sections;
+  }
+  return sections
+    .map((section) => {
+      const gone = section.ids.filter((id) => removed.has(id)).length;
+      if (gone === 0) {
+        return section;
+      }
+      return {
+        ...section,
+        rows: section.rows.filter((row) => !removed.has(row.id)),
+        ids: section.ids.filter((id) => !removed.has(id)),
+        count: Math.max(0, section.count - gone),
+      };
+    })
+    .filter((section) => section.ids.length > 0 || section.rows.length > 0);
+}
+
 function shownSections(entries: readonly PageEntry[], all: readonly PageSection[]): ShownSection[] {
   const meta = new Map(all.map((section) => [section.key, section]));
   const shown: ShownSection[] = [];

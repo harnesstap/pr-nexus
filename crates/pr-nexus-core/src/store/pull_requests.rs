@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::domain::{
-    AccountId, Involvement, PR_BODY_MAX_BYTES, PrId, ProviderRef, PullRequest, RepoRef, Repository,
-    RequestedReviewer, Reviewer, TeamRef,
+    AccountId, Involvement, PR_BODY_MAX_BYTES, PrId, PrState, ProviderRef, PullRequest, RepoRef,
+    Repository, RequestedReviewer, Reviewer, TeamRef,
 };
 use crate::error::CoreError;
 use crate::search;
@@ -162,6 +162,19 @@ impl Store {
         })
     }
 
+    /// Records a state change made from the app (a merge), ahead of the
+    /// next sync.
+    pub fn set_pull_request_state(&self, id: PrId, state: PrState) -> Result<(), CoreError> {
+        self.write(move |conn| {
+            conn.execute(
+                "UPDATE pull_requests SET state = ?1 WHERE id = ?2",
+                params![state.as_str(), id.0],
+            )
+            .map_err(db)?;
+            Ok(())
+        })
+    }
+
     pub fn set_pull_request_hidden(&self, id: PrId, hidden: bool) -> Result<(), CoreError> {
         self.write(move |conn| {
             conn.execute(
@@ -295,7 +308,9 @@ fn upsert_pull_request(
                 url = excluded.url,
                 author_login = excluded.author_login,
                 body = excluded.body,
-                state = excluded.state,
+                -- Merged is final on GitHub: a lagging search that still
+                -- says open must not bring a merged row back.
+                state = CASE WHEN pull_requests.state = 'merged' THEN pull_requests.state ELSE excluded.state END,
                 is_draft = excluded.is_draft,
                 head_ref = excluded.head_ref,
                 base_ref = excluded.base_ref,

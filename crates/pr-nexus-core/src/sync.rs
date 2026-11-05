@@ -912,16 +912,23 @@ fn sync_bucket(
 /// requests. An incremental one also returns finished ones; those matter
 /// only when the row is already stored, so an old closed pull request with a
 /// fresh comment does not appear in the list.
+///
+/// A merge is final, so an open hit for a row already stored as merged (for
+/// example one just merged from the app) is a stale search index entry and
+/// is dropped rather than reopening the row.
 fn keeps_hit(item: &SyncedPullRequest, existing: &[PullRequest]) -> bool {
-    item.pull_request.state == PrState::Open
-        || existing
-            .iter()
-            .any(|pr| pr.remote.id == item.pull_request.remote.id)
+    let stored = existing
+        .iter()
+        .find(|pr| pr.remote.id == item.pull_request.remote.id);
+    match stored {
+        Some(pr) => !(pr.state == PrState::Merged && item.pull_request.state == PrState::Open),
+        None => item.pull_request.state == PrState::Open,
+    }
 }
 
 /// §7.4: once sync sees a PR merged or closed, its active review requests close
 /// with that reason, so the list and the Slack panel stop offering a bump.
-fn close_requests_of_finished(
+pub(crate) fn close_requests_of_finished(
     store: &Store,
     pr: &PullRequest,
     now: DateTime<Utc>,
@@ -1320,6 +1327,106 @@ mod tests {
         ) -> Result<(), ProviderError> {
             Err(ProviderError::Unsupported("github writes are M10".into()))
         }
+        /// Merges unless `fail_status` is set, which stands for GitHub
+        /// rejecting the merge here.
+        fn merge_pull_request(
+            &self,
+            _pr: &PullRequest,
+            _method: crate::overview::MergeMethod,
+        ) -> Result<(), ProviderError> {
+            if self.fail_status {
+                return Err(ProviderError::Network("base branch was modified".into()));
+            }
+            Ok(())
+        }
+    }
+
+    fn merge_fake(mine: Vec<SyncedPullRequest>, fail: bool) -> Fake {
+        Fake {
+            mine,
+            review: Vec::new(),
+            refresh: Vec::new(),
+            status: Vec::new(),
+            budget: sample_budget(5000, 4000),
+            queries: Default::default(),
+            status_asked: Default::default(),
+            fail_status: fail,
+            refresh_asked: Default::default(),
+        }
+    }
+
+    fn open_numbers(store: &Store, account: AccountId) -> Vec<u64> {
+        let mut open: Vec<u64> = store
+            .list_pull_requests_for_account(account)
+            .unwrap()
+            .iter()
+            .filter(|row| row.state == PrState::Open && !row.hidden)
+            .map(|row| row.number)
+            .collect();
+        open.sort_unstable();
+        open
+    }
+
+    #[test]
+    fn a_pr_merged_from_the_app_leaves_the_open_list_and_a_lagging_search_keeps_it_out() {
+        let (_dir, store, account) = open_store();
+        let keep = pr("M1", "acme", 1, Involvement::AUTHOR);
+        let target = pr("M2", "acme", 2, Involvement::AUTHOR);
+        let fake = merge_fake(vec![keep.clone(), target.clone()], false);
+        sync_account(&store, &fake, account, SyncKind::Manual, ts(20)).unwrap();
+        assert_eq!(open_numbers(&store, account), vec![1, 2]);
+        let stored = store.list_pull_requests_for_account(account).unwrap();
+        let row = stored.iter().find(|row| row.number == 2).unwrap().clone();
+
+        // This fake has no overview, so only the merge and the stored state
+        // matter here; the follow-up read is best effort.
+        let _ = crate::overview::merge(&store, &fake, &row, crate::overview::MergeMethod::Squash);
+        assert_eq!(open_numbers(&store, account), vec![1]);
+
+        // The search index still lists it as open right after the merge,
+        // on both a full and an incremental pass.
+        let mut stale = target;
+        stale.pull_request.updated_at = ts(30);
+        let lagging = merge_fake(vec![keep, stale], false);
+        sync_account(&store, &lagging, account, SyncKind::Full, ts(40)).unwrap();
+        assert_eq!(open_numbers(&store, account), vec![1]);
+        sync_account(&store, &lagging, account, SyncKind::Manual, ts(50)).unwrap();
+        assert_eq!(open_numbers(&store, account), vec![1]);
+        let rows = store.list_pull_requests_for_account(account).unwrap();
+        let merged = rows.iter().find(|row| row.number == 2).unwrap();
+        assert_eq!(merged.state, PrState::Merged);
+    }
+
+    #[test]
+    fn a_failed_merge_keeps_the_pr_open() {
+        let (_dir, store, account) = open_store();
+        let target = pr("F1", "acme", 1, Involvement::AUTHOR);
+        let fake = merge_fake(vec![target], false);
+        sync_account(&store, &fake, account, SyncKind::Manual, ts(20)).unwrap();
+        let row = store.list_pull_requests_for_account(account).unwrap()[0].clone();
+        let failing = merge_fake(Vec::new(), true);
+        let err =
+            crate::overview::merge(&store, &failing, &row, crate::overview::MergeMethod::Merge)
+                .unwrap_err();
+        assert!(
+            err.to_string().contains("base branch was modified"),
+            "{err}"
+        );
+        assert_eq!(open_numbers(&store, account), vec![1]);
+    }
+
+    #[test]
+    fn closed_rows_can_still_reopen_from_search() {
+        let (_dir, store, account) = open_store();
+        let target = pr("R9", "acme", 9, Involvement::AUTHOR);
+        let fake = merge_fake(vec![target.clone()], false);
+        sync_account(&store, &fake, account, SyncKind::Manual, ts(20)).unwrap();
+        let row = store.list_pull_requests_for_account(account).unwrap()[0].clone();
+        store
+            .set_pull_request_state(row.id, PrState::Closed)
+            .unwrap();
+        sync_account(&store, &fake, account, SyncKind::Full, ts(30)).unwrap();
+        assert_eq!(open_numbers(&store, account), vec![9]);
     }
 
     fn open_store() -> (tempfile::TempDir, Store, AccountId) {

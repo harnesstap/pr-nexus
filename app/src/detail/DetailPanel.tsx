@@ -33,6 +33,8 @@ interface Props {
    * row back, and `"saved"` once GitHub agreed (the caller then refreshes).
    */
   onDraftChange?: (id: number, draft: boolean | null | "saved") => void;
+  /** GitHub confirmed a merge made here; the caller drops the PR and closes the panel. */
+  onMerged?: () => void;
   /** Adds the full Slack threads and mention search (§7.10) as an expander. */
   slack?: { mentions: MentionsScope; workspaces?: SlackWorkspace[] };
   /** Stars or unstars this PR; the header shows the star when set. */
@@ -63,7 +65,7 @@ function storedWidth(): number {
  * The PR detail slide-over (§7.2): docked on the right while the list stays usable, so a
  * click or ↑/↓ in the list switches the PR. Esc or ✕ closes it.
  */
-export function DetailPanel({ api, row, version, onClose, onOpen, onRequestReview, onNotice, onDraftChange, slack, onToggleStar }: Props) {
+export function DetailPanel({ api, row, version, onClose, onOpen, onRequestReview, onNotice, onDraftChange, onMerged, slack, onToggleStar }: Props) {
   const [overview, setOverview] = useState<PrOverview | null>(null);
   const [overviewError, setOverviewError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -298,7 +300,7 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
                 />
                 {overview.state === "open" && (
                   <div data-testid="merge-controls" className="flex flex-wrap items-center gap-2 border-t border-slate-800/70 pt-2">
-                    <AutoMerge api={api} prId={row.id} overview={overview} onChange={setOverview} onNotice={onNotice} />
+                    <AutoMerge api={api} prId={row.id} overview={overview} onChange={setOverview} onNotice={onNotice} onMerged={onMerged} />
                     {!draft.draft && <DraftAction draft={draft} busy={flipping} onToggle={() => void toggleDraft()} />}
                   </div>
                 )}

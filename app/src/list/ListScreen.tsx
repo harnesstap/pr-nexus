@@ -362,6 +362,23 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
     setDetailRow((current) => (current && current.id === id ? { ...current, is_draft: draft } : current));
   }
 
+  // PRs merged from the detail panel leave the list at once; the backend has
+  // already marked them merged, so the reload agrees and the mark can lapse.
+  const [mergedPatches, setMergedPatches] = useState<Record<number, number>>({});
+  const removedIds = useMemo(() => {
+    const ids = new Set<number>();
+    for (const [id, until] of Object.entries(mergedPatches)) if (version <= until) ids.add(Number(id));
+    return ids;
+  }, [mergedPatches, version]);
+
+  function prMerged(id: number) {
+    setMergedPatches((current) => ({ ...current, [id]: version + 1 }));
+    setDetailRow((current) => (current && current.id === id ? null : current));
+    setReviewRow((current) => (current && current.id === id ? null : current));
+    setSelection((current) => current.filter((item) => item !== id));
+    void reload();
+  }
+
   /** Stars or unstars a PR, then reloads so it moves to (or out of) the pinned top. */
   async function toggleStar(row: ListRow) {
     const starred = !row.starred;
@@ -770,6 +787,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
                 onBulkReview={setBulkIds}
                 onNotice={setNotice}
                 draftPatches={shownDraftPatches}
+                removedIds={removedIds}
                 actionsRef={listActions}
               />
             </div>
@@ -784,6 +802,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
                 onRequestReview={() => setReviewRow(detailRow)}
                 onNotice={(text) => setNotice({ text })}
                 onDraftChange={changeDraft}
+                onMerged={() => prMerged(detailRow.id)}
                 slack={{ mentions: boot.slack_mentions, workspaces: boot.slack_workspaces }}
                 onToggleStar={() => void toggleStar(detailRow)}
               />

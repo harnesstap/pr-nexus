@@ -65,6 +65,7 @@ function Harness({
   onBulkReview = () => undefined,
   onOpen = () => undefined,
   onNotice,
+  removedIds,
 }: {
   rows: SearchRow[];
   projects?: ProjectDto[];
@@ -82,6 +83,7 @@ function Harness({
   onBulkReview?: (ids: number[]) => void;
   onOpen?: (url: string) => void;
   onNotice?: (toast: Toast) => void;
+  removedIds?: ReadonlySet<number>;
 }) {
   const [view, setView] = useState<SavedView>(defaultView());
   const [currentView, setCurrentView] = useState(viewKey);
@@ -108,6 +110,7 @@ function Harness({
       onRequestReview={onRequestReview}
       onBulkReview={onBulkReview}
       onNotice={onNotice}
+      removedIds={removedIds}
     />
   );
 }
@@ -132,6 +135,22 @@ const rows = [
   row({ id: 2, number: 138, title: "Add passkeys", project_ids: [1] }),
   row({ id: 3, number: 23, title: "Fix tax rounding", project_ids: [] }),
 ];
+
+test("a PR merged in the app leaves the list and its selection, even if a lagging reload still lists it", async () => {
+  // The page source keeps returning the merged PR as open, like a stale search.
+  const { rerender } = await show(<Harness rows={rows} />);
+  fireEvent.click(screen.getByRole("checkbox", { name: "Select Add passkeys" }));
+  fireEvent.click(screen.getByRole("checkbox", { name: "Select Fix tax rounding" }));
+  expect(screen.getByText("2 selected")).toBeInTheDocument();
+  rerender(<Harness rows={rows} removedIds={new Set([2])} />);
+  await settle();
+  expect(screen.queryByText("Add passkeys")).toBeNull();
+  expect(screen.getByText("1 selected")).toBeInTheDocument();
+  rerender(<Harness rows={rows} removedIds={new Set([2])} version={1} />);
+  await settle();
+  expect(screen.queryByText("Add passkeys")).toBeNull();
+  expect(screen.getAllByText("Migrate login").length).toBeGreaterThan(0);
+});
 
 test("section and global tri-state checkboxes select only visible rows", async () => {
   await show(<Harness rows={rows} />);
