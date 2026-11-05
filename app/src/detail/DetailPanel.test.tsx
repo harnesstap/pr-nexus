@@ -535,7 +535,8 @@ test("when it can merge now, Merge asks to confirm, then merges with the chosen 
   const api = fakeApi({
     prOverview: vi.fn(() => Promise.resolve(mergeable())),
   });
-  const { onNotice } = renderPanel(api);
+  const onMerged = vi.fn();
+  const { onNotice } = renderPanel(api, { onMerged });
   const verdict = await screen.findByTestId("merge-verdict");
   expect(within(verdict).getByText("You can merge")).toBeTruthy();
   fireEvent.change(within(verdict).getByRole("combobox", { name: "Merge method" }), { target: { value: "merge" } });
@@ -550,6 +551,8 @@ test("when it can merge now, Merge asks to confirm, then merges with the chosen 
   fireEvent.click(within(verdict).getByRole("button", { name: "Confirm merge" }));
   await waitFor(() => expect(api.mergePr).toHaveBeenCalledWith(7, "merge"));
   await waitFor(() => expect(onNotice).toHaveBeenCalledWith("Merged: merge commit done."));
+  // The list drops the PR and closes this panel.
+  expect(onMerged).toHaveBeenCalledTimes(1);
   expect(within(verdict).queryByRole("button", { name: "Merge" })).toBeNull();
 });
 
@@ -563,10 +566,13 @@ test("no Merge button while something blocks it, and merge errors become a toast
     prOverview: vi.fn(() => Promise.resolve(mergeable())),
     mergePr: vi.fn(() => Promise.reject(new Error("Base branch was modified"))),
   });
-  const { onNotice } = renderPanel(failing);
+  const onMerged = vi.fn();
+  const { onNotice } = renderPanel(failing, { onMerged });
   fireEvent.click(await screen.findByRole("button", { name: "Merge" }));
   fireEvent.click(screen.getByRole("button", { name: "Confirm merge" }));
   await waitFor(() => expect(onNotice).toHaveBeenCalledWith("Could not merge: Base branch was modified"));
+  // A failed merge keeps the PR in the list.
+  expect(onMerged).not.toHaveBeenCalled();
 });
 
 test("Bump says when it was last poked and waits for the minimum interval from settings", async () => {

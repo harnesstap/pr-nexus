@@ -7,7 +7,7 @@
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
-use crate::domain::{PrId, PullRequest};
+use crate::domain::{PrId, PrState, PullRequest};
 use crate::error::{CoreError, ProviderError};
 use crate::providers::VcsProvider;
 use crate::store::Store;
@@ -220,6 +220,13 @@ pub fn set_draft(
 }
 
 /// Merges the pull request now with `method`, then refreshes the overview.
+///
+/// Once GitHub confirms the merge, the stored row is marked merged right
+/// away so it leaves the open list without waiting for the next sync, and
+/// its active review requests close. A merged PR never reopens, so the
+/// store keeps that state even if a lagging search still reports it open.
+/// The refresh after it is best effort: the merge already happened, so a
+/// failed or stale read must not turn into a "could not merge" error.
 pub fn merge(
     store: &Store,
     provider: &dyn VcsProvider,
@@ -227,7 +234,24 @@ pub fn merge(
     method: MergeMethod,
 ) -> Result<PrOverview, CoreError> {
     provider.merge_pull_request(pr, method)?;
-    refresh(store, provider, pr)
+    store.set_pull_request_state(pr.id, PrState::Merged)?;
+    let merged = PullRequest {
+        state: PrState::Merged,
+        ..pr.clone()
+    };
+    crate::sync::close_requests_of_finished(store, &merged, Utc::now())?;
+    let mut overview = match refresh(store, provider, pr) {
+        Ok(overview) => overview,
+        Err(err) => cached(store, pr.id)?.ok_or(err)?,
+    };
+    if overview.state != PrState::Merged.as_str() {
+        overview.state = PrState::Merged.as_str().to_owned();
+        overview.auto_merge = None;
+        if let Ok(json) = serde_json::to_string(&overview) {
+            store.upsert_pr_overview(pr.id, json, Utc::now())?;
+        }
+    }
+    Ok(overview)
 }
 
 /// Default for providers without an overview.
