@@ -16,6 +16,8 @@
 // `--repo-filter <dir>` saves the repository picker (repo-filter-*.png): the
 // popover filtered to widgets, both widget repositories selected, a 720px
 // toolbar, and the alphabetically sorted project list.
+// `--ready-preview <dir>` saves the bulk dialog before and after Mark all ready
+// when two selected drafts are CI-blocked and only one of those checks clears.
 // `--update <dir>` saves the sidebar's update indicator (update-*.png): none,
 // the icon for a newer release, and its popover for a release and a dev build.
 // Uses an installed Chrome; set CHROME_PATH to pick another Chromium binary.
@@ -69,6 +71,11 @@ const repoFilterFlag = process.argv.indexOf("--repo-filter");
 const repoFilterDir = repoFilterFlag === -1 ? null : process.argv[repoFilterFlag + 1];
 if (repoFilterFlag !== -1 && !repoFilterDir) {
   throw new Error("--repo-filter needs an output directory");
+}
+const readyPreviewFlag = process.argv.indexOf("--ready-preview");
+const readyPreviewDir = readyPreviewFlag === -1 ? null : process.argv[readyPreviewFlag + 1];
+if (readyPreviewFlag !== -1 && !readyPreviewDir) {
+  throw new Error("--ready-preview needs an output directory");
 }
 const updateFlag = process.argv.indexOf("--update");
 const updateDir = updateFlag === -1 ? null : process.argv[updateFlag + 1];
@@ -177,6 +184,29 @@ async function slackDraftShots(page, dir) {
   await dialog.getByRole("button", { name: "Mark all ready" }).click();
   await dialog.getByRole("button", { name: /^Send 1 message$/ }).waitFor();
   await save("bulk-after-mark-ready");
+}
+
+/** Bulk preview before and after Mark all ready, with one real CI block left. */
+async function readyPreviewShots(page, dir) {
+  mkdirSync(dir, { recursive: true });
+  const dialog = page.getByRole("dialog");
+  const save = async (name) => {
+    await page.waitForTimeout(300);
+    const box = await dialog.boundingBox();
+    await page.screenshot({ path: resolve(dir, `ready-preview-${name}.png`), clip: box ?? undefined });
+    console.log(`wrote ready-preview-${name}.png`);
+  };
+  for (const title of ["Add address autocomplete to checkout", "Show saved cards first", "Pin the base image for CI runners"]) {
+    await page.getByRole("checkbox", { name: `Select ${title}` }).first().check();
+  }
+  await page.getByRole("button", { name: "Request / bump on Slack" }).first().click();
+  await dialog.getByLabel("Message preview").waitFor();
+  await dialog.getByText("Blocked: check ci is fail").first().waitFor();
+  await save("before");
+  await dialog.getByRole("button", { name: "Mark all ready" }).click();
+  await dialog.getByText("Show saved cards first").waitFor();
+  await dialog.getByText("Blocked: check ci is fail").waitFor();
+  await save("after");
 }
 
 const UPDATES = {
@@ -304,11 +334,14 @@ try {
   }
   const page = await browser.newPage({ viewport: { width, height: 900 }, deviceScaleFactor: 2, colorScheme: "dark" });
   page.on("pageerror", (err) => console.error("page error:", err.message));
-  if (slackDraftDir) {
+  if (slackDraftDir || readyPreviewDir) {
     // #58 (row 12) is a draft too, for the bulk dialog.
-    await page.addInitScript(() => {
+    await page.addInitScript((ready) => {
       globalThis.__extraDrafts = [12];
-    });
+      if (ready) {
+        globalThis.__readyPreview = true;
+      }
+    }, Boolean(readyPreviewDir));
   }
   if (repoFilterDir) {
     await page.addInitScript(() => {
@@ -319,6 +352,8 @@ try {
   await page.getByRole("group", { name: "Quick filters" }).waitFor();
   if (repoFilterDir) {
     await repoFilterShots(page, resolve(repoFilterDir));
+  } else if (readyPreviewDir) {
+    await readyPreviewShots(page, resolve(readyPreviewDir));
   } else if (slackDraftDir) {
     await slackDraftShots(page, resolve(slackDraftDir));
   } else if (tooltipsDir) {
@@ -347,7 +382,7 @@ try {
         .click();
     }
   }
-  if (!tooltipsDir && !scenesDir && !branchDir && !slackDraftDir && !repoFilterDir) {
+  if (!tooltipsDir && !scenesDir && !branchDir && !slackDraftDir && !repoFilterDir && !readyPreviewDir) {
     await page.waitForTimeout(500);
     await page.screenshot({ path: out });
     console.log(`wrote ${out} (${Math.round(statSync(out).size / 1024)} KB)`);

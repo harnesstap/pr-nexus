@@ -494,6 +494,173 @@ fn previews_warn_about_drafts_without_blocking() {
     );
 }
 
+#[test]
+fn mark_ready_refreshes_the_preview_and_keeps_a_real_ci_block() {
+    use pr_nexus_core::domain::{ChecksState, PrId, ReviewDecision};
+
+    let fx = fixture("ready-preview");
+    let state = &fx.state;
+    connect_fake_workspace(state);
+    let failing = pr_id(state, 3);
+    let passing = pr_id(state, 1);
+    let bulk_of = |ids: Vec<i64>, one_channel: bool| -> BulkRequest {
+        let mut body = serde_json::json!({ "pr_ids": ids });
+        if one_channel {
+            body["target"] = channel_json();
+        }
+        serde_json::from_value(body).unwrap()
+    };
+
+    state
+        .store
+        .set_pull_request_draft(PrId(failing), true)
+        .unwrap();
+    state
+        .store
+        .set_pull_request_draft(PrId(passing), true)
+        .unwrap();
+    let before = bulk::preview(state, &bulk_of(vec![failing, passing], true)).unwrap();
+    assert!(
+        before
+            .pr_warnings
+            .iter()
+            .any(|warning| warning.pr_id == failing),
+        "{:?}",
+        before.pr_warnings
+    );
+    assert!(
+        before
+            .pr_warnings
+            .iter()
+            .any(|warning| warning.pr_id == passing),
+        "{:?}",
+        before.pr_warnings
+    );
+    assert!(
+        before
+            .skipped
+            .iter()
+            .any(|skip| { skip.pr.pr_id == failing && skip.detail.contains("check ci is fail") }),
+        "a failing rollup stays blocked while the PR is a draft: {:?}",
+        before.skipped
+    );
+    assert!(
+        before.cards.iter().any(|card| card
+            .messages
+            .iter()
+            .any(|message| message.prs.iter().any(|item| item.pr_id == passing))),
+        "a draft whose checks pass is in the message, not skipped: {:?}",
+        before.skipped
+    );
+
+    state
+        .store
+        .set_pull_request_draft(PrId(failing), false)
+        .unwrap();
+    state
+        .store
+        .set_pull_request_draft(PrId(passing), false)
+        .unwrap();
+    let after = bulk::preview(state, &bulk_of(vec![failing, passing], true)).unwrap();
+    assert!(after.pr_warnings.is_empty(), "{:?}", after.pr_warnings);
+    assert!(
+        after
+            .skipped
+            .iter()
+            .any(|skip| { skip.pr.pr_id == failing && skip.detail.contains("check ci is fail") }),
+        "clearing the draft does not clear a failing check: {:?}",
+        after.skipped
+    );
+    assert!(after.cards.iter().any(|card| {
+        card.messages
+            .iter()
+            .any(|message| message.prs.iter().any(|item| item.pr_id == passing))
+    }));
+
+    let mut row = state
+        .store
+        .get_pull_request(PrId(failing))
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.checks, ChecksState::Failure);
+    row.checks = ChecksState::Success;
+    row.review_decision = Some(ReviewDecision::Approved);
+    state.store.update_pull_request_gate(&row).unwrap();
+    let refreshed = bulk::preview(state, &bulk_of(vec![failing], true)).unwrap();
+    assert!(
+        refreshed
+            .skipped
+            .iter()
+            .all(|skip| !skip.detail.contains("check ci is fail")),
+        "{:?}",
+        refreshed.skipped
+    );
+    assert!(
+        refreshed.cards.iter().any(|card| card
+            .messages
+            .iter()
+            .any(|message| message.prs.iter().any(|item| item.pr_id == failing))),
+        "a status write-back that reports success includes the PR: {:?}",
+        refreshed.skipped
+    );
+
+    let passing_row = state
+        .store
+        .get_pull_request(PrId(passing))
+        .unwrap()
+        .unwrap();
+    crate::slack::lock(&state.owners).insert(
+        passing,
+        crate::state::OwnersEntry {
+            head_sha: passing_row.head_sha.clone(),
+            base_ref: passing_row.base_ref.clone(),
+            is_draft: passing_row.is_draft,
+            checks: ChecksState::Failure,
+            at: std::time::Instant::now(),
+            blocked: Some("check ci is fail".into()),
+            teams: Vec::new(),
+        },
+    );
+    let stale = bulk::preview(state, &bulk_of(vec![passing], false)).unwrap();
+    assert!(
+        stale
+            .skipped
+            .iter()
+            .all(|skip| !skip.detail.contains("check ci is fail")),
+        "an owner decision recorded for a different checks rollup is not reused: {:?}",
+        stale.skipped
+    );
+
+    row.checks = ChecksState::Failure;
+    state.store.update_pull_request_gate(&row).unwrap();
+    let failing_row = state
+        .store
+        .get_pull_request(PrId(failing))
+        .unwrap()
+        .unwrap();
+    crate::slack::lock(&state.owners).insert(
+        failing,
+        crate::state::OwnersEntry {
+            head_sha: failing_row.head_sha.clone(),
+            base_ref: failing_row.base_ref.clone(),
+            is_draft: failing_row.is_draft,
+            checks: failing_row.checks,
+            at: std::time::Instant::now(),
+            blocked: Some("check ci is fail".into()),
+            teams: Vec::new(),
+        },
+    );
+    let cached = bulk::preview(state, &bulk_of(vec![failing], false)).unwrap();
+    assert!(
+        cached
+            .skipped
+            .iter()
+            .any(|skip| skip.pr.pr_id == failing && skip.detail.contains("check ci is fail")),
+        "a fresh owner decision for the current failing rollup still blocks: {:?}",
+        cached.skipped
+    );
+}
+
 fn channel_json() -> serde_json::Value {
     serde_json::json!({
         "workspace": "acme",

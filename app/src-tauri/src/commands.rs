@@ -1333,9 +1333,12 @@ pub async fn set_pr_draft(
     blocking::run(move || {
         let state = app.inner().as_ref();
         let pr = stored_pr(state, PrId(id))?;
-        with_vcs(state, |provider| {
+        let overview = with_vcs(state, |provider| {
             overview::set_draft(&state.store, provider, &pr, draft)
-        })
+        })?;
+        // The next Slack preview must recompute readiness from the updated row.
+        crate::slack::lock(&state.owners).remove(&id);
+        Ok(overview)
     })
     .await
 }

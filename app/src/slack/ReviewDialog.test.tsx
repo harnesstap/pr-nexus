@@ -193,6 +193,36 @@ test("the backend's draft warning shows even when the row looked ready", async (
   expect(await screen.findByRole("note", { name: "Draft warning" })).toBeInTheDocument();
 });
 
+test("Mark ready for review reloads the preview and clears the warning without sending", async () => {
+  let previews = 0;
+  const { api, calls } = fake({
+    reviewPreview: (_id: number, target: ReviewTarget): Promise<ReviewPreview> => {
+      previews += 1;
+      return Promise.resolve({
+        target,
+        action: "request",
+        text: previews === 1 ? "While draft" : "After ready",
+        warnings: [],
+        pr_warnings: previews === 1 ? [{ kind: "draft", pr_id: 7, number: 42, message: "#42 is still a draft." }] : [],
+        signed_in: true,
+        bump_count: 0,
+        permalink: null,
+        broadcast: true,
+      });
+    },
+  });
+  const ready: number[] = [];
+  render(<ReviewDialog api={api} row={draftRow} onClose={() => undefined} onOpen={() => undefined} onReady={(id) => ready.push(id)} onSent={() => undefined} />);
+  expect(await screen.findByLabelText("Message preview")).toHaveTextContent("While draft");
+  fireEvent.click(screen.getByRole("button", { name: "Mark ready for review" }));
+  expect(await screen.findByText("After ready")).toBeInTheDocument();
+  expect(screen.queryByRole("note", { name: "Draft warning" })).not.toBeInTheDocument();
+  expect(ready).toEqual([7]);
+  expect(calls.order).toEqual(["draft:false"]);
+  expect(calls.sent).toEqual([]);
+  expect(previews).toBe(2);
+});
+
 test("Mark ready for review clears the warning without sending", async () => {
   const { api, calls } = fake();
   const ready: number[] = [];

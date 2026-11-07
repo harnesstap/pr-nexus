@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::domain::{PrId, PrState, PullRequest};
 use crate::error::{CoreError, ProviderError};
-use crate::providers::VcsProvider;
+use crate::providers::{PrStatus, VcsProvider};
 use crate::store::Store;
 
 /// How a pull request lands on its base branch.
@@ -204,6 +204,10 @@ pub fn set_auto_merge(
 
 /// Converts the pull request to a draft (`true`) or marks it ready for
 /// review (`false`), records the flag, then refreshes the overview.
+///
+/// Marking ready does not decide that CI passed. When GitHub returns a
+/// status, those checks and merge fields replace the stored ones; a failed
+/// status read keeps the previous checks and still records the draft flag.
 pub fn set_draft(
     store: &Store,
     provider: &dyn VcsProvider,
@@ -211,12 +215,28 @@ pub fn set_draft(
     draft: bool,
 ) -> Result<PrOverview, CoreError> {
     provider.set_draft(pr, draft)?;
-    store.set_pull_request_draft(pr.id, draft)?;
-    let pr = PullRequest {
-        is_draft: draft,
-        ..pr.clone()
-    };
-    refresh(store, provider, &pr)
+    let mut current = pr.clone();
+    // The draft change already happened. A failed status read must not
+    // turn it into an error or leave the stored flag behind.
+    if let Ok(statuses) = provider.pull_request_status(std::slice::from_ref(&pr.remote)) {
+        apply_ready_status(&mut current, draft, &statuses);
+    } else {
+        current.is_draft = draft;
+    }
+    store.update_pull_request_gate(&current)?;
+    refresh(store, provider, &current)
+}
+
+/// Writes `draft` onto `pr`, then the matching status when GitHub returned one.
+fn apply_ready_status(pr: &mut PullRequest, draft: bool, statuses: &[PrStatus]) {
+    pr.is_draft = draft;
+    if let Some(status) = statuses
+        .iter()
+        .find(|status| status.remote_id == pr.remote.id)
+    {
+        status.apply_to(pr);
+        pr.is_draft = draft;
+    }
 }
 
 /// Merges the pull request now with `method`, then refreshes the overview.
@@ -269,6 +289,75 @@ mod tests {
         assert_eq!(MergeMethod::parse("rebase"), Some(MergeMethod::Rebase));
         assert_eq!(MergeMethod::parse("fast-forward"), None);
         assert_eq!(MergeMethod::Merge.graphql(), "MERGE");
+    }
+
+    #[test]
+    fn marking_ready_keeps_a_failing_check_and_takes_a_passing_one() {
+        use crate::domain::{
+            AccountId, ChecksState, Involvement, MergeStateStatus, Mergeable, PrId, ProviderRef,
+            RepoRef, ReviewDecision,
+        };
+
+        let now = Utc::now();
+        let mut pr = PullRequest {
+            id: PrId(7),
+            remote: ProviderRef {
+                account: AccountId(1),
+                id: "PR_acme_7".into(),
+            },
+            repo: RepoRef {
+                host: "github.com".into(),
+                owner: "acme".into(),
+                name: "widgets".into(),
+            },
+            number: 7,
+            title: "Fix the latch".into(),
+            url: "https://github.com/acme/widgets/pull/7".into(),
+            author_login: "ada".into(),
+            body: String::new(),
+            state: PrState::Open,
+            is_draft: true,
+            head_ref: "fix-latch".into(),
+            base_ref: "main".into(),
+            head_sha: "abc7".into(),
+            labels: Vec::new(),
+            review_decision: None,
+            checks: ChecksState::Failure,
+            mergeable: Mergeable::Mergeable,
+            merge_state: MergeStateStatus::Blocked,
+            requested_reviewers: Vec::new(),
+            unresolved_threads: 0,
+            total_threads: 0,
+            involvement: Involvement::AUTHOR,
+            created_at: now,
+            updated_at: now,
+            last_activity_at: now,
+            synced_at: now,
+            hidden: false,
+        };
+        let mut still_red = PrStatus::of(&pr);
+        still_red.checks = ChecksState::Failure;
+        apply_ready_status(&mut pr, false, &[still_red]);
+        assert!(!pr.is_draft);
+        assert_eq!(pr.checks, ChecksState::Failure);
+
+        let mut green = PrStatus::of(&pr);
+        green.checks = ChecksState::Success;
+        green.review_decision = Some(ReviewDecision::Approved);
+        green.merge_state = MergeStateStatus::Clean;
+        apply_ready_status(&mut pr, false, std::slice::from_ref(&green));
+        assert!(!pr.is_draft);
+        assert_eq!(pr.checks, ChecksState::Success);
+        assert_eq!(pr.review_decision, Some(ReviewDecision::Approved));
+        assert_eq!(pr.merge_state, MergeStateStatus::Clean);
+
+        let other = PrStatus {
+            remote_id: "PR_other".into(),
+            checks: ChecksState::Error,
+            ..PrStatus::of(&pr)
+        };
+        apply_ready_status(&mut pr, false, &[other]);
+        assert_eq!(pr.checks, ChecksState::Success);
     }
 
     #[test]
