@@ -282,7 +282,10 @@ async function repoFilterShots(page, dir) {
   await save("selected");
   await page.setViewportSize({ width: 720, height: 900 });
   const toolbar = page.getByRole("toolbar", { name: "List toolbar" });
-  const pageOverflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  const pageOverflow = await toolbar.evaluate((node) => {
+    const root = node.ownerDocument.documentElement;
+    return root.scrollWidth - root.clientWidth;
+  });
   console.log(`page overflow ${pageOverflow}px at 720px`);
   if (pageOverflow > 0) {
     throw new Error(`page overflows by ${pageOverflow}px at 720px`);
