@@ -545,7 +545,7 @@ Computed from synced fields. Re-computed in the pre-send refresh.
 | file list truncated (≥3000) | Unknown | `PR file list may be truncated (≥3000 files); confirm additional owners` |
 | evidence fetch failed | Unknown | the provider error |
 
-- **Blocked** PRs: the Slack action button (§7.7) is disabled and the tooltip lists the reasons. Blocked PRs cannot be overridden in v1. The skill says "never override", and a red CI is a bad reason to page a team.
+- **Blocked** PRs stay blocked in the list. Pending checks, conflicts, a branch that is behind, requested changes, and a closed or merged PR still leave a PR out of a Slack request or bump. A failing check (`fail`, `cancel`, `timeout`, or `action_required`) does not: those PRs are included in the grouped message, the preview notes them, and Send needs no extra confirmation. A draft still only warns. List readiness is unchanged, so a failing check is still Blocked there.
 - **Unknown** PRs: the preview shows the reasons and requires an explicit "I confirm only reviews are missing" checkbox. The confirmation is scoped to `(head_sha, reasons)`. If either changes, the confirmation is invalidated.
 - **Δ BLOCKED: intentional deviation from the skill (decided by the owner).** The skill marks every `BLOCKED` PR as Unknown. Nearly every PR that waits for review reports `BLOCKED`, so the skill asks for confirmation on almost every request. PR Nexus treats a `BLOCKED` PR as **Ready** when only reviews are missing:
   - `reviewDecision = REVIEW_REQUIRED` (or null with code-owner review pending);
@@ -746,7 +746,7 @@ Validation (on save, and in the preview): an unknown placeholder, a placeholder 
 There is never a separate Request button and Bump button. **In the list**, rows have no action buttons; the floating bar's single **Request / bump on Slack** action applies to the selection (§7.9), and rows only show a request indicator with a link to the original message (§8.2). **In the PR detail**, one contextual button covers the single-PR case. Its label comes from `SlackAction` (§4.1):
 - **Request review**: the PR has no active `review_requests` row.
 - **Bump request**, next to `requested 2d ago · bumped 5h ago`: the PR has at least one active row.
-- **Disabled** with a tooltip: Blocked readiness, all owners approved, not authored by you (D4), or no Slack workspace connected. In bulk, such PRs are not refused at selection time; the preview lists them as skipped.
+- **Disabled** with a tooltip: every enabled Slack workspace needs sign-in, or (for a bump) the thread's workspace does. Not authored by you (D4) leaves the PR out of the preview. In bulk, such PRs are not refused at selection time; the preview lists them as skipped. A failing check does not disable the action or skip the PR.
 
 The preview decides per channel. A PR with an active request in one channel and a newly needed owner team in another channel gets a bump in the first and a request in the second.
 
@@ -770,7 +770,7 @@ Both kinds open the same **preview modal** (wireframe and mockup in §8.2):
 - one card per `workspace · #channel`, with a **Change channel** dropdown (the picker) and a **Save as mapping correction** checkbox (checked by default; unchecked = only for this message);
 - each card is labeled **Request** or **Bump**. A request renders as a new message. A bump renders as a **thread reply under the existing message** (root excerpt plus "Open thread ↗");
 - a Slack-style rendering of the exact text (§7.6), unescaped, with an icon-only **Copy message** button at its top-right corner. In the single-PR dialog it copies the shown text including the optional note; it works like the bulk dialog's button (§7.9): a check and a "Message copied" toast, nothing sent or recorded, the dialog stays open;
-- inline warnings for PRs skipped for that channel (`acme/web#91 skipped: CI failing`) and approved teams skipped (with the reviewer's login);
+- inline warnings for PRs skipped for that channel (`skipped: PR has merge conflicts`) and approved teams skipped (with the reviewer's login). A failing check is not one of these skips; the preview notes it and the PR stays in the message;
 - gate notes: Unknown reasons with the confirm checkbox;
 - the GitHub option "Also request <team> as reviewer on GitHub" (default off, D7);
 - footer: **Cancel** and primary **Send N messages**.
@@ -786,14 +786,14 @@ When the user clicks Send, for each affected PR:
 2. Recompute readiness and `decide_owners`.
 3. Compare with the decision shown in the preview.
    - Same → send.
-   - The head changed, new blockers appeared, targets changed, or unknown reasons changed → **abort that channel's message** and re-open the preview with a diff ("PR #42 got a new commit; team X approved meanwhile"). Teams that are now approved simply drop out, and this does not need re-confirmation.
+   - The head changed, a new blocker other than a failing check appeared (a conflict, a pending check, requested changes, or the PR closing), targets changed, or unknown reasons changed → **abort that channel's message** and re-open the preview with a diff ("PR #42 got a new commit; team X approved meanwhile"). A check that newly fails does not abort: the PR stays in the message. Teams that are now approved simply drop out, and this does not need re-confirmation.
 4. Reads and writes are not atomic. This narrows the race window but does not close it. That is acceptable.
 
 ### 7.9 Bulk (list view)
 
 - Select PRs with the three-level tri-state checkboxes (global, per project section, per row; §8.2). A floating bulk bar appears at the bottom: `N selected · [Request / bump on Slack] · [Clear]`. There is **one** bulk action. The planner sorts each PR into a request or a bump per channel, using `review_requests`.
 - Pipeline:
-  1. gate each PR, dropping Blocked ones with their reason;
+  1. gate each PR, dropping ones that are blocked for a reason other than a failing check, with that reason;
   2. run `decide_owners` per PR;
   3. resolve channels;
   4. **group by `(workspace, channel)`: one message per channel lists every selected PR routed to it**. A batch can span several workspaces;
@@ -805,7 +805,7 @@ When the user clicks Send, for each affected PR:
   - All share one root → a single bump reply in that thread (`reply_broadcast=true`) covering all of them.
   - ≤3 distinct roots → one bump reply per root, each listing only its own PRs. (Δ: the skill falls back to a new top-level message as soon as the roots differ. That loses the thread context the bump exists for.)
   - >3 roots → one new **top-level** message using the remind template; its PRs' old rows become `superseded`. A mix of requested and never-requested PRs in one channel → bump replies (rules above) for the requested ones, plus one new request message for the others. The preview shows this choice explicitly, and the user can switch to "one top-level request for all" (default D5).
-- **Mark all ready** (draft warning in the preview) calls `set_pr_draft(id, false)` for every draft, at most 4 at a time (the GitHub client's own request gate is also 4). Each PR leaves the warning as soon as its call succeeds; failures are listed together as "Couldn't mark ready for review: #N: reason". After any success the preview is planned again from the updated rows, so a PR that was only a draft joins its message and a PR that failed to flip stays on the warning. Marking ready does not make CI pass: `set_pr_draft` writes GitHub's latest checks and merge fields when that read succeeds, and a PR whose checks are still failing stays in Skipped with that reason. A failed status read keeps the previous checks and still records the draft flag. The single-PR dialog reloads its preview the same way. Slack sends stay sequential (step 6) to keep message order and per-channel rate limits.
+- **Mark all ready** (draft warning in the preview) calls `set_pr_draft(id, false)` for every draft, at most 4 at a time (the GitHub client's own request gate is also 4). Each PR leaves the warning as soon as its call succeeds; failures are listed together as "Couldn't mark ready for review: #N: reason". After any success the preview is planned again from the updated rows, so a PR that was only a draft joins its message and a PR that failed to flip stays on the draft warning. Marking ready does not make CI pass: `set_pr_draft` writes GitHub's latest checks and merge fields when that read succeeds. A PR whose checks are still failing stays in the message, with the failing-check note. Pending checks and other blockers still leave it out. A failed status read keeps the previous checks and still records the draft flag. The single-PR dialog reloads its preview the same way. Slack sends stay sequential (step 6) to keep message order and per-channel rate limits.
 - Each Send creates a `batch_id`. Results are recorded in `send_attempts`.
 - **Result report** (dialog, then a toast): a table with PR × (channel, outcome `sent|skipped|failed`, detail, permalink). Skipped reasons include: blocked: …, all teams approved, no channel chosen, head changed. A failed message (e.g. `not_in_channel`, `channel_not_found`, `RateLimited`) has a **Retry failed** button that runs the gate again.
 - A mid-batch failure does not roll back messages already sent. Each channel is independent.
@@ -1281,7 +1281,7 @@ Keyboard: `j/k` move, `x` toggle select, `Shift+x` toggle the focused row's sect
 │ │     when you have a moment :pray:                                             │ │
 │ │     https://github.com/acme/billing/pull/23                                   │ │
 │ │     Thanks!                                                                   │ │
-│ │  ⚠ acme/web#91 skipped: CI failing                                            │ │
+│ │  ⚠ acme/web#91 skipped: PR has merge conflicts                                │ │
 │ └───────────────────────────────────────────────────────────────────────────────┘ │
 │ ☐ I confirm only reviews are missing for #77 (GitHub mergeability is unknown)     │
 │ ☐ Also request teams as reviewers on GitHub                                       │
@@ -1845,7 +1845,7 @@ M0–M1 come first on purpose. Every later PR is then built, linted, and releasa
 
 **Defaults chosen (change them by editing this spec)**
 - **D1. GitHub auth:** the `gh` CLI token is the default, with PAT and then device flow as fallbacks. SSO errors show the authorization link.
-- **D2. Readiness otherwise follows the skill:** `BEHIND`, pending CI, and failed CI block. Blocked cannot be overridden in v1.
+- **D2. Readiness otherwise follows the skill:** `BEHIND`, pending CI, and failed CI block the list and merge readiness. Blocked cannot be overridden there. A Slack request or bump still includes a PR whose only extra blocker is a failing check (`fail`, `cancel`, `timeout`, or `action_required`); the preview notes it and Send needs no extra confirmation. Pending checks and the other blockers still leave it out.
 - **D3. Ticket regex:** generic `([A-Z][A-Z0-9]+-\d+)` from branch and title. The user narrows it per project rule.
 - **D4. "To review" filter ships in v1,** backed by the `review_requested` bucket. The Slack action is disabled for PRs you did not author, and they are skipped in bulk.
 - **D5. Bulk bump with different threads:** one reply per thread (≤3 per channel), otherwise one top-level reminder. The preview can switch to a single top-level message.

@@ -346,9 +346,9 @@ export interface TargetMatch {
   kind: "channel" | "member";
 }
 
-/** A non-blocking warning about the PR itself, e.g. it is still a draft. */
+/** A non-blocking warning about the PR itself: a draft, or failing checks. */
 export interface PrWarning {
-  kind: "draft";
+  kind: "draft" | "checks";
   pr_id: number;
   number: number;
   message: string;

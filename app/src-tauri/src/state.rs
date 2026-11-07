@@ -1307,7 +1307,7 @@ pub struct OwnersEntry {
     pub is_draft: bool,
     pub checks: ChecksState,
     pub at: std::time::Instant,
-    /// `Some` when readiness is blocked for a reason other than draft.
+    /// `Some` when readiness is blocked for a reason other than a draft or a failing check.
     pub blocked: Option<String>,
     pub teams: Vec<String>,
 }

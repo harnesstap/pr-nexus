@@ -17,7 +17,9 @@
 // popover filtered to widgets, both widget repositories selected, a 720px
 // toolbar, and the alphabetically sorted project list.
 // `--ready-preview <dir>` saves the bulk dialog before and after Mark all ready
-// when two selected drafts are CI-blocked and only one of those checks clears.
+// when two selected drafts have failing checks and only one of those clears.
+// `--ci-preview <dir>` saves a bulk preview of three PRs, including one whose
+// checks are failing, all in the same message.
 // `--update <dir>` saves the sidebar's update indicator (update-*.png): none,
 // the icon for a newer release, and its popover for a release and a dev build.
 // Uses an installed Chrome; set CHROME_PATH to pick another Chromium binary.
@@ -76,6 +78,11 @@ const readyPreviewFlag = process.argv.indexOf("--ready-preview");
 const readyPreviewDir = readyPreviewFlag === -1 ? null : process.argv[readyPreviewFlag + 1];
 if (readyPreviewFlag !== -1 && !readyPreviewDir) {
   throw new Error("--ready-preview needs an output directory");
+}
+const ciPreviewFlag = process.argv.indexOf("--ci-preview");
+const ciPreviewDir = ciPreviewFlag === -1 ? null : process.argv[ciPreviewFlag + 1];
+if (ciPreviewFlag !== -1 && !ciPreviewDir) {
+  throw new Error("--ci-preview needs an output directory");
 }
 const updateFlag = process.argv.indexOf("--update");
 const updateDir = updateFlag === -1 ? null : process.argv[updateFlag + 1];
@@ -186,7 +193,7 @@ async function slackDraftShots(page, dir) {
   await save("bulk-after-mark-ready");
 }
 
-/** Bulk preview before and after Mark all ready, with one real CI block left. */
+/** Bulk preview before and after Mark all ready. Failing checks stay in the message. */
 async function readyPreviewShots(page, dir) {
   mkdirSync(dir, { recursive: true });
   const dialog = page.getByRole("dialog");
@@ -201,12 +208,34 @@ async function readyPreviewShots(page, dir) {
   }
   await page.getByRole("button", { name: "Request / bump on Slack" }).first().click();
   await dialog.getByLabel("Message preview").waitFor();
-  await dialog.getByText("Blocked: check ci is fail").first().waitFor();
+  await dialog.getByRole("note", { name: "Failing checks" }).waitFor();
   await save("before");
   await dialog.getByRole("button", { name: "Mark all ready" }).click();
   await dialog.getByText("Show saved cards first").waitFor();
-  await dialog.getByText("Blocked: check ci is fail").waitFor();
+  await dialog.getByRole("note", { name: "Failing checks" }).waitFor();
   await save("after");
+}
+
+/** Three selected PRs, one with failing checks, all in one request. */
+async function ciPreviewShots(page, dir) {
+  mkdirSync(dir, { recursive: true });
+  const dialog = page.getByRole("dialog");
+  for (const title of [
+    "Add address autocomplete to checkout",
+    "fix: expose order totals in the cart API so the mobile client stops recomputing tax",
+    "Register passkeys from account settings",
+  ]) {
+    await page.getByRole("checkbox", { name: `Select ${title}` }).first().check();
+  }
+  await page.getByRole("button", { name: "Request / bump on Slack" }).first().click();
+  await dialog.getByLabel("Message preview").waitFor();
+  await dialog.getByRole("note", { name: "Failing checks" }).waitFor();
+  await dialog.getByText("Add address autocomplete to checkout").waitFor();
+  await dialog.getByText("fix: expose order totals in the cart API so the mobile client stops recomputing tax").waitFor();
+  await dialog.getByText("Register passkeys from account settings").waitFor();
+  await page.waitForTimeout(300);
+  await dialog.screenshot({ path: resolve(dir, "ci-preview.png") });
+  console.log("wrote ci-preview.png");
 }
 
 const UPDATES = {
@@ -348,9 +377,16 @@ try {
       globalThis.__repoScene = true;
     });
   }
+  if (ciPreviewDir) {
+    await page.addInitScript(() => {
+      globalThis.__ciPreview = true;
+    });
+  }
   await page.goto(url);
   await page.getByRole("group", { name: "Quick filters" }).waitFor();
-  if (repoFilterDir) {
+  if (ciPreviewDir) {
+    await ciPreviewShots(page, resolve(ciPreviewDir));
+  } else if (repoFilterDir) {
     await repoFilterShots(page, resolve(repoFilterDir));
   } else if (readyPreviewDir) {
     await readyPreviewShots(page, resolve(readyPreviewDir));
@@ -382,7 +418,7 @@ try {
         .click();
     }
   }
-  if (!tooltipsDir && !scenesDir && !branchDir && !slackDraftDir && !repoFilterDir && !readyPreviewDir) {
+  if (!tooltipsDir && !scenesDir && !branchDir && !slackDraftDir && !repoFilterDir && !readyPreviewDir && !ciPreviewDir) {
     await page.waitForTimeout(500);
     await page.screenshot({ path: out });
     console.log(`wrote ${out} (${Math.round(statSync(out).size / 1024)} KB)`);

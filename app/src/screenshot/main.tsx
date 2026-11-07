@@ -165,11 +165,17 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     const request = args.request as BulkRequest;
     const picked = rows.filter((item) => request.pr_ids.includes(item.id));
     const scene = (window as { __readyPreview?: boolean }).__readyPreview === true;
+    const ciScene = (window as { __ciPreview?: boolean }).__ciPreview === true;
     const cleared = (window as { __ciCleared?: number[] }).__ciCleared ?? [];
-    // Two drafts stay out of the message while their stored rollup is failure.
-    // Marking ready clears the rollup only for the first of them.
-    const blocked = scene ? picked.filter((item) => (item.id === 4 || item.id === 12) && !cleared.includes(item.id)) : [];
-    const included = picked.filter((item) => !blocked.some((skip) => skip.id === item.id));
+    // Failing checks stay in the message. The ready-preview scene starts with
+    // two red drafts; marking the first one ready clears only that rollup.
+    let failing: typeof picked = [];
+    if (scene) {
+      failing = picked.filter((item) => (item.id === 4 || item.id === 12) && !cleared.includes(item.id));
+    } else if (ciScene) {
+      failing = picked.filter((item) => item.checks === "failure" || item.checks === "error");
+    }
+    const included = picked;
     const prs = included.map((item) => ({ pr_id: item.id, number: item.number, title: item.title, repo: item.repo }));
     const listed = included.length > 0 ? included : picked;
     const text = `Hello team\nCould someone please review these pull requests? (Ada Park)\n${listed
@@ -190,11 +196,16 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
               fingerprint: "fp-screenshot",
             },
           ],
-      skipped: blocked.map((item) => ({
-        pr: { pr_id: item.id, number: item.number, title: item.title, repo: item.repo },
-        detail: "Blocked: check ci is fail",
-      })),
-      pr_warnings: picked.flatMap(draftWarnings),
+      skipped: [],
+      pr_warnings: [
+        ...picked.flatMap(draftWarnings),
+        ...failing.map((item) => ({
+          kind: "checks" as const,
+          pr_id: item.id,
+          number: item.number,
+          message: `#${item.number} has failing checks.`,
+        })),
+      ],
     };
   },
   review_preview: (args) => {

@@ -131,6 +131,7 @@ test("titles with underscores preview as inline code with no Markdown warning", 
 });
 
 const draft = (pr_id: number, number: number) => ({ kind: "draft" as const, pr_id, number, message: `#${number} is still a draft.` });
+const failingChecks = (pr_id: number, number: number) => ({ kind: "checks" as const, pr_id, number, message: `#${number} has failing checks.` });
 
 test("drafts warn once with a count and a badge each, and can be sent anyway", async () => {
   const { api } = fake();
@@ -205,7 +206,12 @@ test("Mark all ready runs up to four at once, clears each as it finishes and rep
   expect(ready.sort()).toEqual([2, 3, 4, 5, 6]);
 });
 
-function planned(text: string, included: ReturnType<typeof pr>[], skipped: { pr: ReturnType<typeof pr>; detail: string }[], warnings: ReturnType<typeof draft>[]): BulkPreview {
+function planned(
+  text: string,
+  included: ReturnType<typeof pr>[],
+  skipped: { pr: ReturnType<typeof pr>; detail: string }[],
+  warnings: Array<ReturnType<typeof draft> | ReturnType<typeof failingChecks>>,
+): BulkPreview {
   return {
     cards: [
       {
@@ -223,7 +229,7 @@ function planned(text: string, included: ReturnType<typeof pr>[], skipped: { pr:
   };
 }
 
-test("Mark all ready replans and a draft whose checks now pass joins the message", async () => {
+test("Mark all ready replans and a draft whose checks now pass stays in the message", async () => {
   const { api } = fake();
   let calls = 0;
   const withDrafts: Api = {
@@ -233,26 +239,26 @@ test("Mark all ready replans and a draft whose checks now pass joins the message
       const first = calls === 1;
       return Promise.resolve(
         planned(
-          first ? "Only the ready one" : "Both PRs please",
-          first ? [pr(1, 42, "Add passkeys")] : [pr(1, 42, "Add passkeys"), pr(2, 43, "Fix login")],
-          first ? [{ pr: pr(2, 43, "Fix login"), detail: "Blocked: check ci is fail" }] : [],
-          first ? [draft(2, 43)] : [],
+          first ? "Both, one red" : "Both, now green",
+          [pr(1, 42, "Add passkeys"), pr(2, 43, "Fix login")],
+          [],
+          first ? [draft(2, 43), failingChecks(2, 43)] : [],
         ),
       );
     },
     setPrDraft: () => Promise.resolve({} as Awaited<ReturnType<Api["setPrDraft"]>>),
   };
   render(<BulkDialog api={withDrafts} prIds={[1, 2]} onClose={() => undefined} onSent={() => undefined} onOpen={() => undefined} />);
-  expect(await screen.findByText("Only the ready one")).toBeInTheDocument();
-  expect(screen.getByText(/Blocked: check ci is fail/)).toBeInTheDocument();
+  expect(await screen.findByText("Both, one red")).toBeInTheDocument();
+  expect(screen.getByRole("note", { name: "Failing checks" })).toHaveTextContent("#43");
   fireEvent.click(screen.getByRole("button", { name: "Mark ready for review" }));
-  expect(await screen.findByText("Both PRs please")).toBeInTheDocument();
-  expect(screen.queryByText(/check ci is fail/)).not.toBeInTheDocument();
+  expect(await screen.findByText("Both, now green")).toBeInTheDocument();
+  expect(screen.queryByRole("note", { name: "Failing checks" })).not.toBeInTheDocument();
   expect(screen.queryByRole("note", { name: "Draft warning" })).not.toBeInTheDocument();
   expect(calls).toBe(2);
 });
 
-test("a partial mark-ready keeps the failed draft and a real CI block", async () => {
+test("a partial mark-ready keeps the failed draft and a real conflict", async () => {
   const { api } = fake();
   let calls = 0;
   const withDrafts: Api = {
@@ -263,9 +269,9 @@ test("a partial mark-ready keeps the failed draft and a real CI block", async ()
       return Promise.resolve(
         planned(
           first ? "One PR" : "Ready ones",
-          first ? [pr(1, 42, "Add passkeys")] : [pr(1, 42, "Add passkeys"), pr(2, 43, "Now ready")],
-          [{ pr: pr(3, 44, "Still red"), detail: "Blocked: check ci is fail" }],
-          first ? [draft(2, 43), draft(3, 44)] : [draft(3, 44)],
+          first ? [pr(1, 42, "Add passkeys"), pr(4, 45, "Red but included")] : [pr(1, 42, "Add passkeys"), pr(2, 43, "Now ready"), pr(4, 45, "Red but included")],
+          [{ pr: pr(3, 44, "Conflicts"), detail: "Blocked: PR has merge conflicts" }],
+          first ? [draft(2, 43), draft(3, 44), failingChecks(4, 45)] : [draft(3, 44), failingChecks(4, 45)],
         ),
       );
     },
@@ -274,17 +280,18 @@ test("a partial mark-ready keeps the failed draft and a real CI block", async ()
         ? Promise.reject(new Error("GitHub said no"))
         : Promise.resolve({} as Awaited<ReturnType<Api["setPrDraft"]>>),
   };
-  render(<BulkDialog api={withDrafts} prIds={[1, 2, 3]} onClose={() => undefined} onSent={() => undefined} onOpen={() => undefined} />);
+  render(<BulkDialog api={withDrafts} prIds={[1, 2, 3, 4]} onClose={() => undefined} onSent={() => undefined} onOpen={() => undefined} />);
   expect(await screen.findByText("One PR")).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Mark all ready" }));
   expect(await screen.findByText("Ready ones")).toBeInTheDocument();
   expect(screen.getByText("Couldn't mark ready for review: #44: GitHub said no")).toBeInTheDocument();
   expect(screen.getByRole("note", { name: "Draft warning" })).toHaveTextContent("#44");
-  expect(screen.getByText(/Blocked: check ci is fail/)).toBeInTheDocument();
+  expect(screen.getByText(/PR has merge conflicts/)).toBeInTheDocument();
+  expect(screen.getByRole("note", { name: "Failing checks" })).toHaveTextContent("#45");
   expect(calls).toBe(2);
 });
 
-test("marking ready does not drop a PR whose checks are still failing", async () => {
+test("marking ready keeps a PR whose checks are still failing in the message", async () => {
   const { api } = fake();
   let calls = 0;
   const withDrafts: Api = {
@@ -293,22 +300,38 @@ test("marking ready does not drop a PR whose checks are still failing", async ()
       calls += 1;
       return Promise.resolve(
         planned(
-          "Only green",
-          [pr(1, 42, "Add passkeys")],
-          [{ pr: pr(2, 43, "Red draft"), detail: "Blocked: check ci is fail" }],
-          calls === 1 ? [draft(2, 43)] : [],
+          "Both PRs",
+          [pr(1, 42, "Add passkeys"), pr(2, 43, "Red draft")],
+          [],
+          calls === 1 ? [draft(2, 43), failingChecks(2, 43)] : [failingChecks(2, 43)],
         ),
       );
     },
     setPrDraft: () => Promise.resolve({} as Awaited<ReturnType<Api["setPrDraft"]>>),
   };
   render(<BulkDialog api={withDrafts} prIds={[1, 2]} onClose={() => undefined} onSent={() => undefined} onOpen={() => undefined} />);
-  expect(await screen.findByText("Only green")).toBeInTheDocument();
+  expect(await screen.findByText("Both PRs")).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Mark ready for review" }));
   await waitFor(() => expect(screen.queryByRole("note", { name: "Draft warning" })).not.toBeInTheDocument());
-  expect(screen.getByText("Only green")).toBeInTheDocument();
-  expect(screen.getByText(/Blocked: check ci is fail/)).toBeInTheDocument();
+  expect(screen.getByText("Both PRs")).toBeInTheDocument();
+  expect(screen.getByRole("note", { name: "Failing checks" })).toHaveTextContent("#43");
+  expect(screen.getByRole("button", { name: "Send 1 message" })).toBeEnabled();
   expect(calls).toBe(2);
+});
+
+test("failing checks are noted and the send button stays a normal send", async () => {
+  const { api } = fake();
+  const preview = planned(
+    "Three PRs",
+    [pr(1, 42, "Add passkeys"), pr(2, 43, "Fix login"), pr(3, 44, "Red one")],
+    [],
+    [failingChecks(3, 44)],
+  );
+  render(<BulkDialog api={{ ...api, bulkPreview: () => Promise.resolve(preview) }} prIds={[1, 2, 3]} onClose={() => undefined} onSent={() => undefined} onOpen={() => undefined} />);
+  expect(await screen.findByText("Three PRs")).toBeInTheDocument();
+  expect(screen.getByRole("note", { name: "Failing checks" })).toHaveTextContent("Checks are failing on #44. It is still included.");
+  expect(screen.queryByRole("region", { name: "Skipped" })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Send 1 message" })).toBeEnabled();
 });
 
 test("Copy message copies each destination's text without sending, in both modes", async () => {

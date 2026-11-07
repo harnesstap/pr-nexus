@@ -166,6 +166,26 @@ test("a draft PR warns at the top and can still be sent", async () => {
   expect(calls.order).toEqual(["send"]);
 });
 
+test("failing checks are a note and the send button stays Send request", async () => {
+  const { api } = fake({
+    reviewPreview: (_id: number, target: ReviewTarget): Promise<ReviewPreview> =>
+      Promise.resolve({
+        target,
+        action: "request",
+        text: "Hello\n",
+        warnings: [],
+        pr_warnings: [{ kind: "checks", pr_id: 7, number: 42, message: "#42 has failing checks." }],
+        signed_in: true,
+        bump_count: 0,
+        permalink: null,
+        broadcast: true,
+      }),
+  });
+  render(<ReviewDialog api={api} row={row} onClose={() => undefined} onOpen={() => undefined} onSent={() => undefined} />);
+  expect(await screen.findByRole("note", { name: "Failing checks" })).toHaveTextContent("Checks are failing on #42. It is still included.");
+  expect(screen.getByRole("button", { name: "Send request" })).toBeEnabled();
+});
+
 test("a ready PR shows no draft warning", async () => {
   const { api } = fake();
   render(<ReviewDialog api={api} row={row} onClose={() => undefined} onOpen={() => undefined} onSent={() => undefined} />);

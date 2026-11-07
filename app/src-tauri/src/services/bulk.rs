@@ -94,7 +94,7 @@ pub struct BulkSkip {
 pub struct BulkPreview {
     pub cards: Vec<BulkCard>,
     pub skipped: Vec<BulkSkip>,
-    /// One per selected PR that is still a draft; drafts are sent anyway.
+    /// Drafts and failing checks. Both are notes; the PR is still sent.
     pub pr_warnings: Vec<PrWarning>,
     /// Some card names a channel whose Slack name isn't known yet (only
     /// with `cached_names`): preview again without it before sending.
@@ -363,7 +363,7 @@ fn owners_of(detail: &crate::commands::PrDetail) -> Owners {
         detail.mandatory_teams.clone()
     };
     let blocked = (detail.readiness == "blocked")
-        .then(|| without_draft(&detail.readiness_notes))
+        .then(|| slack_skip_detail(&detail.readiness_notes))
         .flatten();
     (blocked, teams)
 }
@@ -388,7 +388,7 @@ fn resolve_owners(
             && entry.base_ref == pr.base_ref
             && entry.is_draft == pr.is_draft
             && entry.checks == pr.checks)
-            .then(|| (entry.blocked.clone(), entry.teams.clone()))
+            .then(|| (soften_cached_block(&entry.blocked), entry.teams.clone()))
     };
     let mut out: Vec<Option<Result<Owners, AppError>>> =
         prs.iter().map(|pr| cached(pr).map(Ok)).collect();
@@ -645,23 +645,52 @@ fn plan_request(
 
 fn blocked_reasons(readiness: Readiness) -> Option<String> {
     match readiness {
-        Readiness::Blocked { reasons } => without_draft(&reasons),
+        Readiness::Blocked { reasons } => slack_skip_detail(&reasons),
         Readiness::Ready { .. } | Readiness::Unknown { .. } => None,
     }
 }
 
-/// A draft only warns (see [`crate::slack::pr_warnings`]); any other reason
-/// still blocks. `None` when being a draft was the only reason.
-fn without_draft(reasons: &[String]) -> Option<String> {
+/// A draft and a failing check only warn (see [`crate::slack::pr_warnings`]).
+/// Pending checks and every other blocked reason still leave the PR out.
+/// `None` when nothing that still blocks remains.
+fn slack_skip_detail(reasons: &[String]) -> Option<String> {
     let rest: Vec<&str> = reasons
         .iter()
         .map(String::as_str)
-        .filter(|reason| *reason != DRAFT_REASON)
+        .filter(|reason| *reason != DRAFT_REASON && !is_failing_check(reason))
         .collect();
     if rest.is_empty() && !reasons.is_empty() {
         None
     } else {
         Some(rest.join("; "))
+    }
+}
+
+/// `check <name> is fail|cancel|timeout|action_required` from readiness.
+/// Pending stays a blocker. List readiness is unchanged.
+fn is_failing_check(reason: &str) -> bool {
+    let Some(rest) = reason.strip_prefix("check ") else {
+        return false;
+    };
+    let Some((_, bucket)) = rest.rsplit_once(" is ") else {
+        return false;
+    };
+    matches!(bucket, "fail" | "cancel" | "timeout" | "action_required")
+}
+
+/// A session cache entry was stored after this filter. Apply it again so an
+/// entry recorded as only a failing check does not keep the PR out.
+fn soften_cached_block(blocked: &Option<String>) -> Option<String> {
+    match blocked {
+        None => None,
+        Some(text) if text.is_empty() => Some(String::new()),
+        Some(text) => slack_skip_detail(
+            &text
+                .split("; ")
+                .filter(|part| !part.is_empty())
+                .map(str::to_owned)
+                .collect::<Vec<_>>(),
+        ),
     }
 }
 
@@ -722,7 +751,20 @@ fn preview_dto(
             notes: moved_notes(card, moved),
         });
     }
-    let pr_warnings = prs.iter().flat_map(crate::slack::pr_warnings).collect();
+    let included: BTreeSet<i64> = plan
+        .cards
+        .iter()
+        .flat_map(|card| &card.messages)
+        .flat_map(|message| &message.items)
+        .map(|item| item.pr.id.0)
+        .collect();
+    // A failing-check note is only for a PR that is actually in a message.
+    // A draft warning stays even when another reason leaves that PR out.
+    let pr_warnings = prs
+        .iter()
+        .flat_map(crate::slack::pr_warnings)
+        .filter(|warning| warning.kind != "checks" || included.contains(&warning.pr_id))
+        .collect();
     let names_pending = cached_names
         && crate::slack::names_pending(
             state,
@@ -845,15 +887,29 @@ fn pr_dto_by_id(prs: &[PullRequest], id: PrId, title: &str) -> BulkPr {
 
 #[cfg(test)]
 mod draft_tests {
-    use super::{DRAFT_REASON, without_draft};
+    use super::{DRAFT_REASON, is_failing_check, slack_skip_detail};
 
     #[test]
-    fn a_draft_alone_does_not_block_but_other_reasons_still_do() {
-        assert_eq!(without_draft(&[DRAFT_REASON.to_owned()]), None);
+    fn a_draft_or_a_failing_check_does_not_block_but_other_reasons_still_do() {
+        assert_eq!(slack_skip_detail(&[DRAFT_REASON.to_owned()]), None);
+        assert_eq!(slack_skip_detail(&["check ci is fail".into()]), None);
         assert_eq!(
-            without_draft(&[DRAFT_REASON.to_owned(), "PR has merge conflicts".to_owned()]),
+            slack_skip_detail(&["check build is cancel".into(), "check ci is timeout".into()]),
+            None
+        );
+        assert!(!is_failing_check("check ci is pending"));
+        assert_eq!(
+            slack_skip_detail(&[
+                DRAFT_REASON.to_owned(),
+                "check ci is fail".into(),
+                "PR has merge conflicts".into()
+            ]),
             Some("PR has merge conflicts".to_owned())
         );
-        assert_eq!(without_draft(&[]), Some(String::new()));
+        assert_eq!(
+            slack_skip_detail(&["check ci is pending".into()]),
+            Some("check ci is pending".to_owned())
+        );
+        assert_eq!(slack_skip_detail(&[]), Some(String::new()));
     }
 }
