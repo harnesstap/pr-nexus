@@ -205,6 +205,112 @@ test("Mark all ready runs up to four at once, clears each as it finishes and rep
   expect(ready.sort()).toEqual([2, 3, 4, 5, 6]);
 });
 
+function planned(text: string, included: ReturnType<typeof pr>[], skipped: { pr: ReturnType<typeof pr>; detail: string }[], warnings: ReturnType<typeof draft>[]): BulkPreview {
+  return {
+    cards: [
+      {
+        target: platform,
+        messages: [{ action: "request", prs: included, text, permalink: null }],
+        warnings: [],
+        signed_in: true,
+        single_top_level: false,
+        can_switch: false,
+        fingerprint: "fp-ready",
+      },
+    ],
+    skipped,
+    pr_warnings: warnings,
+  };
+}
+
+test("Mark all ready replans and a draft whose checks now pass joins the message", async () => {
+  const { api } = fake();
+  let calls = 0;
+  const withDrafts: Api = {
+    ...api,
+    bulkPreview: () => {
+      calls += 1;
+      const first = calls === 1;
+      return Promise.resolve(
+        planned(
+          first ? "Only the ready one" : "Both PRs please",
+          first ? [pr(1, 42, "Add passkeys")] : [pr(1, 42, "Add passkeys"), pr(2, 43, "Fix login")],
+          first ? [{ pr: pr(2, 43, "Fix login"), detail: "Blocked: check ci is fail" }] : [],
+          first ? [draft(2, 43)] : [],
+        ),
+      );
+    },
+    setPrDraft: () => Promise.resolve({} as Awaited<ReturnType<Api["setPrDraft"]>>),
+  };
+  render(<BulkDialog api={withDrafts} prIds={[1, 2]} onClose={() => undefined} onSent={() => undefined} onOpen={() => undefined} />);
+  expect(await screen.findByText("Only the ready one")).toBeInTheDocument();
+  expect(screen.getByText(/Blocked: check ci is fail/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Mark ready for review" }));
+  expect(await screen.findByText("Both PRs please")).toBeInTheDocument();
+  expect(screen.queryByText(/check ci is fail/)).not.toBeInTheDocument();
+  expect(screen.queryByRole("note", { name: "Draft warning" })).not.toBeInTheDocument();
+  expect(calls).toBe(2);
+});
+
+test("a partial mark-ready keeps the failed draft and a real CI block", async () => {
+  const { api } = fake();
+  let calls = 0;
+  const withDrafts: Api = {
+    ...api,
+    bulkPreview: () => {
+      calls += 1;
+      const first = calls === 1;
+      return Promise.resolve(
+        planned(
+          first ? "One PR" : "Ready ones",
+          first ? [pr(1, 42, "Add passkeys")] : [pr(1, 42, "Add passkeys"), pr(2, 43, "Now ready")],
+          [{ pr: pr(3, 44, "Still red"), detail: "Blocked: check ci is fail" }],
+          first ? [draft(2, 43), draft(3, 44)] : [draft(3, 44)],
+        ),
+      );
+    },
+    setPrDraft: (id: number) =>
+      id === 3
+        ? Promise.reject(new Error("GitHub said no"))
+        : Promise.resolve({} as Awaited<ReturnType<Api["setPrDraft"]>>),
+  };
+  render(<BulkDialog api={withDrafts} prIds={[1, 2, 3]} onClose={() => undefined} onSent={() => undefined} onOpen={() => undefined} />);
+  expect(await screen.findByText("One PR")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Mark all ready" }));
+  expect(await screen.findByText("Ready ones")).toBeInTheDocument();
+  expect(screen.getByText("Couldn't mark ready for review: #44: GitHub said no")).toBeInTheDocument();
+  expect(screen.getByRole("note", { name: "Draft warning" })).toHaveTextContent("#44");
+  expect(screen.getByText(/Blocked: check ci is fail/)).toBeInTheDocument();
+  expect(calls).toBe(2);
+});
+
+test("marking ready does not drop a PR whose checks are still failing", async () => {
+  const { api } = fake();
+  let calls = 0;
+  const withDrafts: Api = {
+    ...api,
+    bulkPreview: () => {
+      calls += 1;
+      return Promise.resolve(
+        planned(
+          "Only green",
+          [pr(1, 42, "Add passkeys")],
+          [{ pr: pr(2, 43, "Red draft"), detail: "Blocked: check ci is fail" }],
+          calls === 1 ? [draft(2, 43)] : [],
+        ),
+      );
+    },
+    setPrDraft: () => Promise.resolve({} as Awaited<ReturnType<Api["setPrDraft"]>>),
+  };
+  render(<BulkDialog api={withDrafts} prIds={[1, 2]} onClose={() => undefined} onSent={() => undefined} onOpen={() => undefined} />);
+  expect(await screen.findByText("Only green")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Mark ready for review" }));
+  await waitFor(() => expect(screen.queryByRole("note", { name: "Draft warning" })).not.toBeInTheDocument());
+  expect(screen.getByText("Only green")).toBeInTheDocument();
+  expect(screen.getByText(/Blocked: check ci is fail/)).toBeInTheDocument();
+  expect(calls).toBe(2);
+});
+
 test("Copy message copies each destination's text without sending, in both modes", async () => {
   const writeText = vi.fn<(text: string) => Promise<void>>(() => Promise.resolve());
   Object.assign(navigator, { clipboard: { writeText } });

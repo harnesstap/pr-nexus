@@ -6,7 +6,7 @@ use std::thread;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use pr_nexus_core::domain::{Account, AccountKind};
+use pr_nexus_core::domain::{Account, AccountKind, ChecksState};
 use pr_nexus_core::onboarding::{self, OnboardingState, StepValidity};
 use pr_nexus_core::providers::{ChatProvider, SearchBucket};
 use pr_nexus_core::providers::{ProviderRegistry, SetupStep};
@@ -1304,6 +1304,8 @@ pub struct NameEntry {
 pub struct OwnersEntry {
     pub head_sha: String,
     pub base_ref: String,
+    pub is_draft: bool,
+    pub checks: ChecksState,
     pub at: std::time::Instant,
     /// `Some` when readiness is blocked for a reason other than draft.
     pub blocked: Option<String>,

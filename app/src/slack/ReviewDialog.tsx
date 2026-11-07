@@ -141,6 +141,9 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNot
       await api.setPrDraft(row.id, false);
       setMarkedReady(true);
       onReady?.(row.id);
+      if (target) {
+        await loadPreview(target);
+      }
     } catch (err) {
       setError(`Couldn't mark it ready for review: ${errorMessage(err)}`);
     } finally {
