@@ -316,8 +316,8 @@ impl VcsSource for LiveVcs {
     }
 }
 
-/// How long a PR's resolved owners are reused by the preview (same head
-/// and base). Send always resolves again.
+/// How long a PR's resolved owners are reused by the preview (same head,
+/// base, draft flag, and checks rollup). Send always resolves again.
 pub(crate) const OWNERS_TTL: std::time::Duration = std::time::Duration::from_secs(2 * 60);
 /// Owner resolutions in flight at once (each a GitHub GraphQL probe, plus
 /// files and team members when the cache is stale).
@@ -347,6 +347,8 @@ pub(crate) fn remember_owners(
         crate::state::OwnersEntry {
             head_sha: pr.head_sha.clone(),
             base_ref: pr.base_ref.clone(),
+            is_draft: pr.is_draft,
+            checks: pr.checks,
             at: std::time::Instant::now(),
             blocked,
             teams,
@@ -383,7 +385,9 @@ fn resolve_owners(
         let entry = owners.get(&pr.id.0)?;
         (entry.at.elapsed() < OWNERS_TTL
             && entry.head_sha == pr.head_sha
-            && entry.base_ref == pr.base_ref)
+            && entry.base_ref == pr.base_ref
+            && entry.is_draft == pr.is_draft
+            && entry.checks == pr.checks)
             .then(|| (entry.blocked.clone(), entry.teams.clone()))
     };
     let mut out: Vec<Option<Result<Owners, AppError>>> =

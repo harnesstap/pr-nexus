@@ -150,6 +150,38 @@ impl Store {
         })
     }
 
+    /// Records a draft flip and the status fields read with it, ahead of the next sync.
+    pub fn update_pull_request_gate(&self, pr: &PullRequest) -> Result<(), CoreError> {
+        let pr = pr.clone();
+        self.write(move |conn| {
+            conn.execute(
+                "UPDATE pull_requests SET
+                    is_draft = ?1,
+                    review_decision = ?2,
+                    checks_state = ?3,
+                    mergeable = ?4,
+                    merge_state = ?5,
+                    unresolved_threads = ?6,
+                    total_threads = ?7,
+                    last_activity_at = ?8
+                 WHERE id = ?9",
+                params![
+                    sql_bool(pr.is_draft),
+                    pr.review_decision.map(|value| value.as_str().to_owned()),
+                    pr.checks.as_str(),
+                    pr.mergeable.as_str(),
+                    pr.merge_state.as_str(),
+                    pr.unresolved_threads,
+                    pr.total_threads,
+                    format_ts(pr.last_activity_at),
+                    pr.id.0,
+                ],
+            )
+            .map_err(db)?;
+            Ok(())
+        })
+    }
+
     /// Records a draft flip made from the app, ahead of the next sync.
     pub fn set_pull_request_draft(&self, id: PrId, draft: bool) -> Result<(), CoreError> {
         self.write(move |conn| {

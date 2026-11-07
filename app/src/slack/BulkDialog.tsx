@@ -191,18 +191,30 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen, onReady, onNot
   async function markAllReady() {
     setMarking(true);
     setError(null);
-    const results = await mapLimit(drafts, BULK_CONCURRENCY, async (warning) => {
+    const pending = drafts;
+    const results = await mapLimit(pending, BULK_CONCURRENCY, async (warning) => {
       await api.setPrDraft(warning.pr_id, false);
       setReadied((current) => [...current, warning.pr_id]);
       onReady?.(warning.pr_id);
     });
     const failed = results.flatMap((result, index) =>
-      result.status === "rejected" ? [`#${drafts[index].number}: ${errorMessage(result.reason)}`] : [],
+      result.status === "rejected" ? [`#${pending[index].number}: ${errorMessage(result.reason)}`] : [],
     );
-    if (failed.length > 0) {
-      setError(`Couldn't mark ready for review: ${failed.join("; ")}`);
+    const message = failed.length > 0 ? `Couldn't mark ready for review: ${failed.join("; ")}` : null;
+    if (message) {
+      setError(message);
     }
     setMarking(false);
+    // The open preview was planned before the draft flips. Plan again so a PR
+    // that is no longer only a draft joins its message. A real CI block stays
+    // in Skipped; this does not treat the draft flip as a passing check.
+    if (results.some((result) => result.status === "fulfilled")) {
+      setLoading(true);
+      await plan(request());
+      if (message) {
+        setError(message);
+      }
+    }
   }
 
   function retryFailed() {

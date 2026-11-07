@@ -164,24 +164,36 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   bulk_preview: (args) => {
     const request = args.request as BulkRequest;
     const picked = rows.filter((item) => request.pr_ids.includes(item.id));
-    const prs = picked.map((item) => ({ pr_id: item.id, number: item.number, title: item.title, repo: item.repo }));
-    const text = `Hello team\nCould someone please review these pull requests? (Ada Park)\n${picked
+    const scene = (window as { __readyPreview?: boolean }).__readyPreview === true;
+    const cleared = (window as { __ciCleared?: number[] }).__ciCleared ?? [];
+    // Two drafts stay out of the message while their stored rollup is failure.
+    // Marking ready clears the rollup only for the first of them.
+    const blocked = scene ? picked.filter((item) => (item.id === 4 || item.id === 12) && !cleared.includes(item.id)) : [];
+    const included = picked.filter((item) => !blocked.some((skip) => skip.id === item.id));
+    const prs = included.map((item) => ({ pr_id: item.id, number: item.number, title: item.title, repo: item.repo }));
+    const listed = included.length > 0 ? included : picked;
+    const text = `Hello team\nCould someone please review these pull requests? (Ada Park)\n${listed
       .map((item) => `• \`${item.title}\`\nhttps://github.com/${item.repo}/pull/${item.number}`)
       .join("\n")}\nThanks!\n`;
     const target = request.target ?? reviewChoices[0].target;
     return {
-      cards: [
-        {
-          target,
-          messages: [{ action: "request", prs, text, permalink: null }],
-          warnings: [],
-          signed_in: true,
-          single_top_level: true,
-          can_switch: true,
-          fingerprint: "fp-screenshot",
-        },
-      ],
-      skipped: [],
+      cards: included.length === 0
+        ? []
+        : [
+            {
+              target,
+              messages: [{ action: "request", prs, text, permalink: null }],
+              warnings: [],
+              signed_in: true,
+              single_top_level: true,
+              can_switch: true,
+              fingerprint: "fp-screenshot",
+            },
+          ],
+      skipped: blocked.map((item) => ({
+        pr: { pr_id: item.id, number: item.number, title: item.title, repo: item.repo },
+        detail: "Blocked: check ci is fail",
+      })),
       pr_warnings: picked.flatMap(draftWarnings),
     };
   },
@@ -206,6 +218,12 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     const row = rows.find((item) => item.id === args.id);
     if (row) {
       row.is_draft = args.draft === true;
+    }
+    // The status read after a successful ready flip: one PR's checks are now
+    // green, the other is still failing. Marking ready does not clear both.
+    if ((window as { __readyPreview?: boolean }).__readyPreview && args.id === 4 && args.draft !== true) {
+      const cleared = (window as { __ciCleared?: number[] }).__ciCleared ?? [];
+      (window as { __ciCleared?: number[] }).__ciCleared = [...cleared, 4];
     }
     return {
       ...draftOverview,
