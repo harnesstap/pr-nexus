@@ -347,7 +347,7 @@ if (scene === "mine") {
   api.activateReviews = () => Promise.resolve(loading);
 } else if (scene === "filtered") {
   const reviews = { state: "ready" as const, message: "", total: 412, loaded: 100, window: 100 };
-  const filtered = { key: "|status:failure", state: "ready" as const, message: "", total: 57, loaded: 40, window: 100, retry_at: null };
+  const filtered = { key: "||status:failure", state: "ready" as const, message: "", total: 57, loaded: 40, window: 100, retry_at: null };
   const answered = { ...boot.sync, revision: boot.sync.revision + 1, reviews: { ...reviews, filtered } };
   api.activateReviews = () => Promise.resolve({ ...boot.sync, reviews });
   api.filterReviews = () => Promise.resolve(answered);

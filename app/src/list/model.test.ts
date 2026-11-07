@@ -77,6 +77,10 @@ test("saved view state round-trips", () => {
   expect(parseViewState(JSON.stringify({ filters: { quick: "ready" } })).filters.quick).toBe("ready");
   expect(parseViewState(JSON.stringify({ filters: { quick: "bogus" } })).filters.quick).toBeNull();
   expect(parseViewState(null).filters.quick).toBeNull();
+  expect(parseViewState(JSON.stringify({ filters: { repos: [" acme/widgets ", "Acme/Widgets", "", "acme-labs/widgets"] } })).filters.repos).toEqual([
+    "acme/widgets",
+    "acme-labs/widgets",
+  ]);
 });
 
 test("demo mode shows a neutral sync label instead of an error", () => {
@@ -214,7 +218,14 @@ test("To review filters with a GitHub qualifier go to GitHub; the rest stays loc
   ]) {
     expect(remoteReviewFilter({ ...defaultFilters(), ...local })).toBeNull();
   }
-  expect(remoteReviewFilter({ ...defaultFilters(), orgs: ["acme-labs"] })).toEqual({ orgs: ["acme-labs"], draft: null, review: null, ci: null });
+  expect(remoteReviewFilter({ ...defaultFilters(), orgs: ["acme-labs"] })).toEqual({ orgs: ["acme-labs"], repos: [], draft: null, review: null, ci: null });
+  expect(remoteReviewFilter({ ...defaultFilters(), repos: ["acme/widgets", "not a repo"] })).toEqual({
+    orgs: [],
+    repos: ["acme/widgets", "not a repo"],
+    draft: null,
+    review: null,
+    ci: null,
+  });
   expect(remoteReviewFilter({ ...defaultFilters(), statuses: ["draft"] })?.draft).toBe(true);
   expect(remoteReviewFilter({ ...defaultFilters(), statuses: ["ready", "blocked"] })?.draft).toBe(false);
   expect(remoteReviewFilter({ ...defaultFilters(), reviews: ["review_required"] })?.review).toBe("required");
@@ -223,25 +234,25 @@ test("To review filters with a GitHub qualifier go to GitHub; the rest stays loc
   expect(remoteReviewFilter({ ...defaultFilters(), ci: ["pending"] })?.ci).toBe("pending");
   expect(remoteReviewFilter({ ...defaultFilters(), quick: "draft" })?.draft).toBe(true);
   expect(remoteReviewFilter({ ...defaultFilters(), quick: "declined" })?.review).toBe("changes_requested");
-  expect(remoteReviewFilter({ ...defaultFilters(), quick: "ready" })).toEqual({ orgs: [], draft: false, review: "approved", ci: "success" });
+  expect(remoteReviewFilter({ ...defaultFilters(), quick: "ready" })).toEqual({ orgs: [], repos: [], draft: false, review: "approved", ci: "success" });
   // A menu choice wins over the quick filter's: the local pass narrows further.
   expect(remoteReviewFilter({ ...defaultFilters(), reviews: ["approved"], quick: "declined" })?.review).toBe("approved");
 });
 
 test("the remote filter key mirrors the backend's", () => {
-  const filter = { orgs: ["acme-labs", "Acme"], draft: false, review: "approved" as const, ci: "success" as const };
-  expect(remoteFilterKey(filter)).toBe("acme,acme-labs|draft:false review:approved status:success");
-  expect(remoteFilterKey({ orgs: [], draft: null, review: null, ci: "failure" })).toBe("|status:failure");
+  const filter = { orgs: ["acme-labs", "Acme"], repos: ["Acme/Widgets", "acme/widgets"], draft: false, review: "approved" as const, ci: "success" as const };
+  expect(remoteFilterKey(filter)).toBe("acme,acme-labs|acme/widgets|draft:false review:approved status:success");
+  expect(remoteFilterKey({ orgs: [], repos: [], draft: null, review: null, ci: "failure" })).toBe("||status:failure");
 });
 
 test("a GitHub-side filter reports its own window", () => {
   const ready = { state: "ready" as const, message: "", total: 412, loaded: 100, window: 100 };
-  const filtered = { key: "|status:failure", state: "ready" as const, message: "", total: 57, loaded: 40, window: 100, retry_at: null };
-  const reviews = reviewsFor({ ...ready, filtered }, "|status:failure");
+  const filtered = { key: "||status:failure", state: "ready" as const, message: "", total: 57, loaded: 40, window: 100, retry_at: null };
+  const reviews = reviewsFor({ ...ready, filtered }, "||status:failure");
   expect(reviewsLabel(reviews)).toBe("40 of 57 loaded");
   expect(moreReviews(reviews)).toBe(true);
-  expect(reviewsLabel(reviewsFor({ ...ready, filtered: { ...filtered, loaded: 57 } }, "|status:failure"))).toBeNull();
-  expect(reviewsLabel(reviewsFor({ ...ready, filtered: { ...filtered, state: "loading" } }, "|status:failure"))).toBe("Searching GitHub…");
+  expect(reviewsLabel(reviewsFor({ ...ready, filtered: { ...filtered, loaded: 57 } }, "||status:failure"))).toBeNull();
+  expect(reviewsLabel(reviewsFor({ ...ready, filtered: { ...filtered, state: "loading" } }, "||status:failure"))).toBe("Searching GitHub…");
   // An answer for another filter is ignored: the bucket's own window shows.
   expect(reviewsLabel(reviewsFor({ ...ready, filtered }, "|status:pending"))).toBe("100 of 412 loaded");
   expect(reviewsLabel(reviewsFor({ ...ready, filtered }, null))).toBe("100 of 412 loaded");

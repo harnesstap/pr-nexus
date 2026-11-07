@@ -141,6 +141,48 @@ test("an empty Projects section offers to create one, and Settings lives in the 
   expect(within(projects).queryByText(/No projects yet/)).not.toBeInTheDocument();
 });
 
+test("sidebar projects are alphabetical and stay that way after create and rename", async () => {
+  const stored = [
+    { id: 4, name: "zeta", color: "#4a5568", archived: false, description: "", sort_order: 0, jira_links: [] },
+    { id: 1, name: "Alpha", color: "#7c5cbf", archived: false, description: "", sort_order: 3, jira_links: [] },
+    { id: 3, name: "beta 10", color: "#3f6f8f", archived: false, description: "", sort_order: 1, jira_links: [] },
+    { id: 2, name: "beta 2", color: "#2f855a", archived: false, description: "", sort_order: 2, jira_links: [] },
+    { id: 5, name: "aaa", color: "#c53030", archived: true, description: "", sort_order: 0, jira_links: [] },
+  ];
+  const fake = api(stored);
+  fake.renameProject = vi.fn((_id: number, name: string) => {
+    const project = stored.find((item) => item.id === _id);
+    if (project) {
+      project.name = name;
+    }
+    return Promise.resolve();
+  });
+  render(<ListScreen api={fake} boot={boot} onBoot={() => undefined} />);
+  const region = screen.getByRole("region", { name: "Projects" });
+  const names = () =>
+    within(region)
+      .getAllByRole("button")
+      .map((button) => button.textContent)
+      .filter((name) => name && name !== "");
+  await waitFor(() => expect(names()).toEqual(["Alpha", "beta 2", "beta 10", "zeta"]));
+  expect(within(screen.getByRole("navigation", { name: "Views" })).getByRole("button", { name: "My PRs" })).toBeInTheDocument();
+  expect(within(screen.getByRole("navigation", { name: "Views" })).getByRole("button", { name: "To review" })).toBeInTheDocument();
+  expect(within(region).queryByRole("button", { name: "aaa" })).not.toBeInTheDocument();
+
+  fireEvent.click(within(region).getByRole("button", { name: "New project" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Project name" }), { target: { value: "aardvark" } });
+  fireEvent.submit(screen.getByRole("textbox", { name: "Project name" }));
+  await waitFor(() => expect(names()[0]).toBe("aardvark"));
+
+  fireEvent.click(within(region).getByRole("button", { name: "Alpha" }));
+  fireEvent.doubleClick(screen.getByRole("heading", { name: "Alpha" }));
+  const rename = screen.getByRole("textbox", { name: "Rename Alpha" });
+  fireEvent.change(rename, { target: { value: "yarn" } });
+  fireEvent.keyDown(rename, { key: "Enter" });
+  await waitFor(() => expect(fake.renameProject).toHaveBeenCalled());
+  await waitFor(() => expect(names()).toEqual(["aardvark", "beta 2", "beta 10", "yarn", "zeta"]));
+});
+
 test("dropping PRs on a sidebar project links them, confirms and offers Undo", async () => {
   const fake = api([{ id: 1, name: "Checkout", color: "#7c5cbf", archived: false, description: "", sort_order: 0 , jira_links: [] }]);
   const undo = [
@@ -356,17 +398,17 @@ test("To review filters with a GitHub qualifier search GitHub, debounced, with t
   const reviews = { state: "ready" as const, message: "", total: 412, loaded: 100, window: 100 };
   const saved = JSON.stringify({ filters: { ci: ["failing"] } });
   const loadViewState = (key: string) => Promise.resolve(key === "to_review" ? saved : null);
-  const filtered = { key: "|status:failure", state: "ready" as const, message: "", total: 57, loaded: 40, window: 100, retry_at: null };
+  const filtered = { key: "||status:failure", state: "ready" as const, message: "", total: 57, loaded: 40, window: 100, retry_at: null };
   const activateReviews = vi.fn(() => Promise.resolve({ ...boot.sync, reviews }));
   const filterReviews = vi.fn(() => Promise.resolve({ ...boot.sync, revision: 1, reviews: { ...reviews, filtered } }));
   const loadMoreReviews = vi.fn(() => Promise.resolve({ ...boot.sync, reviews }));
   render(<ListScreen api={{ ...fake, loadViewState, activateReviews, filterReviews, loadMoreReviews }} boot={boot} onBoot={() => {}} />);
   fireEvent.click(await screen.findByRole("button", { name: /To review/ }));
   await waitFor(() => expect(filterReviews).toHaveBeenCalledTimes(1), { timeout: 3_000 });
-  expect(filterReviews).toHaveBeenCalledWith({ orgs: [], draft: null, review: null, ci: "failure" }, false);
+  expect(filterReviews).toHaveBeenCalledWith({ orgs: [], repos: [], draft: null, review: null, ci: "failure" }, false);
   expect(await screen.findByText(/40 of 57 loaded/)).toBeInTheDocument();
   fireEvent.click(await screen.findByRole("button", { name: "Load more review requests" }));
-  await waitFor(() => expect(filterReviews).toHaveBeenLastCalledWith({ orgs: [], draft: null, review: null, ci: "failure" }, true));
+  await waitFor(() => expect(filterReviews).toHaveBeenLastCalledWith({ orgs: [], repos: [], draft: null, review: null, ci: "failure" }, true));
   expect(loadMoreReviews).not.toHaveBeenCalled();
 });
 

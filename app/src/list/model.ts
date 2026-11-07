@@ -33,6 +33,8 @@ export interface ShowFlags {
 
 export interface Filters {
   orgs: string[];
+  /** `owner/name` values. Empty means every repository. */
+  repos: string[];
   statuses: StatusFilter[];
   reviews: ReviewFilter[];
   ci: CiFilter[];
@@ -73,7 +75,7 @@ export function defaultShow(): ShowFlags {
 }
 
 export function defaultFilters(): Filters {
-  return { orgs: [], statuses: [], reviews: [], ci: [], slack: [], archived: false, starred: false, quick: null };
+  return { orgs: [], repos: [], statuses: [], reviews: [], ci: [], slack: [], archived: false, starred: false, quick: null };
 }
 
 export function defaultView(): SavedView {
@@ -111,6 +113,7 @@ export function parseViewState(json: string | null): SavedView {
       ...base.filters,
       ...(record.filters ?? {}),
       orgs: stringList(record.filters?.orgs),
+      repos: repoList(record.filters?.repos),
       statuses: pickList(record.filters?.statuses, ["ready", "unknown", "blocked", "draft"]),
       reviews: pickList(record.filters?.reviews, ["approved", "changes_requested", "review_required", "none"]),
       ci: pickList(record.filters?.ci, ["passing", "failing", "pending", "none"]),
@@ -125,6 +128,7 @@ export function parseViewState(json: string | null): SavedView {
 export function filtersActive(filters: Filters): boolean {
   return (
     filters.orgs.length > 0 ||
+    filters.repos.length > 0 ||
     filters.statuses.length > 0 ||
     filters.reviews.length > 0 ||
     filters.ci.length > 0 ||
@@ -221,6 +225,9 @@ export function passesMenu(row: ListRow, filters: Filters, now: Date): boolean {
     return false;
   }
   if (filters.orgs.length > 0 && !filters.orgs.some((org) => org.toLowerCase() === row.owner.toLowerCase())) {
+    return false;
+  }
+  if (filters.repos.length > 0 && !filters.repos.some((repo) => repo.toLowerCase() === row.repo.toLowerCase())) {
     return false;
   }
   if (filters.statuses.length > 0 && !filters.statuses.some((status) => statusMatches(row, status))) {
@@ -495,6 +502,28 @@ function stringList(value: unknown): string[] {
   return value.filter((item): item is string => typeof item === "string");
 }
 
+/** `owner/name` values: trimmed, non-empty, first casing kept. */
+function repoList(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string") {
+      continue;
+    }
+    const name = item.trim();
+    const key = name.toLowerCase();
+    if (!name || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    names.push(name);
+  }
+  return names;
+}
+
 export type Tone = "good" | "bad" | "warn" | "pending" | "muted";
 
 export function reviewTone(decision: string | null): Tone {
@@ -647,12 +676,15 @@ export function moreReviews(reviews: ReviewsStatus | undefined): boolean {
  * - Review decision: one choice of Approved, Changes requested or Review required.
  * - CI: one choice of Passing, Failing or Pending (`status:`).
  * - Quick filters Draft, Review declined and Ready to merge.
+ * - Repository: `repo:owner/name` for each chosen repository (GitHub ORs them).
+ *   A name that is not `owner/name` of plain logins is dropped from the query
+ *   and still applied locally.
  * Local only: projects, Slack request, starred, archived, the search box,
  * readiness (Ready / Unknown / Blocked), "None" choices, several choices in
  * one submenu, and the No review and CI or conflicts quick filters.
  */
 export function remoteReviewFilter(filters: Filters): RemoteReviewFilter | null {
-  const remote: RemoteReviewFilter = { orgs: [...filters.orgs], draft: null, review: null, ci: null };
+  const remote: RemoteReviewFilter = { orgs: [...filters.orgs], repos: [...filters.repos], draft: null, review: null, ci: null };
   if (filters.statuses.length > 0) {
     remote.draft = filters.statuses.length === 1 && filters.statuses[0] === "draft" ? true : filters.statuses.includes("draft") ? null : false;
   }
@@ -683,7 +715,7 @@ export function remoteReviewFilter(filters: Filters): RemoteReviewFilter | null 
       return unreachable;
     }
   }
-  const empty = remote.orgs.length === 0 && remote.draft === null && remote.review === null && remote.ci === null;
+  const empty = remote.orgs.length === 0 && remote.repos.length === 0 && remote.draft === null && remote.review === null && remote.ci === null;
   return empty ? null : remote;
 }
 
@@ -721,9 +753,10 @@ function ciQualifier(ci: CiFilter): RemoteReviewFilter["ci"] {
   }
 }
 
-/** Mirrors `RemoteReviewFilter::key` in `review_filter.rs`: owners folded and sorted, then the qualifiers. */
+/** Mirrors `RemoteReviewFilter::key`: owners, repositories, then the qualifiers. */
 export function remoteFilterKey(filter: RemoteReviewFilter): string {
   const orgs = [...new Set(filter.orgs.map((org) => org.toLowerCase()))].sort();
+  const repos = [...new Set(filter.repos.map((repo) => repo.trim().toLowerCase()).filter((repo) => repo.length > 0))].sort();
   const qualifiers: string[] = [];
   if (filter.draft !== null) {
     qualifiers.push(`draft:${filter.draft}`);
@@ -734,7 +767,7 @@ export function remoteFilterKey(filter: RemoteReviewFilter): string {
   if (filter.ci !== null) {
     qualifiers.push(`status:${filter.ci}`);
   }
-  return `${orgs.join(",")}|${qualifiers.join(" ")}`;
+  return `${orgs.join(",")}|${repos.join(",")}|${qualifiers.join(" ")}`;
 }
 
 /** The review status as the list should read it: the filtered window only when it answers `key`. */

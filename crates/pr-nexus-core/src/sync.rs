@@ -221,7 +221,45 @@ pub fn on_demand_queries(
         base.push(' ');
         base.push_str(terms);
     }
-    scoped_queries(&base, scope)
+    let scoped = scoped_queries(&base, scope);
+    match filter {
+        Some(filter) => pack_repo_terms(&scoped, &filter.repo_terms()),
+        None => scoped,
+    }
+}
+
+/// Repeats each already-scoped query with a subset of `repo:` terms.
+///
+/// Org chunks and repository chunks stay together: the union of (the same
+/// owner query AND a subset of repositories) is every owner AND every
+/// repository. A term that cannot fit beside its stem is skipped. When none
+/// fit, the stem is kept, so the search stays a superset of the local filter.
+pub(crate) fn pack_repo_terms(scoped: &[String], repos: &[String]) -> Vec<String> {
+    if repos.is_empty() {
+        return scoped.to_vec();
+    }
+    let mut out = Vec::new();
+    for stem in scoped {
+        let mut current = stem.clone();
+        let mut fitted = false;
+        for term in repos {
+            let piece = format!(" {term}");
+            if stem.len() + piece.len() > SEARCH_QUERY_MAX {
+                continue;
+            }
+            if current.len() + piece.len() > SEARCH_QUERY_MAX {
+                out.push(std::mem::replace(&mut current, stem.clone()));
+            }
+            current.push_str(&piece);
+            fitted = true;
+        }
+        if fitted && current.len() > stem.len() {
+            out.push(current);
+        } else if !fitted {
+            out.push(stem.clone());
+        }
+    }
+    out
 }
 
 pub(crate) fn scoped_queries(base: &str, scope: &TrackedScope) -> Vec<String> {
@@ -2118,6 +2156,62 @@ mod tests {
             &scope(&["acme", "ACME", "bad name", "x\"y", ""], false),
         );
         assert_eq!(queries, vec![format!("{MINE_QUERY} org:acme")]);
+    }
+
+    #[test]
+    fn repository_filters_are_repeated_on_every_owner_query() {
+        let filter = RemoteReviewFilter {
+            repos: vec![
+                "acme-labs/Widgets".into(),
+                "acme/widgets".into(),
+                "not a repo".into(),
+            ],
+            ..Default::default()
+        };
+        let queries = on_demand_queries(
+            SearchBucket::ReviewRequested,
+            &scope(&["acme", "acme-labs"], false),
+            Some(&filter),
+            None,
+        );
+        assert_eq!(queries.len(), 1);
+        let query = &queries[0];
+        assert!(query.contains(" org:acme "));
+        assert!(query.contains(" org:acme-labs"));
+        assert!(query.contains(" repo:acme/widgets"));
+        assert!(query.contains(" repo:acme-labs/widgets"));
+        assert!(!query.contains("not a repo"));
+        assert!(query.len() <= SEARCH_QUERY_MAX);
+    }
+
+    #[test]
+    fn repository_terms_split_beside_a_long_stem_and_a_term_that_cannot_fit_is_dropped() {
+        let stem = "x".repeat(240);
+        let packed = pack_repo_terms(
+            std::slice::from_ref(&stem),
+            &["repo:acme/one".into(), "repo:acme/two".into()],
+        );
+        assert!(packed.len() >= 2);
+        assert!(packed.iter().all(|query| query.len() <= SEARCH_QUERY_MAX));
+        assert!(packed.iter().all(|query| query.starts_with(&stem)));
+        assert!(packed.iter().any(|query| query.contains("repo:acme/one")));
+        assert!(packed.iter().any(|query| query.contains("repo:acme/two")));
+
+        let tight = "y".repeat(245);
+        let long = format!("repo:{}", "a".repeat(20));
+        let kept = pack_repo_terms(std::slice::from_ref(&tight), &[long, "repo:a/b".into()]);
+        assert_eq!(kept.len(), 1);
+        assert!(kept[0].contains("repo:a/b"));
+        assert!(!kept[0].contains(&"a".repeat(20)));
+
+        let full = "z".repeat(250);
+        assert_eq!(
+            pack_repo_terms(
+                std::slice::from_ref(&full),
+                &["repo:acme/widgets-extra".into()]
+            ),
+            vec![full]
+        );
     }
 
     fn status(id: &str, checks: ChecksState) -> PrStatus {

@@ -13,3 +13,15 @@ export const RULE_KINDS: { id: RuleKind; label: string; placeholder: string; hin
 export function ruleKindLabel(kind: RuleKind): string {
   return RULE_KINDS.find((item) => item.id === kind)?.label ?? kind;
 }
+
+/** Case-insensitive, with numbers in numeric order (`beta 2` before `beta 10`). */
+export function compareNames(left: string, right: string): number {
+  return left.localeCompare(right, undefined, { sensitivity: "base", numeric: true });
+}
+
+/** Active projects in sidebar order. Identity and `sort_order` are unchanged. */
+export function sidebarProjects<T extends { id: number; name: string; archived: boolean }>(projects: readonly T[]): T[] {
+  return projects
+    .filter((project) => !project.archived)
+    .sort((left, right) => compareNames(left.name, right.name) || left.id - right.id);
+}

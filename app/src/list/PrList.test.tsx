@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, expect, test, vi } from "vitest";
 
@@ -944,6 +944,7 @@ test("every list command sits on the one toolbar row, the header keeps only the 
   expect(inToolbar.getByRole("textbox", { name: "Search" })).toBeInTheDocument();
   expect(inToolbar.getByRole("combobox", { name: "Sort by" })).toBeInTheDocument();
   expect(inToolbar.getByRole("group", { name: "Quick filters" }).className).toContain("flex-nowrap");
+  expect(inToolbar.getByRole("button", { name: "Repository" })).toBeInTheDocument();
   expect(inToolbar.getByRole("button", { name: "Filter menu" })).toBeInTheDocument();
   expect(toolbar.className).toContain("flex-nowrap");
   const header = container.querySelector("header") as HTMLElement;
@@ -959,6 +960,30 @@ const filterRows = [
   row({ id: 3, title: "Fix tax rounding", repo: "acme/planning", project_ids: [2] }),
   row({ id: 4, title: "Tax report", repo: "acme/planning", project_ids: [2] }),
 ];
+
+test("the repository picker filters by owner and name and clears back to every repository", async () => {
+  const repoRows = [
+    row({ id: 1, title: "Latch", repo: "acme/widgets", owner: "acme" }),
+    row({ id: 2, title: "Gateway", repo: "acme-labs/widgets", owner: "acme-labs" }),
+    row({ id: 3, title: "Invoice", repo: "acme-labs/billing", owner: "acme-labs" }),
+  ];
+  await show(<Harness rows={repoRows} />);
+  fireEvent.click(screen.getByRole("button", { name: "Repository" }));
+  const dialog = screen.getByRole("dialog", { name: "Repositories" });
+  fireEvent.change(within(dialog).getByRole("textbox", { name: "Find a repository" }), { target: { value: "widgets" } });
+  expect(within(dialog).getByRole("checkbox", { name: "acme/widgets" })).toBeInTheDocument();
+  expect(within(dialog).getByRole("checkbox", { name: "acme-labs/widgets" })).toBeInTheDocument();
+  expect(within(dialog).queryByRole("checkbox", { name: "acme-labs/billing" })).not.toBeInTheDocument();
+  fireEvent.click(within(dialog).getByRole("checkbox", { name: "acme/widgets" }));
+  fireEvent.click(within(dialog).getByRole("checkbox", { name: "acme-labs/widgets" }));
+  expect(screen.getByRole("button", { name: "Repository, 2 repositories" })).toBeInTheDocument();
+  await waitFor(() => expect(screen.queryByRole("article", { name: /Invoice/ })).not.toBeInTheDocument());
+  expect(screen.getByRole("article", { name: /Latch/ })).toBeInTheDocument();
+  expect(screen.getByRole("article", { name: /Gateway/ })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Clear repositories" }));
+  await waitFor(() => expect(screen.getByRole("article", { name: /Invoice/ })).toBeInTheDocument());
+  expect(screen.getByRole("button", { name: "Repository" })).toBeInTheDocument();
+});
 
 test("header and bulk bar agree, and bulk actions skip rows hidden by a filter", async () => {
   vi.useFakeTimers();

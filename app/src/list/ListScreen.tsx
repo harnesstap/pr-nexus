@@ -24,6 +24,7 @@ import {
   type Toast,
 } from "./model";
 import { PrList, type ListActions } from "./PrList";
+import { sidebarProjects } from "./projects";
 import { GlobalCommands } from "./GlobalCommands";
 import type { PageRequest } from "./paging";
 
@@ -33,7 +34,7 @@ const SYNC_POLL_MS = 500;
 const IDLE_POLL_MS = 15_000;
 /** Quiet time after a To review filter change before GitHub is searched with it (§6). */
 export const REMOTE_FILTER_DEBOUNCE_MS = 400;
-const NO_REMOTE_FILTER: RemoteReviewFilter = { orgs: [], draft: null, review: null, ci: null };
+const NO_REMOTE_FILTER: RemoteReviewFilter = { orgs: [], repos: [], draft: null, review: null, ci: null };
 import { DetailPanel } from "../detail/DetailPanel";
 import { ProjectDialog } from "./ProjectDialog";
 import { AccountsSettings } from "../settings/AccountsSettings";
@@ -474,7 +475,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
     setFlash(project.id);
   }
 
-  const activeProjects = projects.filter((project) => !project.archived);
+  const activeProjects = sidebarProjects(projects);
   const dialogProject = projects.find((project) => project.id === editingProject) ?? null;
   const syncTone =
     sync.phase === "error"
