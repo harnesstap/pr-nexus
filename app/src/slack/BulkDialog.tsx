@@ -206,8 +206,8 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen, onReady, onNot
     }
     setMarking(false);
     // The open preview was planned before the draft flips. Plan again so a PR
-    // that is no longer only a draft joins its message. A real CI block stays
-    // in Skipped; this does not treat the draft flip as a passing check.
+    // that is no longer only a draft joins its message. Failing checks stay
+    // in that message; this does not treat the draft flip as a passing check.
     if (results.some((result) => result.status === "fulfilled")) {
       setLoading(true);
       await plan(request());
@@ -228,6 +228,8 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen, onReady, onNot
   }
 
   const drafts = (preview?.pr_warnings ?? []).filter((warning) => warning.kind === "draft" && !readied.includes(warning.pr_id));
+  const included = new Set(preview?.cards.flatMap((card) => card.messages.flatMap((message) => message.prs.map((item) => item.pr_id))) ?? []);
+  const failingChecks = (preview?.pr_warnings ?? []).filter((warning) => warning.kind === "checks" && included.has(warning.pr_id));
   const isDraft = (id: number) => drafts.some((warning) => warning.pr_id === id);
   const messageCount = preview?.cards.reduce((sum, card) => sum + card.messages.length, 0) ?? 0;
   const unsigned = preview?.cards.filter((card) => !card.signed_in) ?? [];
@@ -274,6 +276,12 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen, onReady, onNot
                   }}
                 />
               </div>
+            )}
+            {failingChecks.length > 0 && (
+              <p role="note" aria-label="Failing checks" className="mt-3 text-xs text-slate-400">
+                Checks are failing on {failingChecks.map((warning) => `#${warning.number}`).join(", ")}.{" "}
+                {failingChecks.length === 1 ? "It is" : "They are"} still included.
+              </p>
             )}
             {drafts.length > 0 && (
               <DraftWarning busy={marking} onMarkReady={() => void markAllReady()} action={drafts.length === 1 ? "Mark ready for review" : "Mark all ready"}>

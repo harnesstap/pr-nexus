@@ -174,6 +174,7 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNot
   const previous = (choices ?? []).filter((choice) => choice.source === "previous");
   const draft =
     !markedReady && ((row.state === "open" && row.is_draft) || (preview?.pr_warnings ?? []).some((warning) => warning.kind === "draft"));
+  const failingChecks = (preview?.pr_warnings ?? []).filter((warning) => warning.kind === "checks");
   return (
     <div
       className="fixed inset-0 z-40 flex items-start justify-center overflow-auto bg-black/50 p-8"
@@ -195,6 +196,11 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNot
           <DraftWarning busy={marking} onMarkReady={() => void markReady()}>
             This PR is still a draft. Reviewers may skip it.
           </DraftWarning>
+        )}
+        {failingChecks.length > 0 && (
+          <p role="note" aria-label="Failing checks" className="mt-3 text-xs text-slate-400">
+            Checks are failing on #{row.number}. It is still included.
+          </p>
         )}
         {choices === null ? (
           <p className="mt-4 text-slate-400">Finding channels…</p>

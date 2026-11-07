@@ -494,15 +494,33 @@ fn previews_warn_about_drafts_without_blocking() {
     );
 }
 
+fn in_message(preview: &bulk::BulkPreview, id: i64) -> bool {
+    preview.cards.iter().any(|card| {
+        card.messages
+            .iter()
+            .any(|message| message.prs.iter().any(|item| item.pr_id == id))
+    })
+}
+
+fn checks_warning(preview: &bulk::BulkPreview, id: i64) -> bool {
+    preview
+        .pr_warnings
+        .iter()
+        .any(|warning| warning.kind == "checks" && warning.pr_id == id)
+}
+
+/// Failing checks stay in the request. A draft flip still refreshes the
+/// preview. Conflicts, pending checks, and requested changes still skip.
 #[test]
-fn mark_ready_refreshes_the_preview_and_keeps_a_real_ci_block() {
-    use pr_nexus_core::domain::{ChecksState, PrId, ReviewDecision};
+fn failing_checks_stay_in_the_preview_and_mark_ready_still_refreshes() {
+    use pr_nexus_core::domain::{ChecksState, MergeStateStatus, PrId, ReviewDecision};
 
     let fx = fixture("ready-preview");
     let state = &fx.state;
     connect_fake_workspace(state);
-    let failing = pr_id(state, 3);
-    let passing = pr_id(state, 1);
+    let failing = pr_id(state, 1);
+    let pending = pr_id(state, 2);
+    let changes = pr_id(state, 3);
     let bulk_of = |ids: Vec<i64>, one_channel: bool| -> BulkRequest {
         let mut body = serde_json::json!({ "pr_ids": ids });
         if one_channel {
@@ -511,117 +529,125 @@ fn mark_ready_refreshes_the_preview_and_keeps_a_real_ci_block() {
         serde_json::from_value(body).unwrap()
     };
 
-    state
-        .store
-        .set_pull_request_draft(PrId(failing), true)
-        .unwrap();
-    state
-        .store
-        .set_pull_request_draft(PrId(passing), true)
-        .unwrap();
-    let before = bulk::preview(state, &bulk_of(vec![failing, passing], true)).unwrap();
+    let passing = bulk::preview(state, &bulk_of(vec![failing], true)).unwrap();
+    assert!(in_message(&passing, failing), "{:?}", passing.skipped);
     assert!(
-        before
-            .pr_warnings
-            .iter()
-            .any(|warning| warning.pr_id == failing),
+        !checks_warning(&passing, failing),
         "{:?}",
-        before.pr_warnings
+        passing.pr_warnings
     );
-    assert!(
-        before
-            .pr_warnings
-            .iter()
-            .any(|warning| warning.pr_id == passing),
-        "{:?}",
-        before.pr_warnings
-    );
-    assert!(
-        before
-            .skipped
-            .iter()
-            .any(|skip| { skip.pr.pr_id == failing && skip.detail.contains("check ci is fail") }),
-        "a failing rollup stays blocked while the PR is a draft: {:?}",
-        before.skipped
-    );
-    assert!(
-        before.cards.iter().any(|card| card
-            .messages
-            .iter()
-            .any(|message| message.prs.iter().any(|item| item.pr_id == passing))),
-        "a draft whose checks pass is in the message, not skipped: {:?}",
-        before.skipped
-    );
-
-    state
-        .store
-        .set_pull_request_draft(PrId(failing), false)
-        .unwrap();
-    state
-        .store
-        .set_pull_request_draft(PrId(passing), false)
-        .unwrap();
-    let after = bulk::preview(state, &bulk_of(vec![failing, passing], true)).unwrap();
-    assert!(after.pr_warnings.is_empty(), "{:?}", after.pr_warnings);
-    assert!(
-        after
-            .skipped
-            .iter()
-            .any(|skip| { skip.pr.pr_id == failing && skip.detail.contains("check ci is fail") }),
-        "clearing the draft does not clear a failing check: {:?}",
-        after.skipped
-    );
-    assert!(after.cards.iter().any(|card| {
-        card.messages
-            .iter()
-            .any(|message| message.prs.iter().any(|item| item.pr_id == passing))
-    }));
 
     let mut row = state
         .store
         .get_pull_request(PrId(failing))
         .unwrap()
         .unwrap();
-    assert_eq!(row.checks, ChecksState::Failure);
-    row.checks = ChecksState::Success;
-    row.review_decision = Some(ReviewDecision::Approved);
+    row.checks = ChecksState::Failure;
     state.store.update_pull_request_gate(&row).unwrap();
-    let refreshed = bulk::preview(state, &bulk_of(vec![failing], true)).unwrap();
+
+    let red = bulk::preview(state, &bulk_of(vec![failing, pending, changes], true)).unwrap();
     assert!(
-        refreshed
-            .skipped
+        in_message(&red, failing),
+        "failing checks stay in the message: {:?}",
+        red.skipped
+    );
+    assert!(checks_warning(&red, failing), "{:?}", red.pr_warnings);
+    assert!(
+        red.skipped
             .iter()
-            .all(|skip| !skip.detail.contains("check ci is fail")),
-        "{:?}",
-        refreshed.skipped
+            .any(|skip| skip.pr.pr_id == pending && skip.detail.contains("pending")),
+        "a pending check still blocks: {:?}",
+        red.skipped
     );
     assert!(
-        refreshed.cards.iter().any(|card| card
-            .messages
+        red.skipped
             .iter()
-            .any(|message| message.prs.iter().any(|item| item.pr_id == failing))),
-        "a status write-back that reports success includes the PR: {:?}",
-        refreshed.skipped
+            .any(|skip| { skip.pr.pr_id == changes && skip.detail.contains("requested changes") }),
+        "requested changes still block: {:?}",
+        red.skipped
+    );
+    assert!(!in_message(&red, pending) && !in_message(&red, changes));
+    assert!(
+        !checks_warning(&red, changes),
+        "a skipped PR is not noted as included"
     );
 
+    state
+        .store
+        .set_pull_request_draft(PrId(failing), true)
+        .unwrap();
+    let drafted = bulk::preview(state, &bulk_of(vec![failing], true)).unwrap();
+    assert!(
+        drafted
+            .pr_warnings
+            .iter()
+            .any(|warning| warning.kind == "draft" && warning.pr_id == failing)
+    );
+    assert!(in_message(&drafted, failing));
+    assert!(checks_warning(&drafted, failing));
+
+    state
+        .store
+        .set_pull_request_draft(PrId(failing), false)
+        .unwrap();
+    let after = bulk::preview(state, &bulk_of(vec![failing], true)).unwrap();
+    assert!(
+        after
+            .pr_warnings
+            .iter()
+            .all(|warning| warning.kind != "draft"),
+        "mark ready drops the draft warning: {:?}",
+        after.pr_warnings
+    );
+    assert!(
+        checks_warning(&after, failing),
+        "mark ready does not clear a failing check"
+    );
+    assert!(in_message(&after, failing));
+
+    row.checks = ChecksState::Success;
+    row.is_draft = false;
+    row.review_decision = Some(ReviewDecision::Approved);
+    row.merge_state = MergeStateStatus::Clean;
+    state.store.update_pull_request_gate(&row).unwrap();
+    let green = bulk::preview(state, &bulk_of(vec![failing], true)).unwrap();
+    assert!(!checks_warning(&green, failing));
+    assert!(in_message(&green, failing));
+
+    row.checks = ChecksState::Failure;
+    row.merge_state = MergeStateStatus::Dirty;
+    state.store.update_pull_request_gate(&row).unwrap();
+    let conflicted = bulk::preview(state, &bulk_of(vec![failing], true)).unwrap();
+    assert!(
+        conflicted
+            .skipped
+            .iter()
+            .any(|skip| { skip.pr.pr_id == failing && skip.detail.contains("merge conflicts") }),
+        "conflicts still block when checks are also failing: {:?}",
+        conflicted.skipped
+    );
+    assert!(!in_message(&conflicted, failing));
+
+    row.merge_state = MergeStateStatus::Clean;
+    state.store.update_pull_request_gate(&row).unwrap();
     let passing_row = state
         .store
-        .get_pull_request(PrId(passing))
+        .get_pull_request(PrId(failing))
         .unwrap()
         .unwrap();
     crate::slack::lock(&state.owners).insert(
-        passing,
+        failing,
         crate::state::OwnersEntry {
             head_sha: passing_row.head_sha.clone(),
             base_ref: passing_row.base_ref.clone(),
             is_draft: passing_row.is_draft,
-            checks: ChecksState::Failure,
+            checks: ChecksState::Success,
             at: std::time::Instant::now(),
             blocked: Some("check ci is fail".into()),
             teams: Vec::new(),
         },
     );
-    let stale = bulk::preview(state, &bulk_of(vec![passing], false)).unwrap();
+    let stale = bulk::preview(state, &bulk_of(vec![failing], false)).unwrap();
     assert!(
         stale
             .skipped
@@ -631,20 +657,13 @@ fn mark_ready_refreshes_the_preview_and_keeps_a_real_ci_block() {
         stale.skipped
     );
 
-    row.checks = ChecksState::Failure;
-    state.store.update_pull_request_gate(&row).unwrap();
-    let failing_row = state
-        .store
-        .get_pull_request(PrId(failing))
-        .unwrap()
-        .unwrap();
     crate::slack::lock(&state.owners).insert(
         failing,
         crate::state::OwnersEntry {
-            head_sha: failing_row.head_sha.clone(),
-            base_ref: failing_row.base_ref.clone(),
-            is_draft: failing_row.is_draft,
-            checks: failing_row.checks,
+            head_sha: passing_row.head_sha.clone(),
+            base_ref: passing_row.base_ref.clone(),
+            is_draft: false,
+            checks: ChecksState::Failure,
             at: std::time::Instant::now(),
             blocked: Some("check ci is fail".into()),
             teams: Vec::new(),
@@ -655,9 +674,95 @@ fn mark_ready_refreshes_the_preview_and_keeps_a_real_ci_block() {
         cached
             .skipped
             .iter()
-            .any(|skip| skip.pr.pr_id == failing && skip.detail.contains("check ci is fail")),
-        "a fresh owner decision for the current failing rollup still blocks: {:?}",
+            .all(|skip| !skip.detail.contains("check ci is fail")),
+        "a cached failing-check decision does not leave the PR out: {:?}",
         cached.skipped
+    );
+    crate::slack::lock(&state.owners).insert(
+        failing,
+        crate::state::OwnersEntry {
+            head_sha: passing_row.head_sha.clone(),
+            base_ref: passing_row.base_ref.clone(),
+            is_draft: false,
+            checks: ChecksState::Failure,
+            at: std::time::Instant::now(),
+            blocked: Some("check ci is fail; PR has merge conflicts".into()),
+            teams: Vec::new(),
+        },
+    );
+    let cached_conflict = bulk::preview(state, &bulk_of(vec![failing], false)).unwrap();
+    assert!(
+        cached_conflict
+            .skipped
+            .iter()
+            .any(|skip| { skip.pr.pr_id == failing && skip.detail.contains("merge conflicts") }),
+        "a cached conflict still blocks: {:?}",
+        cached_conflict.skipped
+    );
+}
+
+#[test]
+fn failing_checks_are_accepted_by_single_and_bulk_send() {
+    use pr_nexus_core::domain::{ChecksState, PrId};
+
+    let fx = fixture("ci-send");
+    let state = &fx.state;
+    connect_fake_workspace(state);
+    let slack = Arc::new(FakeSlack::default());
+    let failing = pr_id(state, 1);
+    let mut row = state
+        .store
+        .get_pull_request(PrId(failing))
+        .unwrap()
+        .unwrap();
+    row.checks = ChecksState::Failure;
+    state.store.update_pull_request_gate(&row).unwrap();
+
+    let single = review::preview(state, failing, channel()).unwrap();
+    assert!(
+        slack.posts.lock().unwrap().is_empty(),
+        "preview posts nothing"
+    );
+    assert!(
+        single
+            .pr_warnings
+            .iter()
+            .any(|warning| warning.kind == "checks")
+    );
+    let sent = review::send(state, &slack, failing, channel(), &[], None).unwrap();
+    assert_eq!(sent.channel_id, "C0ACME0001");
+    assert_eq!(slack.posts.lock().unwrap().len(), 1);
+
+    let request: BulkRequest = serde_json::from_value(serde_json::json!({
+        "pr_ids": [failing, pr_id(state, 2)],
+        "target": channel_json(),
+    }))
+    .unwrap();
+    let preview = bulk::preview(state, &request).unwrap();
+    assert!(in_message(&preview, failing));
+    assert!(
+        preview
+            .skipped
+            .iter()
+            .any(|skip| skip.detail.contains("pending"))
+    );
+    let fingerprint = preview.cards[0].fingerprint.clone();
+    let result = bulk::send_card(state, &slack, &request, &fingerprint).unwrap();
+    let posted: Vec<(i64, String)> = result
+        .results
+        .iter()
+        .map(|outcome| (outcome.pr.pr_id, outcome.outcome.clone()))
+        .collect();
+    assert!(
+        posted
+            .iter()
+            .any(|(id, outcome)| *id == failing && outcome == "sent"),
+        "{posted:?}"
+    );
+    let pending = pr_id(state, 2);
+    assert!(
+        posted.iter().all(|(id, _)| *id != pending),
+        "a pending PR is not posted: {posted:?}"
     );
 }
 
