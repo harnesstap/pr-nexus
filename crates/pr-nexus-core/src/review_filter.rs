@@ -40,6 +40,9 @@ pub struct RemoteReviewFilter {
     /// scope.
     #[serde(default)]
     pub orgs: Vec<String>,
+    /// `owner/name`. Empty means every repository in the searched scope.
+    #[serde(default)]
+    pub repos: Vec<String>,
     #[serde(default)]
     pub draft: Option<bool>,
     #[serde(default)]
@@ -50,7 +53,31 @@ pub struct RemoteReviewFilter {
 
 impl RemoteReviewFilter {
     pub fn is_empty(&self) -> bool {
-        self.orgs.is_empty() && self.draft.is_none() && self.review.is_none() && self.ci.is_none()
+        self.orgs.is_empty()
+            && self.repos.is_empty()
+            && self.draft.is_none()
+            && self.review.is_none()
+            && self.ci.is_none()
+    }
+
+    /// `repo:owner/name` terms GitHub can search, lowercased, sorted, and
+    /// deduped. A name that is not `owner/name` of plain logins is omitted;
+    /// the local filter still applies it.
+    pub fn repo_terms(&self) -> Vec<String> {
+        let mut terms = Vec::new();
+        for repo in &self.repos {
+            let Some(term) = repo_term(repo) else {
+                continue;
+            };
+            if !terms
+                .iter()
+                .any(|known: &String| known.eq_ignore_ascii_case(&term))
+            {
+                terms.push(term);
+            }
+        }
+        terms.sort();
+        terms
     }
 
     /// The qualifiers appended to the review query, in a fixed order, with
@@ -97,7 +124,7 @@ impl RemoteReviewFilter {
         (!narrowed.orgs.is_empty() || narrowed.include_personal).then_some(narrowed)
     }
 
-    /// A stable identity for caching: owners folded and sorted.
+    /// A stable identity for caching: owners, repositories, then qualifiers.
     pub fn key(&self) -> String {
         let mut orgs: Vec<String> = self
             .orgs
@@ -106,8 +133,39 @@ impl RemoteReviewFilter {
             .collect();
         orgs.sort();
         orgs.dedup();
-        format!("{}|{}", orgs.join(","), self.qualifiers().trim())
+        let mut repos: Vec<String> = self
+            .repos
+            .iter()
+            .map(|repo| repo.trim().to_ascii_lowercase())
+            .filter(|repo| !repo.is_empty())
+            .collect();
+        repos.sort();
+        repos.dedup();
+        format!(
+            "{}|{}|{}",
+            orgs.join(","),
+            repos.join(","),
+            self.qualifiers().trim()
+        )
     }
+}
+
+/// `repo:owner/name` when both sides are plain logins.
+fn repo_term(repo: &str) -> Option<String> {
+    let (owner, name) = repo.trim().split_once('/')?;
+    let plain = |part: &str| {
+        !part.is_empty()
+            && part
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    };
+    (plain(owner) && plain(name)).then(|| {
+        format!(
+            "repo:{}/{}",
+            owner.to_ascii_lowercase(),
+            name.to_ascii_lowercase()
+        )
+    })
 }
 
 #[cfg(test)]
@@ -137,6 +195,7 @@ mod tests {
     fn each_field_maps_to_its_qualifier_in_a_fixed_order() {
         let filter = RemoteReviewFilter {
             orgs: Vec::new(),
+            repos: Vec::new(),
             draft: Some(false),
             review: Some(ReviewQualifier::Approved),
             ci: Some(CiQualifier::Success),
@@ -220,7 +279,19 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(left.key(), right.key());
-        assert_eq!(left.key(), "acme,acme-labs|status:failure");
+        assert_eq!(left.key(), "acme,acme-labs||status:failure");
+        let repos = RemoteReviewFilter {
+            repos: vec!["Acme/Widgets".into(), "acme/widgets".into()],
+            ..Default::default()
+        };
+        assert_eq!(repos.key(), "|acme/widgets|");
+        assert_eq!(repos.repo_terms(), vec!["repo:acme/widgets".to_owned()]);
+        let invalid = RemoteReviewFilter {
+            repos: vec!["not a repo".into()],
+            ..Default::default()
+        };
+        assert!(!invalid.is_empty());
+        assert!(invalid.repo_terms().is_empty());
     }
 
     #[test]

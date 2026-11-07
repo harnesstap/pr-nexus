@@ -163,16 +163,18 @@ export function QuickFilters({ active, counts, onChange, starred, starredCount, 
 
   const folded = KEYS.filter((key) => !shown.has(key));
   return (
-    <div ref={box} role="group" aria-label="Quick filters" className="relative flex h-8 min-w-0 flex-1 flex-nowrap items-center gap-1 overflow-visible">
-      {/* Invisible copies of every chip (and More) at their natural width, measured to decide what fits. */}
-      <div ref={ruler} aria-hidden="true" className="pointer-events-none invisible absolute left-0 top-0 flex gap-1" inert>
-        {KEYS.map((key) => (
-          <ChipFace key={key} chipKey={key} on={isOn(key)} count={countOf(key)} />
-        ))}
-        <span className={`${BASE} ${IDLE}`}>
-          <MoreIcon size={12} />
-          More ({KEYS.length})
-        </span>
+    <div ref={box} role="group" aria-label="Quick filters" className="relative flex h-8 min-w-20 flex-1 flex-nowrap items-center gap-1 overflow-visible">
+      {/* A zero-size clip so the measuring row cannot widen the toolbar's scroll width. */}
+      <div className="pointer-events-none absolute left-0 top-0 h-0 w-0 overflow-hidden" inert>
+        <div ref={ruler} aria-hidden="true" className="invisible flex w-max gap-1">
+          {KEYS.map((key) => (
+            <ChipFace key={key} chipKey={key} on={isOn(key)} count={countOf(key)} />
+          ))}
+          <span className={`${BASE} ${IDLE}`}>
+            <MoreIcon size={12} />
+            More ({KEYS.length})
+          </span>
+        </div>
       </div>
       {KEYS.filter((key) => shown.has(key)).map((key) => (
         <Chip key={key} chipKey={key} on={isOn(key)} count={countOf(key)} onToggle={() => toggle(key)} />

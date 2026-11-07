@@ -5,6 +5,7 @@ import { Tooltip } from "../Tooltip";
 import { ReviewerAvatars } from "./ReviewerAvatars";
 import { NextActionBadge } from "./NextActionBadge";
 import { QuickFilters } from "./QuickFilters";
+import { RepoPicker } from "./RepoPicker";
 import { AddToProjectMenu } from "./AddToProjectMenu";
 import { SelectionBar } from "./SelectionBar";
 import { GitHubRowButton, StarButton } from "./StarButton";
@@ -583,6 +584,11 @@ export function PrList({
             starredCount={page ? new Set(list.entries.flatMap((entry) => (entry.row?.starred ? [entry.row.id] : []))).size : null}
             onStarredChange={(starred) => onViewChange({ ...view, filters: { ...view.filters, starred } })}
           />
+          <RepoPicker
+            options={page?.repos ?? []}
+            selected={view.filters.repos}
+            onChange={(repos) => onViewChange({ ...view, filters: { ...view.filters, repos } })}
+          />
           {filtersActive(view.filters) && (
             <Tooltip label="Clear filters" detail="Turn off every filter, quick filter chips and Starred included">
             <button
@@ -596,12 +602,12 @@ export function PrList({
             </button>
             </Tooltip>
           )}
-          <label className="flex h-8 w-44 min-w-28 shrink items-center @5xl:w-56 @7xl:w-72 gap-2 rounded-md border border-slate-700 bg-slate-900 px-2.5 text-sm focus-within:border-violet-400">
+          <label className="flex h-8 w-44 min-w-16 shrink items-center @5xl:w-56 @7xl:w-72 gap-2 rounded-md border border-slate-700 bg-slate-900 px-2.5 text-sm focus-within:border-violet-400">
             <SearchIcon className="shrink-0 text-slate-500" />
             <input {...plainText}
               ref={searchRef}
               aria-label="Search"
-              className="min-w-0 flex-1 bg-transparent outline-none placeholder:text-slate-500"
+              className="min-w-0 flex-1 bg-transparent outline-none placeholder:text-transparent @3xl:placeholder:text-slate-500"
               placeholder="Search projects, PRs, descriptions…"
               value={query}
               onChange={(event) => setQuery(event.target.value)}

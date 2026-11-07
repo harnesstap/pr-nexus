@@ -75,6 +75,8 @@ export interface PageDto {
   in_view: number;
   /** Org filter options with counts over every synced row. */
   orgs: { name: string; count: number }[];
+  /** Repositories in this view, counted after the other menu filters, search, and the quick filter. */
+  repos: { name: string; count: number }[];
   /** Rows per quick filter, over the menu filters and search but ignoring the quick filter. */
   quick: Record<QuickFilter, number>;
   /** Where else the search matches, so an empty result can point there. Null without a query. */
@@ -214,9 +216,37 @@ export function pageFromRows(rows: readonly SearchRow[], projects: readonly Proj
     summary,
     in_view: scoped.length,
     orgs: [...orgCounts.entries()].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)).map(([name, count]) => ({ name, count })),
+    repos: repoChoices(scoped, filters, projects, terms, now),
     quick,
     elsewhere: terms.length > 0 ? elsewhereFor(rows, projects, request, terms, now) : null,
   };
+}
+
+/** First casing wins. A selected repository missing from the view stays, at count 0. */
+function repoChoices(scoped: readonly SearchRow[], filters: Filters, projects: readonly ProjectDto[], terms: readonly string[], now: Date): { name: string; count: number }[] {
+  const cleared = { ...filters, repos: [] };
+  const counts = new Map<string, { name: string; count: number }>();
+  const touch = (name: string, hit: boolean) => {
+    const trimmed = name.trim();
+    if (!trimmed) {
+      return;
+    }
+    const key = trimmed.toLowerCase();
+    const current = counts.get(key);
+    if (!current) {
+      counts.set(key, { name: trimmed, count: hit ? 1 : 0 });
+    } else if (hit) {
+      current.count += 1;
+    }
+  };
+  for (const row of scoped) {
+    const hit = passesMenu(row, cleared, now) && matchesTerms(row, projects, terms) && (!filters.quick || quickMatches(row, filters.quick));
+    touch(row.repo, hit);
+  }
+  for (const name of filters.repos) {
+    touch(name, false);
+  }
+  return [...counts.values()].sort((left, right) => left.name.toLowerCase().localeCompare(right.name.toLowerCase()) || (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
 }
 
 function elsewhereFor(rows: readonly SearchRow[], projects: readonly ProjectDto[], request: PageRequest, terms: readonly string[], now: Date): Elsewhere {

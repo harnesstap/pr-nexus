@@ -74,7 +74,7 @@ test("typing searches PRs and picking one opens it", async () => {
   expect(onPickPr).toHaveBeenCalledWith(expect.objectContaining({ id: 479 }));
 });
 
-const page = (rows: ListRow[]): PageDto => ({ entries: rows.map((row) => ({ section: "s", row })), sections: [], next_cursor: null, summary: { open: 0, finished: 0, unassigned: 0, live_projects: 0 }, in_view: 0, orgs: [], quick: {} as PageDto["quick"], elsewhere: null });
+const page = (rows: ListRow[]): PageDto => ({ entries: rows.map((row) => ({ section: "s", row })), sections: [], next_cursor: null, summary: { open: 0, finished: 0, unassigned: 0, live_projects: 0 }, in_view: 0, orgs: [], repos: [], quick: {} as PageDto["quick"], elsewhere: null });
 
 test("Mod+K opens the palette; commands reuse the list's actions and navigation", async () => {
   const onView = vi.fn();

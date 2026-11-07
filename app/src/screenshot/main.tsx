@@ -265,6 +265,21 @@ for (const id of (window as { __extraDrafts?: number[] }).__extraDrafts ?? []) {
   await emit(DATA_CHANGED_EVENT);
 };
 
+// `--repo-filter` adds two repositories that share a name, and drops ticket chips.
+if ((window as { __repoScene?: boolean }).__repoScene) {
+  for (const project of projects) {
+    project.jira_links = [];
+  }
+  const base = rows[0];
+  if (base) {
+    rows.push(
+      { ...base, id: 90, number: 90, title: "Widgets on acme", repo: "acme/widgets", owner: "acme", project_ids: [1], slack: null },
+      { ...base, id: 91, number: 91, title: "Widgets on labs", repo: "acme-labs/widgets", owner: "acme-labs", project_ids: [1], slack: null },
+      { ...base, id: 92, number: 92, title: "Billing service", repo: "acme-labs/billing", owner: "acme-labs", project_ids: [2], slack: null },
+    );
+  }
+}
+
 mockWindows("main");
 mockIPC((cmd, args) => handlers[cmd]?.((args ?? {}) as Record<string, unknown>) ?? null, { shouldMockEvents: true });
 

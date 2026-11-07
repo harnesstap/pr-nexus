@@ -315,3 +315,21 @@ test("starred rows pin to the top within the current sort, and the Starred filte
   const starredOnly = { ...view, filters: { ...view.filters, starred: true } };
   expect(shownIds(rows, [], "mine", starredOnly).sort()).toEqual([2, 4]);
 });
+
+test("repository choices count the current view and keep a selected name at zero", () => {
+  const rows = [
+    row({ id: 1, title: "Latch", repo: "acme-labs/widgets", owner: "acme-labs" }),
+    row({ id: 2, title: "Drawer", repo: "acme/widgets", owner: "acme" }),
+    row({ id: 3, title: "Hidden billing", repo: "acme/billing", owner: "acme", hidden: true }),
+    row({ id: 4, title: "Closed billing", repo: "acme-labs/billing", owner: "acme-labs", state: "closed" }),
+  ];
+  const view = { ...defaultView(), filters: { ...defaultView().filters, repos: ["ACME/widgets", "acme/missing"] } };
+  const page = pageFromRows(rows, [], request("mine", view));
+  expect(page.repos).toEqual([
+    { name: "acme-labs/widgets", count: 1 },
+    { name: "acme/missing", count: 0 },
+    { name: "acme/widgets", count: 1 },
+  ]);
+  expect(page.sections.flatMap((section) => section.ids)).toEqual([2]);
+  expect(filtersActive(view.filters)).toBe(true);
+});

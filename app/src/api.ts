@@ -57,6 +57,7 @@ export interface FilteredReviews {
 /** The To review filters GitHub search can answer (§6); see `remoteReviewFilter`. */
 export interface RemoteReviewFilter {
   orgs: string[];
+  repos: string[];
   draft: boolean | null;
   review: "approved" | "changes_requested" | "required" | null;
   ci: "success" | "failure" | "pending" | null;

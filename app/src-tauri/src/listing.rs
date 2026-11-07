@@ -25,6 +25,9 @@ pub const MAX_LIMIT: usize = 5000;
 pub struct FiltersDto {
     #[serde(default)]
     pub orgs: Vec<String>,
+    /// `owner/name`. Empty means every repository.
+    #[serde(default)]
+    pub repos: Vec<String>,
     #[serde(default)]
     pub statuses: Vec<String>,
     #[serde(default)]
@@ -46,6 +49,7 @@ pub struct FiltersDto {
 impl FiltersDto {
     fn active(&self) -> bool {
         !self.orgs.is_empty()
+            || !self.repos.is_empty()
             || !self.statuses.is_empty()
             || !self.reviews.is_empty()
             || !self.ci.is_empty()
@@ -144,6 +148,7 @@ pub struct PageDto {
     pub summary: PageSummary,
     pub in_view: usize,
     pub orgs: Vec<OrgCount>,
+    pub repos: Vec<OrgCount>,
     pub quick: QuickCounts,
     /// Only while searching.
     pub elsewhere: Option<Elsewhere>,
@@ -317,6 +322,7 @@ pub fn page(
                 count,
             })
             .collect(),
+        repos: repo_choices(&scoped, filters, search, now_ms),
         quick,
         elsewhere,
     }
@@ -483,6 +489,51 @@ fn scope_row(row: &ListRow, live: &HashSet<i64>, filters: &FiltersDto) -> bool {
     !(only_archived && !filters.archived)
 }
 
+/// Repositories in the scoped view. Counts ignore the repository filter and
+/// include search and the quick filter. A selected name missing from the view
+/// stays at 0. Order is case-insensitive.
+fn repo_choices(
+    scoped: &[&Item],
+    filters: &FiltersDto,
+    search: Option<&HashSet<i64>>,
+    now_ms: i64,
+) -> Vec<OrgCount> {
+    let mut cleared = filters.clone();
+    cleared.repos.clear();
+    let mut counts: BTreeMap<String, (String, usize)> = BTreeMap::new();
+    let mut touch = |name: &str, hit: bool| {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        let key = trimmed.to_ascii_lowercase();
+        counts
+            .entry(key)
+            .and_modify(|(_, count)| {
+                if hit {
+                    *count += 1;
+                }
+            })
+            .or_insert((trimmed.to_owned(), usize::from(hit)));
+    };
+    for item in scoped {
+        let hit = passes_menu(item, &cleared, now_ms)
+            && search.is_none_or(|ids| ids.contains(&item.row.id))
+            && filters
+                .quick
+                .as_deref()
+                .is_none_or(|quick| quick_matches(&item.row, quick));
+        touch(&item.row.repo, hit);
+    }
+    for name in &filters.repos {
+        touch(name, false);
+    }
+    counts
+        .into_values()
+        .map(|(name, count)| OrgCount { name, count })
+        .collect()
+}
+
 fn passes_menu(item: &Item, filters: &FiltersDto, now_ms: i64) -> bool {
     let row = &item.row;
     if filters.starred && !row.starred {
@@ -493,6 +544,14 @@ fn passes_menu(item: &Item, filters: &FiltersDto, now_ms: i64) -> bool {
             .orgs
             .iter()
             .any(|org| org.eq_ignore_ascii_case(&row.owner))
+    {
+        return false;
+    }
+    if !filters.repos.is_empty()
+        && !filters
+            .repos
+            .iter()
+            .any(|repo| repo.eq_ignore_ascii_case(&row.repo))
     {
         return false;
     }
@@ -1188,6 +1247,32 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn repository_options_follow_the_view_and_keep_a_selected_name() {
+        let mut items: Vec<Item> = (1..=3).map(|id| item(id, &[], id)).collect();
+        items[0].row.repo = "acme-labs/widgets".into();
+        items[1].row.repo = "acme/widgets".into();
+        items[2].row.repo = "acme/billing".into();
+        items[2].row.hidden = true;
+        let mut request = request("mine");
+        request.filters.repos = vec!["acme/missing".into(), "ACME/widgets".into()];
+        let page = page(&items, &[], &request, None);
+        let names: Vec<_> = page
+            .repos
+            .iter()
+            .map(|item| (item.name.as_str(), item.count))
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                ("acme-labs/widgets", 1),
+                ("acme/missing", 0),
+                ("acme/widgets", 1),
+            ]
+        );
+        assert_eq!(pageless_ids(&page), vec![2]);
     }
 
     fn quick_fixture() -> Vec<Item> {

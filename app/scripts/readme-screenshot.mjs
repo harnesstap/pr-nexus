@@ -13,6 +13,9 @@
 // `--slack-draft <dir>` saves the Slack dialogs' draft warning (slack-draft-*.png):
 // the single request for draft #488 (default and narrow), after Mark ready, and
 // the bulk dialog with #488 and #58 as drafts, before and after Mark all ready.
+// `--repo-filter <dir>` saves the repository picker (repo-filter-*.png): the
+// popover filtered to widgets, both widget repositories selected, a 720px
+// toolbar, and the alphabetically sorted project list.
 // `--ready-preview <dir>` saves the bulk dialog before and after Mark all ready
 // when two selected drafts are CI-blocked and only one of those checks clears.
 // `--update <dir>` saves the sidebar's update indicator (update-*.png): none,
@@ -63,6 +66,11 @@ const slackDraftFlag = process.argv.indexOf("--slack-draft");
 const slackDraftDir = slackDraftFlag === -1 ? null : process.argv[slackDraftFlag + 1];
 if (slackDraftFlag !== -1 && !slackDraftDir) {
   throw new Error("--slack-draft needs an output directory");
+}
+const repoFilterFlag = process.argv.indexOf("--repo-filter");
+const repoFilterDir = repoFilterFlag === -1 ? null : process.argv[repoFilterFlag + 1];
+if (repoFilterFlag !== -1 && !repoFilterDir) {
+  throw new Error("--repo-filter needs an output directory");
 }
 const readyPreviewFlag = process.argv.indexOf("--ready-preview");
 const readyPreviewDir = readyPreviewFlag === -1 ? null : process.argv[readyPreviewFlag + 1];
@@ -276,6 +284,45 @@ async function updateShots(browser, dir) {
   }
 }
 
+/** Repository picker open, both widgets selected, a narrow toolbar, and the sorted sidebar. */
+async function repoFilterShots(page, dir) {
+  mkdirSync(dir, { recursive: true });
+  const save = async (name) => {
+    await page.waitForTimeout(300);
+    await page.screenshot({ path: resolve(dir, `repo-filter-${name}.png`) });
+    console.log(`wrote repo-filter-${name}.png`);
+  };
+  const aside = await page.locator("aside").first().boundingBox();
+  if (aside) {
+    await page.screenshot({
+      path: resolve(dir, "repo-filter-sidebar.png"),
+      clip: { x: aside.x, y: aside.y, width: aside.width, height: Math.min(aside.height, 640) },
+    });
+    console.log("wrote repo-filter-sidebar.png");
+  }
+  await page.getByRole("button", { name: "Repository" }).click();
+  const dialog = page.getByRole("dialog", { name: "Repositories" });
+  await dialog.getByRole("textbox", { name: "Find a repository" }).fill("widgets");
+  await dialog.getByRole("checkbox", { name: "acme/widgets" }).waitFor();
+  await save("picker-open");
+  await dialog.getByRole("checkbox", { name: "acme/widgets" }).check();
+  await dialog.getByRole("checkbox", { name: "acme-labs/widgets" }).check();
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "Repository, 2 repositories" }).waitFor();
+  await save("selected");
+  await page.setViewportSize({ width: 720, height: 900 });
+  const toolbar = page.getByRole("toolbar", { name: "List toolbar" });
+  const pageOverflow = await toolbar.evaluate((node) => {
+    const root = node.ownerDocument.documentElement;
+    return root.scrollWidth - root.clientWidth;
+  });
+  console.log(`page overflow ${pageOverflow}px at 720px`);
+  if (pageOverflow > 0) {
+    throw new Error(`page overflows by ${pageOverflow}px at 720px`);
+  }
+  await save("narrow");
+}
+
 let browser;
 try {
   browser = await chromium.launch(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: "chrome" });
@@ -296,9 +343,16 @@ try {
       }
     }, Boolean(readyPreviewDir));
   }
+  if (repoFilterDir) {
+    await page.addInitScript(() => {
+      globalThis.__repoScene = true;
+    });
+  }
   await page.goto(url);
   await page.getByRole("group", { name: "Quick filters" }).waitFor();
-  if (readyPreviewDir) {
+  if (repoFilterDir) {
+    await repoFilterShots(page, resolve(repoFilterDir));
+  } else if (readyPreviewDir) {
     await readyPreviewShots(page, resolve(readyPreviewDir));
   } else if (slackDraftDir) {
     await slackDraftShots(page, resolve(slackDraftDir));
@@ -328,7 +382,7 @@ try {
         .click();
     }
   }
-  if (!tooltipsDir && !scenesDir && !branchDir && !slackDraftDir && !readyPreviewDir) {
+  if (!tooltipsDir && !scenesDir && !branchDir && !slackDraftDir && !repoFilterDir && !readyPreviewDir) {
     await page.waitForTimeout(500);
     await page.screenshot({ path: out });
     console.log(`wrote ${out} (${Math.round(statSync(out).size / 1024)} KB)`);
