@@ -107,6 +107,22 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   pr_detail: () => detail,
   pr_overview: (args) => ({ ...overviewFor(args.id), fetched_at: new Date().toISOString() }),
   merge_pr: (args) => ({ ...overviewFor(args.id), state: "merged", fetched_at: new Date().toISOString() }),
+  close_pull_requests: (args) => {
+    const ids = Array.isArray(args.ids) ? args.ids : [];
+    const comment = String(args.comment ?? "").trim();
+    return ids.map((id) => {
+      const row = rows.find((item) => item.id === Number(id));
+      return {
+        id: Number(id),
+        repo: row?.repo ?? "acme/storefront",
+        number: row?.number ?? 0,
+        title: row?.title ?? "",
+        outcome: "closed",
+        comment_posted: comment.length > 0,
+        message: null,
+      };
+    });
+  },
   pr_branch_status: (args) => branchFor(args.id),
   update_pr_branch: (args) => ({ overview: { ...baseOverviewFor(args.id), fetched_at: new Date().toISOString() }, branch: branchFixtures[1].branch }),
   load_preferences: () => ({

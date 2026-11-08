@@ -18,6 +18,8 @@ const DISABLE: &str = include_str!("graphql/disable_auto_merge.graphql");
 const TO_DRAFT: &str = include_str!("graphql/convert_to_draft.graphql");
 const MARK_READY: &str = include_str!("graphql/mark_ready.graphql");
 const MERGE: &str = include_str!("graphql/merge_pull_request.graphql");
+const CLOSE: &str = include_str!("graphql/close_pull_request.graphql");
+const COMMENT: &str = include_str!("graphql/add_comment.graphql");
 
 pub(crate) fn fetch(client: &GithubClient, pr: &PullRequest) -> Result<PrOverview, ProviderError> {
     let body = client.graphql(
@@ -49,6 +51,53 @@ pub(crate) fn set_auto_merge(
     };
     data(&body)?;
     Ok(())
+}
+
+/// Posts `body` as a pull request comment. Does not close it.
+pub(crate) fn add_comment(
+    client: &GithubClient,
+    pr: &PullRequest,
+    body: &str,
+) -> Result<(), ProviderError> {
+    match client.graphql(COMMENT, json!({ "id": pr.remote.id, "body": body })) {
+        Ok(response) => data(&response).map(|_| ()),
+        Err(err) => Err(permission_error(err, "comment on")),
+    }
+}
+
+/// Closes the pull request. The mutation does not delete the branch.
+pub(crate) fn close(client: &GithubClient, pr: &PullRequest) -> Result<(), ProviderError> {
+    let body = match client.graphql(CLOSE, json!({ "id": pr.remote.id })) {
+        Ok(body) => body,
+        Err(err) => return Err(permission_error(err, "close")),
+    };
+    let node = data(&body)?.pointer("/closePullRequest/pullRequest");
+    let state = node
+        .and_then(|node| node.get("state"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if state.eq_ignore_ascii_case("merged") {
+        return Err(ProviderError::Api {
+            code: "graphql".into(),
+            message: "Pull request is already merged".into(),
+        });
+    }
+    Ok(())
+}
+
+fn permission_error(err: ProviderError, action: &str) -> ProviderError {
+    let text = err.to_string().to_ascii_lowercase();
+    if text.contains("forbidden")
+        || text.contains("permission")
+        || text.contains("not accessible")
+        || text.contains("not allowed")
+    {
+        ProviderError::Forbidden(format!(
+            "You don't have permission to {action} this pull request."
+        ))
+    } else {
+        err
+    }
 }
 
 /// Merges the pull request now with `method` (GraphQL `mergePullRequest`).
@@ -181,6 +230,7 @@ pub(crate) fn parse(body: &Value, fetched_at: String) -> Result<PrOverview, Prov
             can_merge_as_admin: flag(node.get("viewerCanMergeAsAdmin")),
             can_enable_auto_merge: flag(node.get("viewerCanEnableAutoMerge")),
             can_disable_auto_merge: flag(node.get("viewerCanDisableAutoMerge")),
+            can_close: node.get("viewerCanClose").and_then(Value::as_bool),
         },
         merge_settings: MergeSettings {
             auto_merge_allowed: flag(repo.get("autoMergeAllowed")),

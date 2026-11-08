@@ -1,0 +1,3 @@
+kind: Added
+body: "You can close a GitHub pull request from the detail panel or the selection bar, with an optional comment. The app asks first, leaves the branch in place, and drops the pull request from the open list even when GitHub search is slow."
+time: 2026-11-08T22:45:00.000000Z

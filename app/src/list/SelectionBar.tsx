@@ -42,6 +42,8 @@ interface Props {
   onRequest: () => void;
   onCopy: () => void;
   onClear: () => void;
+  /** Opens the close confirmation for the active selection. */
+  onClose: () => void;
 }
 
 const secondary =
@@ -50,9 +52,10 @@ const secondary =
 /**
  * The floating bar under the list (§8.2). It is centered in the list column
  * and never wider than it, so it stays clear of the detail panel; as the
- * column narrows, Add to project and Copy as Markdown move into a More menu,
- * then the count and the Slack button shorten. Clear and the Slack button
- * always stay visible.
+ * column narrows, Add to project and Copy as Markdown move into the More
+ * menu, then the count and the Slack button shorten. More is always there:
+ * on a wide column it holds only Close. Clear and the Slack button always
+ * stay visible.
  */
 export function SelectionBar({
   count,
@@ -62,6 +65,7 @@ export function SelectionBar({
   addMenu,
   onRequest,
   onCopy,
+  onClose,
   onClear,
 }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -159,70 +163,7 @@ export function SelectionBar({
             {layout === "compact" ? "Slack" : "Request / bump on Slack"}
           </button>
         </Tooltip>
-        {folded ? (
-          <div
-            ref={moreRef}
-            className="relative shrink-0"
-            onKeyDown={onMenuKey}
-          >
-            <Tooltip
-              label="More actions"
-              detail="Add to project, Copy as Markdown"
-              side="top"
-            >
-              <button
-                type="button"
-                aria-label="More actions"
-                aria-haspopup="menu"
-                aria-expanded={moreOpen}
-                className="flex items-center rounded-md border border-slate-700 p-2 text-slate-200 hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-violet-400"
-                onClick={() => setMoreOpen((open) => !open)}
-              >
-                <MoreIcon />
-              </button>
-            </Tooltip>
-            {moreOpen && folded && (
-              <div
-                role="menu"
-                aria-label="More actions"
-                className="absolute bottom-full left-1/2 z-20 mb-2 w-max min-w-48 -translate-x-1/2 whitespace-nowrap rounded border border-slate-700 bg-slate-900 py-1 text-sm shadow-lg"
-              >
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-slate-200 hover:bg-slate-800 focus:bg-slate-800 focus:outline-none"
-                  onClick={() => {
-                    setMoreOpen(false);
-                    onToggleAddMenu();
-                  }}
-                >
-                  <FolderPlusIcon />
-                  <span className="flex-1">Add to project</span>
-                  <kbd className="text-xs text-slate-500">
-                    {hint("project")}
-                  </kbd>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  disabled={count === 0}
-                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-slate-200 hover:bg-slate-800 focus:bg-slate-800 focus:outline-none disabled:text-slate-500"
-                  onClick={() => {
-                    setMoreOpen(false);
-                    onCopy();
-                  }}
-                >
-                  <CopyIcon />
-                  <span className="flex-1">Copy as Markdown</span>
-                  <kbd className="text-xs text-slate-500">
-                    {hint("copyMarkdown")}
-                  </kbd>
-                </button>
-              </div>
-            )}
-            {addMenuOpen && addMenu}
-          </div>
-        ) : (
+        {!folded && (
           <>
             <div className="relative shrink-0">
               <Tooltip
@@ -262,6 +203,87 @@ export function SelectionBar({
             </Tooltip>
           </>
         )}
+        <div ref={moreRef} className="relative shrink-0" onKeyDown={onMenuKey}>
+            <Tooltip
+              label="More actions"
+              detail={
+                folded
+                  ? "Add to project, Copy as Markdown, Close pull requests"
+                  : "Close pull requests"
+              }
+              side="top"
+            >
+              <button
+                type="button"
+                aria-label="More actions"
+                aria-haspopup="menu"
+                aria-expanded={moreOpen}
+                className="flex items-center rounded-md border border-slate-700 p-2 text-slate-200 hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-violet-400"
+                onClick={() => setMoreOpen((open) => !open)}
+              >
+                <MoreIcon />
+              </button>
+            </Tooltip>
+            {moreOpen && (
+              <div
+                role="menu"
+                aria-label="More actions"
+                className="absolute bottom-full left-1/2 z-20 mb-2 w-max min-w-48 -translate-x-1/2 whitespace-nowrap rounded border border-slate-700 bg-slate-900 py-1 text-sm shadow-lg"
+              >
+                {folded && (
+                  <>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-slate-200 hover:bg-slate-800 focus:bg-slate-800 focus:outline-none"
+                      onClick={() => {
+                        setMoreOpen(false);
+                        onToggleAddMenu();
+                      }}
+                    >
+                      <FolderPlusIcon />
+                      <span className="flex-1">Add to project</span>
+                      <kbd className="text-xs text-slate-500">
+                        {hint("project")}
+                      </kbd>
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      disabled={count === 0}
+                      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-slate-200 hover:bg-slate-800 focus:bg-slate-800 focus:outline-none disabled:text-slate-500"
+                      onClick={() => {
+                        setMoreOpen(false);
+                        onCopy();
+                      }}
+                    >
+                      <CopyIcon />
+                      <span className="flex-1">Copy as Markdown</span>
+                      <kbd className="text-xs text-slate-500">
+                        {hint("copyMarkdown")}
+                      </kbd>
+                    </button>
+                    <div role="separator" className="my-1 h-px bg-slate-800" />
+                  </>
+                )}
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={count === 0}
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-rose-300 hover:bg-slate-800 focus:bg-slate-800 focus:outline-none disabled:text-slate-500"
+                  onClick={() => {
+                    setMoreOpen(false);
+                    onClose();
+                  }}
+                >
+                  <span className="flex-1">
+                    {count === 1 ? "Close PR" : `Close ${count} PRs`}
+                  </span>
+                </button>
+              </div>
+            )}
+            {folded && addMenuOpen && addMenu}
+          </div>
         <Tooltip
           label="Clear selection"
           shortcut={hint("clear")}

@@ -99,11 +99,13 @@ interface Props {
   onToggleStar?: (row: ListRow) => void;
   /** Two or more PRs from the bottom bar (§7.9). */
   onBulkReview: (ids: number[]) => void;
+  /** Opens the close confirmation for the active selection. */
+  onClosePullRequests?: (rows: { id: number; repo: string; number: number; title: string }[]) => void;
   /** Shows a toast, e.g. after "Copy as Markdown". */
   onNotice?: (toast: Toast) => void;
   /** Draft flags changed in the app ahead of the reload, by PR id. */
   draftPatches?: Record<number, boolean>;
-  /** PRs just merged in the app: gone from the list before the reload lands. */
+  /** PRs just merged or closed in the app: gone from the list before the reload lands. */
   removedIds?: ReadonlySet<number>;
   /** Opens Settings, from the "no open PRs" empty state. */
   onOpenSettings?: () => void;
@@ -178,6 +180,7 @@ export function PrList({
   onRequestReview,
   onToggleStar,
   onBulkReview,
+  onClosePullRequests,
   onNotice,
   draftPatches,
   removedIds,
@@ -886,6 +889,17 @@ export function PrList({
           }
           onRequest={requestSelection}
           onCopy={copySelectionAsMarkdown}
+          onClose={() => {
+            const byId = new Map(flat.map((item) => [item.row.id, item.row]));
+            onClosePullRequests?.(
+              activeIds.map((id) => {
+                const row = byId.get(id);
+                return row
+                  ? { id: row.id, repo: row.repo, number: row.number, title: row.title }
+                  : { id, repo: "", number: 0, title: "" };
+              }),
+            );
+          }}
           onClear={() => setSelected(new Set())}
         />
       )}

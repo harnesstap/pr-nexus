@@ -21,6 +21,7 @@ query PullRequestOverview($owner: String!, $name: String!, $number: Int!) {
       viewerCanMergeAsAdmin
       viewerCanEnableAutoMerge
       viewerCanDisableAutoMerge
+      viewerCanClose
       autoMergeRequest { mergeMethod enabledAt enabledBy { login } }
       author { __typename login avatarUrl(size: 64) ... on User { name } }
       comments(last: 50) { totalCount nodes { author { __typename login avatarUrl(size: 64) ... on User { name } } } }

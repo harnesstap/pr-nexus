@@ -632,6 +632,62 @@ test("the merge card keeps blockers full width with their action on the row, and
   expect(controls.parentElement).toBe(verdict);
 });
 
+test("Close PR sits in the header menu and Enter does not confirm", async () => {
+  const closePullRequests = vi.fn(() =>
+    Promise.resolve([
+      {
+        id: 7,
+        repo: "acme/web",
+        number: 42,
+        title: "Split the checkout into steps",
+        outcome: "closed" as const,
+        comment_posted: false,
+        message: null,
+      },
+    ]),
+  );
+  const onClosed = vi.fn();
+  const api = fakeApi({
+    closePullRequests,
+    prOverview: vi.fn(() => Promise.resolve(mockOverview())),
+  });
+  renderPanel(api, { onClosed });
+  const verdict = await screen.findByTestId("merge-verdict");
+  expect(within(verdict).queryByRole("menuitem", { name: "Close PR" })).toBeNull();
+  expect(within(verdict).queryByRole("button", { name: "Close PR" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "More actions" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Close PR" }));
+  const dialog = screen.getByRole("dialog", { name: "Close this pull request?" });
+  expect(dialog.textContent).toContain("acme/web#42 Split the checkout into steps");
+  expect(dialog.textContent).toContain("The branch stays. Nothing is merged.");
+  fireEvent.change(within(dialog).getByRole("textbox", { name: "Comment (optional)" }), {
+    target: { value: "No longer needed" },
+  });
+  fireEvent.keyDown(within(dialog).getByRole("button", { name: "Close PR" }), { key: "Enter" });
+  expect(closePullRequests).not.toHaveBeenCalled();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Close PR" }));
+  await waitFor(() => expect(closePullRequests).toHaveBeenCalledWith([7], "No longer needed"));
+  expect(onClosed).toHaveBeenCalledWith([7]);
+});
+
+test("Close PR is unavailable when GitHub says this user cannot close", async () => {
+  const overview = mockOverview();
+  overview.viewer = { ...overview.viewer, can_close: false };
+  const api = fakeApi({ prOverview: vi.fn(() => Promise.resolve(overview)) });
+  renderPanel(api);
+  await screen.findByTestId("merge-verdict");
+  fireEvent.click(screen.getByRole("button", { name: "More actions" }));
+  expect(screen.getByRole("menuitem", { name: "Close PR" })).toBeDisabled();
+  expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+test("a closed pull request has no Close PR action", () => {
+  const api = fakeApi({ prOverview: vi.fn(() => Promise.resolve(mockOverview({ state: "closed" }))) });
+  renderPanel(api, { row: { ...row, state: "closed" } });
+  expect(screen.getByRole("button", { name: "Close details" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "More actions" })).toBeNull();
+});
+
 test("BlockerList renders any per-blocker action beside its text", () => {
   render(
     <BlockerList

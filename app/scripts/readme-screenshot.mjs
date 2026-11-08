@@ -20,6 +20,8 @@
 // when two selected drafts are CI-blocked and only one of those checks clears.
 // `--update <dir>` saves the sidebar's update indicator (update-*.png): none,
 // the icon for a newer release, and its popover for a release and a dev build.
+// `--close-pr <dir>` saves Close PR (close-*.png): the detail menu, the
+// confirmation with a comment, the bulk confirmation, and the narrow bar menu.
 // Uses an installed Chrome; set CHROME_PATH to pick another Chromium binary.
 import { mkdirSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -81,6 +83,11 @@ const updateFlag = process.argv.indexOf("--update");
 const updateDir = updateFlag === -1 ? null : process.argv[updateFlag + 1];
 if (updateFlag !== -1 && !updateDir) {
   throw new Error("--update needs an output directory");
+}
+const closePrFlag = process.argv.indexOf("--close-pr");
+const closePrDir = closePrFlag === -1 ? null : process.argv[closePrFlag + 1];
+if (closePrFlag !== -1 && !closePrDir) {
+  throw new Error("--close-pr needs an output directory");
 }
 /** A row's own button, not its star (both carry the title). */
 const rowButton = (title) => new RegExp(`^(?!Star |Unstar |Open ).*${title}`);
@@ -362,6 +369,8 @@ try {
     await scenes(page, resolve(scenesDir));
   } else if (branchDir) {
     await branchShots(page, resolve(branchDir));
+  } else if (closePrDir) {
+    await closePrShots(page, resolve(closePrDir));
   } else if (detailOut) {
     await page
       .getByRole("button", {
@@ -382,7 +391,7 @@ try {
         .click();
     }
   }
-  if (!tooltipsDir && !scenesDir && !branchDir && !slackDraftDir && !repoFilterDir && !readyPreviewDir) {
+  if (!tooltipsDir && !scenesDir && !branchDir && !slackDraftDir && !repoFilterDir && !readyPreviewDir && !closePrDir) {
     await page.waitForTimeout(500);
     await page.screenshot({ path: out });
     console.log(`wrote ${out} (${Math.round(statSync(out).size / 1024)} KB)`);
@@ -433,6 +442,50 @@ async function shootTooltips(page, dir) {
     await page.screenshot({ path: file, clip });
     console.log(`wrote ${file}`);
   }
+}
+
+async function closePrShots(page, dir) {
+  mkdirSync(dir, { recursive: true });
+  const save = async (name) => {
+    const path = resolve(dir, name);
+    await page.waitForTimeout(300);
+    await page.screenshot({ path });
+    console.log(`wrote ${path} (${Math.round(statSync(path).size / 1024)} KB)`);
+  };
+  const panel = page.getByTestId("detail-panel");
+  await page.getByRole("button", { name: rowButton("Add address autocomplete to checkout") }).first().click();
+  await panel.getByRole("button", { name: /^Checks:/ }).waitFor();
+  await panel.getByRole("button", { name: "More actions" }).click();
+  await panel.getByRole("menuitem", { name: "Close PR" }).waitFor();
+  await save("close-detail-menu.png");
+  await panel.getByRole("menuitem", { name: "Close PR" }).click();
+  const dialog = page.getByRole("dialog", { name: "Close this pull request?" });
+  await dialog.getByRole("textbox", { name: "Comment (optional)" }).fill("No longer needed. The branch stays.");
+  await save("close-dialog.png");
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await panel.getByRole("button", { name: "Close details" }).click();
+
+  await page.getByRole("checkbox", { name: "Select Add address autocomplete to checkout" }).click();
+  await page
+    .getByRole("checkbox", { name: "Select feat(checkout): split the payment step into its own route and lazy-load the card form" })
+    .click();
+  const bar = page.getByRole("region", { name: "Selection actions" });
+  await bar.getByRole("button", { name: "More actions" }).click();
+  await bar.getByRole("menuitem", { name: "Close 2 PRs" }).click();
+  await page.getByRole("dialog", { name: "Close 2 pull requests?" }).waitFor();
+  await save("close-bulk.png");
+  await page.keyboard.press("Escape");
+
+  await page.setViewportSize({ width: 860, height: 900 });
+  await page.waitForTimeout(200);
+  if ((await bar.getAttribute("data-layout")) === "full") {
+    await page.setViewportSize({ width: 720, height: 900 });
+    await page.waitForTimeout(200);
+  }
+  await bar.getByRole("button", { name: "More actions" }).click();
+  await bar.getByRole("menuitem", { name: "Add to project" }).waitFor();
+  await bar.getByRole("menuitem", { name: "Close 2 PRs" }).waitFor();
+  await save("close-narrow-menu.png");
 }
 
 async function shot(page, path) {

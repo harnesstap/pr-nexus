@@ -1,14 +1,15 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import type { Api, Explanation, ListRow, MentionsScope, PrDetail, PrOverview, SlackWorkspace } from "../api";
 import { errorMessage } from "../api";
 import { CloseButton } from "../CloseButton";
-import { AlertIcon, CheckIcon, DeclinedIcon, GitHubIcon } from "../icons";
+import { AlertIcon, CheckIcon, DeclinedIcon, GitHubIcon, MoreIcon } from "../icons";
 import { isTypingTarget } from "../list/keys";
 import { ago } from "../list/model";
 import { SlackContextPanel } from "../list/SlackContextPanel";
 import { StarButton } from "../list/StarButton";
 import { Tooltip } from "../Tooltip";
 import { AutoMerge } from "./AutoMerge";
+import { CloseDialog } from "./CloseDialog";
 import { BranchAction, BranchCard, BranchError, RebaseConfirm, useBranch } from "./BranchCard";
 import { Expander } from "./Expander";
 import { NoteSection } from "./NoteSection";
@@ -35,6 +36,8 @@ interface Props {
   onDraftChange?: (id: number, draft: boolean | null | "saved") => void;
   /** GitHub confirmed a merge made here; the caller drops the PR and closes the panel. */
   onMerged?: () => void;
+  /** GitHub confirmed a close, or the pull request was already closed or merged. */
+  onClosed?: (ids: number[]) => void;
   /** Adds the full Slack threads and mention search (§7.10) as an expander. */
   slack?: { mentions: MentionsScope; workspaces?: SlackWorkspace[] };
   /** Stars or unstars this PR; the header shows the star when set. */
@@ -65,7 +68,7 @@ function storedWidth(): number {
  * The PR detail slide-over (§7.2): docked on the right while the list stays usable, so a
  * click or ↑/↓ in the list switches the PR. Esc or ✕ closes it.
  */
-export function DetailPanel({ api, row, version, onClose, onOpen, onRequestReview, onNotice, onDraftChange, onMerged, slack, onToggleStar }: Props) {
+export function DetailPanel({ api, row, version, onClose, onOpen, onRequestReview, onNotice, onDraftChange, onMerged, onClosed, slack, onToggleStar }: Props) {
   const [overview, setOverview] = useState<PrOverview | null>(null);
   const [overviewError, setOverviewError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -73,6 +76,7 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
   const [detailError, setDetailError] = useState<string | null>(null);
   const [width, setWidth] = useState(storedWidth);
   const [flipping, setFlipping] = useState(false);
+  const [confirmClose, setConfirmClose] = useState(false);
   const panelRef = useRef<HTMLElement>(null);
   const branch = useBranch({ api, prId: row.id, overview, fresh: loaded && !overviewError, onOverview: setOverview, onNotice });
 
@@ -258,6 +262,12 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
           <IconButton label="Open on GitHub" shortcut="O" onClick={() => onOpen(row.url)}>
             <GitHubIcon size={16} />
           </IconButton>
+          {row.state === "open" && (
+            <HeaderMenu
+              canClose={overview?.viewer.can_close !== false}
+              onClosePr={() => setConfirmClose(true)}
+            />
+          )}
           <CloseButton label="Close details" onClick={onClose} />
         </div>
       </header>
@@ -338,6 +348,16 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
         </div>
         {overview && <p className="text-[11px] text-slate-600">Updated {ago(overview.fetched_at, new Date())}</p>}
       </div>
+      {confirmClose && (
+        <CloseDialog
+          api={api}
+          ids={[row.id]}
+          known={[{ id: row.id, repo: row.repo, number: row.number, title: row.title }]}
+          onDismiss={() => setConfirmClose(false)}
+          onClosed={(ids) => onClosed?.(ids)}
+          onNotice={onNotice}
+        />
+      )}
     </aside>
   );
 }
@@ -433,6 +453,78 @@ function DraftAction({ draft, busy, onToggle }: { draft: DraftView; busy: boolea
     >
       {button}
     </Tooltip>
+  );
+}
+
+function HeaderMenu({ canClose, onClosePr }: { canClose: boolean; onClosePr: () => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    ref.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
+    const onDown = (event: MouseEvent) => {
+      if (!ref.current?.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
+  function onMenuKey(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (event.key !== "Escape") {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    setOpen(false);
+    ref.current?.querySelector<HTMLElement>("[aria-haspopup]")?.focus();
+  }
+  const item = (
+    <button
+      type="button"
+      role="menuitem"
+      disabled={!canClose}
+      className="flex w-full px-3 py-1.5 text-left text-rose-300 hover:bg-slate-800 focus:bg-slate-800 focus:outline-none disabled:text-slate-500"
+      onClick={() => {
+        setOpen(false);
+        onClosePr();
+      }}
+    >
+      Close PR
+    </button>
+  );
+  return (
+    <div ref={ref} className="relative" onKeyDown={onMenuKey}>
+      <Tooltip label="More actions" detail="Close this pull request" align="end">
+        <button
+          type="button"
+          aria-label="More actions"
+          aria-haspopup="menu"
+          aria-expanded={open}
+          className="rounded-md p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
+          onClick={() => setOpen((value) => !value)}
+        >
+          <MoreIcon size={16} />
+        </button>
+      </Tooltip>
+      {open && (
+        <div
+          role="menu"
+          aria-label="More actions"
+          className="absolute right-0 top-full z-30 mt-1 min-w-40 rounded-md border border-slate-700 bg-slate-900 py-1 text-sm shadow-xl"
+        >
+          {canClose ? (
+            item
+          ) : (
+            <Tooltip label="You don't have permission to close this pull request." align="end">
+              <span className="block">{item}</span>
+            </Tooltip>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 

@@ -1,0 +1,5 @@
+mutation ClosePullRequest($id: ID!) {
+  closePullRequest(input: { pullRequestId: $id }) {
+    pullRequest { id state }
+  }
+}

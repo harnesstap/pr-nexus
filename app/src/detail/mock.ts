@@ -32,7 +32,7 @@ export function mockOverview(overrides: Partial<PrOverview> = {}): PrOverview {
       { kind: "user", login: "kim", name: "Kim Lee", avatar_url: null },
       { kind: "user", login: "lee", name: "Lee Ng", avatar_url: null },
     ],
-    viewer: { login: "ada", permission: "write", can_merge_as_admin: false, can_enable_auto_merge: true, can_disable_auto_merge: false },
+    viewer: { login: "ada", permission: "write", can_merge_as_admin: false, can_enable_auto_merge: true, can_disable_auto_merge: false, can_close: true },
     merge_settings: { auto_merge_allowed: true, squash: true, merge: true, rebase: false },
     auto_merge: null,
     fetched_at: new Date().toISOString(),

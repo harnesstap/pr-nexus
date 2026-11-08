@@ -13,6 +13,7 @@ function bar(
     onRequest: vi.fn(),
     onCopy: vi.fn(),
     onClear: vi.fn(),
+    onClose: vi.fn(),
     onToggleAddMenu: vi.fn(),
   };
   render(
@@ -46,8 +47,8 @@ test("the bar is laid out inside the list column, never wider than it", () => {
   expect(region.className).toContain("max-w-full");
 });
 
-test("a wide column shows every action inline", () => {
-  const { region } = bar(1000);
+test("a wide column keeps Add and Copy inline and puts Close in More", () => {
+  const { region, onClose } = bar(1000);
   expect(region.getAttribute("data-layout")).toBe("full");
   expect(
     within(region).getByRole("button", { name: /Add to project/ }),
@@ -55,9 +56,11 @@ test("a wide column shows every action inline", () => {
   expect(
     within(region).getByRole("button", { name: /Copy as Markdown/ }),
   ).toBeTruthy();
-  expect(
-    within(region).queryByRole("button", { name: "More actions" }),
-  ).toBeNull();
+  fireEvent.click(within(region).getByRole("button", { name: "More actions" }));
+  const items = within(region).getAllByRole("menuitem");
+  expect(items.map((item) => item.textContent)).toEqual(["Close 5 PRs"]);
+  fireEvent.click(items[0]);
+  expect(onClose).toHaveBeenCalledTimes(1);
   expect(region.textContent).toContain("5 selected");
 });
 
@@ -69,6 +72,7 @@ test("the More menu holds the folded actions and fires them", () => {
   expect(items.map((item) => item.textContent)).toEqual([
     expect.stringContaining("Add to project"),
     expect.stringContaining("Copy as Markdown"),
+    "Close 5 PRs",
   ]);
   expect(document.activeElement).toBe(items[0]);
   fireEvent.keyDown(items[0], { key: "ArrowDown" });

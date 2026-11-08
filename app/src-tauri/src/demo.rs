@@ -338,6 +338,7 @@ impl DemoProvider {
                 can_merge_as_admin: false,
                 can_enable_auto_merge: !pr.is_draft,
                 can_disable_auto_merge: false,
+                can_close: Some(true),
             },
             merge_settings: MergeSettings {
                 auto_merge_allowed: true,
@@ -390,6 +391,12 @@ impl VcsProvider for DemoProvider {
     }
     /// Demo drafts flip locally; the stored row carries the new flag.
     fn set_draft(&self, _pr: &PullRequest, _draft: bool) -> Result<(), ProviderError> {
+        Ok(())
+    }
+    fn add_pull_request_comment(&self, _: &PullRequest, _: &str) -> Result<(), ProviderError> {
+        Ok(())
+    }
+    fn close_pull_request(&self, _: &PullRequest) -> Result<(), ProviderError> {
         Ok(())
     }
     fn kind(&self) -> VcsKind {

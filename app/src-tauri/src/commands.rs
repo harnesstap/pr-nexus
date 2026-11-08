@@ -1266,6 +1266,27 @@ pub async fn set_auto_merge(
     .await
 }
 
+/// Closes the pull requests in `ids`. A non-empty `comment` is posted on
+/// each open one first. The branch is left in place. One failure does not
+/// stop the others; each report says what happened.
+#[tauri::command]
+pub async fn close_pull_requests(
+    app: State<'_, std::sync::Arc<AppState>>,
+    ids: Vec<i64>,
+    comment: Option<String>,
+) -> Result<Vec<pr_nexus_core::close::CloseReport>, AppError> {
+    let ids: Vec<PrId> = ids.into_iter().map(PrId).collect();
+    let comment = comment.unwrap_or_default();
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        with_vcs(state, |provider| {
+            pr_nexus_core::close::close_pull_requests(&state.store, provider, &ids, &comment)
+        })
+    })
+    .await
+}
+
 /// Merges the pull request now with `method` (`squash`, `merge`, `rebase`)
 /// and returns the refreshed overview. The UI confirms first.
 #[tauri::command]
