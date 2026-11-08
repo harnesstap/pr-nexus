@@ -621,6 +621,7 @@ fn sync_bucket(
     // Rows as they are now (an earlier bucket of this sync may have written):
     // their status and involvement fill in for what a search page lacks.
     let existing = store.list_pull_requests_for_account(account_id)?;
+    let app_closed = store.app_closed_at_by_node()?;
     let mut writer = Writer::new(store, account_id, now, &existing)?;
     let mut early = EarlyRows::default();
     let queries = match plan {
@@ -639,7 +640,7 @@ fn sync_bucket(
         if failed.is_some() {
             return;
         }
-        match early.store(&mut writer, rows, scope, &existing) {
+        match early.store(&mut writer, rows, scope, &existing, &app_closed) {
             Ok(()) => progress(SyncProgress {
                 full,
                 bucket,
@@ -694,7 +695,7 @@ fn sync_bucket(
         let owner = &item.pull_request.repo.owner;
         remember_org(&mut seen_orgs, owner, &scope.viewer_login);
         seen_ids.insert(item.pull_request.remote.id.clone());
-        if in_scope(owner, scope) && keeps_hit(item, &existing) {
+        if in_scope(owner, scope) && keeps_hit(item, &existing, &app_closed) {
             latest = latest.max(Some(item.pull_request.updated_at));
             let mut item = item.clone();
             // This search decides only its own flag; the other bucket's
@@ -954,12 +955,29 @@ fn sync_bucket(
 /// A merge is final, so an open hit for a row already stored as merged (for
 /// example one just merged from the app) is a stale search index entry and
 /// is dropped rather than reopening the row.
-fn keeps_hit(item: &SyncedPullRequest, existing: &[PullRequest]) -> bool {
+///
+/// A close started in the app is sticky the same way until a search document
+/// newer than that close says the pull request is open again. A close that
+/// sync merely observed can still reopen, because GitHub allows that.
+fn keeps_hit(
+    item: &SyncedPullRequest,
+    existing: &[PullRequest],
+    closed_at: &HashMap<String, DateTime<Utc>>,
+) -> bool {
     let stored = existing
         .iter()
         .find(|pr| pr.remote.id == item.pull_request.remote.id);
     match stored {
-        Some(pr) => !(pr.state == PrState::Merged && item.pull_request.state == PrState::Open),
+        Some(pr) if pr.state == PrState::Merged && item.pull_request.state == PrState::Open => {
+            false
+        }
+        Some(pr) if pr.state == PrState::Closed && item.pull_request.state == PrState::Open => {
+            !matches!(
+                closed_at.get(&pr.remote.id),
+                Some(closed) if item.pull_request.updated_at <= *closed
+            )
+        }
+        Some(_) => true,
         None => item.pull_request.state == PrState::Open,
     }
 }
@@ -1029,9 +1047,12 @@ impl EarlyRows {
         rows: &[SyncedPullRequest],
         scope: &TrackedScope,
         existing: &[PullRequest],
+        closed_at: &HashMap<String, DateTime<Utc>>,
     ) -> Result<(), CoreError> {
         for item in rows {
-            if !in_scope(&item.pull_request.repo.owner, scope) || !keeps_hit(item, existing) {
+            if !in_scope(&item.pull_request.repo.owner, scope)
+                || !keeps_hit(item, existing, closed_at)
+            {
                 continue;
             }
             let id = item.pull_request.remote.id.clone();
@@ -1377,6 +1398,16 @@ mod tests {
             }
             Ok(())
         }
+        fn add_pull_request_comment(
+            &self,
+            _pr: &PullRequest,
+            _body: &str,
+        ) -> Result<(), ProviderError> {
+            Ok(())
+        }
+        fn close_pull_request(&self, _pr: &PullRequest) -> Result<(), ProviderError> {
+            Ok(())
+        }
     }
 
     fn merge_fake(mine: Vec<SyncedPullRequest>, fail: bool) -> Fake {
@@ -1451,6 +1482,43 @@ mod tests {
             "{err}"
         );
         assert_eq!(open_numbers(&store, account), vec![1]);
+    }
+
+    #[test]
+    fn a_pr_closed_from_the_app_leaves_the_open_list_and_a_lagging_search_keeps_it_out() {
+        let (_dir, store, account) = open_store();
+        let keep = pr("C1", "acme", 1, Involvement::AUTHOR);
+        let target = pr("C2", "acme", 2, Involvement::AUTHOR);
+        let fake = merge_fake(vec![keep.clone(), target.clone()], false);
+        sync_account(&store, &fake, account, SyncKind::Manual, ts(20)).unwrap();
+        assert_eq!(open_numbers(&store, account), vec![1, 2]);
+        let row = store
+            .list_pull_requests_for_account(account)
+            .unwrap()
+            .into_iter()
+            .find(|row| row.number == 2)
+            .unwrap();
+
+        let reports =
+            crate::close::close_pull_requests(&store, &fake, &[row.id], "No longer needed")
+                .unwrap();
+        assert_eq!(reports[0].outcome, crate::close::CloseOutcome::Closed);
+        assert!(reports[0].comment_posted);
+        assert_eq!(open_numbers(&store, account), vec![1]);
+
+        let lagging = merge_fake(vec![keep.clone(), target.clone()], false);
+        sync_account(&store, &lagging, account, SyncKind::Full, ts(40)).unwrap();
+        assert_eq!(open_numbers(&store, account), vec![1]);
+        sync_account(&store, &lagging, account, SyncKind::Manual, ts(50)).unwrap();
+        assert_eq!(open_numbers(&store, account), vec![1]);
+
+        // A search document newer than the close is a real reopen.
+        let mut fresh = target;
+        fresh.pull_request.updated_at = Utc::now() + Duration::hours(1);
+        let reopened = merge_fake(vec![keep, fresh], false);
+        sync_account(&store, &reopened, account, SyncKind::Full, ts(60)).unwrap();
+        assert_eq!(open_numbers(&store, account), vec![1, 2]);
+        assert!(store.app_closed_at_by_node().unwrap().is_empty());
     }
 
     #[test]

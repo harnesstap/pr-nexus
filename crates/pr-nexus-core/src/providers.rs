@@ -508,6 +508,22 @@ pub trait VcsProvider: Send + Sync {
     ) -> Result<(), ProviderError> {
         Err(crate::overview::unsupported())
     }
+    /// Posts `body` as a comment on the pull request. Does not close it.
+    fn add_pull_request_comment(
+        &self,
+        _pr: &PullRequest,
+        _body: &str,
+    ) -> Result<(), ProviderError> {
+        Err(ProviderError::Unsupported(
+            "commenting on pull requests is not available".into(),
+        ))
+    }
+    /// Closes the pull request. Does not delete its branch and does not merge.
+    fn close_pull_request(&self, _pr: &PullRequest) -> Result<(), ProviderError> {
+        Err(ProviderError::Unsupported(
+            "closing pull requests is not available".into(),
+        ))
+    }
     /// Compares `base...head` (REST compare): how far the head is behind,
     /// and who wrote its commits. One request; never called by sync.
     fn compare_branches(

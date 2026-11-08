@@ -65,7 +65,7 @@ const OVERVIEW: &str = r#"{"data":{
       "state":"OPEN","isDraft":false,"baseRefName":"main","headRefName":"latch",
       "headRefOid":"h1","baseRefOid":"b1","headRepositoryOwner":{"login":"alice"},
       "mergeable":"MERGEABLE","mergeStateStatus":"BLOCKED","reviewDecision":"REVIEW_REQUIRED",
-      "viewerCanMergeAsAdmin":false,"viewerCanEnableAutoMerge":true,"viewerCanDisableAutoMerge":false,
+      "viewerCanMergeAsAdmin":false,"viewerCanEnableAutoMerge":true,"viewerCanDisableAutoMerge":false,"viewerCanClose":true,
       "autoMergeRequest":null,
       "comments":{"totalCount":3},
       "reviewThreads":{"nodes":[{"comments":{"totalCount":2}},{"comments":{"totalCount":1}}]},
@@ -222,6 +222,7 @@ fn overview_reads_checks_comments_people_and_merge_rights() {
     assert_eq!(overview.viewer.login, "alice");
     assert_eq!(overview.viewer.permission.as_deref(), Some("write"));
     assert!(overview.viewer.can_enable_auto_merge);
+    assert_eq!(overview.viewer.can_close, Some(true));
     assert!(overview.merge_settings.auto_merge_allowed);
     assert!(!overview.merge_settings.merge);
     assert!(overview.auto_merge.is_none());
@@ -284,6 +285,116 @@ fn compare_qualifies_both_owners_for_forks() {
     let found = client.compare_branches(&pr(), &base, &head).unwrap();
     assert_eq!((found.behind_by, found.ahead_by), (4, 2));
     assert_eq!(found.authors, vec!["alice", "bob"]);
+}
+
+#[test]
+fn close_posts_the_comment_then_closes_without_deleting_the_branch() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let server = runtime.block_on(async {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(body_string_contains("mutation AddPullRequestComment"))
+            .and(body_string_contains(r#""body":"Please close this.""#))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"data":{"addComment":{"commentEdge":{"node":{"id":"IC_1"}}}}}"#,
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(body_string_contains("mutation ClosePullRequest"))
+            .and(body_string_contains(r#""id":"PR_1""#))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"data":{"closePullRequest":{"pullRequest":{"id":"PR_1","state":"CLOSED"}}}}"#,
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(body_string_contains("mutation ClosePullRequest"))
+            .and(body_string_contains(r#""id":"PR_denied""#))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"data":null,"errors":[{"type":"FORBIDDEN","message":"Resource not accessible by integration"}]}"#,
+            ))
+            .mount(&server)
+            .await;
+        server
+    });
+    let client = GithubClient::with_base(server.uri(), AccountId(1), "token").unwrap();
+    client
+        .add_pull_request_comment(&pr(), "Please close this.")
+        .unwrap();
+    client.close_pull_request(&pr()).unwrap();
+
+    let mut denied = pr();
+    denied.remote.id = "PR_denied".into();
+    let err = client.close_pull_request(&denied).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "forbidden: You don't have permission to close this pull request."
+    );
+
+    let requests = runtime.block_on(server.received_requests()).unwrap();
+    assert!(requests.iter().all(|request| request.method == "POST"));
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.url.path() == "/graphql")
+    );
+    let bodies: Vec<String> = requests
+        .iter()
+        .map(|request| String::from_utf8(request.body.clone()).unwrap())
+        .collect();
+    assert!(bodies.iter().all(|body| {
+        let lower = body.to_ascii_lowercase();
+        !lower.contains("delete") && !lower.contains("merge")
+    }));
+    let comment_at = bodies
+        .iter()
+        .position(|body| body.contains("AddPullRequestComment"))
+        .unwrap();
+    let close_at = bodies
+        .iter()
+        .position(|body| body.contains("ClosePullRequest"))
+        .unwrap();
+    assert!(comment_at < close_at);
+}
+
+#[test]
+fn close_without_a_comment_sends_only_the_close_mutation() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let server = runtime.block_on(async {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(body_string_contains("mutation ClosePullRequest"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"data":{"closePullRequest":{"pullRequest":{"id":"PR_1","state":"CLOSED"}}}}"#,
+            ))
+            .mount(&server)
+            .await;
+        server
+    });
+    let client = GithubClient::with_base(server.uri(), AccountId(1), "token").unwrap();
+    client.close_pull_request(&pr()).unwrap();
+    let requests = runtime.block_on(server.received_requests()).unwrap();
+    assert_eq!(requests.len(), 1);
+    let body = String::from_utf8(requests[0].body.clone()).unwrap();
+    assert!(body.contains("ClosePullRequest"));
+    assert!(!body.contains("AddPullRequestComment"));
+    assert!(!body.to_ascii_lowercase().contains("delete"));
+}
+
+#[test]
+fn close_graphql_does_not_delete_a_branch_or_merge() {
+    let close = include_str!("../src/github/graphql/close_pull_request.graphql");
+    let comment = include_str!("../src/github/graphql/add_comment.graphql");
+    for source in [close, comment] {
+        let lower = source.to_ascii_lowercase();
+        assert!(!lower.contains("delete"), "{source}");
+        assert!(!lower.contains("merge"), "{source}");
+    }
 }
 
 #[test]

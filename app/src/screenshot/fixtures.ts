@@ -300,7 +300,7 @@ export const overview: PrOverview = mockOverview({
   author: ada,
   assignees: [ada],
   commenters: [people.kim, grace, people.noor, people.theo],
-  viewer: { login: "ada", permission: "write", can_merge_as_admin: false, can_enable_auto_merge: true, can_disable_auto_merge: false },
+  viewer: { login: "ada", permission: "write", can_merge_as_admin: false, can_enable_auto_merge: true, can_disable_auto_merge: false, can_close: true },
   merge_settings: { auto_merge_allowed: true, squash: true, merge: true, rebase: true },
 });
 

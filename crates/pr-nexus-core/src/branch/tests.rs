@@ -199,6 +199,7 @@ fn overview(mergeable: &str, merge_state: &str) -> PrOverview {
             can_merge_as_admin: false,
             can_enable_auto_merge: false,
             can_disable_auto_merge: false,
+            can_close: None,
         },
         merge_settings: MergeSettings {
             auto_merge_allowed: false,

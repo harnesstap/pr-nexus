@@ -491,6 +491,14 @@ impl VcsProvider for GithubClient {
         overview::merge(self, pr, method)
     }
 
+    fn add_pull_request_comment(&self, pr: &PullRequest, body: &str) -> Result<(), ProviderError> {
+        overview::add_comment(self, pr, body)
+    }
+
+    fn close_pull_request(&self, pr: &PullRequest) -> Result<(), ProviderError> {
+        overview::close(self, pr)
+    }
+
     fn compare_branches(
         &self,
         pr: &PullRequest,

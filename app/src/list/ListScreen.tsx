@@ -1,6 +1,7 @@
 import { createPortal } from "react-dom";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Api, Bootstrap, ListRow, ProjectDto, RemoteReviewFilter, ReplacedLinkDto } from "../api";
+import { CloseDialog, type CloseTarget } from "../detail/CloseDialog";
 import { errorMessage } from "../api";
 import { ClockIcon, CloseIcon, FolderIcon, HomeIcon, LogoIcon, PlusIcon, RefreshIcon } from "../icons";
 import { Tooltip } from "../Tooltip";
@@ -363,21 +364,37 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
     setDetailRow((current) => (current && current.id === id ? { ...current, is_draft: draft } : current));
   }
 
-  // PRs merged from the detail panel leave the list at once; the backend has
-  // already marked them merged, so the reload agrees and the mark can lapse.
+  // PRs merged or closed from the app leave the list at once. The backend has
+  // already stored that, so the reload agrees and the mark can lapse. A later
+  // sync that still says open does not put them back.
   const [mergedPatches, setMergedPatches] = useState<Record<number, number>>({});
+  const [closeTargets, setCloseTargets] = useState<CloseTarget[] | null>(null);
   const removedIds = useMemo(() => {
     const ids = new Set<number>();
     for (const [id, until] of Object.entries(mergedPatches)) if (version <= until) ids.add(Number(id));
     return ids;
   }, [mergedPatches, version]);
 
-  function prMerged(id: number) {
-    setMergedPatches((current) => ({ ...current, [id]: version + 1 }));
-    setDetailRow((current) => (current && current.id === id ? null : current));
-    setReviewRow((current) => (current && current.id === id ? null : current));
-    setSelection((current) => current.filter((item) => item !== id));
+  function forgetOpenPrs(ids: number[]) {
+    if (ids.length === 0) {
+      return;
+    }
+    const gone = new Set(ids);
+    setMergedPatches((current) => {
+      const next = { ...current };
+      for (const id of ids) {
+        next[id] = version + 1;
+      }
+      return next;
+    });
+    setDetailRow((current) => (current && gone.has(current.id) ? null : current));
+    setReviewRow((current) => (current && gone.has(current.id) ? null : current));
+    setSelection((current) => current.filter((item) => !gone.has(item)));
     void reload();
+  }
+
+  function prMerged(id: number) {
+    forgetOpenPrs([id]);
   }
 
   /** Stars or unstars a PR, then reloads so it moves to (or out of) the pinned top. */
@@ -786,6 +803,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
                 onRequestReview={setReviewRow}
                 onToggleStar={(row) => void toggleStar(row)}
                 onBulkReview={setBulkIds}
+                onClosePullRequests={setCloseTargets}
                 onNotice={setNotice}
                 draftPatches={shownDraftPatches}
                 removedIds={removedIds}
@@ -804,8 +822,19 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
                 onNotice={(text) => setNotice({ text })}
                 onDraftChange={changeDraft}
                 onMerged={() => prMerged(detailRow.id)}
+                onClosed={forgetOpenPrs}
                 slack={{ mentions: boot.slack_mentions, workspaces: boot.slack_workspaces }}
                 onToggleStar={() => void toggleStar(detailRow)}
+              />
+            )}
+            {closeTargets && closeTargets.length > 0 && (
+              <CloseDialog
+                api={api}
+                ids={closeTargets.map((target) => target.id)}
+                known={closeTargets}
+                onDismiss={() => setCloseTargets(null)}
+                onClosed={forgetOpenPrs}
+                onNotice={(text) => setNotice({ text })}
               />
             )}
           </div>

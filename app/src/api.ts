@@ -662,10 +662,27 @@ export interface PrOverview {
     can_merge_as_admin: boolean;
     can_enable_auto_merge: boolean;
     can_disable_auto_merge: boolean;
+    /** Absent on overviews stored before the app asked GitHub. */
+    can_close?: boolean | null;
   };
   merge_settings: { auto_merge_allowed: boolean; squash: boolean; merge: boolean; rebase: boolean };
   auto_merge: { method: MergeMethod; enabled_by: string | null; enabled_at: string | null } | null;
   fetched_at: string;
+}
+
+/** What happened to one pull request in a close. */
+export type CloseOutcome = "closed" | "skipped" | "failed";
+
+export interface CloseReport {
+  id: number;
+  repo: string;
+  number: number;
+  title: string;
+  outcome: CloseOutcome;
+  /** True when this close's comment is already on the pull request. */
+  comment_posted: boolean;
+  /** Why it was skipped or why it failed. Empty after a clean close. */
+  message: string | null;
 }
 
 /** Readiness, owners, and why for one PR (§6, §7.2). */
@@ -956,6 +973,11 @@ export interface Api {
   setPrDraft(id: number, draft: boolean): Promise<PrOverview>;
   /** Merges now with `method`; irreversible, so the UI confirms first. Returns the fresh overview. */
   mergePr(id: number, method: MergeMethod): Promise<PrOverview>;
+  /**
+   * Closes these pull requests. A non-empty comment is posted on each open
+   * one first. The branch stays. One failure does not stop the others.
+   */
+  closePullRequests(ids: number[], comment: string): Promise<CloseReport[]>;
   /** The Branch card; `refresh: false` reuses the cached overview. */
   prBranchStatus(id: number, refresh: boolean): Promise<BranchStatus>;
   /** Brings the base into the branch; the caller confirms a rebase first. */
@@ -1096,6 +1118,7 @@ export const tauriApi: Api = {
   setAutoMerge: (id, method) => invoke("set_auto_merge", { id, method }),
   setPrDraft: (id, draft) => invoke("set_pr_draft", { id, draft }),
   mergePr: (id, method) => invoke("merge_pr", { id, method }),
+  closePullRequests: (ids, comment) => invoke("close_pull_requests", { ids, comment }),
   prBranchStatus: (id, refresh) => invoke("pr_branch_status", { id, refresh }),
   updatePrBranch: (id, method) => invoke("update_pr_branch", { id, method }),
   prSlackContext: (prId, refresh) => invoke("pr_slack_context", { prId, refresh }),

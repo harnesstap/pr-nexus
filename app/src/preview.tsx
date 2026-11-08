@@ -330,6 +330,7 @@ const api: Api = {
   setAutoMerge: (_id, method) =>
     Promise.resolve(mockOverview(method ? { auto_merge: { method, enabled_by: "ada", enabled_at: null } } : {})),
   mergePr: () => Promise.resolve(mockOverview({ state: "merged", merge_state: "unknown" })),
+  closePullRequests: () => Promise.resolve([]),
   setPrDraft: (_id, draft) => Promise.resolve(mockOverview({ is_draft: draft, merge_state: draft ? "draft" : "blocked" })),
   prBranchStatus: () => Promise.resolve(mockBranch({ state: "behind", behind_by: 3 })),
   updatePrBranch: () => Promise.resolve({ overview: mockOverview(), branch: mockBranch() }),

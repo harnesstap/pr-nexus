@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::domain::{
@@ -10,7 +11,7 @@ use crate::error::CoreError;
 use crate::search;
 
 use super::row::{conv, parse_enum, parse_opt_enum};
-use super::time::{format_ts, parse_bool, sql_bool, ts_col};
+use super::time::{format_ts, parse_bool, parse_ts, sql_bool, ts_col};
 use super::{Store, db};
 
 impl Store {
@@ -194,6 +195,85 @@ impl Store {
         })
     }
 
+    /// Remembers a comment already posted for a close, so a retry does not
+    /// post the same text again. `closed_at` stays as it was.
+    pub fn remember_close_comment(&self, id: PrId, body: &str) -> Result<(), CoreError> {
+        let body = body.to_owned();
+        self.write(move |conn| {
+            conn.execute(
+                "INSERT INTO pr_close_notes (pr_id, closed_at, comment_body)
+                 VALUES (?1, NULL, ?2)
+                 ON CONFLICT(pr_id) DO UPDATE SET comment_body = excluded.comment_body",
+                params![id.0, body],
+            )
+            .map_err(db)?;
+            Ok(())
+        })
+    }
+
+    /// The comment already posted for this close, when one was saved.
+    pub fn close_comment_body(&self, id: PrId) -> Result<Option<String>, CoreError> {
+        self.read(move |conn| {
+            let body: Option<Option<String>> = conn
+                .query_row(
+                    "SELECT comment_body FROM pr_close_notes WHERE pr_id = ?1",
+                    [id.0],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(db)?;
+            Ok(body.flatten())
+        })
+    }
+
+    /// Marks a pull request closed from the app and records when, so a
+    /// lagging search that still says open cannot bring it back.
+    pub fn mark_closed_from_app(&self, id: PrId, now: DateTime<Utc>) -> Result<(), CoreError> {
+        let stamp = format_ts(now);
+        self.write(move |conn| {
+            conn.execute(
+                "UPDATE pull_requests
+                 SET state = 'closed', updated_at = ?1, last_activity_at = ?1
+                 WHERE id = ?2",
+                params![&stamp, id.0],
+            )
+            .map_err(db)?;
+            conn.execute(
+                "INSERT INTO pr_close_notes (pr_id, closed_at, comment_body)
+                 VALUES (?1, ?2, NULL)
+                 ON CONFLICT(pr_id) DO UPDATE SET closed_at = excluded.closed_at",
+                params![id.0, stamp],
+            )
+            .map_err(db)?;
+            Ok(())
+        })
+    }
+
+    /// Node id to the time the app closed that pull request.
+    pub fn app_closed_at_by_node(&self) -> Result<HashMap<String, DateTime<Utc>>, CoreError> {
+        self.read(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT pr.node_id, n.closed_at
+                     FROM pr_close_notes n
+                     JOIN pull_requests pr ON pr.id = n.pr_id
+                     WHERE n.closed_at IS NOT NULL",
+                )
+                .map_err(db)?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(db)?;
+            let mut out = HashMap::new();
+            for row in rows {
+                let (node, stamp) = row.map_err(db)?;
+                out.insert(node, parse_ts(&stamp)?);
+            }
+            Ok(out)
+        })
+    }
+
     /// Records a state change made from the app (a merge), ahead of the
     /// next sync.
     pub fn set_pull_request_state(&self, id: PrId, state: PrState) -> Result<(), CoreError> {
@@ -340,9 +420,22 @@ fn upsert_pull_request(
                 url = excluded.url,
                 author_login = excluded.author_login,
                 body = excluded.body,
-                -- Merged is final on GitHub: a lagging search that still
-                -- says open must not bring a merged row back.
-                state = CASE WHEN pull_requests.state = 'merged' THEN pull_requests.state ELSE excluded.state END,
+                -- Merged is final on GitHub. A close started in the app is
+                -- sticky too, until a search document newer than that close
+                -- says the pull request is open again.
+                state = CASE
+                    WHEN pull_requests.state = 'merged' THEN pull_requests.state
+                    WHEN pull_requests.state = 'closed'
+                        AND excluded.state = 'open'
+                        AND EXISTS (
+                            SELECT 1 FROM pr_close_notes n
+                            WHERE n.pr_id = pull_requests.id
+                              AND n.closed_at IS NOT NULL
+                              AND n.closed_at >= excluded.updated_at
+                        )
+                    THEN pull_requests.state
+                    ELSE excluded.state
+                END,
                 is_draft = excluded.is_draft,
                 head_ref = excluded.head_ref,
                 base_ref = excluded.base_ref,
@@ -355,8 +448,30 @@ fn upsert_pull_request(
                 total_threads = excluded.total_threads,
                 involvement = excluded.involvement,
                 created_at = excluded.created_at,
-                updated_at = excluded.updated_at,
-                last_activity_at = excluded.last_activity_at,
+                updated_at = CASE
+                    WHEN pull_requests.state = 'closed'
+                        AND excluded.state = 'open'
+                        AND EXISTS (
+                            SELECT 1 FROM pr_close_notes n
+                            WHERE n.pr_id = pull_requests.id
+                              AND n.closed_at IS NOT NULL
+                              AND n.closed_at >= excluded.updated_at
+                        )
+                    THEN pull_requests.updated_at
+                    ELSE excluded.updated_at
+                END,
+                last_activity_at = CASE
+                    WHEN pull_requests.state = 'closed'
+                        AND excluded.state = 'open'
+                        AND EXISTS (
+                            SELECT 1 FROM pr_close_notes n
+                            WHERE n.pr_id = pull_requests.id
+                              AND n.closed_at IS NOT NULL
+                              AND n.closed_at >= excluded.updated_at
+                        )
+                    THEN pull_requests.last_activity_at
+                    ELSE excluded.last_activity_at
+                END,
                 synced_at = excluded.synced_at,
                 hidden = excluded.hidden,
                 search_text = excluded.search_text
@@ -425,8 +540,14 @@ fn upsert_pull_request(
         .map_err(db)?;
     }
 
-    load_pull_request(conn, PrId(id))?
-        .ok_or_else(|| CoreError::Store("upserted pull request disappeared".to_owned()))
+    let saved = load_pull_request(conn, PrId(id))?
+        .ok_or_else(|| CoreError::Store("upserted pull request disappeared".to_owned()))?;
+    // A real reopen clears the close note, so the next close can comment again.
+    if saved.state == PrState::Open {
+        conn.execute("DELETE FROM pr_close_notes WHERE pr_id = ?1", [id])
+            .map_err(db)?;
+    }
+    Ok(saved)
 }
 
 fn list_for_account(

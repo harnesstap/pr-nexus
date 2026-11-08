@@ -106,6 +106,10 @@ pub struct ViewerAccess {
     pub can_merge_as_admin: bool,
     pub can_enable_auto_merge: bool,
     pub can_disable_auto_merge: bool,
+    /// Whether this user can close the pull request. `None` on overviews
+    /// stored before the app asked GitHub.
+    #[serde(default)]
+    pub can_close: Option<bool>,
 }
 
 /// Repository merge settings.

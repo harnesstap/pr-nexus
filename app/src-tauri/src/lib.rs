@@ -179,6 +179,7 @@ pub fn run() {
             commands::set_auto_merge,
             commands::set_pr_draft,
             commands::merge_pr,
+            commands::close_pull_requests,
             commands::pr_branch_status,
             commands::update_pr_branch,
             mcp::control::mcp_settings,
