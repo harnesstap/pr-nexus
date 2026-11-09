@@ -9,14 +9,16 @@ use std::collections::BTreeSet;
 
 use chrono::{DateTime, Duration, Utc};
 use pr_nexus_core::domain::{
-    Involvement, PrId, PrState, PullRequest, Readiness, RequestStatus, SendOutcome,
+    Involvement, PrId, PrState, PullRequest, Readiness, RequestStatus, SendOutcome, TeamRef,
 };
 use pr_nexus_core::error::CoreError;
+use pr_nexus_core::mapping::lookup_mapping;
 use pr_nexus_core::ownership;
 use pr_nexus_core::providers::VcsProvider;
 use pr_nexus_core::review::batch::{
     self, BatchInput, BatchOptions, BatchPlan, MessagePlanKind, Pace, Route, Skip,
 };
+use pr_nexus_core::review::groups::{self, GroupTeamChoice, OwnerGroup};
 use pr_nexus_core::review::lifecycle::Target;
 use pr_nexus_core::review::route::{self, Workspace};
 use pr_nexus_core::settings;
@@ -50,6 +52,17 @@ pub struct BulkRequest {
     /// live preview could still rename a card.
     #[serde(default)]
     pub cached_names: bool,
+    /// Team (`org/slug`) the user picked for a CODEOWNERS group.
+    #[serde(default)]
+    pub group_choices: Vec<GroupChoice>,
+}
+
+/// One CODEOWNERS group's team, chosen in the preview.
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+pub struct GroupChoice {
+    pub pr_id: i64,
+    pub group_id: String,
+    pub team: String,
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq, Eq)]
@@ -84,6 +97,24 @@ pub struct BulkCard {
     pub notes: Vec<String>,
 }
 
+/// A CODEOWNERS group in the preview, and the team this plan asks.
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+pub struct BulkGroup {
+    pub pr_id: i64,
+    pub number: u64,
+    pub group_id: String,
+    pub pattern: String,
+    /// Every team on the line, `org/slug`.
+    pub teams: Vec<String>,
+    /// The team this plan asks. Empty when the line has no Slack channel.
+    pub selected: Option<String>,
+    /// A short note when the line cannot be requested. The other sends stay.
+    pub hint: Option<String>,
+    /// Channel the selected team maps to. The card with this id is the send.
+    pub channel_id: Option<String>,
+    pub workspace: Option<String>,
+}
+
 #[derive(Debug, Serialize, Clone, PartialEq, Eq)]
 pub struct BulkSkip {
     pub pr: BulkPr,
@@ -94,8 +125,10 @@ pub struct BulkSkip {
 pub struct BulkPreview {
     pub cards: Vec<BulkCard>,
     pub skipped: Vec<BulkSkip>,
-    /// One per selected PR that is still a draft; drafts are sent anyway.
+    /// Drafts and failing checks. Both are notes; the PR is still sent.
     pub pr_warnings: Vec<PrWarning>,
+    /// One row per CODEOWNERS group that still needs a request, or a hint.
+    pub groups: Vec<BulkGroup>,
     /// Some card names a channel whose Slack name isn't known yet (only
     /// with `cached_names`): preview again without it before sending.
     pub names_pending: bool,
@@ -142,7 +175,7 @@ pub fn send_with_vcs(
     request: &BulkRequest,
     fingerprints: &[String],
 ) -> Result<BulkResult, AppError> {
-    let (plan, prs, _) = plan_request(state, chats, vcs, request, Fresh::Always)?;
+    let (plan, prs, _, _) = plan_request(state, chats, vcs, request, Fresh::Always)?;
     send_plan(state, chats, plan, &prs, fingerprints)
 }
 
@@ -155,7 +188,7 @@ pub fn send_card(
     request: &BulkRequest,
     fingerprint: &str,
 ) -> Result<BulkResult, AppError> {
-    let (mut plan, prs, _) = plan_request(state, chats, &LiveVcs, request, Fresh::Always)?;
+    let (mut plan, prs, _, _) = plan_request(state, chats, &LiveVcs, request, Fresh::Always)?;
     plan.cards.retain(|card| card.fingerprint() == fingerprint);
     if plan.cards.is_empty() {
         return Err(AppError::new(
@@ -290,8 +323,8 @@ pub fn preview_with(
     request: &BulkRequest,
 ) -> Result<BulkPreview, AppError> {
     let started = std::time::Instant::now();
-    let (plan, prs, moved) = plan_request(state, chats, vcs, request, Fresh::Cached)?;
-    let preview = preview_dto(state, &plan, &prs, &moved, request.cached_names)?;
+    let (plan, prs, moved, groups) = plan_request(state, chats, vcs, request, Fresh::Cached)?;
+    let preview = preview_dto(state, &plan, &prs, &moved, request.cached_names, groups)?;
     tracing::debug!(
         prs = request.pr_ids.len(),
         cards = preview.cards.len(),
@@ -332,8 +365,12 @@ enum Fresh {
     Always,
 }
 
-/// Owner teams and blocked reason, as the detail panel resolves them.
-type Owners = (Option<String>, Vec<String>);
+/// Blocked reason, fallback teams, and CODEOWNERS groups.
+type Owners = (
+    Option<String>,
+    Vec<String>,
+    Vec<crate::commands::OwnerGroupDto>,
+);
 
 /// Remember `detail` as `pr`'s owners for the next preview.
 pub(crate) fn remember_owners(
@@ -341,7 +378,7 @@ pub(crate) fn remember_owners(
     pr: &PullRequest,
     detail: &crate::commands::PrDetail,
 ) {
-    let (blocked, teams) = owners_of(detail);
+    let (blocked, teams, groups) = owners_of(detail);
     crate::slack::lock(&state.owners).insert(
         pr.id.0,
         crate::state::OwnersEntry {
@@ -352,6 +389,7 @@ pub(crate) fn remember_owners(
             at: std::time::Instant::now(),
             blocked,
             teams,
+            groups,
         },
     );
 }
@@ -363,9 +401,9 @@ fn owners_of(detail: &crate::commands::PrDetail) -> Owners {
         detail.mandatory_teams.clone()
     };
     let blocked = (detail.readiness == "blocked")
-        .then(|| without_draft(&detail.readiness_notes))
+        .then(|| slack_skip_detail(&detail.readiness_notes))
         .flatten();
-    (blocked, teams)
+    (blocked, teams, detail.owner_groups.clone())
 }
 
 /// Owners for each of `prs`, in order: fresh cache entries as they are,
@@ -388,7 +426,13 @@ fn resolve_owners(
             && entry.base_ref == pr.base_ref
             && entry.is_draft == pr.is_draft
             && entry.checks == pr.checks)
-            .then(|| (entry.blocked.clone(), entry.teams.clone()))
+            .then(|| {
+                (
+                    soften_cached_block(&entry.blocked),
+                    entry.teams.clone(),
+                    entry.groups.clone(),
+                )
+            })
     };
     let mut out: Vec<Option<Result<Owners, AppError>>> =
         prs.iter().map(|pr| cached(pr).map(Ok)).collect();
@@ -441,13 +485,15 @@ struct Moved {
     from: String,
 }
 
+type PlanParts = (BatchPlan, Vec<PullRequest>, Vec<Moved>, Vec<BulkGroup>);
+
 fn plan_request(
     state: &AppState,
     chats: &dyn ChatSource,
     vcs: &dyn VcsSource,
     request: &BulkRequest,
     fresh: Fresh,
-) -> Result<(BatchPlan, Vec<PullRequest>, Vec<Moved>), AppError> {
+) -> Result<PlanParts, AppError> {
     if request.pr_ids.is_empty() {
         return Err(AppError::new(
             "validation",
@@ -495,9 +541,11 @@ fn plan_request(
         pr: PullRequest,
         teams: Vec<String>,
         choices: Vec<crate::slack::TargetChoice>,
+        groups: Vec<BulkGroup>,
     }
     let mut skipped = Vec::new();
     let mut planned = Vec::new();
+    let mappings = state.store.list_mappings()?;
     for pr in &prs {
         let skip = |detail: String| Skip {
             pr: pr.id,
@@ -509,9 +557,10 @@ fn plan_request(
             skipped.push(skip(detail));
             continue;
         }
-        let (blocked, teams) = if override_target.is_some() {
+        let (blocked, fallback, catalog) = if override_target.is_some() {
             (
                 blocked_reasons(ownership::cached_readiness(&state.store, pr, flag)?),
+                Vec::new(),
                 Vec::new(),
             )
         } else {
@@ -531,6 +580,13 @@ fn plan_request(
             }));
             continue;
         }
+        let (teams, groups) = match route_groups(pr, &fallback, &catalog, request, &mappings) {
+            RouteTeams::Approved => {
+                skipped.push(skip("All owning teams approved".into()));
+                continue;
+            }
+            RouteTeams::Ask { teams, groups } => (teams, groups),
+        };
         let choices = if override_target.is_some() {
             Vec::new()
         } else {
@@ -540,6 +596,7 @@ fn plan_request(
             pr: pr.clone(),
             teams,
             choices,
+            groups,
         });
     }
     // Name every routed channel at once: each distinct channel is read
@@ -557,7 +614,16 @@ fn plan_request(
 
     let mut inputs = Vec::new();
     let mut moved = Vec::new();
-    for Planned { pr, teams, choices } in planned {
+    let mut group_views = Vec::new();
+    for Planned {
+        pr,
+        teams,
+        choices,
+        mut groups,
+    } in planned
+    {
+        assign_channels(&mut groups, &choices);
+        group_views.extend(groups);
         let routes: Vec<Route> = match &override_target {
             Some(target) => vec![Route {
                 target: core_target(target),
@@ -612,13 +678,21 @@ fn plan_request(
             }
         };
         if routes.is_empty() {
+            let hints: Vec<String> = group_views
+                .iter()
+                .filter(|group| group.pr_id == pr.id.0)
+                .filter_map(|group| group.hint.clone())
+                .collect();
             skipped.push(Skip {
                 pr: pr.id,
                 title: pr.title.clone(),
                 channel: None,
-                detail:
+                detail: if hints.is_empty() {
                     "No mapped channel for its teams. Request it alone, or send all to one channel."
-                        .into(),
+                        .into()
+                } else {
+                    hints.join(" ")
+                },
             });
             continue;
         }
@@ -640,28 +714,193 @@ fn plan_request(
             .collect(),
     };
     let plan = batch::plan_batch(&state.store, &inputs, skipped, &options, Utc::now())?;
-    Ok((plan, prs, moved))
+    Ok((plan, prs, moved, group_views))
+}
+
+enum RouteTeams {
+    /// Every matched CODEOWNERS line already has an approval.
+    Approved,
+    Ask {
+        teams: Vec<String>,
+        groups: Vec<BulkGroup>,
+    },
+}
+
+/// Teams to route, and the group rows the preview shows.
+///
+/// No CODEOWNERS groups keeps the coverage/candidate teams. Otherwise one
+/// team is chosen per line that still needs an approval.
+fn route_groups(
+    pr: &PullRequest,
+    fallback: &[String],
+    catalog: &[crate::commands::OwnerGroupDto],
+    request: &BulkRequest,
+    mappings: &[pr_nexus_core::domain::TeamChannelMapping],
+) -> RouteTeams {
+    if catalog.is_empty() {
+        return RouteTeams::Ask {
+            teams: fallback.to_vec(),
+            groups: Vec::new(),
+        };
+    }
+    let pending: Vec<OwnerGroup> = catalog
+        .iter()
+        .filter(|group| !group.satisfied)
+        .map(owner_group_from_dto)
+        .collect();
+    if pending.is_empty() {
+        return RouteTeams::Approved;
+    }
+    let choices = request
+        .group_choices
+        .iter()
+        .filter(|choice| choice.pr_id == pr.id.0)
+        .filter_map(|choice| {
+            parse_team(&choice.team).map(|team| GroupTeamChoice {
+                group_id: choice.group_id.clone(),
+                team,
+            })
+        })
+        .collect::<Vec<_>>();
+    let plans = groups::plan_group_requests(
+        &pending,
+        |team| mapping_has_channel(mappings, team),
+        &choices,
+    );
+    let mut teams = Vec::new();
+    let mut views = Vec::new();
+    for plan in &plans {
+        if let Some(team) = plan.team.as_ref().filter(|_| !plan.unmapped) {
+            let label = team.to_string();
+            if !teams
+                .iter()
+                .any(|existing: &String| existing.eq_ignore_ascii_case(&label))
+            {
+                teams.push(label);
+            }
+        }
+        let users: Vec<&str> = plan.group.users.iter().map(String::as_str).collect();
+        views.push(BulkGroup {
+            pr_id: pr.id.0,
+            number: pr.number,
+            group_id: plan.group.id.clone(),
+            pattern: plan.group.pattern.clone(),
+            teams: plan.group.teams.iter().map(ToString::to_string).collect(),
+            selected: plan.team.as_ref().map(ToString::to_string),
+            hint: plan
+                .unmapped
+                .then(|| groups::unmapped_hint(&plan.group.teams, &users)),
+            channel_id: None,
+            workspace: None,
+        });
+    }
+    RouteTeams::Ask {
+        teams,
+        groups: views,
+    }
+}
+
+fn mapping_has_channel(rows: &[pr_nexus_core::domain::TeamChannelMapping], team: &TeamRef) -> bool {
+    lookup_mapping(rows, &team.org, &team.slug, "")
+        .is_some_and(|row| !row.slack_channel_id.trim().is_empty())
+}
+
+fn owner_group_from_dto(dto: &crate::commands::OwnerGroupDto) -> OwnerGroup {
+    OwnerGroup {
+        id: dto.id.clone(),
+        pattern: dto.pattern.clone(),
+        teams: dto
+            .teams
+            .iter()
+            .filter_map(|team| parse_team(team))
+            .collect(),
+        users: dto.users.clone(),
+    }
+}
+
+fn parse_team(label: &str) -> Option<TeamRef> {
+    let label = label.trim().trim_start_matches('@');
+    let (org, slug) = label.split_once('/')?;
+    if org.is_empty() || slug.is_empty() || slug.contains('/') {
+        return None;
+    }
+    Some(TeamRef {
+        org: org.to_owned(),
+        slug: slug.to_owned(),
+    })
+}
+
+fn assign_channels(groups: &mut [BulkGroup], choices: &[crate::slack::TargetChoice]) {
+    for group in groups {
+        if group.hint.is_some() {
+            continue;
+        }
+        let Some(selected) = group.selected.clone() else {
+            continue;
+        };
+        let choice = choices.iter().find(|choice| {
+            choice.source != "previous"
+                && choice.source != "unresolved"
+                && choice
+                    .teams
+                    .iter()
+                    .any(|team| team.eq_ignore_ascii_case(&selected))
+        });
+        if let Some(choice) = choice {
+            group.channel_id = Some(choice.target.channel_id.clone());
+            group.workspace = Some(choice.target.workspace.clone());
+        }
+    }
 }
 
 fn blocked_reasons(readiness: Readiness) -> Option<String> {
     match readiness {
-        Readiness::Blocked { reasons } => without_draft(&reasons),
+        Readiness::Blocked { reasons } => slack_skip_detail(&reasons),
         Readiness::Ready { .. } | Readiness::Unknown { .. } => None,
     }
 }
 
-/// A draft only warns (see [`crate::slack::pr_warnings`]); any other reason
-/// still blocks. `None` when being a draft was the only reason.
-fn without_draft(reasons: &[String]) -> Option<String> {
+/// A draft and a failing check only warn (see [`crate::slack::pr_warnings`]).
+/// Pending checks and every other blocked reason still leave the PR out.
+/// `None` when nothing that still blocks remains.
+fn slack_skip_detail(reasons: &[String]) -> Option<String> {
     let rest: Vec<&str> = reasons
         .iter()
         .map(String::as_str)
-        .filter(|reason| *reason != DRAFT_REASON)
+        .filter(|reason| *reason != DRAFT_REASON && !is_failing_check(reason))
         .collect();
     if rest.is_empty() && !reasons.is_empty() {
         None
     } else {
         Some(rest.join("; "))
+    }
+}
+
+/// `check <name> is fail|cancel|timeout|action_required` from readiness.
+/// Pending stays a blocker. List readiness is unchanged.
+fn is_failing_check(reason: &str) -> bool {
+    let Some(rest) = reason.strip_prefix("check ") else {
+        return false;
+    };
+    let Some((_, bucket)) = rest.rsplit_once(" is ") else {
+        return false;
+    };
+    matches!(bucket, "fail" | "cancel" | "timeout" | "action_required")
+}
+
+/// A session cache entry was stored after this filter. Apply it again so an
+/// entry recorded as only a failing check does not keep the PR out.
+fn soften_cached_block(blocked: &Option<String>) -> Option<String> {
+    match blocked {
+        None => None,
+        Some(text) if text.is_empty() => Some(String::new()),
+        Some(text) => slack_skip_detail(
+            &text
+                .split("; ")
+                .filter(|part| !part.is_empty())
+                .map(str::to_owned)
+                .collect::<Vec<_>>(),
+        ),
     }
 }
 
@@ -674,6 +913,7 @@ fn preview_dto(
     prs: &[PullRequest],
     moved: &[Moved],
     cached_names: bool,
+    groups: Vec<BulkGroup>,
 ) -> Result<BulkPreview, AppError> {
     let workspaces = route::workspaces(&state.store)?;
     let mut cards = Vec::new();
@@ -722,7 +962,18 @@ fn preview_dto(
             notes: moved_notes(card, moved),
         });
     }
-    let pr_warnings = prs.iter().flat_map(crate::slack::pr_warnings).collect();
+    let sent: BTreeSet<i64> = plan
+        .cards
+        .iter()
+        .flat_map(|card| card.messages.iter())
+        .flat_map(|message| message.items.iter())
+        .map(|item| item.pr.id.0)
+        .collect();
+    let pr_warnings = prs
+        .iter()
+        .flat_map(crate::slack::pr_warnings)
+        .filter(|warning| warning.kind == "draft" || sent.contains(&warning.pr_id))
+        .collect();
     let names_pending = cached_names
         && crate::slack::names_pending(
             state,
@@ -735,6 +986,7 @@ fn preview_dto(
         cards,
         names_pending,
         pr_warnings,
+        groups,
         skipped: plan
             .skipped
             .iter()
@@ -845,15 +1097,30 @@ fn pr_dto_by_id(prs: &[PullRequest], id: PrId, title: &str) -> BulkPr {
 
 #[cfg(test)]
 mod draft_tests {
-    use super::{DRAFT_REASON, without_draft};
+    use super::{DRAFT_REASON, slack_skip_detail, soften_cached_block};
 
     #[test]
-    fn a_draft_alone_does_not_block_but_other_reasons_still_do() {
-        assert_eq!(without_draft(&[DRAFT_REASON.to_owned()]), None);
+    fn a_draft_or_failing_check_does_not_block_but_other_reasons_still_do() {
+        assert_eq!(slack_skip_detail(&[DRAFT_REASON.to_owned()]), None);
+        assert_eq!(slack_skip_detail(&["check ci is fail".to_owned()]), None);
         assert_eq!(
-            without_draft(&[DRAFT_REASON.to_owned(), "PR has merge conflicts".to_owned()]),
+            slack_skip_detail(&["check ci is pending".to_owned()]),
+            Some("check ci is pending".to_owned())
+        );
+        assert_eq!(
+            slack_skip_detail(&[
+                DRAFT_REASON.to_owned(),
+                "check ci is fail".to_owned(),
+                "PR has merge conflicts".to_owned()
+            ]),
             Some("PR has merge conflicts".to_owned())
         );
-        assert_eq!(without_draft(&[]), Some(String::new()));
+        assert_eq!(slack_skip_detail(&[]), Some(String::new()));
+        assert_eq!(soften_cached_block(&None), None);
+        assert_eq!(soften_cached_block(&Some("check ci is fail".into())), None);
+        assert_eq!(
+            soften_cached_block(&Some("check ci is fail; PR has merge conflicts".into())),
+            Some("PR has merge conflicts".into())
+        );
     }
 }

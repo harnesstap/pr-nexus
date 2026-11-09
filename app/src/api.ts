@@ -357,7 +357,7 @@ export interface TargetMatch {
 
 /** A non-blocking warning about the PR itself, e.g. it is still a draft. */
 export interface PrWarning {
-  kind: "draft";
+  kind: "draft" | "checks";
   pr_id: number;
   number: number;
   message: string;
@@ -390,6 +390,29 @@ export interface BulkRequest {
   single_top_level: ChannelKey[];
   /** Name channels from the session cache only, so the first render is instant. */
   cached_names?: boolean;
+  /** Team (`org/slug`) picked for a CODEOWNERS group. */
+  group_choices?: GroupChoice[];
+}
+
+export interface GroupChoice {
+  pr_id: number;
+  group_id: string;
+  team: string;
+}
+
+/** One CODEOWNERS line in a Slack preview, and the team this plan asks. */
+export interface BulkGroup {
+  pr_id: number;
+  number: number;
+  group_id: string;
+  pattern: string;
+  /** `org/slug`, in line order. */
+  teams: string[];
+  selected: string | null;
+  /** Set when no team on the line has a Slack channel. The other sends stay. */
+  hint: string | null;
+  channel_id: string | null;
+  workspace: string | null;
 }
 
 export interface BulkPr {
@@ -421,8 +444,10 @@ export interface BulkCard {
 export interface BulkPreview {
   cards: BulkCard[];
   skipped: { pr: BulkPr; detail: string }[];
-  /** Selected PRs that are still drafts; they are sent anyway. */
+  /** Drafts and failing checks. Both are notes; the PR is still sent. */
   pr_warnings: PrWarning[];
+  /** CODEOWNERS lines this plan covers, or explains with a hint. */
+  groups?: BulkGroup[];
   /** With `cached_names`: a channel name may still change; preview again live before sending. */
   names_pending?: boolean;
 }
@@ -694,6 +719,17 @@ export interface CloseReport {
   message: string | null;
 }
 
+/** One CODEOWNERS owner set on the changed files. */
+export interface OwnerGroup {
+  id: string;
+  pattern: string;
+  /** `org/slug`, in line order. */
+  teams: string[];
+  users: string[];
+  /** An approval from any owner already covers this set. */
+  satisfied: boolean;
+}
+
 /** Readiness, owners, and why for one PR (§6, §7.2). */
 export interface PrDetail {
   id: number;
@@ -715,6 +751,8 @@ export interface PrDetail {
   /** Plain-language sentences for the Details expander, blockers first. */
   explanations: Explanation[];
   files: FileOwners[];
+  /** Distinct CODEOWNERS lines on the changed files. Empty when the file did not load. */
+  owner_groups: OwnerGroup[];
   files_truncated: boolean;
   rules_error: string | null;
   protection: string;

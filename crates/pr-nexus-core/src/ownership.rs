@@ -18,6 +18,7 @@ use crate::domain::{
 use crate::error::{CoreError, ProviderError};
 use crate::providers::{ClassicProtection, OwnershipInputs, OwnershipProbe, VcsProvider};
 use crate::review::codeowners::{parse_codeowners, resolve_ownership};
+use crate::review::groups::{self, MarkedGroup};
 use crate::review::owners::{
     DecideOptions, GivenReadiness, Membership, OwnerCatalog, OwnerDecision, OwnerQuery,
     ReadinessWord, decide_owners,
@@ -80,6 +81,9 @@ pub struct OwnershipReport {
     pub code_owner_review_pending: Option<bool>,
     /// Files, rules, and protection came from the cache.
     pub from_cache: bool,
+    /// Every distinct CODEOWNERS owner set on the changed files, including
+    /// sets an approval already satisfied. Empty when CODEOWNERS did not load.
+    pub owner_groups: Vec<MarkedGroup>,
 }
 
 /// Owner catalog from the CODEOWNERS text and the changed files.
@@ -208,6 +212,7 @@ pub fn build_report(
     snapshot.code_owner_review_pending = pending;
     let readiness = decide_readiness_with(&snapshot, blocked_review_required_is_ready);
     let decision = decide(pr, probe, inputs, &catalog, membership, &readiness);
+    let owner_groups = marked_owner_groups(pr, probe, &inputs.files, &decision.approved_teams);
 
     OwnershipReport {
         readiness,
@@ -229,7 +234,49 @@ pub fn build_report(
         protection: inputs.protection.clone(),
         code_owner_review_pending: pending,
         from_cache,
+        owner_groups,
     }
+}
+
+/// Matched CODEOWNERS groups, each flagged when an approval already covers it.
+fn marked_owner_groups(
+    pr: &PullRequest,
+    probe: &OwnershipProbe,
+    files: &[String],
+    approved_teams: &[TeamRef],
+) -> Vec<MarkedGroup> {
+    let Some(blob) = &probe.codeowners else {
+        return Vec::new();
+    };
+    let Ok(rules) = parse_codeowners(&blob.text) else {
+        return Vec::new();
+    };
+    let matched = groups::matched_groups(&rules, files);
+    let logins = approved_user_logins(pr, probe);
+    let users: Vec<&str> = logins.iter().map(String::as_str).collect();
+    groups::mark_groups(&matched, approved_teams, &users)
+}
+
+/// Logins of human approvers other than the pull request author.
+pub fn approved_user_logins(pr: &PullRequest, probe: &OwnershipProbe) -> Vec<String> {
+    let author = pr.author_login.to_ascii_lowercase();
+    let mut logins = Vec::new();
+    for review in &probe.reviews.reviews {
+        if review.author_typename != "User"
+            || !review.state.eq_ignore_ascii_case("APPROVED")
+            || review.author_login.is_empty()
+            || review.author_login.to_ascii_lowercase() == author
+        {
+            continue;
+        }
+        if !logins
+            .iter()
+            .any(|login: &String| login.eq_ignore_ascii_case(&review.author_login))
+        {
+            logins.push(review.author_login.clone());
+        }
+    }
+    logins
 }
 
 fn decide(

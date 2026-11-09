@@ -492,6 +492,69 @@ if (screenName === "request-review-suggest") {
     }
   }, 600);
 }
+// ?screen=codeowners shows one PR whose files match two CODEOWNERS lines
+// (two sends, with a team switch on each) and a third line with no Slack channel.
+const codeownersRow = {
+  id: 1,
+  number: 549,
+  title: "Reject budgets below one sampling unit",
+  url: "https://github.com/acme/data-service/pull/549",
+  repo: "acme/data-service",
+  state: "open",
+  is_draft: false,
+  slack: null,
+} as unknown as Parameters<typeof ReviewDialog>[0]["row"];
+if (screenName === "codeowners") {
+  const channelFor = (team: string) =>
+    team.endsWith("team-b")
+      ? { workspace: "acme", channel_id: "C0ACME0002", channel_name: "team-b" }
+      : team.endsWith("team-c") || team.endsWith("team-d")
+        ? { workspace: "acme", channel_id: "C0ACME0003", channel_name: "team-c" }
+        : { workspace: "acme", channel_id: "C0ACME0001", channel_name: "team-a" };
+  previewApi.prDetail = () =>
+    Promise.resolve({
+      ...mockDetail(1),
+      owner_groups: [
+        { id: "line-a", pattern: "/src/", teams: ["acme/team-a", "acme/team-b"], users: [], satisfied: false },
+        { id: "line-c", pattern: "/billing/", teams: ["acme/team-c", "acme/team-d"], users: [], satisfied: false },
+        { id: "line-e", pattern: "/ops/", teams: ["acme/team-e"], users: [], satisfied: false },
+      ],
+    });
+  previewApi.bulkPreview = (request) => {
+    const picked = (id: string, fallback: string) => request.group_choices?.find((choice) => choice.group_id === id)?.team ?? fallback;
+    const teamA = picked("line-a", "acme/team-a");
+    const teamC = picked("line-c", "acme/team-c");
+    const first = channelFor(teamA);
+    const second = channelFor(teamC);
+    const card = (target: ReviewTarget) => ({
+      target,
+      messages: [
+        {
+          action: "request" as const,
+          prs: [{ pr_id: 1, number: 549, title: codeownersRow.title, repo: codeownersRow.repo }],
+          text: `Hello team\nCould someone please review this pull request?\n• \`${codeownersRow.title}\`\nhttps://github.com/acme/data-service/pull/549\nThanks!`,
+          permalink: null,
+        },
+      ],
+      warnings: [],
+      signed_in: true,
+      single_top_level: false,
+      can_switch: false,
+      fingerprint: target.channel_id,
+    });
+    const preview: BulkPreview = {
+      cards: [card(first), card(second)],
+      skipped: [],
+      pr_warnings: [],
+      groups: [
+        { pr_id: 1, number: 549, group_id: "line-a", pattern: "/src/", teams: ["acme/team-a", "acme/team-b"], selected: teamA, hint: null, channel_id: first.channel_id, workspace: "acme" },
+        { pr_id: 1, number: 549, group_id: "line-c", pattern: "/billing/", teams: ["acme/team-c", "acme/team-d"], selected: teamC, hint: null, channel_id: second.channel_id, workspace: "acme" },
+        { pr_id: 1, number: 549, group_id: "line-e", pattern: "/ops/", teams: ["acme/team-e"], selected: null, hint: "No Slack channel is saved for @acme/team-e.", channel_id: null, workspace: null },
+      ],
+    };
+    return Promise.resolve(preview);
+  };
+}
 const root = document.getElementById("root");
 if (!root) {
   throw new Error("root element missing");
@@ -510,6 +573,10 @@ createRoot(root).render(
         }}
         onFinished={() => undefined}
       />
+    ) : screenName === "codeowners" ? (
+      <div className="min-h-screen bg-slate-950 text-slate-200">
+        <ReviewDialog api={previewApi} row={codeownersRow} onClose={() => undefined} onSent={() => undefined} onOpen={() => undefined} />
+      </div>
     ) : screenName === "request-review-suggest" ? (
       <div className="min-h-screen bg-slate-950 text-slate-200">
         <ReviewDialog api={previewApi} row={suggestRow} onClose={() => undefined} onSent={() => undefined} onOpen={() => undefined} />
