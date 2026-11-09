@@ -136,6 +136,19 @@ export function dayBounds(now: Date): { day_start: string; week_start: string } 
   return { day_start: start.toISOString(), week_start: week.toISOString() };
 }
 
+/**
+ * The count beside Select all: the rows that checkbox selects.
+ * `N open PRs` when every row is open, and `N PRs` when merged or closed rows
+ * are in the selection. A selection reads `N of M selected`.
+ */
+export function selectionCountText(selectable: number, finished: number, selected: number, hiddenSelected: number): string {
+  if (selected === 0 && hiddenSelected === 0) {
+    const noun = selectable === 1 ? "PR" : "PRs";
+    return finished > 0 ? `${selectable} ${noun}` : `${selectable} open ${noun}`;
+  }
+  return `${selected} of ${selectable} selected`;
+}
+
 /** Header subtitle (§8.2) from backend counts: "5 open PRs across 2 projects · 1 unassigned". */
 export function summaryText(summary: PageSummary, viewKey: string, syncProgress: string | null = null): string {
   const text = countsText(summary, viewKey);

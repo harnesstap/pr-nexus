@@ -67,6 +67,9 @@ function Harness({
   onNotice,
   removedIds,
   githubError,
+  initialView,
+  githubIds = null,
+  githubAnyState = false,
 }: {
   rows: SearchRow[];
   projects?: ProjectDto[];
@@ -86,8 +89,11 @@ function Harness({
   onNotice?: (toast: Toast) => void;
   removedIds?: ReadonlySet<number>;
   githubError?: string;
+  initialView?: SavedView;
+  githubIds?: number[] | null;
+  githubAnyState?: boolean;
 }) {
-  const [view, setView] = useState<SavedView>(defaultView());
+  const [view, setView] = useState<SavedView>(initialView ?? defaultView());
   const [currentView, setCurrentView] = useState(viewKey);
   const [reference] = useState(() => (request: PageRequest) => Promise.resolve(pageFromRows(rows, projects, request)));
   return (
@@ -114,6 +120,8 @@ function Harness({
       onNotice={onNotice}
       removedIds={removedIds}
       githubError={githubError}
+      githubIds={githubIds}
+      githubAnyState={githubAnyState}
     />
   );
 }
@@ -138,6 +146,34 @@ const rows = [
   row({ id: 2, number: 138, title: "Add passkeys", project_ids: [1] }),
   row({ id: 3, number: 23, title: "Fix tax rounding", project_ids: [] }),
 ];
+
+test("a GitHub query counts every row Select all checks, and Sort says the query sets the order", async () => {
+  const initialView: SavedView = {
+    ...defaultView(),
+    filters: { ...defaultView().filters, github: "is:pr author:octocat sort:updated-desc" },
+  };
+  const merged = row({ id: 4, number: 90, title: "Ship the widget", state: "merged", project_ids: [], involvement: 0 });
+  await show(<Harness rows={[...rows, merged]} initialView={initialView} githubIds={[4, 1]} githubAnyState />);
+  const toolbar = screen.getByRole("toolbar", { name: "List toolbar" });
+  expect(within(toolbar).getByText("2 PRs")).toBeInTheDocument();
+  expect(within(toolbar).queryByText(/open PRs?/)).toBeNull();
+  expect(screen.getByText(/1 open PR/)).toBeInTheDocument();
+  const sort = within(toolbar).getByRole("combobox", { name: "Sort by, from the GitHub query" });
+  expect(sort).toBeDisabled();
+  expect(sort).toHaveValue("query");
+  expect(within(sort).getByRole("option", { name: "From query" })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Filter menu" }));
+  expect(screen.getByRole("button", { name: /Ordering/ })).toHaveTextContent("From query");
+  fireEvent.click(screen.getByRole("button", { name: /Ordering/ }));
+  expect(screen.getByText("The GitHub query sets this order. Clear the query to choose another.")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Needs attention" })).toBeNull();
+
+  fireEvent.click(within(toolbar).getByRole("button", { name: "Clear GitHub query" }));
+  await settle();
+  const restored = within(toolbar).getByRole("combobox", { name: "Sort by" });
+  expect(restored).toBeEnabled();
+  expect(restored).toHaveValue("attention");
+});
 
 test("a rejected GitHub query shows GitHub's sentence", async () => {
   const message =
@@ -521,6 +557,7 @@ test("a merged PR is not listed as open and shows its state under the Archived f
   expect(within(merged).getAllByText("Merged").length).toBeGreaterThan(0);
   expect(within(merged).getByRole("img", { name: /^Merged: / })).toBeInTheDocument();
   expect(screen.getAllByText(/3 open PRs .*· 1 merged or closed/).length).toBeGreaterThan(0);
+  expect(within(screen.getByRole("toolbar", { name: "List toolbar" })).getByText("4 PRs")).toBeInTheDocument();
 });
 
 test("r requests the selection or the focused row, and system shortcuts are left alone", async () => {

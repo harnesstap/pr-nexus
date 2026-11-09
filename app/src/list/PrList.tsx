@@ -46,7 +46,7 @@ import {
   type Tone,
 } from "./model";
 import { setDragBadge } from "./dragBadge";
-import { pageIds, summaryText, type Elsewhere, type PageDto, type PageEntry, type PageRequest, type PageSection } from "./paging";
+import { pageIds, selectionCountText, summaryText, type Elsewhere, type PageDto, type PageEntry, type PageRequest, type PageSection } from "./paging";
 import { usePagedList, type PageParams } from "./usePagedList";
 import { plainText } from "../textInput";
 import { commentsText, compactSlack, rowPills, staleCue, viewEmptyState, type RowPill, type StaleCue } from "./rowCues";
@@ -551,10 +551,8 @@ export function PrList({
     return () => window.removeEventListener("keydown", onKey);
   });
 
-  const header =
-    checkState(ids, selected) === "none" && hidden === 0
-      ? `${ids.length} open ${ids.length === 1 ? "PR" : "PRs"}`
-      : `${activeIds.length} of ${ids.length} selected`;
+  const header = selectionCountText(ids.length, page?.summary.finished ?? 0, activeIds.length, hidden);
+  const queryOrders = view.filters.github.trim() !== "";
 
   const titleProject = currentProject !== null ? projects.find((project) => project.id === currentProject) : undefined;
   const sectionProject = (id: number | null) => (id === null ? undefined : projects.find((project) => project.id === id));
@@ -667,8 +665,8 @@ export function PrList({
               </span>
             )}
           </label>
-          <SortPicker view={view} onViewChange={onViewChange} />
-          <FilterMenu view={view} orgs={page?.orgs ?? []} menu={menu} setMenu={setMenu} onViewChange={onViewChange} />
+          <SortPicker view={view} onViewChange={onViewChange} fromQuery={queryOrders} />
+          <FilterMenu view={view} orgs={page?.orgs ?? []} menu={menu} setMenu={setMenu} onViewChange={onViewChange} fromQuery={queryOrders} />
         </div>
         {githubError !== "" && (
           <p role="status" data-github-query-error className="mt-1 truncate text-xs text-slate-400">
@@ -1379,14 +1377,15 @@ function CompactRow({
 const SORT_PICKS: Ordering[] = ["attention", "updated", "waiting", "bumped", "created", "slack", "readiness", "number"];
 
 /** Sort order, in the toolbar so "Waiting longest" and "Last bumped" are one click away. */
-function SortPicker({ view, onViewChange }: { view: SavedView; onViewChange: (view: SavedView) => void }) {
-  return (
+function SortPicker({ view, onViewChange, fromQuery }: { view: SavedView; onViewChange: (view: SavedView) => void; fromQuery: boolean }) {
+  const control = (
     <label className="flex h-8 shrink-0 items-center gap-1 rounded-md border border-slate-700 bg-slate-900 pl-2 text-xs text-slate-400 focus-within:border-violet-400">
       <span className="hidden @3xl:inline">Sort</span>
       <select
-        aria-label="Sort by"
-        className="h-full max-w-28 rounded-md @3xl:max-w-40 bg-slate-900 pr-1 text-slate-200 outline-none"
-        value={view.ordering}
+        aria-label={fromQuery ? "Sort by, from the GitHub query" : "Sort by"}
+        className="h-full max-w-28 rounded-md bg-slate-900 pr-1 text-slate-200 outline-none disabled:text-slate-200 @3xl:max-w-40"
+        value={fromQuery ? "query" : view.ordering}
+        disabled={fromQuery}
         onChange={(event) => {
           const ordering = event.target.value as Ordering;
           // The stale and attention sorts read top-down: most urgent, longest wait, latest bump.
@@ -1394,13 +1393,25 @@ function SortPicker({ view, onViewChange }: { view: SavedView; onViewChange: (vi
           onViewChange({ ...view, ordering, direction });
         }}
       >
-        {SORT_PICKS.map((id) => (
-          <option key={id} value={id}>
-            {labelOf(ORDERINGS, id)}
-          </option>
-        ))}
+        {fromQuery ? (
+          <option value="query">From query</option>
+        ) : (
+          SORT_PICKS.map((id) => (
+            <option key={id} value={id}>
+              {labelOf(ORDERINGS, id)}
+            </option>
+          ))
+        )}
       </select>
     </label>
+  );
+  if (!fromQuery) {
+    return control;
+  }
+  return (
+    <Tooltip label="From query" detail="This list follows the GitHub query. Clear the query to sort here.">
+      {control}
+    </Tooltip>
   );
 }
 
@@ -1447,12 +1458,14 @@ function FilterMenu({
   menu,
   setMenu,
   onViewChange,
+  fromQuery,
 }: {
   view: SavedView;
   orgs: OrgCount[];
   menu: string | null;
   setMenu: (menu: string | null) => void;
   onViewChange: (view: SavedView) => void;
+  fromQuery: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const open = menu !== null;
@@ -1503,8 +1516,15 @@ function FilterMenu({
               onPick={(grouping) => onViewChange({ ...view, grouping })}
             />
           )}
-          <MenuRow label="Ordering" value={labelOf(ORDERINGS, view.ordering)} onClick={() => setMenu(menu === "ordering" ? "root" : "ordering")} />
-          {menu === "ordering" && (
+          <MenuRow
+            label="Ordering"
+            value={fromQuery ? "From query" : labelOf(ORDERINGS, view.ordering)}
+            onClick={() => setMenu(menu === "ordering" ? "root" : "ordering")}
+          />
+          {menu === "ordering" && fromQuery && (
+            <p className="px-2 py-1 text-xs text-slate-400">The GitHub query sets this order. Clear the query to choose another.</p>
+          )}
+          {menu === "ordering" && !fromQuery && (
             <div>
               <ChoiceList options={ORDERINGS} current={view.ordering} onPick={(ordering) => onViewChange({ ...view, ordering })} />
               <div className="mt-1 flex gap-2 px-2">

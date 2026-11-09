@@ -357,7 +357,12 @@ async function githubQueryShots(browser, dir) {
     } else {
       await page.getByRole("button", { name: "#90 Ship the widget" }).waitFor();
       await page.getByText("Merged", { exact: true }).first().waitFor();
+      // The count sits on the toolbar only once the row is wide enough to show it.
+      if (widthPx > 720) {
+        await page.getByText("2 PRs", { exact: true }).waitFor();
+      }
     }
+    await page.getByRole("combobox", { name: "Sort by, from the GitHub query" }).waitFor();
     if (widthPx <= 720) {
       const overflow = await page.evaluate(() => globalThis.document.documentElement.scrollWidth - globalThis.document.documentElement.clientWidth);
       console.log(`page overflow ${overflow}px at ${widthPx}px`);

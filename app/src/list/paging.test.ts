@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 import type { ProjectDto } from "../api";
 import { checkState, defaultView, filtersActive, resetFilters, toggleParent, type SavedView } from "./model";
-import { PAGE_SIZE, dayBounds, pageFromRows, pageIds, summaryText, candidatesFromRows, type PageRequest, type SearchRow } from "./paging";
+import { PAGE_SIZE, dayBounds, pageFromRows, pageIds, selectionCountText, summaryText, candidatesFromRows, type PageRequest, type SearchRow } from "./paging";
 
 const now = new Date("2026-10-26T12:00:00Z");
 
@@ -187,6 +187,11 @@ test("merged and closed PRs leave the open list and the header count", () => {
   const all = pageFromRows(rows, [auth], request("mine", archived));
   expect(pageIds(all.sections).sort()).toEqual([1, 2, 3]);
   expect(summaryText(all.summary, "mine")).toBe("1 open PR across 1 project · 2 merged or closed · 1 unassigned");
+  expect(selectionCountText(pageIds(open.sections).length, open.summary.finished, 0, 0)).toBe("1 open PR");
+  expect(selectionCountText(pageIds(all.sections).length, all.summary.finished, 0, 0)).toBe("3 PRs");
+  expect(selectionCountText(3, 0, 0, 0)).toBe("3 open PRs");
+  expect(selectionCountText(2, 1, 1, 0)).toBe("1 of 2 selected");
+  expect(selectionCountText(2, 1, 0, 1)).toBe("0 of 2 selected");
 });
 
 test("nav views pick authored, review-requested, or project rows", () => {
