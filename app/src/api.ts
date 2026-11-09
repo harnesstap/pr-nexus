@@ -392,6 +392,31 @@ export interface BulkRequest {
   cached_names?: boolean;
   /** Team (`org/slug`) picked for a CODEOWNERS group. */
   group_choices?: GroupChoice[];
+  /** Channel picked for a group, instead of or without a saved mapping. */
+  group_channels?: GroupChannelChoice[];
+  /** Groups left out of this send. */
+  skipped_groups?: GroupRef[];
+  /** Retarget a card that is not a CODEOWNERS group. The key is the channel it was routed to. */
+  channel_moves?: ChannelMove[];
+  /** Cards left out, by the channel they were routed to. */
+  skipped_channels?: ChannelKey[];
+}
+
+export interface GroupChannelChoice {
+  pr_id: number;
+  group_id: string;
+  target: ReviewTarget;
+}
+
+export interface GroupRef {
+  pr_id: number;
+  group_id: string;
+}
+
+export interface ChannelMove {
+  workspace: string;
+  channel_id: string;
+  target: ReviewTarget;
 }
 
 export interface GroupChoice {
@@ -409,7 +434,9 @@ export interface BulkGroup {
   /** `org/slug`, in line order. */
   teams: string[];
   selected: string | null;
-  /** Set when no team on the line has a Slack channel. The other sends stay. */
+  /** The line has no channel yet, so it is a card the user can fill in and is not sent. */
+  needs_channel?: boolean;
+  /** Set when no team on the line has a Slack channel. Shown on that card. */
   hint: string | null;
   channel_id: string | null;
   workspace: string | null;

@@ -55,6 +55,19 @@ pub struct BulkRequest {
     /// Team (`org/slug`) the user picked for a CODEOWNERS group.
     #[serde(default)]
     pub group_choices: Vec<GroupChoice>,
+    /// Channel picked for a group, in place of a saved mapping or instead of one.
+    #[serde(default)]
+    pub group_channels: Vec<GroupChannelChoice>,
+    /// Groups the user removed. They are not planned and not sent.
+    #[serde(default)]
+    pub skipped_groups: Vec<GroupRef>,
+    /// Retarget one planned card. The key is the channel the routes were built
+    /// for, before any earlier move in this preview.
+    #[serde(default)]
+    pub channel_moves: Vec<ChannelMove>,
+    /// Cards the user removed, by the channel their routes were built for.
+    #[serde(default)]
+    pub skipped_channels: Vec<ChannelKey>,
 }
 
 /// One CODEOWNERS group's team, chosen in the preview.
@@ -63,6 +76,29 @@ pub struct GroupChoice {
     pub pr_id: i64,
     pub group_id: String,
     pub team: String,
+}
+
+/// A channel the user picked for one CODEOWNERS group.
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+pub struct GroupChannelChoice {
+    pub pr_id: i64,
+    pub group_id: String,
+    pub target: ReviewTarget,
+}
+
+/// A group the user removed from this preview.
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+pub struct GroupRef {
+    pub pr_id: i64,
+    pub group_id: String,
+}
+
+/// Send what was routed to `channel_id` to `target` instead.
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+pub struct ChannelMove {
+    pub workspace: String,
+    pub channel_id: String,
+    pub target: ReviewTarget,
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq, Eq)]
@@ -106,11 +142,13 @@ pub struct BulkGroup {
     pub pattern: String,
     /// Every team on the line, `org/slug`.
     pub teams: Vec<String>,
-    /// The team this plan asks. Empty when the line has no Slack channel.
+    /// The team this plan asks. The first team on the line when none is mapped.
     pub selected: Option<String>,
-    /// A short note when the line cannot be requested. The other sends stay.
+    /// Set when the line has no channel yet. The preview still shows a card.
+    pub needs_channel: bool,
+    /// Why no channel is saved yet. The other sends stay.
     pub hint: Option<String>,
-    /// Channel the selected team maps to. The card with this id is the send.
+    /// Channel this group will be posted to. Empty until one is picked.
     pub channel_id: Option<String>,
     pub workspace: Option<String>,
 }
@@ -611,6 +649,20 @@ fn plan_request(
             choice.target = resolved.next().expect("one name per target");
         }
     }
+    let group_channels = named_targets(
+        state,
+        chats,
+        request.group_channels.clone(),
+        names,
+        |choice| &mut choice.target,
+    );
+    let channel_moves = named_targets(
+        state,
+        chats,
+        request.channel_moves.clone(),
+        names,
+        |choice| &mut choice.target,
+    );
 
     let mut inputs = Vec::new();
     let mut moved = Vec::new();
@@ -622,22 +674,33 @@ fn plan_request(
         mut groups,
     } in planned
     {
-        assign_channels(&mut groups, &choices);
-        group_views.extend(groups);
+        let removed = groups
+            .iter()
+            .any(|group| group_skipped(request, pr.id.0, &group.group_id));
+        groups.retain(|group| !group_skipped(request, pr.id.0, &group.group_id));
+        moved.extend(mapping_moves(&pr, &choices));
+        // A pull request that has CODEOWNERS groups is routed only from those
+        // groups. Removing every group leaves nothing to send; an open thread
+        // in some other channel must not reappear as the only route.
         let routes: Vec<Route> = match &override_target {
             Some(target) => vec![Route {
                 target: core_target(target),
                 teams: teams.clone(),
             }],
+            None if !groups.is_empty() || removed => {
+                routes_for_groups(state, &pr, &mut groups, &choices, &group_channels)?
+            }
             None => {
                 // Never bump a thread in a channel the team left: the card
                 // would name the mapped channel and post to the old one.
-                let (unresolved, choices): (Vec<_>, Vec<_>) = choices
-                    .into_iter()
+                let (unresolved, rest): (Vec<_>, Vec<_>) = choices
+                    .iter()
+                    .cloned()
                     .partition(|choice| choice.source == "unresolved");
-                if choices.iter().all(|choice| choice.source == "previous")
+                if rest.iter().all(|choice| choice.source == "previous")
                     && let Some(first) = unresolved.first()
                 {
+                    group_views.extend(groups);
                     skipped.push(Skip {
                         pr: pr.id,
                         title: pr.title.clone(),
@@ -649,23 +712,9 @@ fn plan_request(
                     });
                     continue;
                 }
-                let (previous, choices): (Vec<_>, Vec<_>) = choices
+                let routes = rest
                     .into_iter()
-                    .partition(|choice| choice.source == "previous");
-                for old in &previous {
-                    for to in choices.iter().filter(|choice| choice.source == "mapping") {
-                        moved.push(Moved {
-                            pr: pr.id,
-                            to: (
-                                to.target.workspace.trim().to_ascii_lowercase(),
-                                to.target.channel_id.clone(),
-                            ),
-                            from: crate::slack::to_core(&old.target).label(),
-                        });
-                    }
-                }
-                choices
-                    .into_iter()
+                    .filter(|choice| choice.source != "previous")
                     .map(|choice| Route {
                         target: core_target(&choice.target),
                         teams: if choice.teams.is_empty() {
@@ -674,26 +723,33 @@ fn plan_request(
                             choice.teams
                         },
                     })
-                    .collect()
+                    .collect();
+                edit_routes(state, &pr, routes, request, &channel_moves)?
             }
         };
+        let pending = groups.iter().any(|group| group.needs_channel);
+        group_views.extend(groups);
         if routes.is_empty() {
-            let hints: Vec<String> = group_views
-                .iter()
-                .filter(|group| group.pr_id == pr.id.0)
-                .filter_map(|group| group.hint.clone())
-                .collect();
-            skipped.push(Skip {
-                pr: pr.id,
-                title: pr.title.clone(),
-                channel: None,
-                detail: if hints.is_empty() {
-                    "No mapped channel for its teams. Request it alone, or send all to one channel."
-                        .into()
-                } else {
-                    hints.join(" ")
-                },
-            });
+            // A line with no channel stays in the preview as a card the user
+            // can fill in. Removing every card is not a "no mapping" skip.
+            if !pending && !removed {
+                let hints: Vec<String> = group_views
+                    .iter()
+                    .filter(|group| group.pr_id == pr.id.0)
+                    .filter_map(|group| group.hint.clone())
+                    .collect();
+                skipped.push(Skip {
+                    pr: pr.id,
+                    title: pr.title.clone(),
+                    channel: None,
+                    detail: if hints.is_empty() {
+                        "No mapped channel for its teams. Request it alone, or send all to one channel."
+                            .into()
+                    } else {
+                        hints.join(" ")
+                    },
+                });
+            }
             continue;
         }
         inputs.push(BatchInput { pr, routes });
@@ -780,13 +836,18 @@ fn route_groups(
             }
         }
         let users: Vec<&str> = plan.group.users.iter().map(String::as_str).collect();
+        let selected = plan
+            .team
+            .clone()
+            .or_else(|| plan.group.teams.first().cloned());
         views.push(BulkGroup {
             pr_id: pr.id.0,
             number: pr.number,
             group_id: plan.group.id.clone(),
             pattern: plan.group.pattern.clone(),
             teams: plan.group.teams.iter().map(ToString::to_string).collect(),
-            selected: plan.team.as_ref().map(ToString::to_string),
+            selected: selected.as_ref().map(ToString::to_string),
+            needs_channel: plan.unmapped,
             hint: plan
                 .unmapped
                 .then(|| groups::unmapped_hint(&plan.group.teams, &users)),
@@ -830,27 +891,226 @@ fn parse_team(label: &str) -> Option<TeamRef> {
     })
 }
 
-fn assign_channels(groups: &mut [BulkGroup], choices: &[crate::slack::TargetChoice]) {
-    for group in groups {
-        if group.hint.is_some() {
-            continue;
-        }
-        let Some(selected) = group.selected.clone() else {
-            continue;
-        };
-        let choice = choices.iter().find(|choice| {
-            choice.source != "previous"
-                && choice.source != "unresolved"
-                && choice
-                    .teams
-                    .iter()
-                    .any(|team| team.eq_ignore_ascii_case(&selected))
-        });
-        if let Some(choice) = choice {
-            group.channel_id = Some(choice.target.channel_id.clone());
-            group.workspace = Some(choice.target.workspace.clone());
+fn group_skipped(request: &BulkRequest, pr_id: i64, group_id: &str) -> bool {
+    request
+        .skipped_groups
+        .iter()
+        .any(|skipped| skipped.pr_id == pr_id && skipped.group_id == group_id)
+}
+
+fn channel_skipped(request: &BulkRequest, workspace: &str, channel_id: &str) -> bool {
+    request.skipped_channels.iter().any(|key| {
+        key.workspace.trim().eq_ignore_ascii_case(workspace)
+            && key.channel_id.trim().eq_ignore_ascii_case(channel_id)
+    })
+}
+
+/// Read channel names for the targets inside `items` before the plan is built.
+fn named_targets<T>(
+    state: &AppState,
+    chats: &dyn ChatSource,
+    mut items: Vec<T>,
+    names: crate::slack::Names,
+    mut target_of: impl FnMut(&mut T) -> &mut ReviewTarget,
+) -> Vec<T> {
+    let snapshot: Vec<ReviewTarget> = items
+        .iter_mut()
+        .map(|item| target_of(item).clone())
+        .collect();
+    let resolved = crate::slack::resolve_targets(state, chats, snapshot, names);
+    for (item, target) in items.iter_mut().zip(resolved) {
+        *target_of(item) = target;
+    }
+    items
+}
+
+/// "Channel changed since the last request" for a mapping that no longer
+/// points at the open thread. A card shows it only when it still posts there.
+fn mapping_moves(pr: &PullRequest, choices: &[crate::slack::TargetChoice]) -> Vec<Moved> {
+    let mut moved = Vec::new();
+    for old in choices.iter().filter(|choice| choice.source == "previous") {
+        for to in choices.iter().filter(|choice| choice.source == "mapping") {
+            moved.push(Moved {
+                pr: pr.id,
+                to: (
+                    to.target.workspace.trim().to_ascii_lowercase(),
+                    to.target.channel_id.clone(),
+                ),
+                from: crate::slack::to_core(&old.target).label(),
+            });
         }
     }
+    moved
+}
+
+/// One route per distinct channel the groups will actually post to.
+///
+/// A saved mapping is the default. `overrides` replaces it, or supplies a
+/// channel for a line that has none. Lines still without a channel stay in
+/// `groups` and are left out of the routes, so an earlier request in some
+/// other channel cannot become the only send.
+fn routes_for_groups(
+    state: &AppState,
+    pr: &PullRequest,
+    groups: &mut [BulkGroup],
+    choices: &[crate::slack::TargetChoice],
+    overrides: &[GroupChannelChoice],
+) -> Result<Vec<Route>, AppError> {
+    let mut routes = Vec::new();
+    for group in groups.iter_mut() {
+        let target = if let Some(choice) = overrides
+            .iter()
+            .find(|choice| choice.pr_id == pr.id.0 && choice.group_id == group.group_id)
+        {
+            let mut target = validate_target(choice.target.clone())?;
+            fill_open_request(state, pr, &mut target)?;
+            Some(target)
+        } else {
+            mapped_choice(choices, group.selected.as_deref()).map(|choice| choice.target.clone())
+        };
+        let Some(target) = target else {
+            group.needs_channel = true;
+            group.channel_id = None;
+            group.workspace = None;
+            continue;
+        };
+        if group.selected.is_none() {
+            group.selected = group.teams.first().cloned();
+        }
+        group.needs_channel = false;
+        group.hint = None;
+        group.channel_id = Some(target.channel_id.clone());
+        group.workspace = Some(target.workspace.clone());
+        push_route(&mut routes, &target, group.selected.clone());
+    }
+    Ok(routes)
+}
+
+fn mapped_choice<'a>(
+    choices: &'a [crate::slack::TargetChoice],
+    selected: Option<&str>,
+) -> Option<&'a crate::slack::TargetChoice> {
+    let selected = selected?;
+    choices.iter().find(|choice| {
+        choice.source != "previous"
+            && choice.source != "unresolved"
+            && !choice.target.channel_id.trim().is_empty()
+            && choice
+                .teams
+                .iter()
+                .any(|team| team.eq_ignore_ascii_case(selected))
+    })
+}
+
+fn push_route(routes: &mut Vec<Route>, target: &ReviewTarget, team: Option<String>) {
+    let mut teams = Vec::new();
+    if let Some(team) = team {
+        teams.push(team);
+    }
+    absorb_route(
+        routes,
+        Route {
+            target: core_target(target),
+            teams,
+        },
+    );
+}
+
+/// Drop removed cards and retarget the rest. Routes that land on one channel
+/// for the same pull request become one message in [`batch::plan_batch`].
+fn edit_routes(
+    state: &AppState,
+    pr: &PullRequest,
+    routes: Vec<Route>,
+    request: &BulkRequest,
+    moves: &[ChannelMove],
+) -> Result<Vec<Route>, AppError> {
+    let mut out = Vec::new();
+    for route in routes {
+        if channel_skipped(request, &route.target.workspace, &route.target.channel_id) {
+            continue;
+        }
+        let Some(change) = moves.iter().find(|change| {
+            change
+                .workspace
+                .trim()
+                .eq_ignore_ascii_case(&route.target.workspace)
+                && change
+                    .channel_id
+                    .trim()
+                    .eq_ignore_ascii_case(&route.target.channel_id)
+        }) else {
+            absorb_route(&mut out, route);
+            continue;
+        };
+        let mut target = validate_target(change.target.clone())?;
+        fill_open_request(state, pr, &mut target)?;
+        absorb_route(
+            &mut out,
+            Route {
+                target: core_target(&target),
+                teams: route.teams,
+            },
+        );
+    }
+    Ok(out)
+}
+
+fn absorb_route(routes: &mut Vec<Route>, route: Route) {
+    if let Some(existing) = routes.iter_mut().find(|existing| {
+        existing
+            .target
+            .channel_id
+            .eq_ignore_ascii_case(&route.target.channel_id)
+            && existing
+                .target
+                .workspace
+                .eq_ignore_ascii_case(&route.target.workspace)
+    }) {
+        for team in route.teams {
+            if !existing
+                .teams
+                .iter()
+                .any(|have| have.eq_ignore_ascii_case(&team))
+            {
+                existing.teams.push(team);
+            }
+        }
+        return;
+    }
+    routes.push(route);
+}
+
+/// An id typed with no workspace still bumps the open thread in that channel.
+fn fill_open_request(
+    state: &AppState,
+    pr: &PullRequest,
+    target: &mut ReviewTarget,
+) -> Result<(), AppError> {
+    if !target.workspace.trim().is_empty() {
+        return Ok(());
+    }
+    let Some(existing) = state
+        .store
+        .list_review_requests(pr.id)?
+        .into_iter()
+        .find(|request| {
+            request.status == RequestStatus::Active
+                && request.channel_id.eq_ignore_ascii_case(&target.channel_id)
+        })
+    else {
+        return Ok(());
+    };
+    target.workspace = existing.workspace;
+    if target.team_id.is_none() {
+        target.team_id = existing.team_id;
+    }
+    if target.channel_name.is_empty()
+        || target.channel_name.eq_ignore_ascii_case(&target.channel_id)
+    {
+        target.channel_name = existing.channel_name;
+    }
+    Ok(())
 }
 
 fn blocked_reasons(readiness: Readiness) -> Option<String> {

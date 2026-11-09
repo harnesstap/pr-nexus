@@ -492,8 +492,9 @@ if (screenName === "request-review-suggest") {
     }
   }, 600);
 }
-// ?screen=codeowners shows one PR whose files match two CODEOWNERS lines
-// (two sends, with a team switch on each) and a third line with no Slack channel.
+// ?screen=codeowners shows one PR that already has a request in #team-a-pr-reviews
+// and a second CODEOWNERS line with no saved channel. ?case=open focuses that
+// line's channel picker. The picker searches the fictional channels below.
 const codeownersRow = {
   id: 1,
   number: 549,
@@ -505,55 +506,105 @@ const codeownersRow = {
   slack: null,
 } as unknown as Parameters<typeof ReviewDialog>[0]["row"];
 if (screenName === "codeowners") {
-  const channelFor = (team: string) =>
-    team.endsWith("team-b")
-      ? { workspace: "acme", channel_id: "C0ACME0002", channel_name: "team-b" }
-      : team.endsWith("team-c") || team.endsWith("team-d")
-        ? { workspace: "acme", channel_id: "C0ACME0003", channel_name: "team-c" }
-        : { workspace: "acme", channel_id: "C0ACME0001", channel_name: "team-a" };
+  const workspace = { workspace: "acme", team_id: "T0ACME0001", workspace_name: "Acme" };
+  const known = [
+    { ...workspace, channel_id: "C0ACME0001", channel_name: "team-a-pr-reviews" },
+    { ...workspace, channel_id: "C0ACME0004", channel_name: "team-b-pr-reviews" },
+    { ...workspace, channel_id: "C0ACME0009", channel_name: "ops-reviews" },
+  ];
+  previewApi.slackWorkspaces = () =>
+    Promise.resolve([{ id: 1, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false, team_id: "T0ACME0001", enabled: true, priority: 0 }]);
+  previewApi.reviewTargets = () =>
+    Promise.resolve([
+      { target: known[0]!, teams: ["acme/team-a"], source: "request" as const },
+    ]);
+  previewApi.searchSlackTargets = (query: string) => {
+    const term = query.replace(/^[#@]/, "").trim().toLowerCase();
+    return Promise.resolve(
+      known
+        .filter((target) => target.channel_name.includes(term))
+        .map((target) => ({ kind: "channel" as const, target })),
+    );
+  };
   previewApi.prDetail = () =>
     Promise.resolve({
       ...mockDetail(1),
       owner_groups: [
-        { id: "line-a", pattern: "/src/", teams: ["acme/team-a", "acme/team-b"], users: [], satisfied: false },
-        { id: "line-c", pattern: "/billing/", teams: ["acme/team-c", "acme/team-d"], users: [], satisfied: false },
-        { id: "line-e", pattern: "/ops/", teams: ["acme/team-e"], users: [], satisfied: false },
+        { id: "line-a", pattern: "/src/", teams: ["acme/team-a"], users: [], satisfied: false },
+        { id: "line-b", pattern: "/billing/", teams: ["acme/team-b"], users: [], satisfied: false },
       ],
     });
   previewApi.bulkPreview = (request) => {
-    const picked = (id: string, fallback: string) => request.group_choices?.find((choice) => choice.group_id === id)?.team ?? fallback;
-    const teamA = picked("line-a", "acme/team-a");
-    const teamC = picked("line-c", "acme/team-c");
-    const first = channelFor(teamA);
-    const second = channelFor(teamC);
-    const card = (target: ReviewTarget) => ({
-      target,
-      messages: [
-        {
-          action: "request" as const,
-          prs: [{ pr_id: 1, number: 549, title: codeownersRow.title, repo: codeownersRow.repo }],
-          text: `Hello team\nCould someone please review this pull request?\n• \`${codeownersRow.title}\`\nhttps://github.com/acme/data-service/pull/549\nThanks!`,
-          permalink: null,
-        },
-      ],
-      warnings: [],
-      signed_in: true,
-      single_top_level: false,
-      can_switch: false,
-      fingerprint: target.channel_id,
-    });
+    const skipped = new Set((request.skipped_groups ?? []).map((item) => item.group_id));
+    const chosen = new Map((request.group_channels ?? []).map((item) => [item.group_id, item.target]));
+    const text = `Hello team\nCould someone please review this pull request?\n• \`${codeownersRow.title}\`\nhttps://github.com/acme/data-service/pull/549\nThanks!`;
+    const groups: NonNullable<BulkPreview["groups"]> = [];
+    const byChannel = new Map<string, ReviewTarget>();
+    const add = (id: string, pattern: string, team: string, fallback: ReviewTarget | null) => {
+      if (skipped.has(id)) {
+        return;
+      }
+      const picked = chosen.get(id);
+      const target = picked
+        ? { ...workspace, channel_id: picked.channel_id, channel_name: picked.channel_name || picked.channel_id }
+        : fallback;
+      if (!target) {
+        groups.push({
+          pr_id: 1,
+          number: 549,
+          group_id: id,
+          pattern,
+          teams: [team],
+          selected: team,
+          needs_channel: true,
+          hint: `No Slack channel is saved for @${team}.`,
+          channel_id: null,
+          workspace: null,
+        });
+        return;
+      }
+      groups.push({
+        pr_id: 1,
+        number: 549,
+        group_id: id,
+        pattern,
+        teams: [team],
+        selected: team,
+        needs_channel: false,
+        hint: null,
+        channel_id: target.channel_id,
+        workspace: "acme",
+      });
+      byChannel.set(target.channel_id, { ...target, channel_name: known.find((item) => item.channel_id === target.channel_id)?.channel_name || target.channel_name });
+    };
+    add("line-a", "/src/", "acme/team-a", known[0]!);
+    add("line-b", "/billing/", "acme/team-b", null);
     const preview: BulkPreview = {
-      cards: [card(first), card(second)],
+      cards: [...byChannel.entries()].map(([channelId, target]) => ({
+        target,
+        messages: [
+          {
+            action: channelId === "C0ACME0001" ? "bump" : "request",
+            prs: [{ pr_id: 1, number: 549, title: codeownersRow.title, repo: codeownersRow.repo }],
+            text,
+            permalink: channelId === "C0ACME0001" ? "https://acme.slack.com/archives/C0ACME0001/p1700000000000100" : null,
+          },
+        ],
+        warnings: [],
+        signed_in: true,
+        single_top_level: false,
+        can_switch: false,
+        fingerprint: channelId,
+      })),
       skipped: [],
       pr_warnings: [],
-      groups: [
-        { pr_id: 1, number: 549, group_id: "line-a", pattern: "/src/", teams: ["acme/team-a", "acme/team-b"], selected: teamA, hint: null, channel_id: first.channel_id, workspace: "acme" },
-        { pr_id: 1, number: 549, group_id: "line-c", pattern: "/billing/", teams: ["acme/team-c", "acme/team-d"], selected: teamC, hint: null, channel_id: second.channel_id, workspace: "acme" },
-        { pr_id: 1, number: 549, group_id: "line-e", pattern: "/ops/", teams: ["acme/team-e"], selected: null, hint: "No Slack channel is saved for @acme/team-e.", channel_id: null, workspace: null },
-      ],
+      groups,
     };
     return Promise.resolve(preview);
   };
+  window.setTimeout(() => {
+    document.querySelector<HTMLInputElement>('section[aria-label^="Choose a channel"] input[role="combobox"]')?.focus();
+  }, 400);
 }
 const root = document.getElementById("root");
 if (!root) {

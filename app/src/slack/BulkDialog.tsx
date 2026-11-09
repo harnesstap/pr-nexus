@@ -1,14 +1,24 @@
 import { targetWorkspaceName } from "./workspaces";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Api, BulkCard, BulkGroup, BulkPreview, BulkRequest, BulkResult, ChannelKey, GroupChoice, ReviewTarget, SlackWorkspace } from "../api";
+import type { Api, BulkCard, BulkGroup, BulkPreview, BulkRequest, BulkResult, ChannelKey, ChannelMove, GroupChannelChoice, GroupChoice, GroupRef, ReviewTarget, SlackWorkspace } from "../api";
 import { channelLabel, errorMessage } from "../api";
-import { CheckNotes, GroupSwitcher, UnmappedHints, groupOnCard } from "./OwnerGroups";
+import { ChannelHeading, CheckNotes, GroupSwitcher, PendingGroups, RemoveCardButton, SaveChannelBox, groupKey, groupOnCard, saveChecked, saveChosenChannels } from "./OwnerGroups";
 import { DraftWarning } from "./DraftWarning";
 import { TargetCombobox } from "./TargetCombobox";
 import { Tooltip } from "../Tooltip";
 import { BULK_CONCURRENCY, mapLimit } from "../mapLimit";
 import type { Toast } from "../list/model";
 import { CopyMessageButton } from "./CopyMessageButton";
+
+/** A typed id has no workspace until Slack names it. Match the card it became. */
+function sameTarget(left: { workspace: string; channel_id: string }, right: { workspace: string; channel_id: string }): boolean {
+  if (left.channel_id.trim().toUpperCase() !== right.channel_id.trim().toUpperCase()) {
+    return false;
+  }
+  const a = left.workspace.trim().toLowerCase();
+  const b = right.workspace.trim().toLowerCase();
+  return a === "" || b === "" || a === b;
+}
 
 interface Props {
   api: Api;
@@ -58,15 +68,36 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen, onReady, onNot
   const [readied, setReadied] = useState<number[]>([]);
   const [marking, setMarking] = useState(false);
   const [groupChoices, setGroupChoices] = useState<GroupChoice[]>([]);
+  const [groupChannels, setGroupChannels] = useState<GroupChannelChoice[]>([]);
+  const [skippedGroups, setSkippedGroups] = useState<GroupRef[]>([]);
+  const [channelMoves, setChannelMoves] = useState<ChannelMove[]>([]);
+  const [skippedChannels, setSkippedChannels] = useState<ChannelKey[]>([]);
+  const [saveFor, setSaveFor] = useState<Record<string, boolean>>({});
 
   const request = useCallback(
-    (next: Partial<{ ids: number[]; oneChannel: boolean; single: ChannelKey[]; target: ReviewTarget; groupChoices: GroupChoice[] }> = {}): BulkRequest => ({
+    (
+      next: Partial<{
+        ids: number[];
+        oneChannel: boolean;
+        single: ChannelKey[];
+        target: ReviewTarget;
+        groupChoices: GroupChoice[];
+        groupChannels: GroupChannelChoice[];
+        skippedGroups: GroupRef[];
+        channelMoves: ChannelMove[];
+        skippedChannels: ChannelKey[];
+      }> = {},
+    ): BulkRequest => ({
       pr_ids: next.ids ?? ids,
       target: (next.oneChannel ?? oneChannel) ? (next.target ?? target) : null,
       single_top_level: next.single ?? single,
       group_choices: next.groupChoices ?? groupChoices,
+      group_channels: next.groupChannels ?? groupChannels,
+      skipped_groups: next.skippedGroups ?? skippedGroups,
+      channel_moves: next.channelMoves ?? channelMoves,
+      skipped_channels: next.skippedChannels ?? skippedChannels,
     }),
-    [ids, oneChannel, target, single, groupChoices],
+    [ids, oneChannel, target, single, groupChoices, groupChannels, skippedGroups, channelMoves, skippedChannels],
   );
 
   /**
@@ -168,6 +199,46 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen, onReady, onNot
     replan(request({ groupChoices: next }));
   }
 
+  function pickChannel(groups: BulkGroup[], target: ReviewTarget) {
+    const next = groupChannels.filter((choice) => !groups.some((group) => group.pr_id === choice.pr_id && group.group_id === choice.group_id));
+    for (const group of groups) {
+      next.push({ pr_id: group.pr_id, group_id: group.group_id, target });
+    }
+    setGroupChannels(next);
+    replan(request({ groupChannels: next }));
+  }
+
+  function retargetCard(card: BulkCard, nextTarget: ReviewTarget) {
+    const mine = (preview?.groups ?? []).filter((group) => groupOnCard(group, card.target));
+    if (mine.length > 0) {
+      pickChannel(mine, nextTarget);
+      return;
+    }
+    const existing = channelMoves.find((move) => sameTarget(move.target, card.target));
+    const next = existing
+      ? channelMoves.map((move) => (move === existing ? { ...move, target: nextTarget } : move))
+      : [...channelMoves, { workspace: card.target.workspace, channel_id: card.target.channel_id, target: nextTarget }];
+    setChannelMoves(next);
+    replan(request({ channelMoves: next }));
+  }
+
+  function removeCard(card: BulkCard) {
+    const mine = (preview?.groups ?? []).filter((group) => groupOnCard(group, card.target));
+    if (mine.length > 0) {
+      const next = [...skippedGroups, ...mine.map((group) => ({ pr_id: group.pr_id, group_id: group.group_id }))];
+      setSkippedGroups(next);
+      replan(request({ skippedGroups: next }));
+      return;
+    }
+    const move = channelMoves.find((item) => sameTarget(item.target, card.target));
+    const key = move ? { workspace: move.workspace, channel_id: move.channel_id } : { workspace: card.target.workspace, channel_id: card.target.channel_id };
+    const nextMoves = move ? channelMoves.filter((item) => item !== move) : channelMoves;
+    const nextSkipped = [...skippedChannels, key];
+    setChannelMoves(nextMoves);
+    setSkippedChannels(nextSkipped);
+    replan(request({ channelMoves: nextMoves, skippedChannels: nextSkipped }));
+  }
+
   function routeMode(next: boolean) {
     setOneChannel(next);
     if (!next) {
@@ -184,6 +255,7 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen, onReady, onNot
     setSending(true);
     setError(null);
     try {
+      await saveChosenChannels(api, preview, groupChannels, saveFor);
       const done = await api.sendBulk(
         request(),
         preview.cards.map((card) => card.fingerprint),
@@ -307,19 +379,33 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen, onReady, onNot
                     aria-label={[targetWorkspaceName(card.target), channelLabel(card.target)].filter(Boolean).join(" ")}
                     className="rounded border border-slate-700 p-3"
                   >
-                    <header className="flex items-center justify-between gap-2">
-                      <h3 className="font-medium">
-                        {targetWorkspaceName(card.target) && `${targetWorkspaceName(card.target)} · `}
-                        <Tooltip label={`Channel ID ${card.target.channel_id}`} align="start">
-                          <span tabIndex={0}>{channelLabel(card.target)}</span>
-                        </Tooltip>
+                    <header className="flex items-start justify-between gap-2">
+                      <h3 className="flex min-w-0 flex-1 flex-wrap items-center gap-x-1 font-medium">
+                        {targetWorkspaceName(card.target) && <span>{targetWorkspaceName(card.target)} ·</span>}
+                        {oneChannel ? (
+                          <Tooltip label={`Channel ID ${card.target.channel_id}`} align="start">
+                            <span tabIndex={0}>{channelLabel(card.target)}</span>
+                          </Tooltip>
+                        ) : (
+                          <ChannelHeading
+                            api={api}
+                            workspaces={workspaces}
+                            prIds={[...new Set(card.messages.flatMap((message) => message.prs.map((pr) => pr.pr_id)))]}
+                            teams={[...new Set((preview.groups ?? []).filter((group) => groupOnCard(group, card.target)).flatMap((group) => group.teams))]}
+                            target={card.target}
+                            onSelect={(next) => retargetCard(card, next)}
+                          />
+                        )}
                       </h3>
-                      {(card.can_switch || card.single_top_level) && (
-                        <label className="flex items-center gap-1 text-xs text-slate-300">
-                          <input type="checkbox" checked={card.single_top_level} onChange={() => toggleSingle(card)} />
-                          One top-level request for all
-                        </label>
-                      )}
+                      <div className="flex shrink-0 items-center gap-3">
+                        {(card.can_switch || card.single_top_level) && (
+                          <label className="flex items-center gap-1 text-xs text-slate-300">
+                            <input type="checkbox" checked={card.single_top_level} onChange={() => toggleSingle(card)} />
+                            One top-level request for all
+                          </label>
+                        )}
+                        {!oneChannel && <RemoveCardButton name={channelLabel(card.target)} onRemove={() => removeCard(card)} />}
+                      </div>
                     </header>
                     {!oneChannel &&
                       (preview.groups ?? [])
@@ -364,12 +450,36 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen, onReady, onNot
                         {warning}
                       </p>
                     ))}
+                    {(preview.groups ?? [])
+                      .filter((group) => groupOnCard(group, card.target) && groupChannels.some((choice) => choice.pr_id === group.pr_id && choice.group_id === group.group_id) && group.selected)
+                      .map((group) => (
+                        <SaveChannelBox
+                          key={groupKey(group)}
+                          team={group.selected as string}
+                          checked={saveChecked(saveFor, group)}
+                          onChange={(checked) => setSaveFor((current) => ({ ...current, [groupKey(group)]: checked }))}
+                        />
+                      ))}
                     {!card.signed_in && (
                       <p className="mt-1 text-xs text-amber-300">Sign in to {card.target.workspace} in Settings → Slack before sending.</p>
                     )}
                   </section>
                 ))}
-                {!oneChannel && <UnmappedHints groups={preview.groups ?? []} />}
+                {!oneChannel && (
+                  <PendingGroups
+                    api={api}
+                    workspaces={workspaces}
+                    groups={preview.groups ?? []}
+                    busy={loading || naming || sending}
+                    onPickTeam={pickTeam}
+                    onPickChannel={(group, next) => pickChannel([group], next)}
+                    onRemove={(group) => {
+                      const next = [...skippedGroups, { pr_id: group.pr_id, group_id: group.group_id }];
+                      setSkippedGroups(next);
+                      replan(request({ skippedGroups: next }));
+                    }}
+                  />
+                )}
                 {preview.skipped.length > 0 && (
                   <section aria-label="Skipped" className="rounded border border-slate-800 p-3 text-xs text-slate-400">
                     <h3 className="mb-1 font-medium text-slate-300">Skipped</h3>

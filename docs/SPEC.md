@@ -572,7 +572,7 @@ Computed from synced fields. Re-computed in the pre-send refresh.
 4. **Inline comments.** Text after ` #` is a comment. Escaped `\#` stays literal.
 5. User owners (`@login`) and emails are parsed and kept in `users_ignored_for_slack`. They are never mapped to channels. A user owner still satisfies the CODEOWNERS line when that login approved.
 
-**Slack requests cover each CODEOWNERS line.** The partition above still drives the detail panel. A Slack request uses a separate set: one group per distinct owner set of a last-match line on the changed files. Identical owner sets, in any order or case, are one group. An empty owner line adds no group. A group drops out when any of its teams or user owners already approved, or when a team selected for another group is also an owner of this one. Each remaining group proposes one team. The default is the first team on the line that has a Slack channel id. The preview lets the user pick another team from that line; the button names the team, and the card header is the channel that Send posts to. Two lines with two teams each propose two sends. Sends for the same pull request and the same channel are one message. A group whose teams have no channel id is a grey note (`No Slack channel is saved for @acme/team-a or @acme/team-b.`) and the other sends stay. When CODEOWNERS did not load, the request keeps the coverage teams (or the candidates when coverage is empty).
+**Slack requests cover each CODEOWNERS line.** The partition above still drives the detail panel. A Slack request uses a separate set: one group per distinct owner set of a last-match line on the changed files. Identical owner sets, in any order or case, are one group. An empty owner line adds no group. A group drops out when any of its teams or user owners already approved, or when a team selected for another group is also an owner of this one. Each remaining group proposes one team. The default is the first team on the line that has a Slack channel id. The preview lets the user pick another team from that line; the button names the team, and the card header is the channel that Send posts to. Two lines with two teams each propose two sends. Sends for the same pull request and the same channel are one message. A group whose teams have no channel id is still a send card: the grey sentence (`No Slack channel is saved for @acme/team-a or @acme/team-b.`) sits on the card, and the card's channel picker is the same one as the review destination (search by name, or enter an ID). The card is left out of the send until a channel is picked, the button counts only the cards that will be posted, and the user can remove the card. A checkbox on that card, on by default, saves the picked channel as that team's user mapping. Every send card's header is the channel that will be posted to; clicking it opens the same picker and the send follows the new channel. An active request in one channel makes that channel a bump and does not drop the other groups. When CODEOWNERS did not load, the request keeps the coverage teams (or the candidates when coverage is empty).
 
 **Partition** (same as the skill):
 - `exclusive` = teams that are the *sole team owner* of at least one changed path.
@@ -754,7 +754,7 @@ There is never a separate Request button and Bump button. **In the list**, rows 
 
 The preview decides per channel. A PR with an active request in one channel and a newly needed owner team in another channel gets a bump in the first and a request in the second.
 
-**One send per CODEOWNERS line.** When more than one group still needs an approval, or a group is not exactly one team, the single-PR dialog uses the same plan as bulk (§7.2, §7.9): one card per channel, a compact team switch on a line with several teams, and a grey note for a line with no mapped channel. Send posts each card to the channel the card shows. One pending group with exactly one team keeps the channel picker. A bump still reuses the thread in the channel that was selected. A mapping that moved since the last request still defaults to a new request in the mapped channel; the old thread is an explicit pick.
+**One send per CODEOWNERS line.** When more than one group still needs an approval, or a group is not exactly one team, the single-PR dialog uses the same plan as bulk (§7.2, §7.9): one card per channel, a compact team switch on a line with several teams, and a send card with the channel picker for a line with no mapped channel. That card shows the grey sentence, is not sent until a channel is picked, and can be removed. Send posts each remaining card to the channel the card shows. The header is that channel; clicking it changes the destination with the same picker, and cards that then share a channel for one pull request are one message. One pending group with exactly one team keeps the single channel picker. A bump still reuses the thread in the channel that was selected. An earlier request in one channel does not hide the other lines. A mapping that moved since the last request still defaults to a new request in the mapped channel; the old thread is an explicit pick.
 
 **Remapped channel.** Channels are matched by channel id, never by name. When a team's mapping now points to another channel than the one holding the PR's active request, the default is a **new top-level request in the mapped channel**; the old thread is not bumped. The preview (single and bulk, both modes, and the MCP `request_reviews` tool, which shares the bulk planner) says so on the card: "Channel changed since the last request: new request in #new for #N. The old thread in #old is not bumped." In the single dialog the old thread stays available as an explicit pick (`old thread · no longer mapped`); picking it shows a bump whose header names the old channel. Every header, 24 h warning and send uses the same target (`channel_id` + workspace), and Send re-plans and refuses a preview whose fingerprint no longer matches.
 
@@ -773,7 +773,7 @@ The preview decides per channel. A PR with an active request in one channel and 
 Because bumps use `reply_broadcast=true` by default (`review.bump_broadcast`, §7.12), Slack also shows each bump in the channel or DM history: `slack_read_channel` lists it as a top-level message while the root reports `Thread: N replies`. This is intended (the skill does the same), not a duplicate post. Warnings and toasts name a DM target `DM` (or `DM · name`), never `#D…`. A successful single send closes the dialog and shows a toast (`Review requested in acme · DM`, with **Open ↗** to the permalink). A bulk run shows a summary toast (`Slack: 2 sent · 1 failed`) when its result dialog closes.
 
 Both kinds open the same **preview modal** (wireframe and mockup in §8.2):
-- one card per `workspace · #channel`, with a **Change channel** dropdown (the picker) and a **Save as mapping correction** checkbox (checked by default; unchecked = only for this message);
+- one card per `workspace · #channel`. The header is the channel that will be posted to; clicking it opens the channel picker and the send follows the new channel. A card whose channel was picked or changed has a **Save channel for @team** checkbox (checked by default; unchecked = only for this message). A CODEOWNERS line with no saved channel is the same kind of card, with the picker open and the grey sentence on it, and it is left out of the send until a channel is picked. The user can remove a card;
 - each card is labeled **Request** or **Bump**. A request renders as a new message. A bump renders as a **thread reply under the existing message** (root excerpt plus "Open thread ↗");
 - a Slack-style rendering of the exact text (§7.6), unescaped, with an icon-only **Copy message** button at its top-right corner. In the single-PR dialog it copies the shown text including the optional note; it works like the bulk dialog's button (§7.9): a check and a "Message copied" toast, nothing sent or recorded, the dialog stays open;
 - inline warnings for PRs skipped for that channel (`acme/web#91 skipped: CI failing`) and approved teams skipped (with the reviewer's login);
@@ -781,7 +781,7 @@ Both kinds open the same **preview modal** (wireframe and mockup in §8.2):
 - the GitHub option "Also request <team> as reviewer on GitHub" (default off, D7);
 - footer: **Cancel** and primary **Send N messages**.
 
-Changing a channel saves a **user correction** for that team (`layer='user'`) when "Save as mapping correction" is checked.
+Changing or picking a channel saves a **user correction** for that team (`layer='user'`) when "Save channel for @team" is checked.
 
 There is no Slack draft step (Δ). The skill posts drafts first because an agent should not post unseen text. The in-app preview with an explicit Send button serves that purpose, with less friction (default D13).
 
@@ -942,7 +942,7 @@ The MCP search tools use the `search:read.*` scopes, not the legacy `search:read
   - `slack_add_reaction` and `slack_get_reactions`.
 
 **Target picker (`TargetCombobox`).** The review dialog's target field and the bulk dialog's **All to one channel** field are one Select2-style combobox (ARIA `combobox` input with `aria-autocomplete=list`, `aria-activedescendant` and `aria-describedby` on the helper line, over a `listbox` of `option`s):
-- **Order.** Suggestions first, under **Code owners and open requests**: the PR's open request targets and the mapped channels of its CODEOWNERS teams (`review_targets`), filtered by the typed term against the channel name and team. Then **Channels** and **People · direct message** from search, without repeating a suggestion. The bulk dialog has no suggestions.
+- **Order.** Suggestions first, under **Code owners and open requests**: the PR's open request targets and the mapped channels of its CODEOWNERS teams (`review_targets`), filtered by the typed term against the channel name and team. Then **Channels** and **People · direct message** from search, without repeating a suggestion. The bulk dialog has no suggestions. A suggestion's secondary text is why that channel is listed: the teams mapped to it (`@acme/team-a`), `open request` when this pull request already has a request there, or both. A search result has no such text.
 - **Search.** Typing `#term` searches channels, `@term` searches people, a bare term searches both (`slack_search_targets(workspace, query)`, up to 10 of each). The call waits 250 ms after the last keystroke and results are cached per workspace and query while the dialog is open. Search runs only in the workspace picked in the field's workspace select (shown when more than one workspace is connected; defaults to the current target's, else the first signed-in one). When one kind fails and the other returns results, the results are shown; when nothing is found and a call failed, the list shows `Search failed: <reason>`.
 - **Members.** Picking a person stores their user ID (`U…`/`W…`) as the target channel: `slack_send_message` delivers it as a direct message, the request record keeps the ID and the person's name, bumps reply in that DM thread, and the UI labels it `@Name`.
 - **Keyboard.** ↑/↓ move the active option, Enter picks it, Esc closes the list without closing the dialog, Tab leaves. When not editing, the field shows the chosen target's label.
@@ -1271,8 +1271,8 @@ Keyboard: `j/k` move, `x` toggle select, `Shift+x` toggle the focused row's sect
 ┌ Preview Slack messages (2 channels, 3 PRs) ───────────────────────────────────────┐
 │ Review the messages below before sending to Slack.                                │
 │ ┌───────────────────────────────────────────────────────────────────────────────┐ │
-│ │ acme · #team-a-reviews                  REQUEST  [Change channel ▾]           │ │
-│ │                                                  ☑ Save as mapping correction │ │
+│ │ acme · #team-a-reviews                  REQUEST  [click the channel to change]│ │
+│ │                                                  ☑ Save channel for @acme/team-a │ │
 │ │  (you)  10:42                                                                 │ │
 │ │  Hello team                                                                   │ │
 │ │  Could someone please review these pull requests?                             │ │
@@ -1283,8 +1283,8 @@ Keyboard: `j/k` move, `x` toggle select, `Shift+x` toggle the focused row's sect
 │ │  Thanks!                                                                      │ │
 │ │  Extra text: [                                    ]                           │ │
 │ ├───────────────────────────────────────────────────────────────────────────────┤ │
-│ │ acme · #team-b-reviews                  BUMP     [Change channel ▾]           │ │
-│ │                                                  ☑ Save as mapping correction │ │
+│ │ acme · #team-b-reviews                  BUMP     [click the channel to change]│ │
+│ │                                                  ☑ Save channel for @acme/team-b │ │
 │ │  ┊ (you) 3d ago: Hello team … /pull/23                     Open thread ↗      │ │
 │ │  └─ (you) 10:42 · reply, also sent to channel                                 │ │
 │ │     Hello, I'm still looking for a review on Fix tax calculation edge case    │ │

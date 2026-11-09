@@ -36,6 +36,9 @@ function fake() {
   const calls = { previews: [] as BulkRequest[], sends: [] as [BulkRequest, string[]][] };
   const api = {
     slackWorkspaces: () => Promise.resolve([{ id: 3, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false, team_id: "T0ACME0001", enabled: true, priority: 0 }]),
+    reviewTargets: () => Promise.resolve([]),
+    searchSlackTargets: () => Promise.resolve([]),
+    saveMapping: () => Promise.resolve(),
     bulkPreview: (request: BulkRequest): Promise<BulkPreview> => {
       calls.previews.push(request);
       if (request.target) {
@@ -382,7 +385,7 @@ test("draws the cards from cached names at once, then swaps in Slack's names bef
   expect(screen.getByRole("button", { name: "Send 2 messages" })).toBeEnabled();
 });
 
-test("a CODEOWNERS line can switch teams, and a line with no channel is only a hint", async () => {
+test("a CODEOWNERS line can switch teams, and a line with no channel is a card", async () => {
   const { api, calls } = fake();
   const teamA = { workspace: "acme", channel_id: "C0ACME0001", channel_name: "team-a" };
   const teamB = { workspace: "acme", channel_id: "C0ACME0002", channel_name: "team-b" };
@@ -416,6 +419,9 @@ test("a CODEOWNERS line can switch teams, and a line with no channel is only a h
   };
   render(<BulkDialog api={withGroups} prIds={[1]} onClose={() => undefined} onSent={() => undefined} onOpen={() => undefined} />);
   expect(await screen.findByRole("region", { name: /#team-a/ })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Change channel, currently #team-a" })).toBeInTheDocument();
+  expect(screen.getByRole("region", { name: "Choose a channel for @acme/team-e" })).toBeInTheDocument();
+  expect(screen.getByRole("combobox", { name: "Channel" })).toBeInTheDocument();
   expect(screen.getByRole("note", { name: "No Slack channel" })).toHaveTextContent("No Slack channel is saved for @acme/team-e.");
   expect(screen.getByRole("note", { name: "Failing checks" })).toHaveClass("text-slate-500");
   fireEvent.click(screen.getByRole("button", { name: "@acme/team-b" }));
@@ -424,6 +430,43 @@ test("a CODEOWNERS line can switch teams, and a line with no channel is only a h
   fireEvent.click(screen.getByRole("button", { name: "Send 2 messages" }));
   await waitFor(() => expect(calls.sends[0]?.[1]).toEqual(["C0ACME0002", "C0ACME0003"]));
   expect(calls.sends[0]?.[0].group_choices).toEqual([{ pr_id: 1, group_id: "line-a", team: "acme/team-b" }]);
+});
+
+test("changing a card's channel retargets that send, and Remove drops the original channel", async () => {
+  const { api, calls } = fake();
+  const moving: Api = {
+    ...api,
+    bulkPreview: (request: BulkRequest) => {
+      calls.previews.push(request);
+      const move = request.channel_moves?.[0];
+      if ((request.skipped_channels ?? []).length > 0) {
+        return Promise.resolve({ cards: [], skipped: [], pr_warnings: [] });
+      }
+      const target = move
+        ? { workspace: move.target.workspace || "acme", channel_id: move.target.channel_id, channel_name: move.target.channel_name || "ops-reviews" }
+        : platform;
+      return Promise.resolve({
+        cards: [{ ...card(false), target, fingerprint: target.channel_id }],
+        skipped: [],
+        pr_warnings: [],
+      });
+    },
+  };
+  render(<BulkDialog api={moving} prIds={[1, 2]} onClose={() => undefined} onSent={() => undefined} onOpen={() => undefined} />);
+  await screen.findByText("Bump #42");
+  fireEvent.click(screen.getByRole("button", { name: "Change channel, currently #platform" }));
+  fireEvent.click(screen.getByRole("button", { name: "Enter an ID" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Channel, DM or member ID" }), { target: { value: "C0ACME0009" } });
+  fireEvent.change(screen.getByRole("textbox", { name: "Name" }), { target: { value: "ops-reviews" } });
+  fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+  expect(await screen.findByRole("button", { name: "Change channel, currently #ops-reviews" })).toBeInTheDocument();
+  expect(calls.previews.at(-1)?.channel_moves).toEqual([
+    { workspace: "acme", channel_id: "C0123456789", target: { workspace: "", channel_id: "C0ACME0009", channel_name: "ops-reviews" } },
+  ]);
+  fireEvent.click(screen.getByRole("button", { name: "Remove #ops-reviews" }));
+  expect(await screen.findByText("Nothing to send.")).toBeInTheDocument();
+  expect(calls.previews.at(-1)?.skipped_channels).toEqual([{ workspace: "acme", channel_id: "C0123456789" }]);
+  expect(calls.previews.at(-1)?.channel_moves).toEqual([]);
 });
 
 test("skips the Slack round when every name is already cached", async () => {

@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Api, BulkCard, BulkGroup, BulkPreview, GroupChoice, ListRow, OwnerGroup, PrWarning, ReviewTarget, SlackIndicator } from "../api";
+import type { Api, BulkCard, BulkGroup, BulkMessage, BulkPreview, GroupChannelChoice, GroupChoice, GroupRef, ListRow, MappingRow, OwnerGroup, PrWarning, ReviewTarget, SlackIndicator, SlackWorkspace, TargetChoice } from "../api";
 import { channelLabel, errorMessage } from "../api";
 import type { Toast } from "../list/model";
 import { plainText } from "../textInput";
+import { Tooltip } from "../Tooltip";
 import { CopyMessageButton } from "./CopyMessageButton";
 import { DraftWarning } from "./DraftWarning";
 import { Mrkdwn } from "./mrkdwn";
+import { TargetCombobox } from "./TargetCombobox";
 
 function withNote(text: string, note: string): string {
   const trimmed = note.trim();
@@ -54,7 +56,7 @@ export function GroupSwitcher({
   disabled: boolean;
   onPick: (team: string) => void;
 }) {
-  if (group.hint || group.teams.length < 2) {
+  if (group.teams.length < 2) {
     return null;
   }
   return (
@@ -78,18 +80,242 @@ export function GroupSwitcher({
   );
 }
 
-export function UnmappedHints({ groups }: { groups: BulkGroup[] }) {
+/** A line with no channel yet: a card, not a send, until the user picks one. */
+export function needsChannel(group: BulkGroup): boolean {
+  return group.needs_channel === true || (!group.channel_id && Boolean(group.hint));
+}
+
+export function groupKey(group: Pick<BulkGroup, "pr_id" | "group_id">): string {
+  return `${group.pr_id}:${group.group_id}`;
+}
+
+export function actionLabel(action: BulkMessage["action"]): string {
+  switch (action) {
+    case "request":
+      return "New request";
+    case "bump":
+      return "Bump in thread";
+    case "remind":
+      return "New reminder (replaces the old threads)";
+    default: {
+      const unexpected: never = action;
+      return unexpected;
+    }
+  }
+}
+
+/** Save is on unless the user turns it off. Matches the mapping-correction default. */
+export function saveChecked(saved: Record<string, boolean>, group: BulkGroup): boolean {
+  return saved[groupKey(group)] ?? true;
+}
+
+export function RemoveCardButton({ name, onRemove }: { name: string; onRemove: () => void }) {
+  return (
+    <button type="button" className="shrink-0 text-xs text-slate-400 underline" aria-label={`Remove ${name}`} onClick={onRemove}>
+      Remove
+    </button>
+  );
+}
+
+export function SaveChannelBox({ team, checked, onChange }: { team: string; checked: boolean; onChange: (checked: boolean) => void }) {
+  return (
+    <label className="mt-2 flex items-center gap-2 text-xs text-slate-400">
+      <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
+      Save channel for {teamLabel(team)}
+    </label>
+  );
+}
+
+function useSuggestions(api: Pick<Api, "reviewTargets">, prIds: number[], teams: string[]) {
+  const [suggestions, setSuggestions] = useState<TargetChoice[]>([]);
+  const ids = prIds.join(",");
+  const teamKey = teams.join(",");
+  useEffect(() => {
+    if (!ids) {
+      return;
+    }
+    let cancel = false;
+    void Promise.all(ids.split(",").map((id) => api.reviewTargets(Number(id), teamKey ? teamKey.split(",") : []).catch(() => [] as TargetChoice[]))).then(
+      (lists) => {
+        if (!cancel) {
+          setSuggestions(lists.flat());
+        }
+      },
+    );
+    return () => {
+      cancel = true;
+    };
+  }, [api, ids, teamKey]);
+  return suggestions;
+}
+
+/** The review dialog's channel picker, optionally tightened for a card. */
+export function ChannelField({
+  api,
+  workspaces,
+  prIds,
+  teams,
+  value,
+  label,
+  compact = false,
+  onSelect,
+}: {
+  api: Pick<Api, "reviewTargets" | "searchSlackTargets">;
+  workspaces: SlackWorkspace[];
+  prIds: number[];
+  teams: string[];
+  value: ReviewTarget | null;
+  label: string;
+  compact?: boolean;
+  onSelect: (target: ReviewTarget) => void;
+}) {
+  const suggestions = useSuggestions(api, prIds, teams);
+  return (
+    <TargetCombobox
+      api={api}
+      workspaces={workspaces}
+      suggestions={suggestions}
+      value={value}
+      label={label}
+      compact={compact}
+      onSelect={(target) => onSelect(target)}
+    />
+  );
+}
+
+/** Click the channel that will be posted to, and pick another one. */
+export function ChannelHeading({
+  api,
+  workspaces,
+  prIds,
+  teams,
+  target,
+  onSelect,
+}: {
+  api: Pick<Api, "reviewTargets" | "searchSlackTargets">;
+  workspaces: SlackWorkspace[];
+  prIds: number[];
+  teams: string[];
+  target: ReviewTarget;
+  onSelect: (target: ReviewTarget) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const label = channelLabel(target);
+  if (editing) {
+    return (
+      <div className="min-w-0 flex-1">
+        <ChannelField
+          api={api}
+          workspaces={workspaces}
+          prIds={prIds}
+          teams={teams}
+          value={target}
+          label={`Channel, currently ${label}`}
+          compact
+          onSelect={(next) => {
+            setEditing(false);
+            onSelect(next);
+          }}
+        />
+      </div>
+    );
+  }
+  return (
+    <Tooltip label={`Channel ID ${target.channel_id}`} align="start">
+      <button
+        type="button"
+        className="font-medium underline decoration-slate-600 underline-offset-2 hover:decoration-slate-200"
+        aria-label={`Change channel, currently ${label}`}
+        onClick={() => setEditing(true)}
+      >
+        {label}
+      </button>
+    </Tooltip>
+  );
+}
+
+export function PendingGroups({
+  api,
+  workspaces,
+  groups,
+  busy,
+  onPickTeam,
+  onPickChannel,
+  onRemove,
+}: {
+  api: Pick<Api, "reviewTargets" | "searchSlackTargets">;
+  workspaces: SlackWorkspace[];
+  groups: BulkGroup[];
+  busy: boolean;
+  onPickTeam: (group: BulkGroup, team: string) => void;
+  onPickChannel: (group: BulkGroup, target: ReviewTarget) => void;
+  onRemove: (group: BulkGroup) => void;
+}) {
+  const pending = groups.filter(needsChannel);
+  if (pending.length === 0) {
+    return null;
+  }
   return (
     <>
-      {groups
-        .filter((group) => group.hint)
-        .map((group) => (
-          <p key={`${group.pr_id}:${group.group_id}`} role="note" aria-label="No Slack channel" className="text-xs text-slate-500">
-            {group.hint}
-          </p>
-        ))}
+      {pending.map((group) => {
+        const name = group.teams.map(teamLabel).join(", ") || group.pattern;
+        return (
+          <section key={groupKey(group)} aria-label={`Choose a channel for ${name}`} className="rounded border border-dashed border-slate-600 p-3">
+            <header className="flex items-start justify-between gap-2">
+              <h3 className="font-medium">{name}</h3>
+              <RemoveCardButton name={name} onRemove={() => onRemove(group)} />
+            </header>
+            {group.hint && (
+              <p role="note" aria-label="No Slack channel" className="mt-1 text-xs text-slate-500">
+                {group.hint}
+              </p>
+            )}
+            <GroupSwitcher group={group} disabled={busy} onPick={(team) => onPickTeam(group, team)} />
+            <div className="mt-2">
+              <ChannelField
+                api={api}
+                workspaces={workspaces}
+                prIds={[group.pr_id]}
+                teams={group.teams}
+                value={null}
+                label="Channel"
+                onSelect={(target) => onPickChannel(group, target)}
+              />
+            </div>
+          </section>
+        );
+      })}
     </>
   );
+}
+
+/** Write a user mapping for each picked channel the user left checked. */
+export async function saveChosenChannels(api: Pick<Api, "saveMapping">, preview: BulkPreview, channels: GroupChannelChoice[], saved: Record<string, boolean>) {
+  for (const choice of channels) {
+    const group = (preview.groups ?? []).find((item) => item.pr_id === choice.pr_id && item.group_id === choice.group_id);
+    if (!group?.selected || !saveChecked(saved, group)) {
+      continue;
+    }
+    const card = preview.cards.find((item) => groupOnCard(group, item.target));
+    const target = card?.target ?? choice.target;
+    if (!target.channel_id.trim()) {
+      continue;
+    }
+    const [org, slug] = group.selected.replace(/^@/, "").split("/");
+    if (!org || !slug || slug.includes("/")) {
+      continue;
+    }
+    const row: MappingRow = {
+      github_org: org,
+      team_slug: slug,
+      team_name: "",
+      slack_workspace: target.workspace,
+      slack_team_id: target.team_id ?? undefined,
+      slack_channel_name: target.channel_name,
+      slack_channel_id: target.channel_id,
+    };
+    await api.saveMapping(row, false);
+  }
 }
 
 export function CheckNotes({ warnings }: { warnings: PrWarning[] }) {
@@ -121,6 +347,10 @@ interface GroupedProps {
 export function GroupedRequest({ api, row, onClose, onSent, onOpen, onReady, onNotice }: GroupedProps) {
   const [preview, setPreview] = useState<BulkPreview | null>(null);
   const [choices, setChoices] = useState<GroupChoice[]>([]);
+  const [channels, setChannels] = useState<GroupChannelChoice[]>([]);
+  const [skipped, setSkipped] = useState<GroupRef[]>([]);
+  const [saveFor, setSaveFor] = useState<Record<string, boolean>>({});
+  const [workspaces, setWorkspaces] = useState<SlackWorkspace[]>([]);
   const [loading, setLoading] = useState(true);
   const [naming, setNaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -132,10 +362,17 @@ export function GroupedRequest({ api, row, onClose, onSent, onOpen, onReady, onN
   const generation = useRef(0);
 
   const plan = useCallback(
-    async (groupChoices: GroupChoice[]) => {
+    async (groupChoices: GroupChoice[], groupChannels: GroupChannelChoice[], skippedGroups: GroupRef[]) => {
       const run = ++generation.current;
       const current = () => run === generation.current;
-      const body = { pr_ids: [row.id], target: null, single_top_level: [], group_choices: groupChoices };
+      const body = {
+        pr_ids: [row.id],
+        target: null,
+        single_top_level: [],
+        group_choices: groupChoices,
+        group_channels: groupChannels,
+        skipped_groups: skippedGroups,
+      };
       let first: BulkPreview;
       try {
         first = await api.bulkPreview({ ...body, cached_names: true });
@@ -172,22 +409,57 @@ export function GroupedRequest({ api, row, onClose, onSent, onOpen, onReady, onN
   );
 
   useEffect(() => {
+    void api.slackWorkspaces().then(setWorkspaces).catch(() => setWorkspaces([]));
+  }, [api]);
+
+  useEffect(() => {
     void (async () => {
-      await plan([]);
+      await plan([], [], []);
     })();
     return () => {
       generation.current += 1;
     };
   }, [plan]);
 
+  function replan(groupChoices: GroupChoice[], groupChannels: GroupChannelChoice[], skippedGroups: GroupRef[]) {
+    setLoading(true);
+    setPreview(null);
+    setError(null);
+    void plan(groupChoices, groupChannels, skippedGroups);
+  }
+
   function pick(group: BulkGroup, team: string) {
     const next = choices.filter((choice) => !(choice.pr_id === group.pr_id && choice.group_id === group.group_id));
     next.push({ pr_id: group.pr_id, group_id: group.group_id, team });
     setChoices(next);
-    setLoading(true);
-    setPreview(null);
-    setError(null);
-    void plan(next);
+    replan(next, channels, skipped);
+  }
+
+  function pickChannel(group: BulkGroup, target: ReviewTarget) {
+    const next = channels.filter((choice) => !(choice.pr_id === group.pr_id && choice.group_id === group.group_id));
+    next.push({ pr_id: group.pr_id, group_id: group.group_id, target });
+    setChannels(next);
+    replan(choices, next, skipped);
+  }
+
+  function retarget(card: BulkCard, target: ReviewTarget) {
+    const mine = (preview?.groups ?? []).filter((group) => groupOnCard(group, card.target));
+    pickChannelMany(mine, target);
+  }
+
+  function pickChannelMany(mine: BulkGroup[], target: ReviewTarget) {
+    const next = channels.filter((choice) => !mine.some((group) => group.pr_id === choice.pr_id && group.group_id === choice.group_id));
+    for (const group of mine) {
+      next.push({ pr_id: group.pr_id, group_id: group.group_id, target });
+    }
+    setChannels(next);
+    replan(choices, next, skipped);
+  }
+
+  function removeGroups(mine: BulkGroup[]) {
+    const next = [...skipped, ...mine.map((group) => ({ pr_id: group.pr_id, group_id: group.group_id }))];
+    setSkipped(next);
+    replan(choices, channels, next);
   }
 
   async function markReady() {
@@ -198,7 +470,7 @@ export function GroupedRequest({ api, row, onClose, onSent, onOpen, onReady, onN
       setMarkedReady(true);
       onReady?.(row.id);
       setLoading(true);
-      await plan(choices);
+      await plan(choices, channels, skipped);
     } catch (err) {
       setError(`Couldn't mark it ready for review: ${errorMessage(err)}`);
     } finally {
@@ -213,6 +485,7 @@ export function GroupedRequest({ api, row, onClose, onSent, onOpen, onReady, onN
     setSending(true);
     setError(null);
     try {
+      await saveChosenChannels(api, preview, channels, saveFor);
       let last: SlackIndicator | null = null;
       for (const card of preview.cards) {
         const teams = (preview.groups ?? []).filter((group) => groupOnCard(group, card.target) && group.selected).map((group) => group.selected as string);
@@ -235,7 +508,8 @@ export function GroupedRequest({ api, row, onClose, onSent, onOpen, onReady, onN
   const drafts = !markedReady && (preview?.pr_warnings ?? []).some((warning) => warning.kind === "draft");
   const messageCount = preview?.cards.reduce((sum, card) => sum + card.messages.length, 0) ?? 0;
   const unsigned = preview?.cards.some((card) => !card.signed_in) ?? false;
-  const label = messageCount === 1 ? "Send request" : `Send ${messageCount} messages`;
+  const label = messageCount > 1 ? `Send ${messageCount} messages` : "Send request";
+  const overridden = (group: BulkGroup) => channels.some((choice) => choice.pr_id === group.pr_id && choice.group_id === group.group_id);
 
   return (
     <>
@@ -254,10 +528,34 @@ export function GroupedRequest({ api, row, onClose, onSent, onOpen, onReady, onN
       {preview && (
         <div className="mt-4 space-y-3">
           {preview.cards.map((card) => (
-            <GroupCard key={card.fingerprint} card={card} groups={groups} busy={loading || naming || sending} note={note} onPick={pick} onOpen={onOpen} onNotice={onNotice} />
+            <GroupCard
+              key={card.fingerprint}
+              api={api}
+              workspaces={workspaces}
+              card={card}
+              groups={groups}
+              busy={loading || naming || sending}
+              note={note}
+              saveFor={saveFor}
+              overridden={overridden}
+              onPick={pick}
+              onRetarget={(target) => retarget(card, target)}
+              onRemove={() => removeGroups(groups.filter((group) => groupOnCard(group, card.target)))}
+              onSave={(group, checked) => setSaveFor((current) => ({ ...current, [groupKey(group)]: checked }))}
+              onOpen={onOpen}
+              onNotice={onNotice}
+            />
           ))}
-          <UnmappedHints groups={groups} />
-          {preview.cards.length > 0 && (
+          <PendingGroups
+            api={api}
+            workspaces={workspaces}
+            groups={groups}
+            busy={loading || naming || sending}
+            onPickTeam={pick}
+            onPickChannel={pickChannel}
+            onRemove={(group) => removeGroups([group])}
+          />
+          {(preview.cards.length > 0 || groups.some(needsChannel)) && (
             <label className="block text-xs text-slate-400">
               Note (optional, added after a blank line)
               <textarea
@@ -297,38 +595,75 @@ export function GroupedRequest({ api, row, onClose, onSent, onOpen, onReady, onN
 }
 
 function GroupCard({
+  api,
+  workspaces,
   card,
   groups,
   busy,
   note,
+  saveFor,
+  overridden,
   onPick,
+  onRetarget,
+  onRemove,
+  onSave,
   onOpen,
   onNotice,
 }: {
+  api: Api;
+  workspaces: SlackWorkspace[];
   card: BulkCard;
   groups: BulkGroup[];
   busy: boolean;
   note: string;
+  saveFor: Record<string, boolean>;
+  overridden: (group: BulkGroup) => boolean;
   onPick: (group: BulkGroup, team: string) => void;
+  onRetarget: (target: ReviewTarget) => void;
+  onRemove: () => void;
+  onSave: (group: BulkGroup, checked: boolean) => void;
   onOpen: (url: string) => void;
   onNotice?: (toast: Toast) => void;
 }) {
   const mine = groups.filter((group) => groupOnCard(group, card.target));
+  const teams = [...new Set(mine.flatMap((group) => group.teams))];
+  const prIds = [...new Set(mine.map((group) => group.pr_id))];
+  const label = channelLabel(card.target);
   return (
-    <section aria-label={channelLabel(card.target)} className="rounded border border-slate-700 p-3">
-      <h3 className="font-medium">{channelLabel(card.target)}</h3>
+    <section aria-label={label} className="rounded border border-slate-700 p-3">
+      <header className="flex items-start justify-between gap-2">
+        <ChannelHeading api={api} workspaces={workspaces} prIds={prIds.length > 0 ? prIds : [card.messages[0]?.prs[0]?.pr_id ?? 0]} teams={teams} target={card.target} onSelect={onRetarget} />
+        <RemoveCardButton name={label} onRemove={onRemove} />
+      </header>
+      {mine.length > 1 && <p className="mt-1 text-xs text-slate-500">These lines share this message.</p>}
       {mine.map((group) => (
         <GroupSwitcher key={group.group_id} group={group} disabled={busy} onPick={(team) => onPick(group, team)} />
       ))}
       {card.messages.map((message, index) => {
         const text = withNote(message.text, note);
         return (
-          <div key={index} className="relative mt-2 rounded border border-slate-800 bg-slate-950 p-3 pr-10">
-            <Mrkdwn label="Message preview" text={text} onOpen={onOpen} />
-            <CopyMessageButton text={text} onNotice={onNotice} />
+          <div key={index} className="relative mt-2">
+            <p className="text-xs text-slate-400">
+              {actionLabel(message.action)}
+              {message.permalink && (
+                <>
+                  {" "}
+                  <button type="button" className="underline" onClick={() => onOpen(message.permalink!)}>
+                    Open thread ↗
+                  </button>
+                </>
+              )}
+            </p>
+            <div className="relative mt-1 rounded border border-slate-800 bg-slate-950 p-3 pr-10">
+              <Mrkdwn label="Message preview" text={text} onOpen={onOpen} />
+              <CopyMessageButton text={text} onNotice={onNotice} />
+            </div>
           </div>
         );
       })}
+      {mine.filter((group) => overridden(group) && group.selected).map((group) => (
+        <SaveChannelBox key={groupKey(group)} team={group.selected as string} checked={saveChecked(saveFor, group)} onChange={(checked) => onSave(group, checked)} />
+      ))}
       {!card.signed_in && <p className="mt-1 text-xs text-amber-300">Sign in to {card.target.workspace} in Settings → Slack before sending.</p>}
     </section>
   );

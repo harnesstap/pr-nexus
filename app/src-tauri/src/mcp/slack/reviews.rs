@@ -186,9 +186,20 @@ fn request_reviews(state: &AppState, arguments: JsonObject) -> Result<Value, App
         single_top_level: Vec::new(),
         cached_names: false,
         group_choices: Vec::new(),
+        group_channels: Vec::new(),
+        skipped_groups: Vec::new(),
+        channel_moves: Vec::new(),
+        skipped_channels: Vec::new(),
     };
     let mut preview = bulk::preview(state, &request)?;
     let mut skipped = skips(&preview);
+    for group in preview.groups.iter().filter(|group| group.needs_channel) {
+        skipped.push(json!({
+            "pr_id": group.pr_id,
+            "number": group.number,
+            "detail": group.hint.clone().unwrap_or_else(|| "No Slack channel is saved for this owner.".to_owned()),
+        }));
+    }
     // A strict mode drops PRs that would get the other kind of message.
     if args.mode != Mode::Auto {
         let wrong: BTreeSet<i64> = preview

@@ -20,6 +20,8 @@ interface Props {
   channelsOnly?: boolean;
   /** "Enter an ID" takes the ID alone; the caller reads the name from Slack. */
   nameFromId?: boolean;
+  /** Shorter field for a card header. Search, ID entry, and their warnings stay. */
+  compact?: boolean;
 }
 
 type Option =
@@ -91,17 +93,33 @@ function keyOf(target: ReviewTarget) {
   return target.channel_id;
 }
 
+/** `@org/slug`, whatever shape the choice stored the team in. */
+function formatTeams(teams: string[]): string {
+  return teams
+    .map((team) => {
+      const name = team.trim().replace(/^@/, "");
+      return name ? `@${name}` : "";
+    })
+    .filter(Boolean)
+    .join(", ");
+}
+
+/**
+ * Why this channel is suggested. The teams are the ones mapped to it.
+ * An open request on this pull request says so. A search hit is not a suggestion
+ * and gets no note.
+ */
 function describe(choice: TargetChoice) {
-  if (choice.source === "request") {
-    return "open request";
-  }
   if (choice.source === "unresolved") {
-    return `${choice.teams.join(", ")} · no channel ID yet, pick to search`;
+    const teams = formatTeams(choice.teams);
+    return teams ? `${teams} · no channel ID yet, pick to search` : "no channel ID yet, pick to search";
   }
   if (choice.source === "previous") {
     return "old thread · no longer mapped";
   }
-  return choice.teams.join(", ");
+  const teams = formatTeams(choice.teams);
+  const open = choice.source === "request" ? "open request" : "";
+  return [teams, open].filter(Boolean).join(" · ");
 }
 
 /**
@@ -119,6 +137,7 @@ export function TargetCombobox({
   label = "Channel or person",
   channelsOnly = false,
   nameFromId = false,
+  compact = false,
 }: Props) {
   const id = useId();
   const listId = `${id}-list`;
@@ -249,7 +268,9 @@ export function TargetCombobox({
     onSelect({ workspace: "", channel_id: channelId, channel_name: nameFromId ? "" : manualName.trim() }, null);
   }
 
-  const input = "mt-1 w-full rounded border border-slate-700 bg-slate-950 px-2 py-1.5";
+  const input = compact
+    ? "mt-1 w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs"
+    : "mt-1 w-full rounded border border-slate-700 bg-slate-950 px-2 py-1.5";
   let lastSection: string | null = null;
   return (
     <div className="space-y-1">
@@ -355,14 +376,14 @@ export function TargetCombobox({
         </div>
       </div>
       <p id={helpId} className="text-xs text-slate-500">
-        {channelsOnly ? (
-          <>Type a channel name to search{several ? " every workspace" : ""}.</>
+        {compact ? null : channelsOnly ? (
+          <>Type a channel name to search{several ? " every workspace" : ""}. </>
         ) : (
           <>
             Type # to search channels or @ to search people; a person gets a direct message. Code-owner channels are listed
-            first{several ? ", then results by workspace" : ""}.
+            first{several ? ", then results by workspace" : ""}.{" "}
           </>
-        )}{" "}
+        )}
         <button type="button" className="underline" onClick={() => setManual((shown) => !shown)} aria-expanded={manual}>
           {manual ? "Hide ID entry" : "Enter an ID"}
         </button>
