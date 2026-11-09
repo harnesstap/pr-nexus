@@ -1,3 +1,0 @@
-kind: Fixed
-body: "After Mark ready for review, the open Slack preview is planned again. A pull request whose checks are still failing stays skipped. A draft whose latest checks are passing is included, and an owner decision from a different draft or checks state is not reused."
-time: 2026-11-07T03:30:00.000000Z
