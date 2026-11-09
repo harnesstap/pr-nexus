@@ -11,6 +11,7 @@
 mod auth;
 mod branch;
 mod http;
+mod issue_search;
 mod notifications;
 mod overview;
 mod ownership;

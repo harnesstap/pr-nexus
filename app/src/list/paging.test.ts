@@ -333,3 +333,18 @@ test("repository choices count the current view and keep a selected name at zero
   expect(page.sections.flatMap((section) => section.ids)).toEqual([2]);
   expect(filtersActive(view.filters)).toBe(true);
 });
+
+test("a GitHub query lists its ids in order, keeps merged rows, and still applies the repository filter", () => {
+  const rows = [
+    row({ id: 1, title: "Open widget", repo: "acme/widgets", involvement: 0 }),
+    row({ id: 2, title: "Merged widget", repo: "acme/widgets", state: "merged", involvement: 0 }),
+    row({ id: 3, title: "Other repo", repo: "acme-labs/widgets", owner: "acme-labs", involvement: 0 }),
+    row({ id: 4, title: "Starred widget", repo: "acme/widgets", starred: true, involvement: 0 }),
+  ];
+  const view = { ...defaultView(), filters: { ...defaultView().filters, repos: ["acme/widgets"], github: "is:pr author:octocat" } };
+  const page = pageFromRows(rows, [], request("to_review", view, "", { github_ids: [3, 1, 2, 4], github_any_state: true }));
+  expect(page.sections.flatMap((section) => section.ids)).toEqual([4, 1, 2]);
+  const openOnly = pageFromRows(rows, [], request("to_review", view, "", { github_ids: [3, 1, 2, 4], github_any_state: false }));
+  expect(openOnly.sections.flatMap((section) => section.ids)).toEqual([4, 1]);
+  expect(pageFromRows(rows, [], request("to_review", defaultView())).sections.flatMap((section) => section.ids)).toEqual([]);
+});

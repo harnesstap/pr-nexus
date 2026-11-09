@@ -585,6 +585,40 @@ fn status_reads_the_slow_fields_by_id_in_small_chunks() {
 }
 
 #[test]
+fn a_rejected_pull_request_query_keeps_githubs_sentence() {
+    let server = server();
+    let runtime = tokio::runtime::Runtime::new().expect("tokio");
+    runtime.block_on(async {
+        Mock::given(method("GET"))
+            .and(path("/search/issues"))
+            .respond_with(ResponseTemplate::new(422).set_body_string(
+                r#"{"message":"Validation Failed","errors":[{"message":"The listed users and repositories cannot be searched either because the resources do not exist or you do not have permission to view them."}]}"#,
+            ))
+            .mount(&server)
+            .await;
+    });
+    let client = GithubClient::with_base(server.uri(), AccountId(1), "token").unwrap();
+    let err = client
+        .search_issues(
+            "is:pr author:no-such-user repo:acme/missing",
+            None,
+            true,
+            "github.com",
+            100,
+        )
+        .unwrap_err();
+    match err {
+        ProviderError::Api { code, message } => {
+            assert_eq!(code, "422");
+            assert!(message.contains("cannot be searched"), "{message}");
+            assert!(!message.contains("Validation Failed"), "{message}");
+            assert!(!message.contains("422"), "{message}");
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+}
+
+#[test]
 fn a_failed_status_chunk_fails_the_pass() {
     let server = server();
     mount(

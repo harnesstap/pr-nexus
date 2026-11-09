@@ -326,10 +326,16 @@ pub fn database_path(app: &tauri::App) -> PathBuf {
 }
 
 pub fn github_account(store: &Store) -> Result<Option<Account>, AppError> {
-    let accounts = store.list_accounts()?;
-    Ok(accounts
+    Ok(github_accounts(store)?.into_iter().next())
+}
+
+/// Every connected GitHub account. A typed query runs on each of them.
+pub fn github_accounts(store: &Store) -> Result<Vec<Account>, AppError> {
+    Ok(store
+        .list_accounts()?
         .into_iter()
-        .find(|account| account.kind == AccountKind::GitHub))
+        .filter(|account| account.kind == AccountKind::GitHub)
+        .collect())
 }
 
 pub fn resolve_github_token(

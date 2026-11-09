@@ -13,6 +13,7 @@ import {
   defaultView,
   parseDragIds,
   parseViewState,
+  listHidesClosed,
   moreReviews,
   remoteFilterKey,
   remoteReviewFilter,
@@ -35,6 +36,10 @@ const SYNC_POLL_MS = 500;
 const IDLE_POLL_MS = 15_000;
 /** Quiet time after a To review filter change before GitHub is searched with it (§6). */
 export const REMOTE_FILTER_DEBOUNCE_MS = 400;
+/** Quiet time after a GitHub query edit before it is sent. */
+export const GITHUB_QUERY_DEBOUNCE_MS = 400;
+const GITHUB_QUERY_PAGE = 100;
+const GITHUB_QUERY_CAP = 1000;
 const NO_REMOTE_FILTER: RemoteReviewFilter = { orgs: [], repos: [], draft: null, review: null, ci: null };
 import { DetailPanel } from "../detail/DetailPanel";
 import { ProjectDialog } from "./ProjectDialog";
@@ -113,6 +118,30 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
   /** The bulk run's summary, shown as a toast once its dialog closes. */
   const [bulkSummary, setBulkSummary] = useState<string | null>(null);
   const view = views[viewKey] ?? defaultView();
+  const githubText = view.filters.github.trim();
+  const githubKey = `${viewKey}\0${githubText}\0${view.filters.repos.join("\n")}`;
+  const [githubLimit, setGithubLimit] = useState(GITHUB_QUERY_PAGE);
+  const [githubLimitKey, setGithubLimitKey] = useState(githubKey);
+  if (githubLimitKey !== githubKey) {
+    setGithubLimitKey(githubKey);
+    setGithubLimit(GITHUB_QUERY_PAGE);
+  }
+  const [githubResult, setGithubResult] = useState<{
+    key: string;
+    limit: number;
+    ids: number[];
+    total: number;
+    openOnly: boolean;
+    error: string;
+  } | null>(null);
+  const githubActive = githubText !== "" && Boolean(api.searchGithubQuery);
+  const githubShown = githubResult?.key === githubKey ? githubResult : null;
+  const githubSettled = githubShown !== null && githubShown.limit === githubLimit;
+  const githubSearching = githubActive && !githubSettled;
+  const githubError = githubSettled ? (githubShown?.error ?? "") : "";
+  const githubIds = githubActive ? (githubShown?.ids ?? []) : null;
+  const githubOpenOnly = githubShown?.openOnly ?? null;
+  const githubTotal = githubShown?.total ?? 0;
   const needsOrgs = orgs.length === 0 && !personal;
 
   useEffect(() => {
@@ -205,12 +234,57 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
     [api, noteRevision],
   );
   useEffect(() => {
-    if (viewKey !== "to_review" || (remoteKey === null && remoteSent.current === null)) {
+    if (githubText !== "" || viewKey !== "to_review" || (remoteKey === null && remoteSent.current === null)) {
       return;
     }
     const timer = window.setTimeout(() => filterReviews(false), REMOTE_FILTER_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
-  }, [viewKey, remoteKey, filterReviews]);
+  }, [viewKey, remoteKey, filterReviews, githubText]);
+  useEffect(() => {
+    const search = api.searchGithubQuery;
+    if (githubText === "" || !search) {
+      return;
+    }
+    let cancel = false;
+    const timer = window.setTimeout(() => {
+      const offsetMinutes = -new Date().getTimezoneOffset();
+      void search(githubText, [...view.filters.repos], offsetMinutes, githubLimit).then(
+        (result) => {
+          if (cancel) {
+            return;
+          }
+          setGithubResult({
+            key: githubKey,
+            limit: githubLimit,
+            ids: result.ok ? result.ids : [],
+            total: result.ok ? result.total : 0,
+            openOnly: result.ok ? result.openOnly : true,
+            error: result.ok ? "" : result.message,
+          });
+          if (result.ok) {
+            setVersion((value) => value + 1);
+          }
+        },
+        (err: unknown) => {
+          if (cancel) {
+            return;
+          }
+          setGithubResult({
+            key: githubKey,
+            limit: githubLimit,
+            ids: [],
+            total: 0,
+            openOnly: true,
+            error: errorMessage(err),
+          });
+        },
+      );
+    }, GITHUB_QUERY_DEBOUNCE_MS);
+    return () => {
+      cancel = true;
+      window.clearTimeout(timer);
+    };
+  }, [api, githubKey, githubLimit, githubText, view.filters.repos]);
   const reviews = reviewsFor(sync.reviews, remoteKey);
   const loadMore = reviews?.filtered ? () => filterReviews(true) : loadMoreReviews;
 
@@ -377,6 +451,10 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
 
   function forgetOpenPrs(ids: number[]) {
     if (ids.length === 0) {
+      return;
+    }
+    if (githubText !== "" && !listHidesClosed(githubOpenOnly)) {
+      void reload();
       return;
     }
     const gone = new Set(ids);
@@ -770,8 +848,23 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
                 syncProgress={
                   viewKey === "to_review" ? (reviewsLabel(reviews) ?? (syncing ? syncLabel(sync, now) : null)) : syncing ? syncLabel(sync, now) : null
                 }
-                remoteMore={viewKey === "to_review" && moreReviews(reviews) ? loadMore : null}
-                onRemoteSearch={viewKey === "to_review" ? searchReviews : undefined}
+                remoteMore={githubText === "" && viewKey === "to_review" && moreReviews(reviews) ? loadMore : null}
+                onRemoteSearch={githubText === "" && viewKey === "to_review" ? searchReviews : undefined}
+                githubIds={githubText === "" ? null : (githubIds ?? [])}
+                githubAnyState={githubOpenOnly === false}
+                githubError={githubError}
+                githubSearching={githubSearching}
+                githubMore={
+                  githubText !== "" &&
+                  githubError === "" &&
+                  githubIds !== null &&
+                  githubIds.length > 0 &&
+                  githubIds.length < githubTotal &&
+                  githubLimit < GITHUB_QUERY_CAP &&
+                  !githubSearching
+                    ? () => setGithubLimit((current) => Math.min(GITHUB_QUERY_CAP, current + GITHUB_QUERY_PAGE))
+                    : null
+                }
                 projects={projects}
                 viewKey={viewKey}
                 view={view}

@@ -40,6 +40,13 @@ export interface PageRequest {
   /** Local midnight and six days before it, for the Updated grouping. */
   day_start: string;
   week_start: string;
+  /**
+   * When set, these ids are the view, in this order (starred rows still pin
+   * first). Null keeps Mine, To review, and project membership.
+   */
+  github_ids?: number[] | null;
+  /** Show merged and closed rows in `github_ids`. Hidden rows come back too. */
+  github_any_state?: boolean;
 }
 
 /** A section header (`row` null) or a row inside `section`. */
@@ -161,8 +168,10 @@ export function pageIds(sections: readonly PageSection[]): number[] {
 export function pageFromRows(rows: readonly SearchRow[], projects: readonly ProjectDto[], request: PageRequest): PageDto {
   const filters = request.filters;
   const now = new Date(request.now);
-  const nav = rowsForView(rows, request.view_key);
-  const scoped = nav.filter((row) => scopeRow(row, projects, filters));
+  const githubIds = request.github_ids ?? null;
+  const anyState = request.github_any_state === true;
+  const nav = githubIds ? rows.filter((row) => githubIds.includes(row.id)) : rowsForView(rows, request.view_key);
+  const scoped = nav.filter((row) => scopeRow(row, projects, filters, anyState));
   const terms = normalizeSearch(request.query).split(/\s+/).filter((term) => term.length > 0);
   const matched = scoped.filter((row) => passesMenu(row, filters, now) && matchesTerms(row, projects, terms));
   const quick = Object.fromEntries(QUICK_FILTERS.map((key) => [key, matched.filter((row) => quickMatches(row, key)).length])) as Record<QuickFilter, number>;
@@ -178,10 +187,18 @@ export function pageFromRows(rows: readonly SearchRow[], projects: readonly Proj
     live_projects: live.length,
   };
 
-  // Starred rows are pinned above the rest, each part in the chosen order (as `listing::page`).
-  const ordered = [...shown].sort(
-    (left, right) => Number(right.starred) - Number(left.starred) || compare(left, right, request.ordering, request.direction, { viewKey: request.view_key, now }),
-  );
+  // Starred rows are pinned above the rest. A GitHub query then follows the
+  // search order; otherwise each part uses the view's ordering (as `listing::page`).
+  const ordered = [...shown].sort((left, right) => {
+    const starred = Number(right.starred) - Number(left.starred);
+    if (starred !== 0) {
+      return starred;
+    }
+    if (githubIds) {
+      return githubIds.indexOf(left.id) - githubIds.indexOf(right.id);
+    }
+    return compare(left, right, request.ordering, request.direction, { viewKey: request.view_key, now });
+  });
   const keepEmpty = keptEmpty(live, request.view_key, filters, terms.length > 0);
   const groups = group(ordered, live, request, keepEmpty);
   const collapsed = new Set(request.collapsed);

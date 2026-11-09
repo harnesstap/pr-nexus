@@ -225,6 +225,18 @@ export const rows: SearchRow[] = [
     review_decision: null,
     starred: true,
   }),
+  row({
+    id: 13,
+    number: 90,
+    title: "Ship the widget",
+    repo: "acme/widgets",
+    author_login: "octocat",
+    state: "merged",
+    project_ids: [],
+    involvement: 0,
+    review_decision: "approved",
+    readiness: "ready",
+  }),
 ];
 
 export const boot: Bootstrap = {

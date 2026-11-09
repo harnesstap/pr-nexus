@@ -66,6 +66,7 @@ function Harness({
   onOpen = () => undefined,
   onNotice,
   removedIds,
+  githubError,
 }: {
   rows: SearchRow[];
   projects?: ProjectDto[];
@@ -84,6 +85,7 @@ function Harness({
   onOpen?: (url: string) => void;
   onNotice?: (toast: Toast) => void;
   removedIds?: ReadonlySet<number>;
+  githubError?: string;
 }) {
   const [view, setView] = useState<SavedView>(defaultView());
   const [currentView, setCurrentView] = useState(viewKey);
@@ -111,6 +113,7 @@ function Harness({
       onBulkReview={onBulkReview}
       onNotice={onNotice}
       removedIds={removedIds}
+      githubError={githubError}
     />
   );
 }
@@ -135,6 +138,15 @@ const rows = [
   row({ id: 2, number: 138, title: "Add passkeys", project_ids: [1] }),
   row({ id: 3, number: 23, title: "Fix tax rounding", project_ids: [] }),
 ];
+
+test("a rejected GitHub query shows GitHub's sentence", async () => {
+  const message =
+    "GitHub could not run that query. The listed users and repositories cannot be searched either because the resources do not exist or you do not have permission to view them.";
+  await show(<Harness rows={rows} githubError={message} />);
+  expect(screen.getByText(/cannot be searched/).getAttribute("role")).toBe("status");
+  expect(screen.queryByText(/422/)).toBeNull();
+  expect(screen.queryByRole("alert")).toBeNull();
+});
 
 test("a PR merged in the app leaves the list and its selection, even if a lagging reload still lists it", async () => {
   // The page source keeps returning the merged PR as open, like a stale search.

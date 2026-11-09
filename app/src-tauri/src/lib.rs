@@ -5,6 +5,7 @@ mod context;
 mod demo;
 mod error;
 mod explain;
+mod github_query;
 mod listing;
 mod live;
 mod logging;
@@ -147,6 +148,7 @@ pub fn run() {
             commands::activate_reviews,
             commands::load_more_reviews,
             commands::search_reviews,
+            commands::search_github_query,
             commands::filter_reviews,
             commands::full_resync,
             commands::sync_status,

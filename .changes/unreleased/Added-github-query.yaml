@@ -1,0 +1,2 @@
+kind: Added
+body: A view can save a GitHub pull request query. PR Nexus runs it on GitHub and lists the matches, including merged and closed pull requests when the query asks for them.

@@ -18,6 +18,8 @@
 // toolbar, and the alphabetically sorted project list.
 // `--ready-preview <dir>` saves the bulk dialog before and after Mark all ready
 // when two selected drafts are CI-blocked and only one of those checks clears.
+// `--github-query <dir>` saves the GitHub query field (github-query-*.png):
+// matching rows, a rejected query, and the same list at 720px.
 // `--update <dir>` saves the sidebar's update indicator (update-*.png): none,
 // the icon for a newer release, and its popover for a release and a dev build.
 // `--close-pr <dir>` saves Close PR (close-*.png): the detail menu, the
@@ -78,6 +80,11 @@ const readyPreviewFlag = process.argv.indexOf("--ready-preview");
 const readyPreviewDir = readyPreviewFlag === -1 ? null : process.argv[readyPreviewFlag + 1];
 if (readyPreviewFlag !== -1 && !readyPreviewDir) {
   throw new Error("--ready-preview needs an output directory");
+}
+const githubQueryFlag = process.argv.indexOf("--github-query");
+const githubQueryDir = githubQueryFlag === -1 ? null : process.argv[githubQueryFlag + 1];
+if (githubQueryFlag !== -1 && !githubQueryDir) {
+  throw new Error("--github-query needs an output directory");
 }
 const updateFlag = process.argv.indexOf("--update");
 const updateDir = updateFlag === -1 ? null : process.argv[updateFlag + 1];
@@ -330,9 +337,52 @@ async function repoFilterShots(page, dir) {
   await save("narrow");
 }
 
+/** GitHub query field with results, the rejected-query sentence, and a 720px toolbar. */
+async function githubQueryShots(browser, dir) {
+  mkdirSync(dir, { recursive: true });
+  const shoot = async (scene, name, widthPx) => {
+    const page = await browser.newPage({ viewport: { width: widthPx, height: 900 }, deviceScaleFactor: 2, colorScheme: "dark" });
+    page.on("pageerror", (err) => console.error("page error:", err.message));
+    await page.addInitScript((value) => {
+      globalThis.__githubScene = value;
+    }, scene);
+    await page.goto(url);
+    const query = scene === "error" ? "author:no-such-user repo:acme/missing" : "is:pr author:octocat sort:updated-desc";
+    await page.waitForFunction((value) => {
+      const input = globalThis.document.querySelector('[aria-label="GitHub query"]');
+      return input instanceof globalThis.HTMLInputElement && input.value === value;
+    }, query);
+    if (scene === "error") {
+      await page.getByText("cannot be searched").waitFor();
+    } else {
+      await page.getByRole("button", { name: "#90 Ship the widget" }).waitFor();
+      await page.getByText("Merged", { exact: true }).first().waitFor();
+    }
+    if (widthPx <= 720) {
+      const overflow = await page.evaluate(() => globalThis.document.documentElement.scrollWidth - globalThis.document.documentElement.clientWidth);
+      console.log(`page overflow ${overflow}px at ${widthPx}px`);
+      if (overflow > 0) {
+        throw new Error(`page overflows by ${overflow}px at ${widthPx}px`);
+      }
+    }
+    await page.screenshot({ path: resolve(dir, name) });
+    console.log(`wrote ${name}`);
+    await page.close();
+  };
+  await shoot("results", "github-query-results.png", 1440);
+  await shoot("error", "github-query-error.png", 1440);
+  await shoot("results", "github-query-narrow.png", 720);
+}
+
 let browser;
 try {
   browser = await chromium.launch(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: "chrome" });
+  if (githubQueryDir) {
+    await githubQueryShots(browser, resolve(githubQueryDir));
+    await browser.close();
+    await vite.close();
+    process.exit(0);
+  }
   if (updateDir) {
     await updateShots(browser, resolve(updateDir));
     await browser.close();

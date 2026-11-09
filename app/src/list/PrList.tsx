@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import type { ListRow, ProjectDto } from "../api";
-import { AlertIcon, ChevronDownIcon, ChevronRightIcon, ClockIcon, CloseIcon, CommentIcon, DraftIcon, FunnelIcon, MoreIcon, SearchIcon, SlackLogo } from "../icons";
+import { AlertIcon, ChevronDownIcon, ChevronRightIcon, ClockIcon, CloseIcon, CommentIcon, DraftIcon, FunnelIcon, GitHubIcon, MoreIcon, SearchIcon, SlackLogo } from "../icons";
 import { Tooltip } from "../Tooltip";
 import { ReviewerAvatars } from "./ReviewerAvatars";
 import { NextActionBadge } from "./NextActionBadge";
@@ -107,6 +107,19 @@ interface Props {
   draftPatches?: Record<number, boolean>;
   /** PRs just merged or closed in the app: gone from the list before the reload lands. */
   removedIds?: ReadonlySet<number>;
+  /**
+   * Ids from the view's GitHub query, in search order. Null when the view has
+   * no query. An empty list (still searching, or nothing matched) shows no rows.
+   */
+  githubIds?: number[] | null;
+  /** The query asked for merged or closed pull requests, so they stay on screen. */
+  githubAnyState?: boolean;
+  /** A plain sentence when GitHub rejected the query. */
+  githubError?: string;
+  /** The query is in flight. */
+  githubSearching?: boolean;
+  /** Fetches the next page of the GitHub query. */
+  githubMore?: (() => void) | null;
   /** Opens Settings, from the "no open PRs" empty state. */
   onOpenSettings?: () => void;
   /** Filled with the list's actions so the command palette reuses them. */
@@ -184,6 +197,11 @@ export function PrList({
   onNotice,
   draftPatches,
   removedIds,
+  githubIds = null,
+  githubAnyState = false,
+  githubError = "",
+  githubSearching = false,
+  githubMore = null,
   actionsRef,
   onOpenSettings,
 }: Props) {
@@ -235,8 +253,10 @@ export function PrList({
       filters: view.filters,
       query: debounced,
       collapsed: collapsedKeys,
+      github_ids: githubIds,
+      github_any_state: githubAnyState,
     }),
-    [viewKey, view.grouping, view.ordering, view.direction, view.filters, debounced, collapsedKeys],
+    [viewKey, view.grouping, view.ordering, view.direction, view.filters, debounced, collapsedKeys, githubIds, githubAnyState],
   );
   const list = usePagedList(loadPage, params, version, now);
   // To review also asks GitHub for matches past the loaded window.
@@ -592,6 +612,32 @@ export function PrList({
             selected={view.filters.repos}
             onChange={(repos) => onViewChange({ ...view, filters: { ...view.filters, repos } })}
           />
+          <label className="flex h-8 min-w-0 w-36 flex-1 items-center gap-1.5 rounded-md border border-slate-700 bg-slate-900 px-2 text-sm focus-within:border-violet-400 @5xl:w-64 @5xl:max-w-sm">
+            <GitHubIcon className="shrink-0 text-slate-500" />
+            <input
+              {...plainText}
+              aria-label="GitHub query"
+              className="min-w-0 flex-1 bg-transparent outline-none placeholder:text-transparent @3xl:placeholder:text-slate-500"
+              placeholder="is:pr state:open author:…"
+              value={view.filters.github}
+              onChange={(event) => onViewChange({ ...view, filters: { ...view.filters, github: event.target.value.slice(0, 1024) } })}
+            />
+            {githubSearching && (
+              <span role="status" className="shrink-0 text-xs text-slate-500">
+                Searching…
+              </span>
+            )}
+            {view.filters.github !== "" && (
+              <button
+                type="button"
+                aria-label="Clear GitHub query"
+                className="shrink-0 text-slate-500 hover:text-slate-200"
+                onClick={() => onViewChange({ ...view, filters: { ...view.filters, github: "" } })}
+              >
+                <CloseIcon />
+              </button>
+            )}
+          </label>
           {filtersActive(view.filters) && (
             <Tooltip label="Clear filters" detail="Turn off every filter, quick filter chips and Starred included">
             <button
@@ -605,7 +651,7 @@ export function PrList({
             </button>
             </Tooltip>
           )}
-          <label className="flex h-8 w-44 min-w-16 shrink items-center @5xl:w-56 @7xl:w-72 gap-2 rounded-md border border-slate-700 bg-slate-900 px-2.5 text-sm focus-within:border-violet-400">
+          <label className="flex h-8 w-36 min-w-0 shrink items-center @5xl:w-56 @7xl:w-72 gap-2 rounded-md border border-slate-700 bg-slate-900 px-2.5 text-sm focus-within:border-violet-400">
             <SearchIcon className="shrink-0 text-slate-500" />
             <input {...plainText}
               ref={searchRef}
@@ -624,6 +670,11 @@ export function PrList({
           <SortPicker view={view} onViewChange={onViewChange} />
           <FilterMenu view={view} orgs={page?.orgs ?? []} menu={menu} setMenu={setMenu} onViewChange={onViewChange} />
         </div>
+        {githubError !== "" && (
+          <p role="status" data-github-query-error className="mt-1 truncate text-xs text-slate-400">
+            {githubError}
+          </p>
+        )}
       </div>
       <div
         ref={listRef}
@@ -846,11 +897,23 @@ export function PrList({
             </button>
           </div>
         )}
+        {!hasMore && !loadingMore && githubMore && (
+          <div className="px-3 py-3 text-center">
+            <button type="button" className="rounded border border-slate-700 px-3 py-1 text-xs text-slate-300 hover:bg-slate-800" onClick={githubMore}>
+              Load more matching pull requests
+            </button>
+          </div>
+        )}
         <div ref={sentinelRef} data-testid="list-sentinel" aria-hidden="true" className="h-px" />
         {page && !list.pending && !showSections && (
           <ViewEmptyState kind={viewEmpty.kind} onOpenSettings={onOpenSettings} />
         )}
-        {page && !list.pending && showSections && sections.length === 0 && (
+        {githubSearching && sections.length === 0 && (
+          <p role="status" className="px-3 py-6 text-sm text-slate-400">
+            Searching GitHub…
+          </p>
+        )}
+        {page && !list.pending && showSections && sections.length === 0 && !githubSearching && githubError === "" && (
           <EmptyList
             title={viewTitle(viewKey, projects)}
             inView={inView}
