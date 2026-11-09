@@ -63,6 +63,15 @@ export interface RemoteReviewFilter {
   ci: "success" | "failure" | "pending" | null;
 }
 
+/** A GitHub pull-request query. `ok` is false when the sentence in `message` explains why it did not run. */
+export interface GithubQueryResult {
+  ok: boolean;
+  message: string;
+  ids: number[];
+  total: number;
+  openOnly: boolean;
+}
+
 export interface LiveStatus {
   /** `active`, `starting`, `off`, `unavailable`, or `demo`. */
   state: string;
@@ -923,6 +932,11 @@ export interface Api {
   searchReviews?(terms: string): Promise<SyncStatus>;
   /** Searches GitHub for review requests matching a filter (`more` widens its window); resolves when stored. */
   filterReviews?(filter: RemoteReviewFilter, more: boolean): Promise<SyncStatus>;
+  /**
+   * Runs a GitHub pull-request query. `offsetMinutes` is the user's zone,
+   * minutes east of UTC. A rejected query resolves with `ok: false`.
+   */
+  searchGithubQuery?(query: string, repos: string[], offsetMinutes: number, limit: number): Promise<GithubQueryResult>;
   /** One slice of the list with counts over every match (§8.2). */
   listPage(request: PageRequest): Promise<PageDto>;
   /** Rows by id in the order asked; unknown ids are skipped. */
@@ -1083,6 +1097,7 @@ export const tauriApi: Api = {
   loadMoreReviews: () => invoke("load_more_reviews"),
   searchReviews: (terms) => invoke("search_reviews", { terms }),
   filterReviews: (filter, more) => invoke("filter_reviews", { filter, more }),
+  searchGithubQuery: (query, repos, offsetMinutes, limit) => invoke("search_github_query", { query, repos, offsetMinutes, limit }),
   listPage: (request) => invoke("list_page", { request }),
   rowsById: (ids) => invoke("rows_by_id", { ids }),
   linkCandidates: (projectId, query, limit) => invoke("link_candidates", { projectId, query, limit }),

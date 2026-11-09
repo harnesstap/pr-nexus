@@ -416,6 +416,31 @@ pub async fn search_reviews(
     .await
 }
 
+/// A GitHub pull-request query typed on a view. Always resolves; a bad query
+/// comes back as `ok: false` with a plain sentence.
+#[tauri::command]
+pub async fn search_github_query(
+    app: State<'_, std::sync::Arc<AppState>>,
+    query: String,
+    repos: Option<Vec<String>>,
+    offset_minutes: i32,
+    limit: Option<usize>,
+) -> Result<crate::github_query::GithubQueryDto, AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        Ok(crate::github_query::run(
+            app.inner().as_ref(),
+            crate::github_query::GithubQueryInput {
+                query,
+                repos: repos.unwrap_or_default(),
+                offset_minutes,
+                limit: limit.unwrap_or(100),
+            },
+        ))
+    })
+    .await
+}
+
 #[derive(Serialize)]
 pub struct GhStatus {
     pub gh_ready: bool,
@@ -915,14 +940,15 @@ pub(crate) fn search_ids(
     if terms.is_empty() {
         return Ok(None);
     }
-    let Some(account) = state::github_account(&state.store)? else {
+    let accounts = state::github_accounts(&state.store)?;
+    if accounts.is_empty() {
         return Ok(Some(HashSet::new()));
-    };
+    }
     let folded: Vec<(i64, String)> = projects
         .iter()
         .map(|project| (project.id, search::fold(&project.name)))
         .collect();
-    let hits = terms
+    let hits: Vec<Vec<i64>> = terms
         .iter()
         .map(|term| {
             folded
@@ -932,14 +958,50 @@ pub(crate) fn search_ids(
                 .collect()
         })
         .collect();
-    Ok(Some(
-        state
+    let mut ids = HashSet::new();
+    for account in accounts {
+        ids.extend(
+            state
+                .store
+                .search_pull_request_ids(account.id, terms.clone(), hits.clone())?
+                .into_iter()
+                .map(|id| id.0),
+        );
+    }
+    Ok(Some(ids))
+}
+
+/// Rows from GitHub accounts other than the first, for ids a query returned
+/// that the usual list does not already hold.
+pub(crate) fn items_for_ids(
+    state: &AppState,
+    wanted: &HashSet<i64>,
+) -> Result<Vec<listing::Item>, AppError> {
+    if wanted.is_empty() {
+        return Ok(Vec::new());
+    }
+    let primary = state::github_account(&state.store)?.map(|account| account.id);
+    let flag = settings::blocked_review_required_is_ready(&state.store)?;
+    let workspaces = pr_nexus_core::review::route::workspaces(&state.store)?;
+    let mut out = Vec::new();
+    for account in state::github_accounts(&state.store)? {
+        if Some(account.id) == primary {
+            continue;
+        }
+        let prs = state
             .store
-            .search_pull_request_ids(account.id, terms, hits)?
-            .into_iter()
-            .map(|id| id.0)
-            .collect(),
-    ))
+            .list_pull_requests_for_account_slim(account.id)?;
+        if !prs.iter().any(|pr| wanted.contains(&pr.id.0)) {
+            continue;
+        }
+        let mut facts = state.store.list_facts(account.id)?;
+        for pr in &prs {
+            if wanted.contains(&pr.id.0) {
+                out.push(to_item(&mut facts, &workspaces, pr, flag));
+            }
+        }
+    }
+    Ok(out)
 }
 
 pub use crate::services::projects::{LinkDto, LinkOutcomeDto, ReplacedLinkDto, RuleDto};
@@ -1669,6 +1731,8 @@ mod tests {
             now,
             day_start: now - Duration::hours(12),
             week_start: now - Duration::days(7),
+            github_ids: None,
+            github_any_state: false,
         }
     }
 

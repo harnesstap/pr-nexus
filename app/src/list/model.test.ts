@@ -14,6 +14,7 @@ import {
   hiddenSelectedCount,
   toggleGlobal,
   visibleSelection,
+  listHidesClosed,
   liveLabel,
   parseViewState,
   renameError,
@@ -81,6 +82,16 @@ test("saved view state round-trips", () => {
     "acme/widgets",
     "acme-labs/widgets",
   ]);
+  const withQuery = parseViewState(JSON.stringify({ filters: { github: "  is:pr author:octocat  " } }));
+  expect(withQuery.filters.github).toBe("is:pr author:octocat");
+  expect(filtersActive(withQuery.filters)).toBe(true);
+  expect(parseViewState(JSON.stringify({ filters: { github: 4 } })).filters.github).toBe("");
+  expect(listHidesClosed(null)).toBe(true);
+  expect(listHidesClosed(true)).toBe(true);
+  expect(listHidesClosed(false)).toBe(false);
+  expect(parseViewState(null).filters.github).toBe("");
+  const long = `is:pr ${"a".repeat(1100)}`;
+  expect(parseViewState(JSON.stringify({ filters: { github: long } })).filters.github.length).toBe(1024);
 });
 
 test("demo mode shows a neutral sync label instead of an error", () => {

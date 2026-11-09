@@ -34,7 +34,18 @@ pub fn page_for(
     request: &listing::PageRequest,
 ) -> Result<listing::PageDto, AppError> {
     let projects = all_projects(state)?;
-    let items = list_items(state)?;
+    let mut items = list_items(state)?;
+    if let Some(wanted) = &request.github_ids {
+        let have: HashSet<i64> = items.iter().map(|item| item.row.id).collect();
+        let missing: HashSet<i64> = wanted
+            .iter()
+            .copied()
+            .filter(|id| !have.contains(id))
+            .collect();
+        if !missing.is_empty() {
+            items.extend(crate::commands::items_for_ids(state, &missing)?);
+        }
+    }
     let found = search_ids(state, &projects, &request.query)?;
     Ok(listing::page(&items, &projects, request, found.as_ref()))
 }

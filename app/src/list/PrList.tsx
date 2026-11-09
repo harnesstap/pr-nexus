@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import type { ListRow, ProjectDto } from "../api";
-import { AlertIcon, ChevronDownIcon, ChevronRightIcon, ClockIcon, CloseIcon, CommentIcon, DraftIcon, FunnelIcon, MoreIcon, SearchIcon, SlackLogo } from "../icons";
+import { AlertIcon, ChevronDownIcon, ChevronRightIcon, ClockIcon, CloseIcon, CommentIcon, DraftIcon, FunnelIcon, GitHubIcon, MoreIcon, SearchIcon, SlackLogo } from "../icons";
 import { Tooltip } from "../Tooltip";
 import { ReviewerAvatars } from "./ReviewerAvatars";
 import { NextActionBadge } from "./NextActionBadge";
@@ -46,7 +46,7 @@ import {
   type Tone,
 } from "./model";
 import { setDragBadge } from "./dragBadge";
-import { pageIds, summaryText, type Elsewhere, type PageDto, type PageEntry, type PageRequest, type PageSection } from "./paging";
+import { pageIds, selectionCountText, summaryText, type Elsewhere, type PageDto, type PageEntry, type PageRequest, type PageSection } from "./paging";
 import { usePagedList, type PageParams } from "./usePagedList";
 import { plainText } from "../textInput";
 import { commentsText, compactSlack, rowPills, staleCue, viewEmptyState, type RowPill, type StaleCue } from "./rowCues";
@@ -107,6 +107,19 @@ interface Props {
   draftPatches?: Record<number, boolean>;
   /** PRs just merged or closed in the app: gone from the list before the reload lands. */
   removedIds?: ReadonlySet<number>;
+  /**
+   * Ids from the view's GitHub query, in search order. Null when the view has
+   * no query. An empty list (still searching, or nothing matched) shows no rows.
+   */
+  githubIds?: number[] | null;
+  /** The query asked for merged or closed pull requests, so they stay on screen. */
+  githubAnyState?: boolean;
+  /** A plain sentence when GitHub rejected the query. */
+  githubError?: string;
+  /** The query is in flight. */
+  githubSearching?: boolean;
+  /** Fetches the next page of the GitHub query. */
+  githubMore?: (() => void) | null;
   /** Opens Settings, from the "no open PRs" empty state. */
   onOpenSettings?: () => void;
   /** Filled with the list's actions so the command palette reuses them. */
@@ -184,6 +197,11 @@ export function PrList({
   onNotice,
   draftPatches,
   removedIds,
+  githubIds = null,
+  githubAnyState = false,
+  githubError = "",
+  githubSearching = false,
+  githubMore = null,
   actionsRef,
   onOpenSettings,
 }: Props) {
@@ -235,8 +253,10 @@ export function PrList({
       filters: view.filters,
       query: debounced,
       collapsed: collapsedKeys,
+      github_ids: githubIds,
+      github_any_state: githubAnyState,
     }),
-    [viewKey, view.grouping, view.ordering, view.direction, view.filters, debounced, collapsedKeys],
+    [viewKey, view.grouping, view.ordering, view.direction, view.filters, debounced, collapsedKeys, githubIds, githubAnyState],
   );
   const list = usePagedList(loadPage, params, version, now);
   // To review also asks GitHub for matches past the loaded window.
@@ -531,10 +551,8 @@ export function PrList({
     return () => window.removeEventListener("keydown", onKey);
   });
 
-  const header =
-    checkState(ids, selected) === "none" && hidden === 0
-      ? `${ids.length} open ${ids.length === 1 ? "PR" : "PRs"}`
-      : `${activeIds.length} of ${ids.length} selected`;
+  const header = selectionCountText(ids.length, page?.summary.finished ?? 0, activeIds.length, hidden);
+  const queryOrders = view.filters.github.trim() !== "";
 
   const titleProject = currentProject !== null ? projects.find((project) => project.id === currentProject) : undefined;
   const sectionProject = (id: number | null) => (id === null ? undefined : projects.find((project) => project.id === id));
@@ -592,6 +610,32 @@ export function PrList({
             selected={view.filters.repos}
             onChange={(repos) => onViewChange({ ...view, filters: { ...view.filters, repos } })}
           />
+          <label className="flex h-8 min-w-0 w-36 flex-1 items-center gap-1.5 rounded-md border border-slate-700 bg-slate-900 px-2 text-sm focus-within:border-violet-400 @5xl:w-64 @5xl:max-w-sm">
+            <GitHubIcon className="shrink-0 text-slate-500" />
+            <input
+              {...plainText}
+              aria-label="GitHub query"
+              className="min-w-0 flex-1 bg-transparent outline-none placeholder:text-transparent @3xl:placeholder:text-slate-500"
+              placeholder="is:pr state:open author:…"
+              value={view.filters.github}
+              onChange={(event) => onViewChange({ ...view, filters: { ...view.filters, github: event.target.value.slice(0, 1024) } })}
+            />
+            {githubSearching && (
+              <span role="status" className="shrink-0 text-xs text-slate-500">
+                Searching…
+              </span>
+            )}
+            {view.filters.github !== "" && (
+              <button
+                type="button"
+                aria-label="Clear GitHub query"
+                className="shrink-0 text-slate-500 hover:text-slate-200"
+                onClick={() => onViewChange({ ...view, filters: { ...view.filters, github: "" } })}
+              >
+                <CloseIcon />
+              </button>
+            )}
+          </label>
           {filtersActive(view.filters) && (
             <Tooltip label="Clear filters" detail="Turn off every filter, quick filter chips and Starred included">
             <button
@@ -605,7 +649,7 @@ export function PrList({
             </button>
             </Tooltip>
           )}
-          <label className="flex h-8 w-44 min-w-16 shrink items-center @5xl:w-56 @7xl:w-72 gap-2 rounded-md border border-slate-700 bg-slate-900 px-2.5 text-sm focus-within:border-violet-400">
+          <label className="flex h-8 w-36 min-w-0 shrink items-center @5xl:w-56 @7xl:w-72 gap-2 rounded-md border border-slate-700 bg-slate-900 px-2.5 text-sm focus-within:border-violet-400">
             <SearchIcon className="shrink-0 text-slate-500" />
             <input {...plainText}
               ref={searchRef}
@@ -621,9 +665,14 @@ export function PrList({
               </span>
             )}
           </label>
-          <SortPicker view={view} onViewChange={onViewChange} />
-          <FilterMenu view={view} orgs={page?.orgs ?? []} menu={menu} setMenu={setMenu} onViewChange={onViewChange} />
+          <SortPicker view={view} onViewChange={onViewChange} fromQuery={queryOrders} />
+          <FilterMenu view={view} orgs={page?.orgs ?? []} menu={menu} setMenu={setMenu} onViewChange={onViewChange} fromQuery={queryOrders} />
         </div>
+        {githubError !== "" && (
+          <p role="status" data-github-query-error className="mt-1 truncate text-xs text-slate-400">
+            {githubError}
+          </p>
+        )}
       </div>
       <div
         ref={listRef}
@@ -846,11 +895,23 @@ export function PrList({
             </button>
           </div>
         )}
+        {!hasMore && !loadingMore && githubMore && (
+          <div className="px-3 py-3 text-center">
+            <button type="button" className="rounded border border-slate-700 px-3 py-1 text-xs text-slate-300 hover:bg-slate-800" onClick={githubMore}>
+              Load more matching pull requests
+            </button>
+          </div>
+        )}
         <div ref={sentinelRef} data-testid="list-sentinel" aria-hidden="true" className="h-px" />
         {page && !list.pending && !showSections && (
           <ViewEmptyState kind={viewEmpty.kind} onOpenSettings={onOpenSettings} />
         )}
-        {page && !list.pending && showSections && sections.length === 0 && (
+        {githubSearching && sections.length === 0 && (
+          <p role="status" className="px-3 py-6 text-sm text-slate-400">
+            Searching GitHub…
+          </p>
+        )}
+        {page && !list.pending && showSections && sections.length === 0 && !githubSearching && githubError === "" && (
           <EmptyList
             title={viewTitle(viewKey, projects)}
             inView={inView}
@@ -1316,14 +1377,15 @@ function CompactRow({
 const SORT_PICKS: Ordering[] = ["attention", "updated", "waiting", "bumped", "created", "slack", "readiness", "number"];
 
 /** Sort order, in the toolbar so "Waiting longest" and "Last bumped" are one click away. */
-function SortPicker({ view, onViewChange }: { view: SavedView; onViewChange: (view: SavedView) => void }) {
-  return (
+function SortPicker({ view, onViewChange, fromQuery }: { view: SavedView; onViewChange: (view: SavedView) => void; fromQuery: boolean }) {
+  const control = (
     <label className="flex h-8 shrink-0 items-center gap-1 rounded-md border border-slate-700 bg-slate-900 pl-2 text-xs text-slate-400 focus-within:border-violet-400">
       <span className="hidden @3xl:inline">Sort</span>
       <select
-        aria-label="Sort by"
-        className="h-full max-w-28 rounded-md @3xl:max-w-40 bg-slate-900 pr-1 text-slate-200 outline-none"
-        value={view.ordering}
+        aria-label={fromQuery ? "Sort by, from the GitHub query" : "Sort by"}
+        className="h-full max-w-28 rounded-md bg-slate-900 pr-1 text-slate-200 outline-none disabled:text-slate-200 @3xl:max-w-40"
+        value={fromQuery ? "query" : view.ordering}
+        disabled={fromQuery}
         onChange={(event) => {
           const ordering = event.target.value as Ordering;
           // The stale and attention sorts read top-down: most urgent, longest wait, latest bump.
@@ -1331,13 +1393,25 @@ function SortPicker({ view, onViewChange }: { view: SavedView; onViewChange: (vi
           onViewChange({ ...view, ordering, direction });
         }}
       >
-        {SORT_PICKS.map((id) => (
-          <option key={id} value={id}>
-            {labelOf(ORDERINGS, id)}
-          </option>
-        ))}
+        {fromQuery ? (
+          <option value="query">From query</option>
+        ) : (
+          SORT_PICKS.map((id) => (
+            <option key={id} value={id}>
+              {labelOf(ORDERINGS, id)}
+            </option>
+          ))
+        )}
       </select>
     </label>
+  );
+  if (!fromQuery) {
+    return control;
+  }
+  return (
+    <Tooltip label="From query" detail="This list follows the GitHub query. Clear the query to sort here.">
+      {control}
+    </Tooltip>
   );
 }
 
@@ -1384,12 +1458,14 @@ function FilterMenu({
   menu,
   setMenu,
   onViewChange,
+  fromQuery,
 }: {
   view: SavedView;
   orgs: OrgCount[];
   menu: string | null;
   setMenu: (menu: string | null) => void;
   onViewChange: (view: SavedView) => void;
+  fromQuery: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const open = menu !== null;
@@ -1440,8 +1516,15 @@ function FilterMenu({
               onPick={(grouping) => onViewChange({ ...view, grouping })}
             />
           )}
-          <MenuRow label="Ordering" value={labelOf(ORDERINGS, view.ordering)} onClick={() => setMenu(menu === "ordering" ? "root" : "ordering")} />
-          {menu === "ordering" && (
+          <MenuRow
+            label="Ordering"
+            value={fromQuery ? "From query" : labelOf(ORDERINGS, view.ordering)}
+            onClick={() => setMenu(menu === "ordering" ? "root" : "ordering")}
+          />
+          {menu === "ordering" && fromQuery && (
+            <p className="px-2 py-1 text-xs text-slate-400">The GitHub query sets this order. Clear the query to choose another.</p>
+          )}
+          {menu === "ordering" && !fromQuery && (
             <div>
               <ChoiceList options={ORDERINGS} current={view.ordering} onPick={(ordering) => onViewChange({ ...view, ordering })} />
               <div className="mt-1 flex gap-2 px-2">

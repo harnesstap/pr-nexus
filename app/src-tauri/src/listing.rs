@@ -44,6 +44,10 @@ pub struct FiltersDto {
     /// One quick status filter from the bar above the list, or none.
     #[serde(default)]
     pub quick: Option<String>,
+    /// A GitHub pull-request query saved with the view. Membership comes from
+    /// [`PageRequest::github_ids`]; this only marks the filter as on.
+    #[serde(default)]
+    pub github: String,
 }
 
 impl FiltersDto {
@@ -57,6 +61,7 @@ impl FiltersDto {
             || self.archived
             || self.starred
             || self.quick.is_some()
+            || !self.github.trim().is_empty()
     }
 }
 
@@ -78,6 +83,14 @@ pub struct PageRequest {
     pub now: DateTime<Utc>,
     pub day_start: DateTime<Utc>,
     pub week_start: DateTime<Utc>,
+    /// When set, these ids are the view: Mine, To review, and project links
+    /// do not decide membership. Order is this order, with starred rows first.
+    #[serde(default)]
+    pub github_ids: Option<Vec<i64>>,
+    /// Show merged and closed rows in `github_ids` (and rows marked hidden).
+    /// Rows that live only in archived projects still wait for Archived.
+    #[serde(default)]
+    pub github_any_state: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -192,11 +205,18 @@ pub fn page(
     let live = displayed(projects, filters);
     let live_ids: HashSet<i64> = live.iter().map(|project| project.id).collect();
     let project_view = project_id_of(&request.view_key);
+    let github: Option<HashSet<i64>> = request
+        .github_ids
+        .as_ref()
+        .map(|ids| ids.iter().copied().collect());
 
     let scoped: Vec<&Item> = items
         .iter()
-        .filter(|item| in_view(&item.row, &request.view_key, project_view))
-        .filter(|item| scope_row(&item.row, &live_ids, filters))
+        .filter(|item| match &github {
+            Some(ids) => ids.contains(&item.row.id),
+            None => in_view(&item.row, &request.view_key, project_view),
+        })
+        .filter(|item| scope_row(&item.row, &live_ids, filters, request.github_any_state))
         .collect();
     let matched: Vec<&Item> = scoped
         .iter()
@@ -237,18 +257,34 @@ pub fn page(
         live_projects: live.len(),
     };
 
-    let ascending = request.direction == "asc";
-    shown.sort_by(|left, right| {
-        let delta = rank(left, request, now_ms).cmp(&rank(right, request, now_ms));
-        let delta = if ascending { delta } else { delta.reverse() };
-        // Starred rows are pinned above the rest, each part in the chosen order.
-        right
-            .row
-            .starred
-            .cmp(&left.row.starred)
-            .then(delta)
-            .then(left.row.id.cmp(&right.row.id))
-    });
+    if let Some(ids) = &request.github_ids {
+        let pos: std::collections::HashMap<i64, usize> = ids
+            .iter()
+            .enumerate()
+            .map(|(index, id)| (*id, index))
+            .collect();
+        shown.sort_by(|left, right| {
+            right
+                .row
+                .starred
+                .cmp(&left.row.starred)
+                .then(pos.get(&left.row.id).cmp(&pos.get(&right.row.id)))
+                .then(left.row.id.cmp(&right.row.id))
+        });
+    } else {
+        let ascending = request.direction == "asc";
+        shown.sort_by(|left, right| {
+            let delta = rank(left, request, now_ms).cmp(&rank(right, request, now_ms));
+            let delta = if ascending { delta } else { delta.reverse() };
+            // Starred rows are pinned above the rest, each part in the chosen order.
+            right
+                .row
+                .starred
+                .cmp(&left.row.starred)
+                .then(delta)
+                .then(left.row.id.cmp(&right.row.id))
+        });
+    }
 
     let keep_empty: HashSet<i64> = if search.is_some() || filters.active() {
         HashSet::new()
@@ -431,7 +467,7 @@ fn elsewhere(
             count: found
                 .iter()
                 .filter(|item| in_view(&item.row, key, None))
-                .filter(|item| scope_row(&item.row, live_ids, filters))
+                .filter(|item| scope_row(&item.row, live_ids, filters, false))
                 .count(),
         })
         .collect();
@@ -449,11 +485,11 @@ fn elsewhere(
         .collect();
     let filtered = here
         .iter()
-        .filter(|item| scope_row(&item.row, live_ids, filters) && !passes(item))
+        .filter(|item| scope_row(&item.row, live_ids, filters, false) && !passes(item))
         .count();
     let finished = here
         .iter()
-        .filter(|item| !scope_row(&item.row, live_ids, filters) && passes(item))
+        .filter(|item| !scope_row(&item.row, live_ids, filters, false) && passes(item))
         .count();
     Elsewhere {
         views,
@@ -477,11 +513,11 @@ fn displayed<'a>(projects: &'a [ProjectDto], filters: &FiltersDto) -> Vec<&'a Pr
 
 /// Merged and closed rows only with the Archived filter; rows linked only to
 /// archived projects likewise.
-fn scope_row(row: &ListRow, live: &HashSet<i64>, filters: &FiltersDto) -> bool {
-    if row.hidden {
+fn scope_row(row: &ListRow, live: &HashSet<i64>, filters: &FiltersDto, any_state: bool) -> bool {
+    if !any_state && row.hidden {
         return false;
     }
-    if row.state != "open" && !filters.archived {
+    if !any_state && row.state != "open" && !filters.archived {
         return false;
     }
     let only_archived =
@@ -1012,6 +1048,8 @@ mod tests {
             now: now(),
             day_start: at(12),
             week_start: at(12 + 6 * 24),
+            github_ids: None,
+            github_any_state: false,
         }
     }
 
@@ -1020,6 +1058,57 @@ mod tests {
             .iter()
             .map(|entry| entry.row.as_ref().map(|row| row.id))
             .collect()
+    }
+
+    #[test]
+    fn a_github_query_uses_its_ids_its_order_and_the_repository_filter() {
+        let mut open = item(1, &[], 1);
+        open.row.repo = "acme/widgets".into();
+        open.row.involvement = 0;
+        let mut merged = item(2, &[], 2);
+        merged.row.repo = "acme/widgets".into();
+        merged.row.state = "merged".into();
+        merged.row.involvement = 0;
+        let mut other = item(3, &[], 3);
+        other.row.repo = "acme-labs/widgets".into();
+        other.row.owner = "acme-labs".into();
+        other.row.involvement = 0;
+        let mut starred = item(4, &[], 4);
+        starred.row.repo = "acme/widgets".into();
+        starred.row.starred = true;
+        starred.row.involvement = 0;
+        let items = vec![open, merged, other, starred];
+
+        let mut queried = request("repository");
+        queried.view_key = "to_review".into();
+        queried.github_ids = Some(vec![3, 1, 2, 4]);
+        queried.github_any_state = true;
+        queried.filters.repos = vec!["acme/widgets".into()];
+        queried.filters.github = "is:pr author:octocat".into();
+        let ids: Vec<i64> = row_ids(&page(&items, &[], &queried, None))
+            .into_iter()
+            .flatten()
+            .collect();
+        // Starred stays first. The repository filter drops acme-labs.
+        // Merged stays because the query is not open-only.
+        assert_eq!(ids, vec![4, 1, 2]);
+
+        queried.github_any_state = false;
+        let open_ids: Vec<i64> = row_ids(&page(&items, &[], &queried, None))
+            .into_iter()
+            .flatten()
+            .collect();
+        assert_eq!(open_ids, vec![4, 1]);
+
+        let mut plain = request("repository");
+        plain.view_key = "to_review".into();
+        let none: Vec<i64> = row_ids(&page(&items, &[], &plain, None))
+            .into_iter()
+            .flatten()
+            .collect();
+        assert!(none.is_empty());
+        plain.filters.github = "is:pr".into();
+        assert!(plain.filters.active());
     }
 
     #[test]

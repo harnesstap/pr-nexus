@@ -43,6 +43,8 @@ export interface Filters {
   /** Only starred PRs; combines with every other filter. */
   starred: boolean;
   quick: QuickFilter | null;
+  /** A GitHub pull-request query saved with this view. Empty keeps the usual list. */
+  github: string;
 }
 
 export interface SavedView {
@@ -75,7 +77,7 @@ export function defaultShow(): ShowFlags {
 }
 
 export function defaultFilters(): Filters {
-  return { orgs: [], repos: [], statuses: [], reviews: [], ci: [], slack: [], archived: false, starred: false, quick: null };
+  return { orgs: [], repos: [], statuses: [], reviews: [], ci: [], slack: [], archived: false, starred: false, quick: null, github: "" };
 }
 
 export function defaultView(): SavedView {
@@ -121,6 +123,7 @@ export function parseViewState(json: string | null): SavedView {
       archived: record.filters?.archived === true,
       starred: record.filters?.starred === true,
       quick: QUICK_FILTERS.includes(record.filters?.quick as QuickFilter) ? (record.filters?.quick as QuickFilter) : null,
+      github: githubQueryText(record.filters?.github),
     },
   };
 }
@@ -135,8 +138,27 @@ export function filtersActive(filters: Filters): boolean {
     filters.slack.length > 0 ||
     filters.archived ||
     filters.starred ||
-    filters.quick !== null
+    filters.quick !== null ||
+    filters.github.trim() !== ""
   );
+}
+
+/** A stored GitHub query: trimmed, and capped so a paste cannot grow without limit. */
+function githubQueryText(value: unknown): string {
+  if (typeof value !== "string") {
+    return "";
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 1024 ? trimmed.slice(0, 1024) : trimmed;
+}
+
+/**
+ * Whether merging or closing a pull request should drop it from the list.
+ * A GitHub query that has not answered yet hides closed rows. A query that
+ * asks for them keeps them, so the Merged or Closed badge can show.
+ */
+export function listHidesClosed(openOnly: boolean | null): boolean {
+  return openOnly !== false;
 }
 
 export function resetFilters(view: SavedView): SavedView {
@@ -249,11 +271,11 @@ export function passesMenu(row: ListRow, filters: Filters, now: Date): boolean {
  * Merged and closed PRs leave the open list at the sync that sees them. The
  * Archived filter brings them back until `sync.keep_closed_days` hides them.
  */
-export function scopeRow(row: ListRow, projects: readonly ProjectDto[], filters: Filters): boolean {
-  if (row.hidden) {
+export function scopeRow(row: ListRow, projects: readonly ProjectDto[], filters: Filters, anyState = false): boolean {
+  if (!anyState && row.hidden) {
     return false;
   }
-  if (!isOpen(row) && !filters.archived) {
+  if (!anyState && !isOpen(row) && !filters.archived) {
     return false;
   }
   const live = new Set(displayedProjects(projects, filters).map((project) => project.id));

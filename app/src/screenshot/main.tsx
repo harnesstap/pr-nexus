@@ -100,7 +100,28 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   sync_status: () => boot.sync,
   list_projects: () => projects,
   list_page: (args) => pageFromRows(rows, projects, args.request as PageRequest),
-  load_view_state: () => null,
+  load_view_state: () => {
+    const scene = (window as { __githubScene?: string }).__githubScene;
+    if (!scene) {
+      return null;
+    }
+    const github = scene === "error" ? "author:no-such-user repo:acme/missing" : "is:pr author:octocat sort:updated-desc";
+    return JSON.stringify({ filters: { github } });
+  },
+  search_github_query: () => {
+    const scene = (window as { __githubScene?: string }).__githubScene;
+    if (scene === "error") {
+      return {
+        ok: false,
+        message:
+          "GitHub could not run that query. The listed users and repositories cannot be searched either because the resources do not exist or you do not have permission to view them.",
+        ids: [],
+        total: 0,
+        openOnly: true,
+      };
+    }
+    return { ok: true, message: "", ids: [2, 13], total: 2, openOnly: false };
+  },
   slack_workspaces: () => boot.slack_workspaces,
   // `--update` scenes set the answer before the app loads.
   check_update: () => (window as { __update?: unknown }).__update ?? null,
