@@ -1,3 +1,0 @@
-kind: Features
-body: Slack review requests propose one team per CODEOWNERS line that still needs approval, let you switch the team, merge sends that share a channel, and note a line with no Slack channel. A failing check stays in the request as a note.
-time: 2026-11-09T11:10:00Z

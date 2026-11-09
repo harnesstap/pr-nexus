@@ -1,3 +1,0 @@
-kind: Dependencies
-body: Update rmcp to 3.9.0 so Slack MCP clients cap HTTP response bodies.
-time: 2026-11-09T12:10:00Z
