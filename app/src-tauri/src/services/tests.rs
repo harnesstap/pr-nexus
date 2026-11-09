@@ -871,12 +871,228 @@ fn codeowners_lines_become_one_send_each() {
     assert_eq!(hinted.cards.len(), 1);
     assert!(hinted.groups.iter().any(|group| {
         group.group_id == line_c
+            && group.needs_channel
             && group
                 .hint
                 .as_deref()
                 .is_some_and(|hint| hint.contains("No Slack channel"))
     }));
     assert!(hinted.skipped.is_empty(), "{:?}", hinted.skipped);
+
+    let picked = bulk::preview(
+        state,
+        &serde_json::from_value(serde_json::json!({
+            "pr_ids": [id],
+            "group_channels": [{
+                "pr_id": id,
+                "group_id": line_c,
+                "target": {
+                    "workspace": "acme",
+                    "channel_id": "C0ACME0009",
+                    "channel_name": "ops-reviews"
+                }
+            }]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let picked_channels: Vec<&str> = picked
+        .cards
+        .iter()
+        .map(|card| card.target.channel_id.as_str())
+        .collect();
+    assert!(
+        picked_channels.contains(&"C0ACME0009"),
+        "{picked_channels:?}"
+    );
+    assert!(picked.groups.iter().any(|group| {
+        group.group_id == line_c
+            && group.channel_id.as_deref() == Some("C0ACME0009")
+            && !group.needs_channel
+    }));
+
+    let same = bulk::preview(
+        state,
+        &serde_json::from_value(serde_json::json!({
+            "pr_ids": [id],
+            "group_channels": [{
+                "pr_id": id,
+                "group_id": line_c,
+                "target": {
+                    "workspace": "acme",
+                    "channel_id": "C0ACME0001",
+                    "channel_name": "team-a"
+                }
+            }]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        same.cards.len(),
+        1,
+        "same channel is one message: {:?}",
+        same.cards
+    );
+    assert_eq!(same.cards[0].messages.len(), 1);
+}
+
+/// An open thread in one channel does not drop the other CODEOWNERS line.
+/// The requested channel is a bump; a line with no mapping stays a card the
+/// user can still address.
+#[test]
+fn an_open_request_does_not_hide_other_codeowners_lines() {
+    use pr_nexus_core::domain::{
+        AccountKind, PrId, ProviderRef, RequestSource, RequestStatus, ReviewRequest,
+        ReviewRequestId,
+    };
+
+    let fx = fixture("codeowners-open-request");
+    let state = &fx.state;
+    connect_fake_workspace(state);
+    let id = pr_id(state, 1);
+    for request in state.store.list_review_requests(PrId(id)).unwrap() {
+        if request.status == RequestStatus::Active {
+            state
+                .store
+                .close_review_request(
+                    request.id,
+                    pr_nexus_core::domain::CloseReason::Dismissed,
+                    Utc::now(),
+                )
+                .unwrap();
+        }
+    }
+    map_team(state, "acme/team-a", "C0ACME0001", "team-a-pr-reviews");
+    let account = state
+        .store
+        .list_accounts()
+        .unwrap()
+        .into_iter()
+        .find(|account| account.kind == AccountKind::Slack)
+        .expect("slack account");
+    state
+        .store
+        .insert_review_request(ReviewRequest {
+            id: ReviewRequestId(0),
+            pr: PrId(id),
+            root: ProviderRef {
+                account: account.id,
+                id: "C0ACME0001:1700000000.000100".into(),
+            },
+            workspace: "acme".into(),
+            team_id: None,
+            channel_id: "C0ACME0001".into(),
+            channel_name: "team-a-pr-reviews".into(),
+            root_ts: "1700000000.000100".into(),
+            permalink: None,
+            requested_at: Utc::now() - chrono::Duration::days(3),
+            last_bumped_at: None,
+            bump_count: 0,
+            status: RequestStatus::Active,
+            closed_at: None,
+            source: RequestSource::App,
+        })
+        .unwrap();
+    let row = state.store.get_pull_request(PrId(id)).unwrap().unwrap();
+    let group = |group_id: &str, pattern: &str, teams: &[&str]| crate::commands::OwnerGroupDto {
+        id: group_id.into(),
+        pattern: pattern.into(),
+        teams: teams.iter().map(|team| (*team).to_owned()).collect(),
+        users: Vec::new(),
+        satisfied: false,
+    };
+    let line_a = "teams:acme/team-a|users:";
+    let line_b = "teams:acme/team-b|users:";
+    crate::slack::lock(&state.owners).insert(
+        id,
+        crate::state::OwnersEntry {
+            head_sha: row.head_sha.clone(),
+            base_ref: row.base_ref.clone(),
+            is_draft: row.is_draft,
+            checks: row.checks,
+            at: std::time::Instant::now(),
+            blocked: None,
+            teams: vec!["acme/team-a".into(), "acme/team-b".into()],
+            groups: vec![
+                group(line_a, "/src/", &["acme/team-a"]),
+                group(line_b, "/billing/", &["acme/team-b"]),
+            ],
+        },
+    );
+    let preview = bulk::preview(
+        state,
+        &serde_json::from_value(serde_json::json!({ "pr_ids": [id] })).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        preview
+            .groups
+            .iter()
+            .any(|group| group.group_id == line_a && !group.needs_channel),
+        "mapped line stays: {:?}",
+        preview.groups
+    );
+    assert!(
+        preview
+            .groups
+            .iter()
+            .any(|group| group.group_id == line_b && group.needs_channel),
+        "unmapped line is still proposed: {:?}",
+        preview.groups
+    );
+    assert_eq!(preview.cards.len(), 1, "{:?}", preview.cards);
+    assert_eq!(preview.cards[0].target.channel_id, "C0ACME0001");
+    assert_eq!(preview.cards[0].messages[0].action, "bump");
+    assert!(preview.skipped.is_empty(), "{:?}", preview.skipped);
+
+    map_team(state, "acme/team-b", "C0ACME0004", "team-b-pr-reviews");
+    let both = bulk::preview(
+        state,
+        &serde_json::from_value(serde_json::json!({ "pr_ids": [id] })).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        both.cards.len(),
+        2,
+        "the other team is its own send: {:?}",
+        both.cards
+    );
+    assert!(both.cards.iter().any(|card| {
+        card.target.channel_id == "C0ACME0001"
+            && card.messages.iter().any(|message| message.action == "bump")
+    }));
+    assert!(both.cards.iter().any(|card| {
+        card.target.channel_id == "C0ACME0004"
+            && card
+                .messages
+                .iter()
+                .any(|message| message.action == "request")
+    }));
+
+    let dropped = bulk::preview(
+        state,
+        &serde_json::from_value(serde_json::json!({
+            "pr_ids": [id],
+            "skipped_groups": [{ "pr_id": id, "group_id": line_a }]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        dropped.groups.iter().all(|group| group.group_id != line_a),
+        "removed group is gone: {:?}",
+        dropped.groups
+    );
+    assert!(
+        dropped
+            .groups
+            .iter()
+            .any(|group| group.group_id == line_b && !group.needs_channel)
+    );
+    assert_eq!(dropped.cards.len(), 1, "{:?}", dropped.cards);
+    assert_eq!(dropped.cards[0].target.channel_id, "C0ACME0004");
+    assert_eq!(dropped.cards[0].messages[0].action, "request");
 }
 
 fn channel_json() -> serde_json::Value {

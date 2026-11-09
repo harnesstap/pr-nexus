@@ -1,0 +1,3 @@
+kind: Fixed
+body: A CODEOWNERS line with no saved Slack channel is a send card with the channel picker, and every send card's channel can be changed. Cards that land on the same channel for one pull request still share one message. An earlier request in one channel stays a bump and no longer hides the other lines.
+time: 2026-11-09T13:40:00.000000Z

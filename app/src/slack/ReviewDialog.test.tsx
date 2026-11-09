@@ -1,7 +1,7 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { expect, test, vi } from "vitest";
 import type { Toast } from "../list/model";
-import type { Api, ListRow, PrDetail, ReviewPreview, ReviewTarget, SlackIndicator, TargetChoice } from "../api";
+import type { Api, BulkPreview, BulkRequest, ListRow, MappingRow, PrDetail, ReviewPreview, ReviewTarget, SlackIndicator, TargetChoice } from "../api";
 import { ReviewDialog, withNote } from "./ReviewDialog";
 
 const row = {
@@ -419,8 +419,9 @@ test("two CODEOWNERS lines propose two sends and the team button changes the cha
   expect(screen.getByRole("button", { name: "@acme/team-b" })).toHaveAttribute("aria-pressed", "false");
   expect(screen.getByRole("note", { name: "No Slack channel" })).toHaveTextContent("No Slack channel is saved for @acme/team-e.");
   expect(screen.getByRole("note", { name: "No Slack channel" })).toHaveClass("text-slate-500");
+  expect(screen.getByRole("region", { name: "Choose a channel for @acme/team-e" })).toBeInTheDocument();
+  expect(screen.getByRole("combobox", { name: "Channel" })).toBeInTheDocument();
   expect(screen.getByRole("note", { name: "Failing checks" })).toHaveTextContent("#42 has failing checks.");
-  expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "@acme/team-b" }));
   expect(await screen.findByRole("region", { name: "#team-b" })).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Send 2 messages" }));
@@ -435,6 +436,233 @@ test("one CODEOWNERS team still uses the channel picker", async () => {
   expect(await screen.findByLabelText("Message preview")).toHaveTextContent("Review please · #platform");
   expect(calls.targets).toEqual([["@acme/platform"]]);
   expect(screen.getByRole("combobox", { name: "Channel or person" })).toBeInTheDocument();
+});
+
+test("an unmapped line is a card you can address, and two lines on one channel share a message", async () => {
+  const saved: MappingRow[] = [];
+  const channel = (channel_id: string, channel_name: string): ReviewTarget => ({ workspace: "acme", channel_id, channel_name });
+  const { api, calls } = fake({
+    prDetail: () =>
+      Promise.resolve({
+        ...detail,
+        owner_groups: [
+          { id: "line-a", pattern: "/src/", teams: ["acme/team-a"], users: [], satisfied: false },
+          { id: "line-b", pattern: "/billing/", teams: ["acme/team-b"], users: [], satisfied: false },
+        ],
+      }),
+    searchSlackTargets: () => Promise.resolve([]),
+    saveMapping: (row: MappingRow) => {
+      saved.push(row);
+      return Promise.resolve();
+    },
+    bulkPreview: (request: BulkRequest): Promise<BulkPreview> => {
+      const skipped = new Set((request.skipped_groups ?? []).map((item) => item.group_id));
+      const chosen = new Map((request.group_channels ?? []).map((item) => [item.group_id, item.target]));
+      const groups: NonNullable<BulkPreview["groups"]> = [];
+      const byChannel = new Map<string, ReviewTarget>();
+      const add = (id: string, pattern: string, team: string, fallback: ReviewTarget | null) => {
+        if (skipped.has(id)) {
+          return;
+        }
+        const picked = chosen.get(id);
+        const target = picked ? { workspace: picked.workspace || "acme", channel_id: picked.channel_id, channel_name: picked.channel_name || picked.channel_id } : fallback;
+        if (!target) {
+          groups.push({
+            pr_id: 7,
+            number: 42,
+            group_id: id,
+            pattern,
+            teams: [team],
+            selected: team,
+            needs_channel: true,
+            hint: `No Slack channel is saved for @${team}.`,
+            channel_id: null,
+            workspace: null,
+          });
+          return;
+        }
+        groups.push({
+          pr_id: 7,
+          number: 42,
+          group_id: id,
+          pattern,
+          teams: [team],
+          selected: team,
+          needs_channel: false,
+          hint: null,
+          channel_id: target.channel_id,
+          workspace: target.workspace,
+        });
+        byChannel.set(target.channel_id, target);
+      };
+      add("line-a", "/src/", "acme/team-a", channel("C0ACME0001", "team-a-pr-reviews"));
+      add("line-b", "/billing/", "acme/team-b", null);
+      return Promise.resolve({
+        cards: [...byChannel.values()].map((target) => ({
+          target,
+          messages: [
+            {
+              action: target.channel_id === "C0ACME0001" ? ("bump" as const) : ("request" as const),
+              prs: [{ pr_id: 7, number: 42, title: "Add passkeys", repo: "acme/widgets" }],
+              text: `Please review in #${target.channel_name}`,
+              permalink: target.channel_id === "C0ACME0001" ? "https://acme.slack.com/archives/C0ACME0001/p1" : null,
+            },
+          ],
+          warnings: [],
+          signed_in: true,
+          single_top_level: false,
+          can_switch: false,
+          fingerprint: target.channel_id,
+        })),
+        skipped: [],
+        pr_warnings: [],
+        groups,
+      });
+    },
+  });
+  render(<ReviewDialog api={api} row={row} onClose={() => undefined} onOpen={() => undefined} onSent={() => undefined} />);
+  const pending = await screen.findByRole("region", { name: "Choose a channel for @acme/team-b" });
+  expect(screen.getByRole("region", { name: "#team-a-pr-reviews" })).toBeInTheDocument();
+  expect(screen.getByText("Bump in thread")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Send request" })).toBeEnabled();
+  expect(within(pending).getByRole("note", { name: "No Slack channel" })).toHaveTextContent("No Slack channel is saved for @acme/team-b.");
+  fireEvent.change(within(pending).getByRole("combobox", { name: "Channel" }), { target: { value: "#nope" } });
+  expect(await within(pending).findByText("No channel found. Try another name, or enter an ID.")).toBeInTheDocument();
+  expect(within(pending).queryByRole("alert")).toBeNull();
+  fireEvent.click(within(pending).getByRole("button", { name: "Enter an ID" }));
+  const idBox = within(pending).getByRole("textbox", { name: "Channel, DM or member ID" });
+  fireEvent.change(idBox, { target: { value: "nope" } });
+  fireEvent.blur(idBox);
+  expect(within(pending).getByRole("alert")).toHaveTextContent("That isn't a Slack ID");
+  fireEvent.change(idBox, { target: { value: "C0ACME0009" } });
+  fireEvent.change(within(pending).getByRole("textbox", { name: "Name" }), { target: { value: "ops-reviews" } });
+  fireEvent.click(within(pending).getByRole("button", { name: "Preview" }));
+  expect(await screen.findByRole("region", { name: "#ops-reviews" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Send 2 messages" })).toBeEnabled();
+  const save = screen.getByRole("checkbox", { name: "Save channel for @acme/team-b" });
+  expect(save).toBeChecked();
+  fireEvent.click(screen.getByRole("button", { name: "Change channel, currently #team-a-pr-reviews" }));
+  const editor = screen.getByRole("combobox", { name: "Channel, currently #team-a-pr-reviews" });
+  const header = editor.closest("section")!;
+  fireEvent.click(within(header).getByRole("button", { name: "Enter an ID" }));
+  fireEvent.change(within(header).getByRole("textbox", { name: "Channel, DM or member ID" }), { target: { value: "C0ACME0009" } });
+  fireEvent.change(within(header).getByRole("textbox", { name: "Name" }), { target: { value: "ops-reviews" } });
+  fireEvent.click(within(header).getByRole("button", { name: "Preview" }));
+  expect(await screen.findByText("These lines share this message.")).toBeInTheDocument();
+  expect(screen.getAllByRole("region", { name: "#ops-reviews" })).toHaveLength(1);
+  expect(screen.getByRole("button", { name: "Send request" })).toBeEnabled();
+  fireEvent.click(screen.getByRole("checkbox", { name: "Save channel for @acme/team-a" }));
+  fireEvent.click(screen.getByRole("checkbox", { name: "Save channel for @acme/team-b" }));
+  fireEvent.click(screen.getByRole("button", { name: "Send request" }));
+  await waitFor(() => expect(calls.sent).toHaveLength(1));
+  expect(calls.sent[0]?.[0].channel_id).toBe("C0ACME0009");
+  expect(calls.sent[0]?.[1]).toEqual(["acme/team-a", "acme/team-b"]);
+  expect(saved).toEqual([]);
+});
+
+test("saving the picked channel writes that team's mapping, and Remove drops the card", async () => {
+  const saved: MappingRow[] = [];
+  const { api, calls } = fake({
+    searchSlackTargets: () => Promise.resolve([]),
+    saveMapping: (row: MappingRow) => {
+      saved.push(row);
+      return Promise.resolve();
+    },
+    prDetail: () =>
+      Promise.resolve({
+        ...detail,
+        owner_groups: [
+          { id: "line-a", pattern: "*", teams: ["acme/team-a"], users: [], satisfied: false },
+          { id: "line-b", pattern: "/billing/", teams: ["acme/team-b"], users: [], satisfied: false },
+        ],
+      }),
+    bulkPreview: (request: BulkRequest): Promise<BulkPreview> => {
+      const skipped = new Set((request.skipped_groups ?? []).map((item) => item.group_id));
+      const picked = request.group_channels?.find((choice) => choice.group_id === "line-b")?.target;
+      const groups: NonNullable<BulkPreview["groups"]> = [];
+      const cards: BulkPreview["cards"] = [];
+      if (!skipped.has("line-a")) {
+        groups.push({
+          pr_id: 7,
+          number: 42,
+          group_id: "line-a",
+          pattern: "*",
+          teams: ["acme/team-a"],
+          selected: "acme/team-a",
+          needs_channel: false,
+          hint: null,
+          channel_id: "C0ACME0001",
+          workspace: "acme",
+        });
+        cards.push({
+          target: { workspace: "acme", channel_id: "C0ACME0001", channel_name: "team-a-pr-reviews" },
+          messages: [{ action: "request", prs: [{ pr_id: 7, number: 42, title: "Add passkeys", repo: "acme/widgets" }], text: "Please review", permalink: null }],
+          warnings: [],
+          signed_in: true,
+          single_top_level: false,
+          can_switch: false,
+          fingerprint: "C0ACME0001",
+        });
+      }
+      if (!skipped.has("line-b")) {
+        if (picked) {
+          groups.push({
+            pr_id: 7,
+            number: 42,
+            group_id: "line-b",
+            pattern: "/billing/",
+            teams: ["acme/team-b"],
+            selected: "acme/team-b",
+            needs_channel: false,
+            hint: null,
+            channel_id: picked.channel_id,
+            workspace: picked.workspace || "acme",
+          });
+          cards.push({
+            target: { workspace: picked.workspace || "acme", channel_id: picked.channel_id, channel_name: picked.channel_name || "ops-reviews" },
+            messages: [{ action: "request", prs: [{ pr_id: 7, number: 42, title: "Add passkeys", repo: "acme/widgets" }], text: "Please review ops", permalink: null }],
+            warnings: [],
+            signed_in: true,
+            single_top_level: false,
+            can_switch: false,
+            fingerprint: picked.channel_id,
+          });
+        } else {
+          groups.push({
+            pr_id: 7,
+            number: 42,
+            group_id: "line-b",
+            pattern: "/billing/",
+            teams: ["acme/team-b"],
+            selected: "acme/team-b",
+            needs_channel: true,
+            hint: "No Slack channel is saved for @acme/team-b.",
+            channel_id: null,
+            workspace: null,
+          });
+        }
+      }
+      return Promise.resolve({ cards, skipped: [], pr_warnings: [], groups });
+    },
+  });
+  const { unmount } = render(<ReviewDialog api={api} row={row} onClose={() => undefined} onOpen={() => undefined} onSent={() => undefined} />);
+  const pending = await screen.findByRole("region", { name: "Choose a channel for @acme/team-b" });
+  fireEvent.click(within(pending).getByRole("button", { name: "Enter an ID" }));
+  fireEvent.change(within(pending).getByRole("textbox", { name: "Channel, DM or member ID" }), { target: { value: "C0ACME0009" } });
+  fireEvent.change(within(pending).getByRole("textbox", { name: "Name" }), { target: { value: "ops-reviews" } });
+  fireEvent.click(within(pending).getByRole("button", { name: "Preview" }));
+  expect(await screen.findByRole("checkbox", { name: "Save channel for @acme/team-b" })).toBeChecked();
+  fireEvent.click(screen.getByRole("button", { name: "Send 2 messages" }));
+  await waitFor(() => expect(saved).toHaveLength(1));
+  expect(saved[0]).toMatchObject({ github_org: "acme", team_slug: "team-b", slack_channel_id: "C0ACME0009", slack_channel_name: "ops-reviews", slack_workspace: "acme" });
+  expect(calls.sent).toHaveLength(2);
+  unmount();
+
+  render(<ReviewDialog api={api} row={row} onClose={() => undefined} onOpen={() => undefined} onSent={() => undefined} />);
+  const again = await screen.findByRole("region", { name: "Choose a channel for @acme/team-b" });
+  fireEvent.click(within(again).getByRole("button", { name: "Remove @acme/team-b" }));
+  await waitFor(() => expect(screen.queryByRole("region", { name: "Choose a channel for @acme/team-b" })).not.toBeInTheDocument());
+  expect(screen.getByRole("button", { name: "Send request" })).toBeEnabled();
 });
 
 test("failing owners are explained instead of an empty list", async () => {
