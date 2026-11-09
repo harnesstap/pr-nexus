@@ -540,8 +540,16 @@ fn mark_ready_refreshes_the_preview_and_keeps_a_real_ci_block() {
         before
             .skipped
             .iter()
-            .any(|skip| { skip.pr.pr_id == failing && skip.detail.contains("check ci is fail") }),
-        "a failing rollup stays blocked while the PR is a draft: {:?}",
+            .any(|skip| { skip.pr.pr_id == failing && skip.detail.contains("requested changes") }),
+        "changes requested still skip the PR: {:?}",
+        before.skipped
+    );
+    assert!(
+        before
+            .skipped
+            .iter()
+            .all(|skip| !skip.detail.contains("check ci is fail")),
+        "a failing check is a note, not a skip: {:?}",
         before.skipped
     );
     assert!(
@@ -562,13 +570,28 @@ fn mark_ready_refreshes_the_preview_and_keeps_a_real_ci_block() {
         .set_pull_request_draft(PrId(passing), false)
         .unwrap();
     let after = bulk::preview(state, &bulk_of(vec![failing, passing], true)).unwrap();
-    assert!(after.pr_warnings.is_empty(), "{:?}", after.pr_warnings);
+    assert!(
+        after
+            .pr_warnings
+            .iter()
+            .all(|warning| warning.kind != "draft"),
+        "{:?}",
+        after.pr_warnings
+    );
     assert!(
         after
             .skipped
             .iter()
-            .any(|skip| { skip.pr.pr_id == failing && skip.detail.contains("check ci is fail") }),
-        "clearing the draft does not clear a failing check: {:?}",
+            .any(|skip| { skip.pr.pr_id == failing && skip.detail.contains("requested changes") }),
+        "clearing the draft does not clear requested changes: {:?}",
+        after.skipped
+    );
+    assert!(
+        after
+            .skipped
+            .iter()
+            .all(|skip| !skip.detail.contains("check ci is fail")),
+        "a failing check stays a note after the draft is cleared: {:?}",
         after.skipped
     );
     assert!(after.cards.iter().any(|card| {
@@ -619,6 +642,7 @@ fn mark_ready_refreshes_the_preview_and_keeps_a_real_ci_block() {
             at: std::time::Instant::now(),
             blocked: Some("check ci is fail".into()),
             teams: Vec::new(),
+            groups: Vec::new(),
         },
     );
     let stale = bulk::preview(state, &bulk_of(vec![passing], false)).unwrap();
@@ -648,17 +672,211 @@ fn mark_ready_refreshes_the_preview_and_keeps_a_real_ci_block() {
             at: std::time::Instant::now(),
             blocked: Some("check ci is fail".into()),
             teams: Vec::new(),
+            groups: Vec::new(),
         },
     );
-    let cached = bulk::preview(state, &bulk_of(vec![failing], false)).unwrap();
+    let cached = bulk::preview(state, &bulk_of(vec![failing], true)).unwrap();
     assert!(
         cached
             .skipped
             .iter()
-            .any(|skip| skip.pr.pr_id == failing && skip.detail.contains("check ci is fail")),
-        "a fresh owner decision for the current failing rollup still blocks: {:?}",
+            .all(|skip| !skip.detail.contains("check ci is fail")),
+        "a cached failing check does not keep the PR out: {:?}",
         cached.skipped
     );
+    assert!(
+        cached
+            .pr_warnings
+            .iter()
+            .any(|warning| { warning.pr_id == failing && warning.kind == "checks" }),
+        "{:?}",
+        cached.pr_warnings
+    );
+    assert!(cached.cards.iter().any(|card| {
+        card.messages
+            .iter()
+            .any(|message| message.prs.iter().any(|item| item.pr_id == failing))
+    }));
+}
+
+#[test]
+fn failing_checks_stay_in_the_request_and_pending_checks_do_not() {
+    use pr_nexus_core::domain::{ChecksState, PrId};
+
+    let fx = fixture("checks-note");
+    let state = &fx.state;
+    connect_fake_workspace(state);
+    let failing = pr_id(state, 1);
+    let pending = pr_id(state, 2);
+    let mut row = state
+        .store
+        .get_pull_request(PrId(failing))
+        .unwrap()
+        .unwrap();
+    row.checks = ChecksState::Failure;
+    state.store.update_pull_request_gate(&row).unwrap();
+    map_team(state, "acme/billing", "C0ACME0001", "team-reviews");
+    crate::slack::lock(&state.owners).insert(
+        failing,
+        crate::state::OwnersEntry {
+            head_sha: row.head_sha.clone(),
+            base_ref: row.base_ref.clone(),
+            is_draft: row.is_draft,
+            checks: row.checks,
+            at: std::time::Instant::now(),
+            blocked: Some("check ci is fail".into()),
+            teams: vec!["acme/billing".into()],
+            groups: Vec::new(),
+        },
+    );
+    let request: BulkRequest = serde_json::from_value(serde_json::json!({
+        "pr_ids": [failing, pending]
+    }))
+    .unwrap();
+    let preview = bulk::preview(state, &request).unwrap();
+    assert!(
+        preview.cards.iter().any(|card| card
+            .messages
+            .iter()
+            .any(|message| { message.prs.iter().any(|item| item.pr_id == failing) })),
+        "a failing check is still requested: {:?}",
+        preview.skipped
+    );
+    assert!(preview.pr_warnings.iter().any(|warning| {
+        warning.pr_id == failing
+            && warning.kind == "checks"
+            && warning.message.contains("failing checks")
+    }));
+    assert!(
+        preview
+            .skipped
+            .iter()
+            .any(|skip| skip.pr.pr_id == pending && skip.detail.contains("pending")),
+        "{:?}",
+        preview.skipped
+    );
+}
+
+#[test]
+fn codeowners_lines_become_one_send_each() {
+    use pr_nexus_core::domain::{PrId, RequestStatus};
+
+    let fx = fixture("codeowners-lines");
+    let state = &fx.state;
+    connect_fake_workspace(state);
+    let id = pr_id(state, 1);
+    for request in state
+        .store
+        .list_review_requests(PrId(id))
+        .unwrap()
+        .into_iter()
+        .filter(|request| request.status == RequestStatus::Active)
+    {
+        state
+            .store
+            .close_review_request(
+                request.id,
+                pr_nexus_core::domain::CloseReason::Dismissed,
+                Utc::now(),
+            )
+            .unwrap();
+    }
+    map_team(state, "acme/team-a", "C0ACME0001", "team-a");
+    map_team(state, "acme/team-b", "C0ACME0002", "team-b");
+    map_team(state, "acme/team-c", "C0ACME0003", "team-c");
+    let row = state.store.get_pull_request(PrId(id)).unwrap().unwrap();
+    let group = |group_id: &str, pattern: &str, teams: &[&str]| crate::commands::OwnerGroupDto {
+        id: group_id.into(),
+        pattern: pattern.into(),
+        teams: teams.iter().map(|team| (*team).to_owned()).collect(),
+        users: Vec::new(),
+        satisfied: false,
+    };
+    let line_a = "teams:acme/team-a,acme/team-b|users:";
+    let line_c = "teams:acme/team-c,acme/team-d|users:";
+    let remember = |groups: Vec<crate::commands::OwnerGroupDto>| {
+        crate::slack::lock(&state.owners).insert(
+            id,
+            crate::state::OwnersEntry {
+                head_sha: row.head_sha.clone(),
+                base_ref: row.base_ref.clone(),
+                is_draft: row.is_draft,
+                checks: row.checks,
+                at: std::time::Instant::now(),
+                blocked: None,
+                teams: vec!["acme/team-a".into()],
+                groups,
+            },
+        );
+    };
+    remember(vec![
+        group(line_a, "*", &["acme/team-a", "acme/team-b"]),
+        group(line_c, "/billing/", &["acme/team-c", "acme/team-d"]),
+    ]);
+    let request = |choices: serde_json::Value| -> BulkRequest {
+        serde_json::from_value(serde_json::json!({
+            "pr_ids": [id],
+            "group_choices": choices,
+        }))
+        .unwrap()
+    };
+    let preview = bulk::preview(state, &request(serde_json::json!([]))).unwrap();
+    let channels: Vec<&str> = preview
+        .cards
+        .iter()
+        .map(|card| card.target.channel_id.as_str())
+        .collect();
+    assert_eq!(
+        channels,
+        vec!["C0ACME0001", "C0ACME0003"],
+        "{:?}",
+        preview.skipped
+    );
+    assert!(preview.groups.iter().any(|group| {
+        group.group_id == line_a && group.selected.as_deref() == Some("acme/team-a")
+    }));
+    assert!(preview.groups.iter().all(|group| group.hint.is_none()));
+
+    let switched = bulk::preview(
+        state,
+        &request(serde_json::json!([{
+            "pr_id": id,
+            "group_id": line_a,
+            "team": "acme/team-b"
+        }])),
+    )
+    .unwrap();
+    assert!(
+        switched
+            .cards
+            .iter()
+            .any(|card| card.target.channel_id == "C0ACME0002")
+    );
+    assert!(switched.groups.iter().any(|group| {
+        group.group_id == line_a
+            && group.selected.as_deref() == Some("acme/team-b")
+            && group.channel_id.as_deref() == Some("C0ACME0002")
+    }));
+
+    map_team(state, "acme/team-c", "C0ACME0001", "team-a");
+    let merged = bulk::preview(state, &request(serde_json::json!([]))).unwrap();
+    assert_eq!(merged.cards.len(), 1, "{:?}", merged.cards);
+    assert_eq!(merged.cards[0].target.channel_id, "C0ACME0001");
+
+    remember(vec![
+        group(line_a, "*", &["acme/team-a", "acme/team-b"]),
+        group(line_c, "/billing/", &["acme/team-e"]),
+    ]);
+    let hinted = bulk::preview(state, &request(serde_json::json!([]))).unwrap();
+    assert_eq!(hinted.cards.len(), 1);
+    assert!(hinted.groups.iter().any(|group| {
+        group.group_id == line_c
+            && group
+                .hint
+                .as_deref()
+                .is_some_and(|hint| hint.contains("No Slack channel"))
+    }));
+    assert!(hinted.skipped.is_empty(), "{:?}", hinted.skipped);
 }
 
 fn channel_json() -> serde_json::Value {

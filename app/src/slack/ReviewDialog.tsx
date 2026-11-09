@@ -6,6 +6,7 @@ import type { Toast } from "../list/model";
 import { CopyMessageButton } from "./CopyMessageButton";
 import { DraftWarning } from "./DraftWarning";
 import { Mrkdwn } from "./mrkdwn";
+import { CheckNotes, GroupedRequest, needsGroupSends } from "./OwnerGroups";
 import { TargetCombobox } from "./TargetCombobox";
 
 interface Props {
@@ -52,6 +53,8 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNot
   const [marking, setMarking] = useState(false);
   /** The send went through but its link is unknown: never offer a resend. */
   const [unconfirmed, setUnconfirmed] = useState<string | null>(null);
+  /** `true` when several CODEOWNERS lines each need their own send. */
+  const [groupsMode, setGroupsMode] = useState(false);
 
   async function loadPreview(target: ReviewTarget) {
     setPreview(null);
@@ -77,6 +80,13 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNot
           }),
           api.slackWorkspaces().catch(() => []),
         ]);
+        if (detail && needsGroupSends(detail.owner_groups)) {
+          if (!cancel) {
+            setGroupsMode(true);
+            setChoices([]);
+          }
+          return;
+        }
         const wanted = detail ? (detail.mandatory_teams.length > 0 ? detail.mandatory_teams : detail.candidate_teams) : [];
         const found = await api.reviewTargets(row.id, wanted).catch((err: unknown) => {
           if (!cancel) {
@@ -191,11 +201,16 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNot
         <p className="truncate text-xs text-slate-500">
           #{row.number} {row.title} · {row.repo}
         </p>
+        {groupsMode ? (
+          <GroupedRequest api={api} row={row} onClose={onClose} onSent={onSent} onOpen={onOpen} onReady={onReady} onNotice={onNotice} />
+        ) : (
+          <>
         {draft && (
           <DraftWarning busy={marking} onMarkReady={() => void markReady()}>
             This PR is still a draft. Reviewers may skip it.
           </DraftWarning>
         )}
+        {preview && <CheckNotes warnings={preview.pr_warnings} />}
         {choices === null ? (
           <p className="mt-4 text-slate-400">Finding channels…</p>
         ) : (
@@ -292,6 +307,8 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNot
             {sending ? "Sending…" : bump ? (draft ? "Bump anyway" : "Bump in thread") : draft ? "Send anyway" : "Send request"}
           </button>
         </footer>
+          </>
+        )}
       </div>
     </div>
   );

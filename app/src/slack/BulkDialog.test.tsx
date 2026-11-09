@@ -382,6 +382,50 @@ test("draws the cards from cached names at once, then swaps in Slack's names bef
   expect(screen.getByRole("button", { name: "Send 2 messages" })).toBeEnabled();
 });
 
+test("a CODEOWNERS line can switch teams, and a line with no channel is only a hint", async () => {
+  const { api, calls } = fake();
+  const teamA = { workspace: "acme", channel_id: "C0ACME0001", channel_name: "team-a" };
+  const teamB = { workspace: "acme", channel_id: "C0ACME0002", channel_name: "team-b" };
+  const teamC = { workspace: "acme", channel_id: "C0ACME0003", channel_name: "team-c" };
+  const withGroups: Api = {
+    ...api,
+    bulkPreview: (request: BulkRequest) => {
+      calls.previews.push(request);
+      const picked = request.group_choices?.find((choice) => choice.group_id === "line-a")?.team ?? "acme/team-a";
+      const first = picked === "acme/team-b" ? teamB : teamA;
+      const message = (channel_name: string) => ({
+        action: "request" as const,
+        prs: [pr(1, 42, "Add passkeys")],
+        text: `Please review in #${channel_name}`,
+        permalink: null,
+      });
+      return Promise.resolve({
+        cards: [
+          { target: first, messages: [message(first.channel_name)], warnings: [], signed_in: true, single_top_level: false, can_switch: false, fingerprint: first.channel_id },
+          { target: teamC, messages: [message(teamC.channel_name)], warnings: [], signed_in: true, single_top_level: false, can_switch: false, fingerprint: teamC.channel_id },
+        ],
+        skipped: [],
+        pr_warnings: [{ kind: "checks", pr_id: 1, number: 42, message: "#42 has failing checks." }],
+        groups: [
+          { pr_id: 1, number: 42, group_id: "line-a", pattern: "/src/", teams: ["acme/team-a", "acme/team-b"], selected: picked, hint: null, channel_id: first.channel_id, workspace: "acme" },
+          { pr_id: 1, number: 42, group_id: "line-c", pattern: "/billing/", teams: ["acme/team-c", "acme/team-d"], selected: "acme/team-c", hint: null, channel_id: teamC.channel_id, workspace: "acme" },
+          { pr_id: 1, number: 42, group_id: "line-e", pattern: "/ops/", teams: ["acme/team-e"], selected: null, hint: "No Slack channel is saved for @acme/team-e.", channel_id: null, workspace: null },
+        ],
+      });
+    },
+  };
+  render(<BulkDialog api={withGroups} prIds={[1]} onClose={() => undefined} onSent={() => undefined} onOpen={() => undefined} />);
+  expect(await screen.findByRole("region", { name: /#team-a/ })).toBeInTheDocument();
+  expect(screen.getByRole("note", { name: "No Slack channel" })).toHaveTextContent("No Slack channel is saved for @acme/team-e.");
+  expect(screen.getByRole("note", { name: "Failing checks" })).toHaveClass("text-slate-500");
+  fireEvent.click(screen.getByRole("button", { name: "@acme/team-b" }));
+  expect(await screen.findByRole("region", { name: /#team-b/ })).toBeInTheDocument();
+  expect(calls.previews.at(-1)?.group_choices).toEqual([{ pr_id: 1, group_id: "line-a", team: "acme/team-b" }]);
+  fireEvent.click(screen.getByRole("button", { name: "Send 2 messages" }));
+  await waitFor(() => expect(calls.sends[0]?.[1]).toEqual(["C0ACME0002", "C0ACME0003"]));
+  expect(calls.sends[0]?.[0].group_choices).toEqual([{ pr_id: 1, group_id: "line-a", team: "acme/team-b" }]);
+});
+
 test("skips the Slack round when every name is already cached", async () => {
   const { api, calls } = fake();
   render(<BulkDialog api={api} prIds={[1, 2]} onClose={() => undefined} onSent={() => undefined} onOpen={() => undefined} />);

@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use chrono::Utc;
 use pr_nexus_core::domain::{
-    Account, AccountId, AccountKind, AuthMode, ChatKind, PrId, PrState, PullRequest,
+    Account, AccountId, AccountKind, AuthMode, ChatKind, ChecksState, PrId, PrState, PullRequest,
 };
 use pr_nexus_core::error::{CoreError, ProviderError};
 use pr_nexus_core::mapping::lookup_mapping;
@@ -126,8 +126,12 @@ pub struct PrWarning {
 /// What reviewers should know before a request goes out: today, only that
 /// the PR is still a draft. Sending stays allowed.
 pub fn pr_warnings(pr: &PullRequest) -> Vec<PrWarning> {
-    if pr.state == PrState::Open && pr.is_draft {
-        vec![PrWarning {
+    if pr.state != PrState::Open {
+        return Vec::new();
+    }
+    let mut warnings = Vec::new();
+    if pr.is_draft {
+        warnings.push(PrWarning {
             kind: "draft".into(),
             pr_id: pr.id.0,
             number: pr.number,
@@ -135,10 +139,17 @@ pub fn pr_warnings(pr: &PullRequest) -> Vec<PrWarning> {
                 "#{} is still a draft. Reviewers may skip it until it's marked ready.",
                 pr.number
             ),
-        }]
-    } else {
-        Vec::new()
+        });
     }
+    if matches!(pr.checks, ChecksState::Failure | ChecksState::Error) {
+        warnings.push(PrWarning {
+            kind: "checks".into(),
+            pr_id: pr.id.0,
+            number: pr.number,
+            message: format!("#{} has failing checks.", pr.number),
+        });
+    }
+    warnings
 }
 
 /// Slack accounts, newest last.

@@ -375,6 +375,68 @@ test("search with no results shows a grey hint, not an ID error", async () => {
   expect(screen.queryByText(/Enter a Slack channel ID/)).toBeNull();
 });
 
+test("two CODEOWNERS lines propose two sends and the team button changes the channel that is sent", async () => {
+  const channel = (channel_id: string, channel_name: string): ReviewTarget => ({ workspace: "acme", channel_id, channel_name });
+  const { api, calls } = fake({
+    prDetail: () =>
+      Promise.resolve({
+        ...detail,
+        owner_groups: [
+          { id: "line-a", pattern: "/src/", teams: ["acme/team-a", "acme/team-b"], users: [], satisfied: false },
+          { id: "line-c", pattern: "/billing/", teams: ["acme/team-c", "acme/team-d"], users: [], satisfied: false },
+          { id: "line-e", pattern: "/ops/", teams: ["acme/team-e"], users: [], satisfied: false },
+        ],
+      }),
+    bulkPreview: (request) => {
+      const picked = request.group_choices?.find((choice) => choice.group_id === "line-a")?.team ?? "acme/team-a";
+      const first = picked === "acme/team-b" ? channel("C0ACME0002", "team-b") : channel("C0ACME0001", "team-a");
+      const second = channel("C0ACME0003", "team-c");
+      const card = (target: ReviewTarget) => ({
+        target,
+        messages: [{ action: "request" as const, prs: [{ pr_id: 7, number: 42, title: "Add passkeys", repo: "acme/widgets" }], text: `Please review in #${target.channel_name}`, permalink: null }],
+        warnings: [],
+        signed_in: true,
+        single_top_level: false,
+        can_switch: false,
+        fingerprint: target.channel_id,
+      });
+      return Promise.resolve({
+        cards: [card(first), card(second)],
+        skipped: [],
+        pr_warnings: [{ kind: "checks" as const, pr_id: 7, number: 42, message: "#42 has failing checks." }],
+        groups: [
+          { pr_id: 7, number: 42, group_id: "line-a", pattern: "/src/", teams: ["acme/team-a", "acme/team-b"], selected: picked, hint: null, channel_id: first.channel_id, workspace: "acme" },
+          { pr_id: 7, number: 42, group_id: "line-c", pattern: "/billing/", teams: ["acme/team-c", "acme/team-d"], selected: "acme/team-c", hint: null, channel_id: second.channel_id, workspace: "acme" },
+          { pr_id: 7, number: 42, group_id: "line-e", pattern: "/ops/", teams: ["acme/team-e"], selected: null, hint: "No Slack channel is saved for @acme/team-e.", channel_id: null, workspace: null },
+        ],
+      });
+    },
+  });
+  render(<ReviewDialog api={api} row={row} onClose={() => undefined} onOpen={() => undefined} onSent={() => undefined} />);
+  expect(await screen.findByRole("region", { name: "#team-a" })).toBeInTheDocument();
+  expect(screen.getByRole("region", { name: "#team-c" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "@acme/team-a" })).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByRole("button", { name: "@acme/team-b" })).toHaveAttribute("aria-pressed", "false");
+  expect(screen.getByRole("note", { name: "No Slack channel" })).toHaveTextContent("No Slack channel is saved for @acme/team-e.");
+  expect(screen.getByRole("note", { name: "No Slack channel" })).toHaveClass("text-slate-500");
+  expect(screen.getByRole("note", { name: "Failing checks" })).toHaveTextContent("#42 has failing checks.");
+  expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "@acme/team-b" }));
+  expect(await screen.findByRole("region", { name: "#team-b" })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Send 2 messages" }));
+  await waitFor(() => expect(calls.sent.map(([target]) => target.channel_id)).toEqual(["C0ACME0002", "C0ACME0003"]));
+});
+
+test("one CODEOWNERS team still uses the channel picker", async () => {
+  const { api, calls } = fake({
+    prDetail: () => Promise.resolve({ ...detail, owner_groups: [{ id: "only", pattern: "*", teams: ["acme/platform"], users: [], satisfied: false }] }),
+  });
+  render(<ReviewDialog api={api} row={row} onClose={() => undefined} onOpen={() => undefined} onSent={() => undefined} />);
+  expect(await screen.findByLabelText("Message preview")).toHaveTextContent("Review please · #platform");
+  expect(calls.targets).toEqual([["@acme/platform"]]);
+  expect(screen.getByRole("combobox", { name: "Channel or person" })).toBeInTheDocument();
+});
+
 test("failing owners are explained instead of an empty list", async () => {
   const { api } = fake({ prDetail: () => Promise.reject(new Error("GitHub is unreachable")), reviewTargets: () => Promise.resolve([]) });
   render(<ReviewDialog api={api} row={row} onClose={() => undefined} onOpen={() => undefined} onSent={() => undefined} />);

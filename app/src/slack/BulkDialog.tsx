@@ -1,7 +1,8 @@
 import { targetWorkspaceName } from "./workspaces";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Api, BulkCard, BulkPreview, BulkRequest, BulkResult, ChannelKey, ReviewTarget, SlackWorkspace } from "../api";
+import type { Api, BulkCard, BulkGroup, BulkPreview, BulkRequest, BulkResult, ChannelKey, GroupChoice, ReviewTarget, SlackWorkspace } from "../api";
 import { channelLabel, errorMessage } from "../api";
+import { CheckNotes, GroupSwitcher, UnmappedHints, groupOnCard } from "./OwnerGroups";
 import { DraftWarning } from "./DraftWarning";
 import { TargetCombobox } from "./TargetCombobox";
 import { Tooltip } from "../Tooltip";
@@ -56,14 +57,16 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen, onReady, onNot
   /** PRs taken out of draft from this dialog. */
   const [readied, setReadied] = useState<number[]>([]);
   const [marking, setMarking] = useState(false);
+  const [groupChoices, setGroupChoices] = useState<GroupChoice[]>([]);
 
   const request = useCallback(
-    (next: Partial<{ ids: number[]; oneChannel: boolean; single: ChannelKey[]; target: ReviewTarget }> = {}): BulkRequest => ({
+    (next: Partial<{ ids: number[]; oneChannel: boolean; single: ChannelKey[]; target: ReviewTarget; groupChoices: GroupChoice[] }> = {}): BulkRequest => ({
       pr_ids: next.ids ?? ids,
       target: (next.oneChannel ?? oneChannel) ? (next.target ?? target) : null,
       single_top_level: next.single ?? single,
+      group_choices: next.groupChoices ?? groupChoices,
     }),
-    [ids, oneChannel, target, single],
+    [ids, oneChannel, target, single, groupChoices],
   );
 
   /**
@@ -132,7 +135,7 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen, onReady, onNot
       setWorkspaces(signedIn);
     })();
     void (async () => {
-      await plan({ pr_ids: prIds, target: null, single_top_level: [] });
+      await plan({ pr_ids: prIds, target: null, single_top_level: [], group_choices: [] });
     })();
     return () => {
       cancel = true;
@@ -156,6 +159,13 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen, onReady, onNot
     const next = single.some((item) => sameKey(item, key)) ? single.filter((item) => !sameKey(item, key)) : [...single, key];
     setSingle(next);
     replan(request({ single: next }));
+  }
+
+  function pickTeam(group: BulkGroup, team: string) {
+    const next = groupChoices.filter((choice) => !(choice.pr_id === group.pr_id && choice.group_id === group.group_id));
+    next.push({ pr_id: group.pr_id, group_id: group.group_id, team });
+    setGroupChoices(next);
+    replan(request({ groupChoices: next }));
   }
 
   function routeMode(next: boolean) {
@@ -206,8 +216,8 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen, onReady, onNot
     }
     setMarking(false);
     // The open preview was planned before the draft flips. Plan again so a PR
-    // that is no longer only a draft joins its message. A real CI block stays
-    // in Skipped; this does not treat the draft flip as a passing check.
+    // that is no longer only a draft joins its message. A failing check stays
+    // a note; this does not treat the draft flip as a passing check.
     if (results.some((result) => result.status === "fulfilled")) {
       setLoading(true);
       await plan(request());
@@ -275,6 +285,7 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen, onReady, onNot
                 />
               </div>
             )}
+            {preview && <CheckNotes warnings={preview.pr_warnings} />}
             {drafts.length > 0 && (
               <DraftWarning busy={marking} onMarkReady={() => void markAllReady()} action={drafts.length === 1 ? "Mark ready for review" : "Mark all ready"}>
                 {drafts.length === 1 ? "1" : drafts.length} of {ids.length} PRs {drafts.length === 1 ? "is" : "are"} still {drafts.length === 1 ? "a draft" : "drafts"}:{" "}
@@ -310,6 +321,12 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen, onReady, onNot
                         </label>
                       )}
                     </header>
+                    {!oneChannel &&
+                      (preview.groups ?? [])
+                        .filter((group) => groupOnCard(group, card.target))
+                        .map((group) => (
+                          <GroupSwitcher key={`${group.pr_id}:${group.group_id}`} group={group} disabled={loading || naming || sending} onPick={(team) => pickTeam(group, team)} />
+                        ))}
                     {card.messages.map((message, index) => (
                       <div key={index} className="mt-2 space-y-1">
                         <p className="text-xs text-slate-400">
@@ -352,6 +369,7 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen, onReady, onNot
                     )}
                   </section>
                 ))}
+                {!oneChannel && <UnmappedHints groups={preview.groups ?? []} />}
                 {preview.skipped.length > 0 && (
                   <section aria-label="Skipped" className="rounded border border-slate-800 p-3 text-xs text-slate-400">
                     <h3 className="mb-1 font-medium text-slate-300">Skipped</h3>

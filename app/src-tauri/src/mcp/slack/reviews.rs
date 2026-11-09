@@ -185,6 +185,7 @@ fn request_reviews(state: &AppState, arguments: JsonObject) -> Result<Value, App
         target,
         single_top_level: Vec::new(),
         cached_names: false,
+        group_choices: Vec::new(),
     };
     let mut preview = bulk::preview(state, &request)?;
     let mut skipped = skips(&preview);

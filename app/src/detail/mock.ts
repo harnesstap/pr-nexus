@@ -67,6 +67,7 @@ export function mockDetail(id: number, overrides: Partial<PrDetail> = {}): PrDet
       { path: "src/checkout/steps.test.tsx", teams: ["@acme/web"] },
       { path: "README.md", teams: [] },
     ],
+    owner_groups: [],
     files_truncated: false,
     rules_error: null,
     protection: "Branch protection requires code-owner reviews",

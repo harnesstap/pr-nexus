@@ -82,11 +82,16 @@ pub fn parse_codeowners(text: &str) -> Result<Vec<Rule>, CoreError> {
 }
 
 pub fn owners_for_path<'a>(rules: &'a [Rule], path: &str) -> &'a [Owner] {
+    last_matching_rule(rules, path).map_or(&[], |rule| rule.owners.as_slice())
+}
+
+/// The last CODEOWNERS rule that matches `path`. Later lines replace earlier ones.
+pub fn last_matching_rule<'a>(rules: &'a [Rule], path: &str) -> Option<&'a Rule> {
     let normalized = path.trim_start_matches('/');
-    let mut matched: &[Owner] = &[];
+    let mut matched = None;
     for rule in rules {
         if rule.matcher.matches(normalized) {
-            matched = &rule.owners;
+            matched = Some(rule);
         }
     }
     matched

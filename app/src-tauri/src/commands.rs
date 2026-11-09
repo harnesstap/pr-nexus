@@ -1203,6 +1203,18 @@ pub struct FileOwners {
     pub teams: Vec<String>,
 }
 
+/// One CODEOWNERS owner set on the changed files.
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+pub struct OwnerGroupDto {
+    pub id: String,
+    pub pattern: String,
+    /// `org/slug`, in line order.
+    pub teams: Vec<String>,
+    pub users: Vec<String>,
+    /// An approval from any owner already covers this set.
+    pub satisfied: bool,
+}
+
 /// The detail view: readiness, owners, and why (§6, §7.2).
 #[derive(Serialize)]
 pub struct PrDetail {
@@ -1226,6 +1238,10 @@ pub struct PrDetail {
     /// Plain-language sentences for the "Details" expander, blockers first.
     pub explanations: Vec<crate::explain::Explanation>,
     pub files: Vec<FileOwners>,
+    /// Distinct CODEOWNERS lines on the changed files. Empty when the file
+    /// did not load. Satisfied lines stay here so the request planner can
+    /// tell "everyone approved" from "there is no CODEOWNERS file".
+    pub owner_groups: Vec<OwnerGroupDto>,
     pub files_truncated: bool,
     pub rules_error: Option<String>,
     pub protection: String,
@@ -1474,6 +1490,17 @@ pub(crate) fn detail_dto(id: PrId, report: OwnershipReport) -> PrDetail {
             .map(|file| FileOwners {
                 path: file.path,
                 teams: names(&file.teams),
+            })
+            .collect(),
+        owner_groups: report
+            .owner_groups
+            .iter()
+            .map(|marked| OwnerGroupDto {
+                id: marked.group.id.clone(),
+                pattern: marked.group.pattern.clone(),
+                teams: names(&marked.group.teams),
+                users: marked.group.users.clone(),
+                satisfied: marked.satisfied,
             })
             .collect(),
         files_truncated: report.files_truncated,
