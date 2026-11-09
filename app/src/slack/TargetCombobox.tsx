@@ -93,17 +93,33 @@ function keyOf(target: ReviewTarget) {
   return target.channel_id;
 }
 
+/** `@org/slug`, whatever shape the choice stored the team in. */
+function formatTeams(teams: string[]): string {
+  return teams
+    .map((team) => {
+      const name = team.trim().replace(/^@/, "");
+      return name ? `@${name}` : "";
+    })
+    .filter(Boolean)
+    .join(", ");
+}
+
+/**
+ * Why this channel is suggested. The teams are the ones mapped to it.
+ * An open request on this pull request says so. A search hit is not a suggestion
+ * and gets no note.
+ */
 function describe(choice: TargetChoice) {
-  if (choice.source === "request") {
-    return "open request";
-  }
   if (choice.source === "unresolved") {
-    return `${choice.teams.join(", ")} · no channel ID yet, pick to search`;
+    const teams = formatTeams(choice.teams);
+    return teams ? `${teams} · no channel ID yet, pick to search` : "no channel ID yet, pick to search";
   }
   if (choice.source === "previous") {
     return "old thread · no longer mapped";
   }
-  return choice.teams.join(", ");
+  const teams = formatTeams(choice.teams);
+  const open = choice.source === "request" ? "open request" : "";
+  return [teams, open].filter(Boolean).join(" · ");
 }
 
 /**

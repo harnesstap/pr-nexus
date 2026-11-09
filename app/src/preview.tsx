@@ -514,7 +514,10 @@ if (screenName === "codeowners") {
   ];
   previewApi.slackWorkspaces = () =>
     Promise.resolve([{ id: 1, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false, team_id: "T0ACME0001", enabled: true, priority: 0 }]);
-  previewApi.reviewTargets = (_id, teams) => Promise.resolve(known.map((target) => ({ target, teams, source: "mapping" as const })));
+  previewApi.reviewTargets = () =>
+    Promise.resolve([
+      { target: known[0]!, teams: ["acme/team-a"], source: "request" as const },
+    ]);
   previewApi.searchSlackTargets = (query: string) => {
     const term = query.replace(/^[#@]/, "").trim().toLowerCase();
     return Promise.resolve(

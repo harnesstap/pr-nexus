@@ -101,6 +101,28 @@ test("search waits 250 ms after the last keystroke and asks once", async () => {
   expect(calls).toEqual(["#pl"]);
 });
 
+test("a suggestion names the team mapped to that channel, or an open request, and a search hit has neither", async () => {
+  const suggestions: TargetChoice[] = [
+    { target: { workspace: "acme", channel_id: "C0ACME0001", channel_name: "team-a-pr-reviews" }, teams: ["acme/team-a"], source: "mapping" },
+    { target: { workspace: "acme", channel_id: "C0ACME0002", channel_name: "already-asked" }, teams: [], source: "request" },
+    { target: { workspace: "acme", channel_id: "C0ACME0005", channel_name: "both" }, teams: ["acme/team-a", "acme/team-c"], source: "request" },
+    { target: { workspace: "acme", channel_id: "C0ACME0006", channel_name: "unnamed" }, teams: [], source: "mapping" },
+  ];
+  const { box } = setup({ suggestions });
+  fireEvent.focus(box);
+  const listed = screen.getAllByRole("option").map((item) => item.textContent);
+  expect(listed).toEqual([
+    "#team-a-pr-reviews@acme/team-a",
+    "#already-askedopen request",
+    "#both@acme/team-a, @acme/team-c · open request",
+    "#unnamed",
+  ]);
+  await type(box, "#plat");
+  const searched = screen.getAllByRole("option").map((item) => item.textContent);
+  expect(searched).toEqual(["#platform", "#platform-alerts"]);
+  expect(searched.join(" ")).not.toMatch(/team-a|open request/);
+});
+
 test("code-owner channels come first and are not repeated by search", async () => {
   const { box } = setup();
   await type(box, "#plat");
