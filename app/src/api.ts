@@ -195,6 +195,8 @@ export interface Preferences {
   review_sla_working_days: boolean;
   /** Open pull requests in My PRs before a soft hint. Null means no cap. */
   my_prs_wip_limit: number | null;
+  /** Extra GitHub logins treated as bots, one per entry. */
+  bot_logins: string[];
 }
 
 /** One editable Slack review-request template (§7.6). */
@@ -594,6 +596,11 @@ export interface ListRow {
     root_ts: string;
     source: string;
   } | null;
+  /**
+   * Bot comments and reviews from the last time the detail was loaded.
+   * Absent or 0 until then: the list sync does not fetch comment text.
+   */
+  bot_comments?: number;
 }
 
 /** One pending review request on a list row. */
@@ -783,8 +790,10 @@ export interface PrOverview {
   /** Null for a deleted account. */
   author: Person | null;
   assignees: Person[];
-  /** Authors of PR and review-thread comments, deduped; bots included. */
+  /** Authors of PR and review-thread comments, deduped. Bots are omitted. */
   commenters: Person[];
+  /** Bot comments and reviews. Absent on overviews stored before this field. */
+  bot_reviews?: BotReviews;
   viewer: {
     login: string;
     permission: "admin" | "maintain" | "write" | "triage" | "read" | null;
@@ -797,6 +806,22 @@ export interface PrOverview {
   merge_settings: { auto_merge_allowed: boolean; squash: boolean; merge: boolean; rebase: boolean };
   auto_merge: { method: MergeMethod; enabled_by: string | null; enabled_at: string | null } | null;
   fetched_at: string;
+}
+
+export interface BotReviewNote {
+  login: string;
+  kind: "issue" | "thread" | "review";
+  snippet: string;
+  url: string;
+  unresolved: boolean;
+  at: string;
+}
+
+export interface BotReviews {
+  count: number;
+  unresolved: number;
+  latest_snippet: string | null;
+  notes: BotReviewNote[];
 }
 
 /** What happened to one pull request in a close. */

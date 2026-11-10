@@ -1322,6 +1322,7 @@ mod tests {
                 reviewers_requested: false,
                 pending_reviewers: Vec::new(),
                 slack: None,
+                bot_comments: 0,
             },
             updated_ms: updated.timestamp_millis(),
             created_ms: updated.timestamp_millis(),

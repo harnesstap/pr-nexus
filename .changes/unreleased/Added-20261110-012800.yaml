@@ -1,0 +1,3 @@
+kind: Added
+body: The detail panel lists bot comments and reviews in a Bot reviews section, and human comment counts leave them out. A row shows a bot mark after that detail has been loaded. Settings → Review takes extra bot logins. MCP prompts summarize_pr, prepare_review_request and triage_my_reviews return context text only.
+time: 2026-11-10T01:28:00Z

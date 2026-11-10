@@ -24,6 +24,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   review_sla_hours: 48,
   review_sla_working_days: false,
   my_prs_wip_limit: null,
+  bot_logins: [],
 };
 
 type SettingsApi = Pick<

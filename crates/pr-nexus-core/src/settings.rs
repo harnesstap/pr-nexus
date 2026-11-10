@@ -73,6 +73,8 @@ pub const REVIEW_SLA_HOURS: &str = "review_sla_hours";
 pub const REVIEW_SLA_WORKING_DAYS: &str = "review_sla_working_days";
 /// Optional cap on open pull requests in My PRs. Missing or 0 means no cap.
 pub const MY_PRS_WIP_LIMIT: &str = "my_prs_wip_limit";
+/// Extra GitHub logins treated as bots, besides Bot actors and `[bot]` logins.
+pub const BOT_LOGINS: &str = "review.bot_logins";
 
 pub const DEFAULT_REDIRECT: &str = "http://127.0.0.1:47821/mcp/oauth/callback";
 
@@ -436,6 +438,55 @@ pub fn jira_base_url(store: &Store) -> Result<String, CoreError> {
     json_or(store, JIRA_BASE_URL, String::new())
 }
 
+/// Extra bot logins (`review.bot_logins`). Empty when unset.
+pub fn bot_logins(store: &Store) -> Result<Vec<String>, CoreError> {
+    json_or(store, BOT_LOGINS, Vec::new())
+}
+
+/// At most this many extra bot logins.
+pub const MAX_BOT_LOGINS: usize = 40;
+
+/// Trim, drop blanks, and reject anything that is not a GitHub login.
+/// Comparison later is case-insensitive; the saved spelling is kept.
+pub fn normalize_bot_logins(raw: &[String]) -> Result<Vec<String>, CoreError> {
+    let mut out = Vec::new();
+    for login in raw {
+        let login = login.trim();
+        if login.is_empty() {
+            continue;
+        }
+        if !valid_bot_login(login) {
+            return Err(CoreError::Validation(format!(
+                "{login} is not a GitHub login. Use letters, digits and hyphens."
+            )));
+        }
+        if out
+            .iter()
+            .any(|known: &String| known.eq_ignore_ascii_case(login))
+        {
+            continue;
+        }
+        out.push(login.to_owned());
+    }
+    if out.len() > MAX_BOT_LOGINS {
+        return Err(CoreError::Validation(format!(
+            "At most {MAX_BOT_LOGINS} extra bot logins"
+        )));
+    }
+    Ok(out)
+}
+
+fn valid_bot_login(login: &str) -> bool {
+    let base = login.strip_suffix("[bot]").unwrap_or(login);
+    !base.is_empty()
+        && base.len() <= 39
+        && base
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+        && !base.starts_with('-')
+        && !base.ends_with('-')
+}
+
 /// `review.bulk_bump_max_threads`: above this many distinct roots in one
 /// channel, a bulk bump becomes one top-level remind (§7.9). At least 1.
 pub fn bulk_bump_max_threads(store: &Store) -> Result<usize, CoreError> {
@@ -520,6 +571,9 @@ pub struct Preferences {
     /// `my_prs_wip_limit`. `None` means My PRs has no open-PR cap.
     #[serde(default)]
     pub my_prs_wip_limit: Option<u32>,
+    /// Extra bot logins. Older clients do not send it.
+    #[serde(default)]
+    pub bot_logins: Vec<String>,
 }
 
 fn default_review_sla_hours() -> i64 {
@@ -572,6 +626,7 @@ pub fn preferences(store: &Store) -> Result<Preferences, CoreError> {
         review_sla_hours: review_sla_hours(store)?,
         review_sla_working_days: review_sla_working_days(store)?,
         my_prs_wip_limit: my_prs_wip_limit(store)?,
+        bot_logins: bot_logins(store)?,
     })
 }
 
@@ -652,6 +707,7 @@ pub fn save_preferences(store: &Store, prefs: &Preferences) -> Result<Preference
     };
     crate::linking::validate_ticket_regex(regex)?;
     let jira_base = crate::jira::valid_base_url(&prefs.jira_base_url)?;
+    let bot_logins = normalize_bot_logins(&prefs.bot_logins)?;
     put_json(store, REVIEW_REQUESTER, prefs.review_requester.trim())?;
     put_json(store, MIN_BUMP_INTERVAL, &prefs.min_bump_interval_hours)?;
     put_json(store, BULK_BUMP_MAX_THREADS, &prefs.bulk_bump_max_threads)?;
@@ -690,6 +746,7 @@ pub fn save_preferences(store: &Store, prefs: &Preferences) -> Result<Preference
         &prefs.review_sla_working_days,
     )?;
     put_json(store, MY_PRS_WIP_LIMIT, &wip_limit)?;
+    put_json(store, BOT_LOGINS, &bot_logins)?;
     preferences(store)
 }
 
@@ -905,9 +962,11 @@ mod tests {
             review_sla_hours: 24,
             review_sla_working_days: true,
             my_prs_wip_limit: Some(8),
+            bot_logins: vec![" review-helper ".into(), "review-helper".into(), "".into()],
         };
         let saved = save_preferences(&store, &prefs).unwrap();
         assert_eq!(saved.jira_base_url, "https://acme-labs.atlassian.net");
+        assert_eq!(saved.bot_logins, vec!["review-helper".to_string()]);
         assert_eq!(saved.review_requester, "for Ada Acme");
         assert_eq!(saved.review_sla_hours, 24);
         assert!(saved.review_sla_working_days);
@@ -943,8 +1002,12 @@ mod tests {
         prefs.review_sla_hours = 48;
         prefs.my_prs_wip_limit = Some(9_000);
         assert!(save_preferences(&store, &prefs).is_err());
+        prefs.my_prs_wip_limit = None;
+        prefs.bot_logins = vec!["not a login".into()];
+        assert!(save_preferences(&store, &prefs).is_err());
         assert!(bump_broadcast(&store).unwrap());
         assert_eq!(review_sla_hours(&store).unwrap(), 48);
+        assert!(bot_logins(&store).unwrap().is_empty());
     }
 
     #[test]

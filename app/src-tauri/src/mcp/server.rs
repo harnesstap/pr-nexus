@@ -12,8 +12,9 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, ErrorData, Implementation,
-    ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ErrorData, GetPromptRequestParams,
+    GetPromptResponse, Implementation, ListPromptsResult, ListToolsResult, PaginatedRequestParams,
+    ServerCapabilities, ServerConfig,
 };
 use rmcp::service::RequestContext;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
@@ -33,7 +34,8 @@ pub const PATH: &str = "/mcp";
 
 const INSTRUCTIONS: &str = "PR Nexus tracks the user's GitHub pull requests, groups them into projects \
     and follows their Slack review requests. Start with list_projects or list_prs; ids returned by one \
-    tool are the ids the others take. Notes are the user's private annotations.";
+    tool are the ids the others take. Notes are the user's private annotations. Prompts return text \
+    for your own model and never send Slack or GitHub messages.";
 
 /// What the server reads on every request, so Settings changes (toggles,
 /// a new token) apply without a restart.
@@ -80,9 +82,14 @@ impl NexusMcp {
 
 impl ServerHandler for NexusMcp {
     fn get_info(&self) -> ServerConfig {
-        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new("pr-nexus", env!("CARGO_PKG_VERSION")))
-            .with_instructions(INSTRUCTIONS)
+        ServerConfig::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_prompts()
+                .build(),
+        )
+        .with_server_info(Implementation::new("pr-nexus", env!("CARGO_PKG_VERSION")))
+        .with_instructions(INSTRUCTIONS)
     }
 
     async fn list_tools(
@@ -98,6 +105,84 @@ impl ServerHandler for NexusMcp {
                 .map(ToolSpec::tool)
                 .collect(),
         ))
+    }
+
+    async fn list_prompts(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListPromptsResult, ErrorData> {
+        if !self.shared.settings().allows(Capability::Reads) {
+            return Ok(ListPromptsResult::with_all_items(Vec::new()));
+        }
+        Ok(ListPromptsResult::with_all_items(super::prompts::list()))
+    }
+
+    async fn get_prompt(
+        &self,
+        request: GetPromptRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<GetPromptResponse, ErrorData> {
+        let name = request.name.clone();
+        let arguments = request.arguments.unwrap_or_default();
+        let client = context
+            .peer
+            .peer_info()
+            .map(|info| info.client_info.name.clone());
+        let profile = self.shared.state.profile();
+        let started = Instant::now();
+        let audit = |outcome: Outcome,
+                     summary: String,
+                     logged: &serde_json::Map<String, serde_json::Value>,
+                     error: Option<String>| {
+            self.shared.audit.record(&AuditEvent {
+                profile: Some(profile.clone()),
+                tool: name.clone(),
+                capability: Capability::Reads,
+                summary,
+                arguments: logged.clone(),
+                outcome,
+                duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                client: client.clone(),
+                error,
+                link: None,
+            });
+        };
+        if !self.shared.settings().allows(Capability::Reads) {
+            let message = "Reads are turned off in PR Nexus Settings → Agents (MCP).".to_owned();
+            audit(
+                Outcome::Denied,
+                format!("prompt {name}"),
+                &arguments,
+                Some(message.clone()),
+            );
+            return Err(ErrorData::invalid_params(message, None));
+        }
+        let state = self.shared.state.clone();
+        let name_for_task = name.clone();
+        let args = arguments.clone();
+        let rendered = tokio::task::spawn_blocking(move || {
+            super::prompts::get(&state, &name_for_task, Some(&args))
+        })
+        .await
+        .map_err(|err| ErrorData::internal_error(err.to_string(), None))?;
+        match rendered {
+            Ok(rendered) => {
+                audit(Outcome::Ok, rendered.summary, &rendered.arguments, None);
+                Ok(rendered.result.into())
+            }
+            Err(err) => {
+                audit(
+                    Outcome::Failed {
+                        kind: err.kind.clone(),
+                    },
+                    format!("prompt {name}"),
+                    &arguments,
+                    Some(err.message.clone()),
+                );
+                Err(prompt_error(err))
+            }
+        }
     }
 
     async fn call_tool(
@@ -218,6 +303,14 @@ impl ServerHandler for NexusMcp {
             }
         }
         .into())
+    }
+}
+
+fn prompt_error(err: AppError) -> ErrorData {
+    match err.kind.as_str() {
+        "not_found" => ErrorData::resource_not_found(err.message, None),
+        "validation" => ErrorData::invalid_params(err.message, None),
+        _ => ErrorData::internal_error(err.message, None),
     }
 }
 

@@ -371,6 +371,12 @@ test("rows show labelled threads, a next-action badge, and the Slack request sta
   expect(screen.queryByRole("button", { name: /^Open Slack request for Quiet one/ })).not.toBeInTheDocument();
 });
 
+test("a row with bot comments shows a quiet bot mark", async () => {
+  await show(<Harness rows={[row({ id: 1, title: "Reviewed by a bot", bot_comments: 2 })]} />);
+  expect(screen.getByLabelText("2 bot comments")).toHaveTextContent("bot");
+  expect(screen.queryByLabelText("1 bot comment")).not.toBeInTheDocument();
+});
+
 function dataTransfer() {
   const store = new Map<string, string>();
   return {

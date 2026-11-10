@@ -10,6 +10,7 @@ import { stackMergeNote } from "../list/stack";
 import { StarButton } from "../list/StarButton";
 import { Tooltip } from "../Tooltip";
 import { AutoMerge } from "./AutoMerge";
+import { BotReviews } from "./BotReviews";
 import { CloseDialog } from "./CloseDialog";
 import { BranchAction, BranchCard, BranchError, RebaseConfirm, useBranch } from "./BranchCard";
 import { Expander } from "./Expander";
@@ -294,6 +295,7 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
         {overview && (
           <>
             <StatCards overview={overview} onOpen={onOpen} branch={<BranchCard branch={branch} onOpen={onOpen} />} />
+            <BotReviews reviews={overview.bot_reviews} onOpen={onOpen} />
             <BranchError branch={branch} />
             <RebaseConfirm branch={branch} headRef={overview.head_ref} />
             {verdict && (

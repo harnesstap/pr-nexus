@@ -63,7 +63,10 @@ pub fn update_branch(state: &AppState, id: i64, method: &str) -> Result<BranchUp
     let method = UpdateMethod::parse(method)
         .ok_or_else(|| AppError::new("validation", format!("unknown update method {method}")))?;
     let pr = stored_pr(state, PrId(id))?;
-    with_vcs(state, |provider| {
+    let mut update = with_vcs(state, |provider| {
         branch::update(&state.store, provider, &state.branch_cache, &pr, method)
-    })
+    })?;
+    let extra = pr_nexus_core::settings::bot_logins(&state.store)?;
+    update.overview = overview::for_viewer(update.overview, &extra);
+    Ok(update)
 }

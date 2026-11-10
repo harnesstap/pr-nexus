@@ -3,6 +3,7 @@
 //! Network clients stay in `pr-nexus-providers`. The sync engine is a later milestone.
 
 pub mod attention;
+pub mod bots;
 pub mod branch;
 pub mod close;
 pub mod domain;

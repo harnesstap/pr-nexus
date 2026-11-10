@@ -332,6 +332,8 @@ impl DemoProvider {
             author: Some(person(&pr.author_login)),
             assignees: vec![person(&pr.author_login)],
             commenters: Vec::new(),
+            feedback: Vec::new(),
+            bot_reviews: pr_nexus_core::bots::BotReviews::default(),
             viewer: ViewerAccess {
                 login: "ada".into(),
                 permission: Some("write".into()),

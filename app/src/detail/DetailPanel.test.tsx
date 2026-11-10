@@ -146,6 +146,50 @@ test("shows a skeleton, then the cards, verdict and people from the overview", a
   expect(screen.queryByText("Participants")).toBeNull();
 });
 
+test("bot reviews sit apart from the human comment counts", async () => {
+  const onOpen = vi.fn();
+  const api = fakeApi({
+    prOverview: vi.fn(() =>
+      Promise.resolve(
+        mockOverview({
+          issue_comments: 2,
+          review_comments: 4,
+          bot_reviews: {
+            count: 2,
+            unresolved: 1,
+            latest_snippet: "Rename the helper before merging.",
+            notes: [
+              {
+                login: "ci-helper[bot]",
+                kind: "review",
+                snippet: "Rename the helper before merging.",
+                url: "https://github.com/acme/widgets/pull/42#pullrequestreview-9",
+                unresolved: false,
+                at: "2026-10-04T00:00:00Z",
+              },
+              {
+                login: "copilot",
+                kind: "thread",
+                snippet: "This still logs the old secret.",
+                url: "https://github.com/acme/widgets/pull/42#discussion_r1",
+                unresolved: true,
+                at: "2026-10-03T00:00:00Z",
+              },
+            ],
+          },
+        }),
+      ),
+    ),
+  });
+  renderPanel(api, { onOpen });
+  const section = await screen.findByRole("region", { name: "Bot reviews" });
+  expect(section).toHaveTextContent("2 comments · 1 unresolved");
+  expect(section).toHaveTextContent("Rename the helper before merging.");
+  expect(screen.getByLabelText("Comments: 6, 2 on the PR · 4 in code")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: /copilot/ }));
+  expect(onOpen).toHaveBeenCalledWith("https://github.com/acme/widgets/pull/42#discussion_r1");
+});
+
 test("the checks card lists the checks that need attention", async () => {
   const api = fakeApi();
   const { onOpen } = renderPanel(api);
