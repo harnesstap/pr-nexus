@@ -27,7 +27,7 @@ PR Nexus reimplements, natively in Rust, the workflow of the existing Claude ski
 | VCS | GitHub.com: read (PRs, checks, reviews, CODEOWNERS, rules). One optional write (see note). | GitLab, Gitea, GHES |
 | Chat | Slack, **N workspaces in v1**, chosen by the user: read (threads tied to PRs, optional mention search) and write (post request, post bump) | Discord, Mattermost |
 | Views | Grouped list (by project) with multi-select and bulk actions; PR detail; projects mgmt; settings (accounts, mappings, rules) | Kanban, stats |
-| Automation | Polling sync while the app runs | Scheduled reminders, MCP server |
+| Automation | Polling sync while the app runs. A Bumps due queue prepares Slack bumps after a quiet wait; nothing is posted until the user sends (§7.14). | MCP server |
 
 Note on "GitHub write": the user asked for read and write. No GitHub mutation is needed by the v1 features. The only one that fits naturally is **"also request the owning team as reviewer on GitHub"** (`requestReviews` with `teamIds`). It is an opt-in checkbox in the request preview (default off), in milestone M10. Without it, v1 performs no GitHub writes.
 
@@ -1040,9 +1040,26 @@ Nothing org-specific is hard-coded or shipped: GitHub orgs, Slack workspaces, te
 | `review.discovery_search` | `true` (if `search:read.public` is granted) | true |
 | `review.bulk_bump_max_threads` | 3 | 3 |
 | `review.bump_broadcast` | `true`: a bump reply is also sent to the channel (`reply_broadcast`, same as the skill). Off: thread reply only. Settings → Review **Also post bumps to the channel**; the preview says which. | true |
+| `review.bump_due_hours` | 48. Hours after the last request or bump, with no review since, before that bump is due (§7.14). 1 to 336. | 48 |
+| `review.bump_due_working_days` | `true`: Saturday and Sunday (UTC) do not count toward `review.bump_due_hours`. Off: every hour counts. | true |
 | `review.also_request_github_team` | `false` (checkbox per preview) | false |
 | `projects.ticket_key_regex` | `([A-Z][A-Z0-9]+-\d+)` | e.g. restrict to the user's Jira keys |
 | mapping | empty; filled by CSV import, picker, corrections | — |
+
+### 7.14 Scheduled bumps (the queue)
+
+Nothing is posted on a timer, and nothing in this section posts by itself. A bump becomes **due** when all of these hold, decided by `review::due::classify` in `pr-nexus-core` (the caller passes `now`):
+
+- The pull request is open and authored by the signed-in user, and it has at least one active Slack request.
+- The latest ask across those active requests — `last_bumped_at` when set, otherwise `requested_at` — is at least `review.bump_due_hours` old (default 48).
+- With `review.bump_due_working_days` on (the default), only Monday–Friday UTC counts. Saturday and Sunday add nothing, so a Friday afternoon ask is not due on Monday morning. Off, every hour counts.
+- No review has landed since that ask. A review is an `approved` or `changes_requested` decision. Its time is `last_activity_at` when that is at or after the ask; an older decision still stands, so it counts at the ask and the bump is not due. `review_required` and no decision are not a review. A comment-only review is not stored with a time, so it does not reset the clock.
+
+Drafts and failing checks stay due. The queue shows them as notes, and they do not block sending, same as §7.9. Snooze hides that ask for 24 hours. Skip hides that ask until a newer request or bump. Neither one posts.
+
+**Bumps due** is a sidebar item under To review, with the count. It lists each due pull request on the card `bulk_preview` would send: the channel and thread that card names, the message text, and the remap note when the mapped channel moved (a new request in the mapped channel; the old thread is not bumped). One card per destination, and one message per CODEOWNERS line, the same planner as §7.7 and §7.9. The heading is that card's channel. The queue does not show a stored channel of its own.
+
+The user can edit a note on each pull request (appended after a blank line, included in the preview and in the card fingerprint), snooze, or skip it, and **Send selected** or **Send all**. A selection that is not the plan on screen replaces the preview and posts nothing; a second click sends that plan. Send plans again with live channel names. If the channel, the channel name, or the message text is not what is on screen, nothing is posted and the queue shows the new plan. Send then uses that plan's fingerprints through the same `send_bulk` path. There is no other sender.
 
 ## 8. Projects & UI
 
@@ -1092,7 +1109,7 @@ Approved mockups (AI-generated; style references, not pixel specs):
 - [`docs/ui/slack-preview.jpg`](ui/slack-preview.jpg): the Slack preview modal only (cropped; in the app it sits centered over the dimmed list view). The rendered message is illustrative: the real text is the §7.6 template, byte-exact, and the sender shown is **you** (messages are posted with your user token), not an "APP" bot. Bumps appear in a separate "Bump · thread reply" group per channel.
 
 **Layout.**
-- **Sidebar** (navigation only, no persistent filters): My PRs, To review, then a **Projects** section listing active projects in alphabetical order (case-insensitive, numbers in numeric order, so `beta 2` comes before `beta 10`), with a `+` (New project) button. That order is display only: project identity, the selected view, and stored `sort_order` stay as they are, and My PRs, To review, New project, the empty state, and the footer are not part of the sort. A create or rename re-sorts on the next render. With no projects it shows an empty state ("No projects yet…") with a **Create project** button; both open an inline name field (`Enter` creates via `create_project`: trimmed, non-empty, unique; `Esc` cancels) and select the new project. Settings is **not** a project entry. There is no org checkbox list here; orgs are a filter in the menu.
+- **Sidebar** (navigation only, no persistent filters): My PRs, To review, **Bumps due** (the count of due bumps, opening the queue in §7.14), then a **Projects** section listing active projects in alphabetical order (case-insensitive, numbers in numeric order, so `beta 2` comes before `beta 10`), with a `+` (New project) button. That order is display only: project identity, the selected view, and stored `sort_order` stay as they are, and My PRs, To review, New project, the empty state, and the footer are not part of the sort. A create or rename re-sorts on the next render. With no projects it shows an empty state ("No projects yet…") with a **Create project** button; both open an inline name field (`Enter` creates via `create_project`: trimmed, non-empty, unique; `Esc` cancels) and select the new project. Settings is **not** a project entry. There is no org checkbox list here; orgs are a filter in the menu.
 - **Sidebar footer:** Settings, then sync status plus a refresh button: `● Synced · 2m ago  ⟳`, `◌ Checking my PRs… 40/132`, `▲ Rate limited · resets 14:32  ⟳`, or `▲ Sync failed · <reason>  ⟳` (§6). Clicking the text shows per-account detail.
 - **Header:** view title and subtitle, the **search bar**, and a single small **filter icon button** (funnel). There is **no** overflow `⋯` button in the header.
 - **Subtitle:** in My PRs and To review, `N open PRs across P projects`, where P counts the active projects (archived ones only when the Archived filter is on), plus `· U unassigned` when some shown PRs have no project. In a project view it reads `N open PRs in this project`. In a project view the title can be double-clicked to rename the project, like a section title.
@@ -1177,7 +1194,7 @@ Row content, each part toggled under **Show**: number and title; `owner/repo`; C
 | author_draft | Draft (slate) | reviewer | draft | none |
 | done | Merged / Closed (slate) | both | not open (checked first) | none |
 
-Author rules run in the order conflicts, CI, changes requested, draft, approved, request review, nudge, waiting; reviewer rules in the order draft, waiting on author, approved, overdue, review. A clickable badge is a button with a pointer cursor; the others are labelled images. Every badge has a tooltip giving the reason (`Checks are failing`, `Requested on Slack 2d ago`), also its accessible name `Label: reason`. Compact rows show the badge without its label.
+Author rules run in the order conflicts, CI, changes requested, draft, approved, request review, nudge, waiting; reviewer rules in the order draft, waiting on author, approved, overdue, review. A clickable badge is a button with a pointer cursor; the others are labelled images. Every badge has a tooltip giving the reason (`Checks are failing`, `Requested on Slack 2d ago`), also its accessible name `Label: reason`. Compact rows show the badge without its label. The Follow up badge is this 24 h cue and still opens the single Slack dialog. The Bumps due queue (§7.14) is separate: it lists bumps that are due under the 48 h rule, and it sends only from that queue.
 
 **Slack request indicator** (from the newest active `review_requests` row):
 - Slack icon plus the newest event and its age: `Requested · 2d ago`, or `Bumped · 5h ago` once `last_bumped_at` is set. Tooltip: `workspace · #channel`, the request age, and the bump count. With several active channels: `Requested 2d ago · 2 channels`, with a hover list.
@@ -1728,7 +1745,6 @@ When the agent's client supports MCP elicitation, a held write is shown in the a
 - Slack direct Web API transport (`SlackWebApiChatProvider`), the documented fallback in §7.11, if a workspace cannot use the Slack MCP server.
 - Discord and Mattermost (`ChatProvider`): bump maps to "reply in thread and also to channel" where supported, otherwise a quote plus link.
 - Android/iOS via Tauri mobile. Keep `core` free of desktop-only dependencies. The keychain moves behind a trait.
-- Scheduled reminders, e.g. "bump if no review after 48 h", using the same pipeline with a user-approved standing rule.
 
 ## 11. CI/CD & release process (modeled on `harnesstap/harnesstap`)
 

@@ -47,6 +47,24 @@ export function PreferencesForm({ api, prefs, section, permission, onRequestPerm
               onChange={(event) => patch({ review_requester: event.target.value })}
             />
           </Field>
+          <Field label="Hours before a bump is due" help="After the last Slack request or bump, if nobody has reviewed since. The Bumps due queue uses this. 1 to 336. Nothing is sent on its own.">
+            <input
+              {...plainText}
+              className={input}
+              type="number"
+              min={1}
+              max={336}
+              aria-label="Hours before a bump is due"
+              value={draft.bump_due_hours}
+              onChange={(event) => patch({ bump_due_hours: Number(event.target.value) })}
+            />
+          </Field>
+          <Check
+            label="Skip weekends"
+            help="Saturday and Sunday (UTC) do not count. With 48 hours, a Friday request is not due on Monday morning. Turn off to count every hour."
+            checked={draft.bump_due_working_days}
+            onChange={(on) => patch({ bump_due_working_days: on })}
+          />
           <Field label="Minimum hours between bumps" help="A PR bumped more recently is skipped, with a warning in the preview.">
             <input {...plainText}
               className={input}

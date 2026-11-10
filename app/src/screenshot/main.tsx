@@ -164,6 +164,8 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     notify_approved: true,
     notify_changes_requested: true,
     notify_comment: false,
+    bump_due_hours: 48,
+    bump_due_working_days: true,
   }),
   set_pr_starred: (args) => {
     const row = rows.find((item) => item.id === args.prId);

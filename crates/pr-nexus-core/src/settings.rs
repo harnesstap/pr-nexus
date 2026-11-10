@@ -50,6 +50,12 @@ pub const SLACK_WORKSPACE_ORDER: &str = "slack.workspace_order";
 pub const SLACK_DISABLED_WORKSPACES: &str = "slack.disabled_workspaces";
 /// Bumps are thread replies; with this on they are also sent to the channel.
 pub const BUMP_BROADCAST: &str = "review.bump_broadcast";
+/// Hours after the last request or bump, with no review, before a bump is due.
+pub const BUMP_DUE_HOURS: &str = "review.bump_due_hours";
+/// When true, Saturday and Sunday UTC do not count toward [`BUMP_DUE_HOURS`].
+pub const BUMP_DUE_WORKING_DAYS: &str = "review.bump_due_working_days";
+/// Snooze and skip for the bumps-due queue. Never a send.
+pub const BUMP_DUE_HOLDS: &str = "review.bump_due_holds";
 /// Base URL bare JIRA keys link to, e.g. `https://acme-labs.atlassian.net`. Empty: no links.
 pub const JIRA_BASE_URL: &str = "jira.base_url";
 /// Master switch for desktop notifications (§8.5). On by default.
@@ -375,6 +381,49 @@ pub fn set_bump_broadcast(store: &Store, on: bool) -> Result<(), CoreError> {
     put_json(store, BUMP_BROADCAST, &on)
 }
 
+pub const DEFAULT_BUMP_DUE_HOURS: i64 = 48;
+
+pub fn bump_due_hours(store: &Store) -> Result<i64, CoreError> {
+    json_or(store, BUMP_DUE_HOURS, DEFAULT_BUMP_DUE_HOURS)
+}
+
+pub fn bump_due_working_days(store: &Store) -> Result<bool, CoreError> {
+    json_or(store, BUMP_DUE_WORKING_DAYS, true)
+}
+
+/// The scheduled-bump rule in effect (§7.14).
+pub fn bump_due_rule(store: &Store) -> Result<crate::review::due::BumpDueRule, CoreError> {
+    Ok(crate::review::due::BumpDueRule {
+        after_hours: bump_due_hours(store)?,
+        working_days: bump_due_working_days(store)?,
+    })
+}
+
+/// One snooze: hidden until `until`, and only for the ask it was set on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SnoozeHold {
+    pub until: String,
+    pub asked_at: String,
+}
+
+/// Per review-request holds for the bumps-due queue. Keys are request ids.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct BumpHolds {
+    #[serde(default)]
+    pub snooze: std::collections::BTreeMap<String, SnoozeHold>,
+    /// Request id → the ask instant (`rfc3339`) the user skipped.
+    #[serde(default)]
+    pub skip: std::collections::BTreeMap<String, String>,
+}
+
+pub fn bump_holds(store: &Store) -> Result<BumpHolds, CoreError> {
+    json_or(store, BUMP_DUE_HOLDS, BumpHolds::default())
+}
+
+pub fn set_bump_holds(store: &Store, holds: &BumpHolds) -> Result<(), CoreError> {
+    put_json(store, BUMP_DUE_HOLDS, holds)
+}
+
 /// `jira.base_url`, without a trailing slash; empty when unset.
 pub fn jira_base_url(store: &Store) -> Result<String, CoreError> {
     json_or(store, JIRA_BASE_URL, String::new())
@@ -393,6 +442,12 @@ pub struct Preferences {
     pub min_bump_interval_hours: i64,
     pub bulk_bump_max_threads: usize,
     pub bump_broadcast: bool,
+    /// Hours before a scheduled bump is due. Older clients omit it: 48.
+    #[serde(default = "default_bump_due_hours")]
+    pub bump_due_hours: i64,
+    /// Skip Saturday and Sunday (UTC). Older clients omit it: on.
+    #[serde(default = "default_working_days")]
+    pub bump_due_working_days: bool,
     pub blocked_review_required_is_ready: bool,
     pub ticket_key_regex: String,
     pub focused_interval_s: u64,
@@ -423,7 +478,17 @@ fn live_default() -> bool {
     true
 }
 
+fn default_bump_due_hours() -> i64 {
+    DEFAULT_BUMP_DUE_HOURS
+}
+
+fn default_working_days() -> bool {
+    true
+}
+
 pub const MIN_BUMP_HOURS: std::ops::RangeInclusive<i64> = 1..=168;
+/// `review.bump_due_hours`: one hour through two weeks.
+pub const DUE_HOURS: std::ops::RangeInclusive<i64> = 1..=336;
 pub const BULK_THREADS: std::ops::RangeInclusive<usize> = 1..=20;
 pub const FOCUSED_SECS: std::ops::RangeInclusive<u64> = 60..=3600;
 pub const UNFOCUSED_SECS: std::ops::RangeInclusive<u64> = 60..=86_400;
@@ -435,6 +500,8 @@ pub fn preferences(store: &Store) -> Result<Preferences, CoreError> {
         min_bump_interval_hours: min_bump_interval_hours(store)?,
         bulk_bump_max_threads: bulk_bump_max_threads(store)?,
         bump_broadcast: bump_broadcast(store)?,
+        bump_due_hours: bump_due_hours(store)?,
+        bump_due_working_days: bump_due_working_days(store)?,
         blocked_review_required_is_ready: blocked_review_required_is_ready(store)?,
         ticket_key_regex: ticket_key_regex(store)?,
         focused_interval_s: focused_interval_s(store)?,
@@ -488,6 +555,11 @@ pub fn save_preferences(store: &Store, prefs: &Preferences) -> Result<Preference
         MIN_BUMP_HOURS,
     )?;
     check(
+        "Hours before a bump is due",
+        prefs.bump_due_hours,
+        DUE_HOURS,
+    )?;
+    check(
         "Threads per bulk bump",
         prefs.bulk_bump_max_threads,
         BULK_THREADS,
@@ -519,6 +591,8 @@ pub fn save_preferences(store: &Store, prefs: &Preferences) -> Result<Preference
     put_json(store, MIN_BUMP_INTERVAL, &prefs.min_bump_interval_hours)?;
     put_json(store, BULK_BUMP_MAX_THREADS, &prefs.bulk_bump_max_threads)?;
     put_json(store, BUMP_BROADCAST, &prefs.bump_broadcast)?;
+    put_json(store, BUMP_DUE_HOURS, &prefs.bump_due_hours)?;
+    put_json(store, BUMP_DUE_WORKING_DAYS, &prefs.bump_due_working_days)?;
     put_json(
         store,
         BLOCKED_IS_READY,
@@ -710,6 +784,8 @@ mod tests {
         assert_eq!(prefs.min_bump_interval_hours, 24);
         assert_eq!(prefs.bulk_bump_max_threads, 3);
         assert!(prefs.bump_broadcast);
+        assert_eq!(prefs.bump_due_hours, 48);
+        assert!(prefs.bump_due_working_days);
         assert!(prefs.blocked_review_required_is_ready);
         assert_eq!(
             prefs.ticket_key_regex,
@@ -736,6 +812,8 @@ mod tests {
             min_bump_interval_hours: 4,
             bulk_bump_max_threads: 5,
             bump_broadcast: false,
+            bump_due_hours: 72,
+            bump_due_working_days: false,
             blocked_review_required_is_ready: false,
             ticket_key_regex: "   ".into(),
             focused_interval_s: 120,
@@ -758,6 +836,8 @@ mod tests {
             crate::linking::DEFAULT_TICKET_KEY_REGEX
         );
         assert!(!bump_broadcast(&store).unwrap());
+        assert_eq!(saved.bump_due_hours, 72);
+        assert!(!saved.bump_due_working_days);
         assert_eq!(focused_interval_s(&store).unwrap(), 120);
         assert_eq!(saved, preferences(&store).unwrap());
     }

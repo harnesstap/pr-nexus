@@ -19,6 +19,8 @@ export const DEFAULT_PREFERENCES: Preferences = {
   notify_approved: true,
   notify_changes_requested: true,
   notify_comment: false,
+  bump_due_hours: 48,
+  bump_due_working_days: true,
 };
 
 type SettingsApi = Pick<

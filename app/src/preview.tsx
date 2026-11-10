@@ -1,6 +1,6 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import type { Api, Bootstrap, BulkPreview, ContextThread, ProfileDto, ProjectDto, ReviewTarget } from "./api";
+import type { Api, Bootstrap, BulkPreview, BulkRequest, ContextThread, ProfileDto, ProjectDto, ReviewTarget } from "./api";
 import { ProfileReuse } from "./wizard/ProfileReuse";
 import { mockBranch, mockDetail, mockOverview } from "./detail/mock";
 import "./index.css";
@@ -332,6 +332,64 @@ if (previewParams.get("rows") === "varied") {
 }
 
 /** Demo plan for the bulk Slack dialog: one card per acme channel, or one card for "All to one channel". */
+const DUE_BUMPS = [
+  { pr_id: 1, number: 142, title: "Migrate login to new auth", repo: "acme/widgets", asked_at: "2026-11-06T16:00:00Z", quiet_hours: 52, bump_count: 1 },
+  { pr_id: 2, number: 138, title: "Add passkeys support", repo: "acme/widgets", asked_at: "2026-11-04T09:00:00Z", quiet_hours: 96, bump_count: 0 },
+];
+
+/** The queue's preview: one bump in the thread that was requested, and one new request after a remap. */
+function bumpsPreview(request: BulkRequest): BulkPreview {
+  const noteFor = (id: number) => request.notes?.find((note) => note.pr_id === id)?.text.trim() ?? "";
+  const withNote = (text: string, id: number) => {
+    const note = noteFor(id);
+    return note ? `${text}\n\n${note}\n` : text;
+  };
+  const cards = [];
+  if (request.pr_ids.includes(1)) {
+    cards.push({
+      target: { workspace: "acme", workspace_name: "Acme", channel_id: "C0ACME0001", channel_name: "team-reviews" },
+      messages: [
+        {
+          action: "bump" as const,
+          prs: [{ pr_id: 1, number: 142, title: "Migrate login to new auth", repo: "acme/widgets" }],
+          text: withNote("Hello team\nCould someone please take another look?\n• `Migrate login to new auth`\nhttps://github.com/acme/widgets/pull/142\nThanks!", 1),
+          permalink: "https://acme.slack.com/archives/C0ACME0001/p1700000000000100",
+        },
+      ],
+      warnings: [],
+      signed_in: true,
+      single_top_level: false,
+      can_switch: false,
+      fingerprint: "fp-team-reviews",
+      notes: [] as string[],
+    });
+  }
+  if (request.pr_ids.includes(2)) {
+    cards.push({
+      target: { workspace: "acme", workspace_name: "Acme", channel_id: "C0ACME0002", channel_name: "payments" },
+      messages: [
+        {
+          action: "request" as const,
+          prs: [{ pr_id: 2, number: 138, title: "Add passkeys support", repo: "acme/widgets" }],
+          text: withNote("Hello team\nCould someone please review this pull request?\n• `Add passkeys support`\nhttps://github.com/acme/widgets/pull/138\nThanks!", 2),
+          permalink: null,
+        },
+      ],
+      warnings: [],
+      signed_in: true,
+      single_top_level: false,
+      can_switch: false,
+      fingerprint: "fp-payments",
+      notes: ["Channel changed since the last request: new request in #payments for #138. The old thread in #team-reviews is not bumped."],
+    });
+  }
+  return {
+    cards,
+    skipped: [],
+    pr_warnings: request.pr_ids.includes(1) ? [{ kind: "checks", pr_id: 1, number: 142, message: "#142 has failing checks." }] : [],
+  };
+}
+
 function demoBulkPreview(ids: number[], target: ReviewTarget | null): BulkPreview {
   const prs = rows.filter((item) => ids.includes(item.id)).map((item) => ({ pr_id: item.id, number: item.number, title: item.title, repo: item.repo }));
   const text = (list: typeof prs) =>
@@ -548,6 +606,13 @@ document.body.style.margin = "0";
 document.body.style.background = "#020617";
 
 const screenName = new URLSearchParams(window.location.search).get("screen");
+if (screenName === "bumps") {
+  api.dueBumps = () => Promise.resolve(DUE_BUMPS);
+  api.snoozeBump = () => Promise.resolve(DUE_BUMPS);
+  api.skipBump = () => Promise.resolve(DUE_BUMPS);
+  api.bulkPreview = (request) => Promise.resolve(bumpsPreview(request));
+  api.sendBulk = () => Promise.resolve({ batch_id: "preview", results: [], indicators: [] });
+}
 // ?changelog=modal opens "What's new" as after an update from the oldest embedded release;
 // ?changelog=tab shows Settings → Changelog.
 const changelogPreview = new URLSearchParams(window.location.search).get("changelog");
@@ -833,7 +898,7 @@ createRoot(root).render(
         <SettingsScreen api={previewApi} boot={boot} onBoot={() => undefined} accounts={null} tab="changelog" onTabChange={() => undefined} onRerunSetup={() => undefined} />
       </div>
     ) : (
-      <ListScreen api={previewApi} boot={boot} onBoot={() => undefined} />
+      <ListScreen api={previewApi} boot={boot} onBoot={() => undefined} startView={screenName === "bumps" ? "bumps_due" : "mine"} />
     )}
   </StrictMode>,
 );

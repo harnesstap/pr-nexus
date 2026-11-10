@@ -68,6 +68,17 @@ pub struct BulkRequest {
     /// Cards the user removed, by the channel their routes were built for.
     #[serde(default)]
     pub skipped_channels: Vec<ChannelKey>,
+    /// Optional note per pull request, appended to each message that includes it.
+    /// The preview and the send use the same notes, so the fingerprint covers them.
+    #[serde(default)]
+    pub notes: Vec<BumpNote>,
+}
+
+/// A note the sender added for one pull request. Blank notes change nothing.
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct BumpNote {
+    pub pr_id: i64,
+    pub text: String,
 }
 
 /// One CODEOWNERS group's team, chosen in the preview.
@@ -769,8 +780,60 @@ fn plan_request(
             })
             .collect(),
     };
-    let plan = batch::plan_batch(&state.store, &inputs, skipped, &options, Utc::now())?;
+    let mut plan = batch::plan_batch(&state.store, &inputs, skipped, &options, Utc::now())?;
+    apply_notes(&mut plan, &request.notes);
     Ok((plan, prs, moved, group_views))
+}
+
+/// Append each pull request's note to the messages that include it.
+///
+/// One note is the text alone. Several notes in one message are each prefixed
+/// with `#N`, so a shared bump still says which pull request the line is for.
+/// The blank line matches `lifecycle::with_note`. Empty notes are skipped, so
+/// a request with none keeps the fingerprint the preview already had.
+fn apply_notes(plan: &mut BatchPlan, notes: &[BumpNote]) {
+    if notes.iter().all(|note| note.text.trim().is_empty()) {
+        return;
+    }
+    for card in &mut plan.cards {
+        for message in &mut card.messages {
+            let Some(block) = note_block(
+                message
+                    .items
+                    .iter()
+                    .map(|item| (item.pr.id.0, item.pr.number)),
+                notes,
+            ) else {
+                continue;
+            };
+            let append = |text: &str| format!("{}\n\n{block}\n", text.trim_end());
+            message.text = append(&message.text);
+            message.wire_text = append(&message.wire_text);
+        }
+    }
+}
+
+/// The note block for a message, or `None` when none of its pull requests have one.
+fn note_block(items: impl IntoIterator<Item = (i64, u64)>, notes: &[BumpNote]) -> Option<String> {
+    let items: Vec<(i64, u64)> = items.into_iter().collect();
+    let lines: Vec<String> = items
+        .iter()
+        .filter_map(|(id, number)| {
+            let text = notes.iter().find(|note| note.pr_id == *id)?.text.trim();
+            if text.is_empty() {
+                None
+            } else if items.len() > 1 {
+                Some(format!("#{number}: {text}"))
+            } else {
+                Some(text.to_owned())
+            }
+        })
+        .collect();
+    if lines.is_empty() {
+        None
+    } else {
+        Some(lines.join("\n"))
+    }
 }
 
 enum RouteTeams {
@@ -1357,7 +1420,7 @@ fn pr_dto_by_id(prs: &[PullRequest], id: PrId, title: &str) -> BulkPr {
 
 #[cfg(test)]
 mod draft_tests {
-    use super::{DRAFT_REASON, slack_skip_detail, soften_cached_block};
+    use super::{BumpNote, DRAFT_REASON, note_block, slack_skip_detail, soften_cached_block};
 
     #[test]
     fn a_draft_or_failing_check_does_not_block_but_other_reasons_still_do() {
@@ -1382,5 +1445,28 @@ mod draft_tests {
             soften_cached_block(&Some("check ci is fail; PR has merge conflicts".into())),
             Some("PR has merge conflicts".into())
         );
+    }
+
+    #[test]
+    fn notes_are_appended_and_blank_ones_are_ignored() {
+        let notes = vec![
+            BumpNote {
+                pr_id: 1,
+                text: "  look at login  ".into(),
+            },
+            BumpNote {
+                pr_id: 2,
+                text: "   ".into(),
+            },
+        ];
+        assert_eq!(
+            note_block([(1, 142)], &notes).as_deref(),
+            Some("look at login")
+        );
+        assert_eq!(
+            note_block([(1, 142), (2, 138), (3, 140)], &notes).as_deref(),
+            Some("#142: look at login")
+        );
+        assert_eq!(note_block([(2, 138)], &notes), None);
     }
 }
