@@ -51,6 +51,8 @@ interface Props {
   onMarkAllRead: () => void;
   onSnooze: (choice: SnoozeChoice) => void;
   onMute: (muted: boolean) => void;
+  /** Opens the merge-queue confirmation. Omitted when no selected PR uses a queue. */
+  onEnqueue?: () => void;
 }
 
 const secondary =
@@ -61,8 +63,9 @@ const secondary =
  * and never wider than it, so it stays clear of the detail panel; as the
  * column narrows, Add to project and Copy as Markdown move into the More
  * menu, then the count and the Slack button shorten. More is always there:
- * it holds mark read, snooze, mute and Close, and Add and Copy when the
- * column is narrow. Clear and the Slack button always stay visible.
+ * it holds mark read, snooze, mute, Close, and Add to merge queue when a
+ * selected pull request's base branch requires one. Add and Copy join it
+ * when the column is narrow. Clear and the Slack button always stay visible.
  */
 export function SelectionBar({
   count,
@@ -73,6 +76,7 @@ export function SelectionBar({
   onRequest,
   onCopy,
   onClose,
+  onEnqueue,
   onClear,
   onMarkRead,
   onMarkAllRead,
@@ -223,8 +227,12 @@ export function SelectionBar({
               label="More actions"
               detail={
                 folded
-                  ? "Add to project, copy as Markdown, mark as read, snooze, mute, or close"
-                  : "Mark as read, snooze, mute, or close"
+                  ? onEnqueue
+                    ? "Add to project, copy as Markdown, mark as read, snooze, mute, add to merge queue, or close"
+                    : "Add to project, copy as Markdown, mark as read, snooze, mute, or close"
+                  : onEnqueue
+                    ? "Mark as read, snooze, mute, add to merge queue, or close"
+                    : "Mark as read, snooze, mute, or close"
               }
               side="top"
             >
@@ -289,6 +297,15 @@ export function SelectionBar({
                 <MenuButton label="Unsnooze" disabled={count === 0} onClick={() => run(() => onSnooze("off"))} />
                 <MenuButton label="Mute" disabled={count === 0} onClick={() => run(() => onMute(true))} />
                 <MenuButton label="Unmute" disabled={count === 0} onClick={() => run(() => onMute(false))} />
+                {onEnqueue && (
+                  <MenuButton
+                    label="Add to merge queue"
+                    disabled={count === 0}
+                    onClick={() => {
+                      if (onEnqueue) run(onEnqueue);
+                    }}
+                  />
+                )}
                 <div role="separator" className="my-1 h-px bg-slate-800" />
                 <MenuButton
                   label={count === 1 ? "Close PR" : `Close ${count} PRs`}

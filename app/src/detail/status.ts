@@ -303,6 +303,9 @@ export function autoMergeView(overview: PrOverview): AutoMergeView {
 
 /** Whether to offer a direct Merge button: open, mergeable now, and a method to use. */
 export function canMergeNow(overview: PrOverview): boolean {
+  if (overview.merge_queue?.required) {
+    return false;
+  }
   return overview.state === "open" && !overview.auto_merge && mergeVerdict(overview).can && autoMergeView(overview).methods.length > 0;
 }
 

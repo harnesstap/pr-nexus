@@ -76,6 +76,17 @@ fragment PrFields on PullRequest {
       }
     }
   }
+  # Same queue fields as status.graphql, so a refresh does not leave a stale badge.
+  isMergeQueueEnabled
+  isInMergeQueue
+  mergeQueue { id }
+  mergeQueueEntry { position state estimatedTimeToMerge }
+  timelineItems(last: 5, itemTypes: [ADDED_TO_MERGE_QUEUE_EVENT, REMOVED_FROM_MERGE_QUEUE_EVENT]) {
+    nodes {
+      __typename
+      ... on RemovedFromMergeQueueEvent { reason }
+    }
+  }
   reviewThreads(first: 100) {
     totalCount
     nodes {

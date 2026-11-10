@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::domain::{AccountId, OwnershipCacheEntry, PrId, PrProjectLink, ReviewRequest};
 use crate::error::CoreError;
+use crate::merge_queue::MergeQueueSnapshot;
 
 use super::cache::map_ownership;
 use super::project_info::starred_in;
@@ -22,6 +23,8 @@ pub struct ListFacts {
     pub ownership: HashMap<PrId, OwnershipCacheEntry>,
     /// Starred pull requests (stars are kept by GitHub node id).
     pub starred: HashSet<PrId>,
+    /// Merge queue facts from the last status read. Missing means not read yet.
+    pub merge_queues: HashMap<PrId, MergeQueueSnapshot>,
 }
 
 impl Store {
@@ -77,6 +80,7 @@ impl Store {
                 facts.ownership.insert(entry.pr_id, entry);
             }
             facts.starred = starred_in(conn, account_id)?;
+            facts.merge_queues = super::merge_queue::merge_queues_for(conn, account_id)?;
             Ok(facts)
         })
     }

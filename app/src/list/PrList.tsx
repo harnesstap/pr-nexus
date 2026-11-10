@@ -51,6 +51,7 @@ import { setDragBadge } from "./dragBadge";
 import { pageIds, selectionCountText, summaryText, type Elsewhere, type PageDto, type PageEntry, type PageRequest, type PageSection } from "./paging";
 import { usePagedList, type PageParams } from "./usePagedList";
 import { plainText } from "../textInput";
+import { queueChip } from "../detail/mergeQueue";
 import { commentsText, compactSlack, rowPills, staleCue, viewEmptyState, type RowPill, type StaleCue } from "./rowCues";
 
 /** A section as drawn: its loaded rows, plus counts and ids over every match. */
@@ -111,6 +112,8 @@ interface Props {
   onSnooze?: (ids: number[], choice: SnoozeChoice) => void;
   /** Mutes or unmutes these pull requests. */
   onMute?: (ids: number[], muted: boolean) => void;
+  /** Opens the merge-queue confirmation for the active selection. */
+  onEnqueuePullRequests?: (rows: ListRow[]) => void;
   /** Shows a toast, e.g. after "Copy as Markdown". */
   onNotice?: (toast: Toast) => void;
   /** Draft flags changed in the app ahead of the reload, by PR id. */
@@ -217,6 +220,7 @@ export function PrList({
   onMarkAllRead,
   onSnooze,
   onMute,
+  onEnqueuePullRequests,
   onNotice,
   draftPatches,
   removedIds,
@@ -1069,6 +1073,18 @@ export function PrList({
               }),
             );
           }}
+          onEnqueue={
+            onEnqueuePullRequests &&
+            activeIds.some((id) => flat.some((item) => item.row.id === id && item.row.merge_queue?.required))
+              ? () => {
+                  const byId = new Map(flat.map((item) => [item.row.id, item.row]));
+                  onEnqueuePullRequests(activeIds.flatMap((id) => {
+                    const row = byId.get(id);
+                    return row ? [row] : [];
+                  }));
+                }
+              : undefined
+          }
           onClear={() => setSelected(new Set())}
           onMarkRead={() => onMarkRead?.(activeIds)}
           onMarkAllRead={() => onMarkAllRead?.(page ? pageIds(page.sections) : [])}
@@ -1400,11 +1416,12 @@ function StaleChip({ cue }: { cue: StaleCue }) {
   );
 }
 
-/** Row cues after the title: draft and conflict pills, then the age chip. */
+/** Row cues after the title: draft, conflict, queue, and bot pills, then the age chip. */
 function RowCues({ row, now, sla }: { row: ListRow; now: Date; sla: ReviewSla }) {
   const stale = staleCue(row, now, sla);
   const bots = row.bot_comments ?? 0;
   const botLabel = bots === 1 ? "1 bot comment" : `${bots} bot comments`;
+  const queue = queueChip(row.merge_queue);
   return (
     <>
       {rowPills(row).map((pill) => (
@@ -1417,8 +1434,32 @@ function RowCues({ row, now, sla }: { row: ListRow; now: Date; sla: ReviewSla })
           </span>
         </Tooltip>
       )}
+      {queue && <QueuePill chip={queue} />}
       {stale && <StaleChip cue={stale} />}
     </>
+  );
+}
+
+const QUEUE_PILL: Record<"queue" | "merging" | "failed" | "removed", string> = {
+  queue: "bg-teal-500/15 text-teal-200",
+  merging: "bg-teal-500/15 text-teal-200",
+  failed: "bg-amber-500/15 text-amber-200",
+  removed: "bg-slate-800 text-slate-300",
+};
+
+function QueuePill({ chip }: { chip: { label: string; detail: string | null; tone: keyof typeof QUEUE_PILL } }) {
+  const pill = (
+    <span className={`inline-flex shrink-0 items-center rounded-full px-1.5 text-[11px] leading-4 ${QUEUE_PILL[chip.tone]}`}>
+      {chip.label}
+    </span>
+  );
+  if (!chip.detail) {
+    return pill;
+  }
+  return (
+    <Tooltip label={chip.detail} className="shrink-0">
+      {pill}
+    </Tooltip>
   );
 }
 

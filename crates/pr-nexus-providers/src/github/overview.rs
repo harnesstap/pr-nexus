@@ -86,7 +86,7 @@ pub(crate) fn close(client: &GithubClient, pr: &PullRequest) -> Result<(), Provi
     Ok(())
 }
 
-fn permission_error(err: ProviderError, action: &str) -> ProviderError {
+pub(super) fn permission_error(err: ProviderError, action: &str) -> ProviderError {
     let text = err.to_string().to_ascii_lowercase();
     if text.contains("forbidden")
         || text.contains("permission")
@@ -242,6 +242,7 @@ pub(crate) fn parse(body: &Value, fetched_at: String) -> Result<PrOverview, Prov
             rebase: flag(repo.get("rebaseMergeAllowed")),
         },
         auto_merge,
+        merge_queue: super::merge_queue::snapshot_from_node(node),
         fetched_at,
     })
 }

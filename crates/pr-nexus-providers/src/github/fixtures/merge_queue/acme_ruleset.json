@@ -1,0 +1,14 @@
+{
+  "name": "main",
+  "target": "BRANCH",
+  "enforcement": "ACTIVE",
+  "conditions": { "refName": { "include": ["refs/heads/main"], "exclude": [] } },
+  "rules": [
+    { "type": "PULL_REQUEST" },
+    { "type": "MERGE_QUEUE" }
+  ],
+  "branchProtection": {
+    "pattern": "main",
+    "requiresStatusChecks": true
+  }
+}

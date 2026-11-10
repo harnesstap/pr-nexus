@@ -1,0 +1,11 @@
+# Adds the pull request to the base branch's merge queue.
+# expectedHeadOid is the head the user confirmed, so a newer push is not queued.
+mutation EnqueuePullRequest($id: ID!, $expectedHeadOid: GitObjectID!) {
+  enqueuePullRequest(input: { pullRequestId: $id, expectedHeadOid: $expectedHeadOid }) {
+    mergeQueueEntry {
+      position
+      state
+      estimatedTimeToMerge
+    }
+  }
+}

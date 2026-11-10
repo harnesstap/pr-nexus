@@ -23,6 +23,18 @@ query PullRequestOverview($owner: String!, $name: String!, $number: Int!) {
       viewerCanDisableAutoMerge
       viewerCanClose
       autoMergeRequest { mergeMethod enabledAt enabledBy { login } }
+      # See status.graphql: isMergeQueueEnabled covers branch protection and
+      # ruleset MERGE_QUEUE. There is no requiresMergeQueue field to query.
+      isMergeQueueEnabled
+      isInMergeQueue
+      mergeQueue { id }
+      mergeQueueEntry { position state estimatedTimeToMerge }
+      timelineItems(last: 5, itemTypes: [ADDED_TO_MERGE_QUEUE_EVENT, REMOVED_FROM_MERGE_QUEUE_EVENT]) {
+        nodes {
+          __typename
+          ... on RemovedFromMergeQueueEvent { reason }
+        }
+      }
       author { __typename login avatarUrl(size: 64) ... on User { name } }
       comments(last: 50) {
         totalCount

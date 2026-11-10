@@ -349,6 +349,7 @@ impl DemoProvider {
                 rebase: false,
             },
             auto_merge: None,
+            merge_queue: None,
             fetched_at: Utc::now().to_rfc3339(),
         }
     }

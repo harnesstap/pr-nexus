@@ -573,6 +573,7 @@ mod tests {
                 repo_node_id: None,
                 default_branch: None,
                 repo_archived: false,
+                merge_queue: None,
                 pull_request: PullRequest {
                     id: PrId(0),
                     remote: ProviderRef {

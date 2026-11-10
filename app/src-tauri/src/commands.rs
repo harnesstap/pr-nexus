@@ -243,6 +243,10 @@ pub struct ListRow {
     pub readiness_notes: Vec<String>,
     /// GitHub reports merge conflicts (dirty merge state or conflicting).
     pub conflicts: bool,
+    /// GitHub's merge state, lower case. Used to explain a bulk queue skip.
+    pub merge_state: String,
+    /// Merge queue facts from the last status read. Absent until that read.
+    pub merge_queue: Option<pr_nexus_core::merge_queue::MergeQueueSnapshot>,
     /// At least one reviewer or team is requested on GitHub.
     pub reviewers_requested: bool,
     /// Who still has to review, in display order (see [`pending_reviewers`]).
@@ -1536,6 +1540,61 @@ pub async fn close_pull_requests(
     .await
 }
 
+/// Adds the pull request to its base branch's merge queue and returns the
+/// refreshed overview. The UI confirms first. Never called by sync.
+#[tauri::command]
+pub async fn enqueue_pull_request(
+    app: State<'_, std::sync::Arc<AppState>>,
+    id: i64,
+) -> Result<PrOverview, AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        let pr = stored_pr(state, PrId(id))?;
+        with_vcs(state, |provider| {
+            pr_nexus_core::merge_queue::enqueue(&state.store, provider, &pr)
+        })
+    })
+    .await
+}
+
+/// Removes the pull request from the merge queue and returns the refreshed
+/// overview. The UI confirms first.
+#[tauri::command]
+pub async fn dequeue_pull_request(
+    app: State<'_, std::sync::Arc<AppState>>,
+    id: i64,
+) -> Result<PrOverview, AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        let pr = stored_pr(state, PrId(id))?;
+        with_vcs(state, |provider| {
+            pr_nexus_core::merge_queue::dequeue(&state.store, provider, &pr)
+        })
+    })
+    .await
+}
+
+/// Adds each selected pull request whose base branch requires a merge queue.
+/// Ineligible ones are skipped with a short reason. One failure does not
+/// stop the others. The UI confirms first.
+#[tauri::command]
+pub async fn enqueue_pull_requests(
+    app: State<'_, std::sync::Arc<AppState>>,
+    ids: Vec<i64>,
+) -> Result<Vec<pr_nexus_core::merge_queue::QueueReport>, AppError> {
+    let ids: Vec<PrId> = ids.into_iter().map(PrId).collect();
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        with_vcs(state, |provider| {
+            pr_nexus_core::merge_queue::enqueue_pull_requests(&state.store, provider, &ids)
+        })
+    })
+    .await
+}
+
 /// Merges the pull request now with `method` (`squash`, `merge`, `rebase`)
 /// and returns the refreshed overview. The UI confirms first.
 #[tauri::command]
@@ -1824,6 +1883,8 @@ fn to_item(
             readiness_notes: notes,
             conflicts: pr.mergeable == pr_nexus_core::domain::Mergeable::Conflicting
                 || pr.merge_state == pr_nexus_core::domain::MergeStateStatus::Dirty,
+            merge_state: pr.merge_state.as_str().to_owned(),
+            merge_queue: facts.merge_queues.get(&pr.id).cloned(),
             reviewers_requested: !pr.requested_reviewers.is_empty(),
             pending_reviewers: pending_reviewers(&pr.requested_reviewers),
             slack: request.map(|request| indicator(request, workspaces)),

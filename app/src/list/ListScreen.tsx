@@ -2,6 +2,7 @@ import { createPortal } from "react-dom";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Api, Bootstrap, ListRow, ProjectDto, RemoteReviewFilter, ReplacedLinkDto } from "../api";
 import { CloseDialog, type CloseTarget } from "../detail/CloseDialog";
+import { MergeQueueDialog } from "../detail/MergeQueueDialog";
 import { errorMessage } from "../api";
 import { ClockIcon, CloseIcon, CopyIcon, FolderIcon, HomeIcon, LogoIcon, PlusIcon, RefreshIcon, SlackLogo } from "../icons";
 import { parseOpenRequest } from "./openRequest";
@@ -532,6 +533,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
   // sync that still says open does not put them back.
   const [mergedPatches, setMergedPatches] = useState<Record<number, number>>({});
   const [closeTargets, setCloseTargets] = useState<CloseTarget[] | null>(null);
+  const [queueRows, setQueueRows] = useState<ListRow[] | null>(null);
   const removedIds = useMemo(() => {
     const ids = new Set<number>();
     for (const [id, until] of Object.entries(mergedPatches)) if (version <= until) ids.add(Number(id));
@@ -1060,6 +1062,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
                 onToggleStar={(row) => void toggleStar(row)}
                 onBulkReview={setBulkIds}
                 onClosePullRequests={setCloseTargets}
+                onEnqueuePullRequests={setQueueRows}
                 onNotice={setNotice}
                 sla={sla}
                 wipLimit={wipLimit}
@@ -1082,6 +1085,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
                 onNotice={(text) => setNotice({ text })}
                 onDraftChange={changeDraft}
                 onMerged={() => prMerged(detailRow.id)}
+                onQueueChange={() => void reload()}
                 onClosed={forgetOpenPrs}
                 slack={{ mentions: boot.slack_mentions, workspaces: boot.slack_workspaces }}
                 onToggleStar={() => void toggleStar(detailRow)}
@@ -1095,6 +1099,18 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
                 }}
                 onSnooze={(choice) => void snoozeRows([detailRow.id], choice)}
                 onMute={(muted) => void muteRows([detailRow.id], muted)}
+              />
+            )}
+            {queueRows && queueRows.length > 0 && (
+              <MergeQueueDialog
+                api={api}
+                rows={queueRows}
+                onDismiss={() => setQueueRows(null)}
+                onDone={() => {
+                  setQueueRows(null);
+                  void reload();
+                }}
+                onNotice={(text) => setNotice({ text })}
               />
             )}
             {closeTargets && closeTargets.length > 0 && (

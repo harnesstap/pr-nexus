@@ -210,6 +210,7 @@ fn overview(mergeable: &str, merge_state: &str) -> PrOverview {
             rebase: true,
         },
         auto_merge: None,
+        merge_queue: None,
         fetched_at: "2026-10-26T12:00:00Z".into(),
     }
 }

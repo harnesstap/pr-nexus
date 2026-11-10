@@ -1,0 +1,16 @@
+{
+  "id": "PR_acme_widgets_10",
+  "isMergeQueueEnabled": true,
+  "isInMergeQueue": false,
+  "mergeQueue": { "id": "MQ_acme_widgets_main" },
+  "mergeQueueEntry": null,
+  "timelineItems": {
+    "nodes": [
+      { "__typename": "AddedToMergeQueueEvent" },
+      {
+        "__typename": "RemovedFromMergeQueueEvent",
+        "reason": "Required status check build failed."
+      }
+    ]
+  }
+}

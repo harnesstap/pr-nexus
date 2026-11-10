@@ -22,6 +22,8 @@
 // matching rows, a rejected query, and the same list at 720px.
 // `--update <dir>` saves the sidebar's update indicator (update-*.png): none,
 // the icon for a newer release, and its popover for a release and a dev build.
+// `--merge-queue <dir>` saves the merge queue preview (merge-queue-*.png):
+// the list, the add confirmation, the bulk dialog, and a narrow list.
 // `--close-pr <dir>` saves Close PR (close-*.png): the detail menu, the
 // confirmation with a comment, the bulk confirmation, and the narrow bar menu.
 // Uses an installed Chrome; set CHROME_PATH to pick another Chromium binary.
@@ -90,6 +92,11 @@ const updateFlag = process.argv.indexOf("--update");
 const updateDir = updateFlag === -1 ? null : process.argv[updateFlag + 1];
 if (updateFlag !== -1 && !updateDir) {
   throw new Error("--update needs an output directory");
+}
+const mergeQueueFlag = process.argv.indexOf("--merge-queue");
+const mergeQueueDir = mergeQueueFlag === -1 ? null : process.argv[mergeQueueFlag + 1];
+if (mergeQueueFlag !== -1 && !mergeQueueDir) {
+  throw new Error("--merge-queue needs an output directory");
 }
 const closePrFlag = process.argv.indexOf("--close-pr");
 const closePrDir = closePrFlag === -1 ? null : process.argv[closePrFlag + 1];
@@ -382,6 +389,12 @@ async function githubQueryShots(browser, dir) {
 let browser;
 try {
   browser = await chromium.launch(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: "chrome" });
+  if (mergeQueueDir) {
+    await mergeQueueShots(browser, resolve(mergeQueueDir));
+    await browser.close();
+    await vite.close();
+    process.exit(0);
+  }
   if (githubQueryDir) {
     await githubQueryShots(browser, resolve(githubQueryDir));
     await browser.close();
@@ -541,6 +554,40 @@ async function closePrShots(page, dir) {
   await bar.getByRole("menuitem", { name: "Add to project" }).waitFor();
   await bar.getByRole("menuitem", { name: "Close 2 PRs" }).waitFor();
   await save("close-narrow-menu.png");
+}
+
+async function mergeQueueShots(browser, dir) {
+  mkdirSync(dir, { recursive: true });
+  const preview = `http://127.0.0.1:${port}/preview.html?screen=merge-queue`;
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, deviceScaleFactor: 2, colorScheme: "dark" });
+  page.on("pageerror", (err) => console.error("page error:", err.message));
+  await page.goto(preview);
+  const latch = page.getByRole("button", { name: rowButton("Tighten the latch") }).first();
+  await latch.waitFor();
+  await shot(page, resolve(dir, "merge-queue-list.png"));
+
+  await latch.click();
+  const panel = page.getByTestId("detail-panel");
+  await panel.getByRole("button", { name: "Add to merge queue" }).click();
+  await panel.getByRole("group", { name: "Confirm add to merge queue" }).waitFor();
+  await shot(page, resolve(dir, "merge-queue-add.png"));
+  await panel.getByRole("button", { name: "Cancel" }).click();
+  await panel.getByRole("button", { name: "Close details" }).click();
+
+  await page.getByRole("checkbox", { name: "Select Tighten the latch" }).click();
+  await page.getByRole("checkbox", { name: "Select Draft the release notes" }).click();
+  const bar = page.getByRole("region", { name: "Selection actions" });
+  await bar.getByRole("button", { name: "More actions" }).click();
+  await bar.getByRole("menuitem", { name: "Add to merge queue" }).click();
+  await page.getByRole("dialog", { name: "Add to the merge queue?" }).waitFor();
+  await shot(page, resolve(dir, "merge-queue-bulk.png"));
+  await page.keyboard.press("Escape");
+  await page.getByRole("dialog", { name: "Add to the merge queue?" }).waitFor({ state: "detached" });
+
+  await page.setViewportSize({ width: 480, height: 900 });
+  await page.waitForTimeout(300);
+  await shot(page, resolve(dir, "merge-queue-narrow.png"));
+  await page.close();
 }
 
 async function shot(page, path) {

@@ -19,6 +19,7 @@ import { draftView, type DraftView } from "./draft";
 import { peopleGroups, PeopleRow, requiredSeats } from "./People";
 import { SlackLine } from "./SlackLine";
 import { StatCards, VerdictIcon } from "./StatCards";
+import { applyQueueVerdict } from "./mergeQueue";
 import { StackSection } from "./StackSection";
 import { behindLine, CONFLICTS_BLOCKER, DRAFT_BLOCKER, mergeVerdict, TONE_TEXT } from "./status";
 
@@ -39,6 +40,8 @@ interface Props {
   onDraftChange?: (id: number, draft: boolean | null | "saved") => void;
   /** GitHub confirmed a merge made here; the caller drops the PR and closes the panel. */
   onMerged?: () => void;
+  /** The pull request joined or left the merge queue; the caller refreshes the list. */
+  onQueueChange?: () => void;
   /** GitHub confirmed a close, or the pull request was already closed or merged. */
   onClosed?: (ids: number[]) => void;
   /** Adds the full Slack threads and mention search (§7.10) as an expander. */
@@ -77,7 +80,7 @@ function storedWidth(): number {
  * The PR detail slide-over (§7.2): docked on the right while the list stays usable, so a
  * click or ↑/↓ in the list switches the PR. Esc or ✕ closes it.
  */
-export function DetailPanel({ api, row, version, onClose, onOpen, onRequestReview, onNotice, onDraftChange, onMerged, onClosed, slack, onToggleStar, onOpenPr, onSnooze, onMute }: Props) {
+export function DetailPanel({ api, row, version, onClose, onOpen, onRequestReview, onNotice, onDraftChange, onMerged, onQueueChange, onClosed, slack, onToggleStar, onOpenPr, onSnooze, onMute }: Props) {
   const [overview, setOverview] = useState<PrOverview | null>(null);
   const [overviewError, setOverviewError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -206,7 +209,7 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
     : row.state === "open" && row.is_draft
       ? "draft"
       : row.state;
-  const verdict = overview ? mergeVerdict(overview, branch.view.behindBy) : null;
+  const verdict = overview ? applyQueueVerdict(overview, mergeVerdict(overview, branch.view.behindBy)) : null;
   /** The fix that sits on a blocker's row: Mark ready on the draft line, Update branch or Resolve on the branch line. */
   const blockerAction = (text: string, only: boolean): ReactNode => {
     if (overview?.state !== "open") {
@@ -331,6 +334,7 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
                       onChange={setOverview}
                       onNotice={onNotice}
                       onMerged={onMerged}
+                      onQueueChange={onQueueChange}
                       hint={stackMergeNote(overview.base_ref, row.stack)}
                     />
                     {!draft.draft && <DraftAction draft={draft} busy={flipping} onToggle={() => void toggleDraft()} />}

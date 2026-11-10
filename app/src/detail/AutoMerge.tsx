@@ -2,6 +2,7 @@ import { useState, type ReactElement } from "react";
 import type { Api, MergeMethod, PrOverview } from "../api";
 import { errorMessage } from "../api";
 import { Tooltip } from "../Tooltip";
+import { canDequeue, enqueueBlock } from "./mergeQueue";
 import { autoMergeView, canMergeNow, METHOD_LABEL } from "./status";
 
 interface Props {
@@ -15,18 +16,25 @@ interface Props {
   onMerged?: () => void;
   /** Grey note when this would merge into a parent that is still open. */
   hint?: string | null;
+  /** Called after the pull request joins or leaves the merge queue. */
+  onQueueChange?: () => void;
 }
 
 /**
  * The merge controls: the method, a direct Merge (confirmed first) when it can
  * merge now, and GitHub auto-merge on or off (no confirmation).
  */
-export function AutoMerge({ api, prId, overview, onChange, onNotice, onMerged, hint }: Props) {
+export function AutoMerge({ api, prId, overview, onChange, onNotice, onMerged, hint, onQueueChange }: Props) {
   const view = autoMergeView(overview);
   const [method, setMethod] = useState<MergeMethod | null>(overview.auto_merge?.method ?? view.defaultMethod);
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [merging, setMerging] = useState(false);
+  const [queueConfirm, setQueueConfirm] = useState<"add" | "remove" | null>(null);
+  const [queueBusy, setQueueBusy] = useState(false);
+  const queueRequired = overview.merge_queue?.required === true;
+  const queueBlock = queueRequired ? enqueueBlock(overview) : null;
+  const showRemove = canDequeue(overview);
   const chosen = method && view.methods.includes(method) ? method : view.defaultMethod;
 
   function run(next: MergeMethod | null) {
@@ -57,6 +65,75 @@ export function AutoMerge({ api, prId, overview, onChange, onNotice, onMerged, h
       });
   }
 
+  function addToQueue() {
+    setQueueBusy(true);
+    api
+      .enqueuePullRequest(prId)
+      .then((fresh) => {
+        onChange(fresh);
+        onNotice("Added to the merge queue.");
+        onQueueChange?.();
+      })
+      .catch((err: unknown) => onNotice(`Could not add to the merge queue: ${errorMessage(err)}`))
+      .finally(() => {
+        setQueueBusy(false);
+        setQueueConfirm(null);
+      });
+  }
+
+  function removeFromQueue() {
+    setQueueBusy(true);
+    api
+      .dequeuePullRequest(prId)
+      .then((fresh) => {
+        onChange(fresh);
+        onNotice("Removed from the merge queue.");
+        onQueueChange?.();
+      })
+      .catch((err: unknown) => onNotice(`Could not remove from the merge queue: ${errorMessage(err)}`))
+      .finally(() => {
+        setQueueBusy(false);
+        setQueueConfirm(null);
+      });
+  }
+
+  const queueActions = (
+    <>
+      {queueRequired && !showRemove && (
+        <QueueAsk
+          label="Add to merge queue"
+          confirmLabel="Add to queue"
+          asking="Add to the merge queue? GitHub merges it from the queue."
+          busyLabel="Adding…"
+          group="Confirm add to merge queue"
+          confirming={queueConfirm === "add"}
+          busy={queueBusy}
+          disabled={queueBlock !== null}
+          disabledReason={queueBlock}
+          onAsk={() => setQueueConfirm("add")}
+          onCancel={() => setQueueConfirm(null)}
+          onConfirm={addToQueue}
+        />
+      )}
+      {showRemove && (
+        <QueueAsk
+          label="Remove from queue"
+          confirmLabel="Remove"
+          asking="Remove from the queue? It will not merge from the queue."
+          busyLabel="Removing…"
+          group="Confirm remove from merge queue"
+          confirming={queueConfirm === "remove"}
+          busy={queueBusy}
+          disabled={false}
+          disabledReason={null}
+          onAsk={() => setQueueConfirm("remove")}
+          onCancel={() => setQueueConfirm(null)}
+          onConfirm={removeFromQueue}
+        />
+      )}
+    </>
+  );
+
   if (view.enabled && overview.auto_merge) {
     const by = overview.auto_merge.enabled_by;
     const button = (
@@ -71,6 +148,7 @@ export function AutoMerge({ api, prId, overview, onChange, onNotice, onMerged, h
     );
     return (
       <div className="flex flex-wrap items-center gap-2" aria-label="Auto-merge">
+        {queueActions}
         <span className="flex items-center gap-1.5 rounded-full bg-teal-500/15 px-2 py-0.5 text-xs text-teal-200">
           <span className="h-1.5 w-1.5 rounded-full bg-teal-300" aria-hidden="true" />
           Auto-merge on · {METHOD_LABEL[overview.auto_merge.method]}
@@ -87,7 +165,7 @@ export function AutoMerge({ api, prId, overview, onChange, onNotice, onMerged, h
   }
 
   const mergeNow = canMergeNow(overview);
-  const select = view.methods.length > 1 && (
+  const select = !queueRequired && view.methods.length > 1 && (
     <select
       aria-label="Merge method"
       value={chosen ?? ""}
@@ -130,9 +208,12 @@ export function AutoMerge({ api, prId, overview, onChange, onNotice, onMerged, h
           onConfirm={() => merge(chosen)}
         />
       )}
-      <div aria-label="Auto-merge" className={view.available ? "" : "opacity-60"}>
-        {view.available ? enable : <Disabled reason={view.reason}>{enable}</Disabled>}
-      </div>
+      {queueActions}
+      {!showRemove && (
+        <div aria-label="Auto-merge" className={view.available ? "" : "opacity-60"}>
+          {view.available ? enable : <Disabled reason={view.reason}>{enable}</Disabled>}
+        </div>
+      )}
       {hint && (
         <p data-testid="stack-merge-note" className="basis-full text-xs text-slate-500">
           {hint}
@@ -179,6 +260,74 @@ function MergeNow({
         {merging ? "Merging…" : "Confirm merge"}
       </button>
       <button type="button" disabled={merging} onClick={onCancel} className="rounded px-1.5 py-0.5 text-slate-300 hover:bg-slate-800">
+        Cancel
+      </button>
+    </span>
+  );
+}
+
+/** First click asks; the second adds or removes. Enter is not a shortcut. */
+function QueueAsk({
+  label,
+  confirmLabel,
+  asking,
+  busyLabel,
+  group,
+  confirming,
+  busy,
+  disabled,
+  disabledReason,
+  onAsk,
+  onCancel,
+  onConfirm,
+}: {
+  label: string;
+  confirmLabel: string;
+  asking: string;
+  busyLabel: string;
+  group: string;
+  confirming: boolean;
+  busy: boolean;
+  disabled: boolean;
+  disabledReason: string | null;
+  onAsk: () => void;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  if (!confirming) {
+    const button = (
+      <button
+        type="button"
+        disabled={disabled || busy}
+        onClick={onAsk}
+        className="rounded-md bg-teal-600 px-2.5 py-1 text-xs font-semibold text-white enabled:hover:bg-teal-500 disabled:bg-slate-800 disabled:text-slate-500"
+      >
+        {label}
+      </button>
+    );
+    if (disabled) {
+      return (
+        <Tooltip label={label} detail={disabledReason ?? undefined} side="top" align="end">
+          <span tabIndex={0} className="inline-flex rounded-md outline-none focus-visible:ring-2 focus-visible:ring-teal-400">
+            {button}
+          </span>
+        </Tooltip>
+      );
+    }
+    return button;
+  }
+  return (
+    <span role="group" aria-label={group} className="flex items-center gap-1.5 rounded-md border border-teal-500/50 bg-teal-500/10 px-2 py-0.5 text-xs">
+      <span className="text-teal-100">{asking}</span>
+      <button
+        type="button"
+        disabled={busy}
+        onClick={onConfirm}
+        className="rounded bg-teal-600 px-2 py-0.5 font-semibold text-white enabled:hover:bg-teal-500 disabled:opacity-60"
+      >
+        {busy ? busyLabel : confirmLabel}
+      </button>
+      <button type="button" disabled={busy} onClick={onCancel} className="rounded px-1.5 py-0.5 text-slate-300 hover:bg-slate-800">
         Cancel
       </button>
     </span>

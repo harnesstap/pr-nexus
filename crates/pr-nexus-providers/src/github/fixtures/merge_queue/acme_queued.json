@@ -1,0 +1,16 @@
+{
+  "id": "PR_acme_widgets_7",
+  "isMergeQueueEnabled": true,
+  "isInMergeQueue": true,
+  "mergeQueue": { "id": "MQ_acme_widgets_main" },
+  "mergeQueueEntry": {
+    "position": 2,
+    "state": "QUEUED",
+    "estimatedTimeToMerge": 300
+  },
+  "timelineItems": {
+    "nodes": [
+      { "__typename": "AddedToMergeQueueEvent" }
+    ]
+  }
+}
