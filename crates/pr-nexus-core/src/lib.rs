@@ -11,6 +11,7 @@ pub mod jira;
 pub mod linking;
 pub mod live;
 pub mod mapping;
+pub mod notify;
 pub mod onboarding;
 pub mod overview;
 pub mod ownership;

@@ -60,6 +60,7 @@ mod tests {
         ("mcp/control.rs", include_str!("mcp/control.rs")),
         ("profiles/commands.rs", include_str!("profiles/commands.rs")),
         ("preferences.rs", include_str!("preferences.rs")),
+        ("presence.rs", include_str!("presence.rs")),
         ("project_info.rs", include_str!("project_info.rs")),
         ("slack.rs", include_str!("slack.rs")),
         ("stats.rs", include_str!("stats.rs")),

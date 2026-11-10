@@ -13,6 +13,12 @@ export const DEFAULT_PREFERENCES: Preferences = {
   keep_closed_days: 7,
   live_updates: true,
   jira_base_url: "",
+  notify_enabled: true,
+  notify_review_requested: true,
+  notify_ci_red: true,
+  notify_approved: true,
+  notify_changes_requested: true,
+  notify_comment: false,
 };
 
 type SettingsApi = Pick<
@@ -42,6 +48,8 @@ type SettingsApi = Pick<
   | "reviewStats"
   | "mcpSlackProposals"
   | "decideMcpSlackProposal"
+  | "notificationPermission"
+  | "requestNotificationPermission"
 >;
 
 export const FAKE_MCP_TOKEN = "pnx_0123456789abcdef0123456789abcdef0123456789abcdef0123456789ab7f3e";
@@ -289,6 +297,8 @@ export function fakeSettingsApi(overrides: Partial<SettingsApi> = {}): SettingsA
     slackChannelNames: (channels) => Promise.resolve(channels.map(() => null)),
     ...withoutConnect(fakeMcp()),
     slackWorkspaces: () => Promise.resolve([]),
+    notificationPermission: () => Promise.resolve("granted"),
+    requestNotificationPermission: () => Promise.resolve("granted"),
     ...overrides,
   };
 }

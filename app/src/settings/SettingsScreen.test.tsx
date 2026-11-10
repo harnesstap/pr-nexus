@@ -405,6 +405,27 @@ test("Sync has a Live updates toggle, on by default, that saves off", async () =
   expect(saved).toEqual([{ ...DEFAULT_PREFERENCES, live_updates: false }]);
 });
 
+test("Sync notification toggles save, and a denial is a grey note", async () => {
+  const saved: Preferences[] = [];
+  const api = fakeSettingsApi({
+    savePreferences: (prefs) => {
+      saved.push(prefs);
+      return Promise.resolve(prefs);
+    },
+    notificationPermission: () => Promise.resolve("denied"),
+  }) as Api;
+  render(<Harness api={api} start="sync" />);
+  expect(await screen.findByRole("switch", { name: "New comments" })).not.toBeChecked();
+  const hint = await screen.findByText("Notifications are off for PR Nexus in system settings.");
+  expect(hint).not.toHaveAttribute("role", "alert");
+  expect(hint.className).toMatch(/text-slate-500/);
+  fireEvent.click(screen.getByRole("switch", { name: "New comments" }));
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  expect(await screen.findByText("Saved")).toBeInTheDocument();
+  expect(saved[0]?.notify_comment).toBe(true);
+  expect(saved[0]?.notify_enabled).toBe(true);
+});
+
 test("the tab row scrolls at narrow widths and brings the active tab into view", () => {
   const scrolled: string[] = [];
   const original = HTMLElement.prototype.scrollIntoView;

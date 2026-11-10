@@ -52,6 +52,14 @@ pub const SLACK_DISABLED_WORKSPACES: &str = "slack.disabled_workspaces";
 pub const BUMP_BROADCAST: &str = "review.bump_broadcast";
 /// Base URL bare JIRA keys link to, e.g. `https://acme-labs.atlassian.net`. Empty: no links.
 pub const JIRA_BASE_URL: &str = "jira.base_url";
+/// Master switch for desktop notifications (§8.5). On by default.
+pub const NOTIFY_ENABLED: &str = "notify.enabled";
+pub const NOTIFY_REVIEW_REQUESTED: &str = "notify.review_requested";
+pub const NOTIFY_CI_RED: &str = "notify.ci_red";
+pub const NOTIFY_APPROVED: &str = "notify.approved";
+pub const NOTIFY_CHANGES_REQUESTED: &str = "notify.changes_requested";
+/// New review threads. Off by default: they are the noisy kind.
+pub const NOTIFY_COMMENT: &str = "notify.comment";
 
 pub const DEFAULT_REDIRECT: &str = "http://127.0.0.1:47821/mcp/oauth/callback";
 
@@ -396,6 +404,19 @@ pub struct Preferences {
     /// `jira.base_url`; older clients do not send it.
     #[serde(default)]
     pub jira_base_url: String,
+    /// Desktop notifications (§8.5). Older clients omit these; noisy ones stay off.
+    #[serde(default = "live_default")]
+    pub notify_enabled: bool,
+    #[serde(default = "live_default")]
+    pub notify_review_requested: bool,
+    #[serde(default = "live_default")]
+    pub notify_ci_red: bool,
+    #[serde(default = "live_default")]
+    pub notify_approved: bool,
+    #[serde(default = "live_default")]
+    pub notify_changes_requested: bool,
+    #[serde(default)]
+    pub notify_comment: bool,
 }
 
 fn live_default() -> bool {
@@ -421,6 +442,25 @@ pub fn preferences(store: &Store) -> Result<Preferences, CoreError> {
         keep_closed_days: keep_closed_days(store)?,
         live_updates: live_updates(store)?,
         jira_base_url: jira_base_url(store)?,
+        notify_enabled: json_or(store, NOTIFY_ENABLED, true)?,
+        notify_review_requested: json_or(store, NOTIFY_REVIEW_REQUESTED, true)?,
+        notify_ci_red: json_or(store, NOTIFY_CI_RED, true)?,
+        notify_approved: json_or(store, NOTIFY_APPROVED, true)?,
+        notify_changes_requested: json_or(store, NOTIFY_CHANGES_REQUESTED, true)?,
+        notify_comment: json_or(store, NOTIFY_COMMENT, false)?,
+    })
+}
+
+/// The notification switches, for the shell that posts them.
+pub fn notify_toggles(store: &Store) -> Result<crate::notify::NotifyToggles, CoreError> {
+    let prefs = preferences(store)?;
+    Ok(crate::notify::NotifyToggles {
+        enabled: prefs.notify_enabled,
+        review_requested: prefs.notify_review_requested,
+        ci_red: prefs.notify_ci_red,
+        approved: prefs.notify_approved,
+        changes_requested: prefs.notify_changes_requested,
+        comment: prefs.notify_comment,
     })
 }
 
@@ -490,6 +530,20 @@ pub fn save_preferences(store: &Store, prefs: &Preferences) -> Result<Preference
     put_json(store, KEEP_CLOSED_DAYS, &prefs.keep_closed_days)?;
     put_json(store, LIVE_ENABLED, &prefs.live_updates)?;
     put_json(store, JIRA_BASE_URL, &jira_base)?;
+    put_json(store, NOTIFY_ENABLED, &prefs.notify_enabled)?;
+    put_json(
+        store,
+        NOTIFY_REVIEW_REQUESTED,
+        &prefs.notify_review_requested,
+    )?;
+    put_json(store, NOTIFY_CI_RED, &prefs.notify_ci_red)?;
+    put_json(store, NOTIFY_APPROVED, &prefs.notify_approved)?;
+    put_json(
+        store,
+        NOTIFY_CHANGES_REQUESTED,
+        &prefs.notify_changes_requested,
+    )?;
+    put_json(store, NOTIFY_COMMENT, &prefs.notify_comment)?;
     preferences(store)
 }
 
@@ -666,6 +720,12 @@ mod tests {
             (180, 900)
         );
         assert_eq!(prefs.keep_closed_days, 7);
+        assert!(prefs.notify_enabled);
+        assert!(prefs.notify_review_requested);
+        assert!(prefs.notify_ci_red);
+        assert!(prefs.notify_approved);
+        assert!(prefs.notify_changes_requested);
+        assert!(!prefs.notify_comment);
     }
 
     #[test]
@@ -683,6 +743,12 @@ mod tests {
             keep_closed_days: 14,
             live_updates: false,
             jira_base_url: " https://acme-labs.atlassian.net/ ".into(),
+            notify_enabled: false,
+            notify_review_requested: false,
+            notify_ci_red: true,
+            notify_approved: false,
+            notify_changes_requested: true,
+            notify_comment: true,
         };
         let saved = save_preferences(&store, &prefs).unwrap();
         assert_eq!(saved.jira_base_url, "https://acme-labs.atlassian.net");

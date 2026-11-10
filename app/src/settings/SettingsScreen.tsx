@@ -7,6 +7,7 @@ import { AboutSettings } from "./AboutSettings";
 import { AgentsSettings } from "./AgentsSettings";
 import { MappingSettings } from "./MappingSettings";
 import { PreferencesForm } from "./PreferencesForm";
+import { isNotificationPermission, type NotificationPermission } from "./notifications";
 import { SETTINGS_TABS, tabAfterKey, type SettingsTab } from "./tabs";
 
 interface Props {
@@ -24,6 +25,7 @@ interface Props {
 export function SettingsScreen({ api, boot, onBoot, accounts, tab, onTabChange, onRerunSetup }: Props) {
   const [prefs, setPrefs] = useState<Preferences | null>(null);
   const [prefsError, setPrefsError] = useState<string | null>(null);
+  const [permission, setPermission] = useState<NotificationPermission>("prompt");
   const tabRefs = useRef<Partial<Record<SettingsTab, HTMLButtonElement | null>>>({});
   // At narrow widths the tab row scrolls; keep the active tab visible.
   useEffect(() => {
@@ -49,6 +51,24 @@ export function SettingsScreen({ api, boot, onBoot, accounts, tab, onTabChange, 
     };
   }, [api]);
 
+  useEffect(() => {
+    if (tab !== "sync" || !api.notificationPermission) {
+      return;
+    }
+    let cancel = false;
+    api
+      .notificationPermission()
+      .then((value) => {
+        if (!cancel && isNotificationPermission(value)) {
+          setPermission(value);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancel = true;
+    };
+  }, [api, tab]);
+
   function select(next: SettingsTab) {
     onTabChange(next);
     tabRefs.current[next]?.focus();
@@ -71,6 +91,20 @@ export function SettingsScreen({ api, boot, onBoot, accounts, tab, onTabChange, 
         api={api}
         prefs={prefs}
         section={section}
+        permission={permission}
+        onRequestPermission={() => {
+          if (!api.requestNotificationPermission) {
+            return;
+          }
+          void api
+            .requestNotificationPermission()
+            .then((value) => {
+              if (isNotificationPermission(value)) {
+                setPermission(value);
+              }
+            })
+            .catch(() => undefined);
+        }}
         onSaved={(saved) => {
           setPrefs(saved);
           if (saved.bump_broadcast !== boot.bump_broadcast) {
