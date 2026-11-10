@@ -184,10 +184,32 @@ test("bot reviews sit apart from the human comment counts", async () => {
   renderPanel(api, { onOpen });
   const section = await screen.findByRole("region", { name: "Bot reviews" });
   expect(section).toHaveTextContent("2 comments · 1 unresolved");
-  expect(section).toHaveTextContent("Rename the helper before merging.");
+  expect(section.textContent?.match(/Rename the helper before merging\./g)).toHaveLength(1);
+  expect(section.querySelector("ul")).not.toBeNull();
   expect(screen.getByLabelText("Comments: 6, 2 on the PR · 4 in code")).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: /copilot/ }));
   expect(onOpen).toHaveBeenCalledWith("https://github.com/acme/widgets/pull/42#discussion_r1");
+});
+
+test("bot reviews keep the newest snippet when the note list is hidden", async () => {
+  const api = fakeApi({
+    prOverview: vi.fn(() =>
+      Promise.resolve(
+        mockOverview({
+          bot_reviews: {
+            count: 1,
+            unresolved: 0,
+            latest_snippet: "Queued behind the release.",
+            notes: [],
+          },
+        }),
+      ),
+    ),
+  });
+  renderPanel(api);
+  const section = await screen.findByRole("region", { name: "Bot reviews" });
+  expect(section).toHaveTextContent("Queued behind the release.");
+  expect(section.querySelector("ul")).toBeNull();
 });
 
 test("the checks card lists the checks that need attention", async () => {
