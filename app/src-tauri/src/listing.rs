@@ -52,8 +52,9 @@ pub struct FiltersDto {
     /// One quick status filter from the bar above the list, or none.
     #[serde(default)]
     pub quick: Option<String>,
-    /// A GitHub pull-request query saved with the view. Membership comes from
+    /// Qualifier tokens from the search field. Membership comes from
     /// [`PageRequest::github_ids`]; this only marks the filter as on.
+    /// Free text is the page's `query` and never lands here.
     #[serde(default)]
     pub github: String,
 }

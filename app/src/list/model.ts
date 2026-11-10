@@ -1,6 +1,7 @@
 import { targetWorkspaceName } from "../slack/workspaces";
 import type { BulkOutcome, BulkResult, FilteredReviews, ListRow, ProjectDto, RemoteReviewFilter, ReviewsStatus, SlackIndicator, SyncStatus } from "../api";
 import { channelLabel } from "../api";
+import { githubQueryOf, splitSearch, SEARCH_FIELD_MAX } from "./searchText";
 
 export const AUTHOR = 1;
 export const REVIEW_REQUESTED = 2;
@@ -47,7 +48,12 @@ export interface Filters {
   /** Only snoozed PRs. Off leaves them out of the list and its counts. */
   snoozed: boolean;
   quick: QuickFilter | null;
-  /** A GitHub pull-request query saved with this view. Empty keeps the usual list. */
+  /**
+   * The search field: GitHub qualifiers and free text together. Saved with the view.
+   * Empty, plus an empty `github`, keeps the usual list.
+   */
+  search: string;
+  /** Qualifier tokens from `search`. Empty keeps Mine, To review, and project membership. */
   github: string;
 }
 
@@ -84,7 +90,7 @@ export function defaultShow(): ShowFlags {
 }
 
 export function defaultFilters(): Filters {
-  return { orgs: [], repos: [], statuses: [], reviews: [], ci: [], slack: [], archived: false, starred: false, unread: false, snoozed: false, quick: null, github: "" };
+  return { orgs: [], repos: [], statuses: [], reviews: [], ci: [], slack: [], archived: false, starred: false, unread: false, snoozed: false, quick: null, search: "", github: "" };
 }
 
 export function defaultView(): SavedView {
@@ -112,7 +118,8 @@ export function parseViewState(json: string | null): SavedView {
   if (!raw || typeof raw !== "object") {
     return base;
   }
-  const record = raw as Partial<SavedView>;
+  const record = raw as Partial<SavedView> & { query?: unknown; filters?: Partial<Filters> & { query?: unknown } };
+  const search = migratedSearch(record);
   return {
     grouping: pick(record.grouping, ["project", "repository", "org", "status", "updated", "stack"], base.grouping),
     ordering: pick(record.ordering, ORDERING_IDS, base.ordering),
@@ -132,9 +139,39 @@ export function parseViewState(json: string | null): SavedView {
       unread: record.filters?.unread === true,
       snoozed: record.filters?.snoozed === true,
       quick: QUICK_FILTERS.includes(record.filters?.quick as QuickFilter) ? (record.filters?.quick as QuickFilter) : null,
-      github: githubQueryText(record.filters?.github),
+      search,
+      github: splitSearch(search).github,
     },
   };
+}
+
+/**
+ * One search field. A view saved before that field existed has the GitHub
+ * query in `filters.github` and, when it was stored, the local words in
+ * `filters.query` or `filters.search`. Those are joined. A view that already
+ * has the combined string in `filters.search` is kept.
+ */
+function migratedSearch(record: { query?: unknown; filters?: { github?: unknown; search?: unknown; query?: unknown } | null }): string {
+  const github = githubQueryText(record.filters?.github);
+  const search = githubQueryText(record.filters?.search);
+  if (search) {
+    if (!github || splitSearch(search).github === github) {
+      return search;
+    }
+    return capJoin(github, search);
+  }
+  return capJoin(github, githubQueryText(record.filters?.query) || githubQueryText(record.query));
+}
+
+function capJoin(github: string, local: string): string {
+  const joined = [github, local].filter((part) => part !== "").join(" ");
+  return joined.length > SEARCH_FIELD_MAX ? joined.slice(0, SEARCH_FIELD_MAX) : joined;
+}
+
+/** Writes the search field and the qualifier half the GitHub pipeline reads. */
+export function withSearch(view: SavedView, raw: string): SavedView {
+  const search = raw.length > SEARCH_FIELD_MAX ? raw.slice(0, SEARCH_FIELD_MAX) : raw;
+  return { ...view, filters: { ...view.filters, search, github: splitSearch(search).github } };
 }
 
 export function filtersActive(filters: Filters): boolean {
@@ -150,17 +187,17 @@ export function filtersActive(filters: Filters): boolean {
     filters.unread ||
     filters.snoozed ||
     filters.quick !== null ||
-    filters.github.trim() !== ""
+    githubQueryOf(filters) !== ""
   );
 }
 
-/** A stored GitHub query: trimmed, and capped so a paste cannot grow without limit. */
+/** A stored search string: trimmed, and capped so a paste cannot grow without limit. */
 function githubQueryText(value: unknown): string {
   if (typeof value !== "string") {
     return "";
   }
   const trimmed = value.trim();
-  return trimmed.length > 1024 ? trimmed.slice(0, 1024) : trimmed;
+  return trimmed.length > SEARCH_FIELD_MAX ? trimmed.slice(0, SEARCH_FIELD_MAX) : trimmed;
 }
 
 /**

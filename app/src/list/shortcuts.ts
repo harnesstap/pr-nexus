@@ -47,7 +47,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { id: "next", group: "Navigation", keys: ["j", "↓"], label: "Next PR", match: ["j", "ArrowDown"], shift: false },
   { id: "prev", group: "Navigation", keys: ["k", "↑"], label: "Previous PR", match: ["k", "ArrowUp"], shift: false },
   { id: "details", group: "Navigation", keys: ["Enter"], label: "Open PR details", match: ["Enter"] },
-  { id: "search", group: "Navigation", keys: ["/"], label: "Search", match: ["/"] },
+  { id: "search", group: "Navigation", keys: ["/"], label: "Search or filter", match: ["/"] },
   { id: "palette", group: "Navigation", keys: ["Mod+K"], label: "Command palette", match: ["k"], mod: true },
   { id: "help", group: "Navigation", keys: ["?"], label: "Keyboard shortcuts", match: ["?"] },
   { id: "toggleRow", group: "Selection", keys: ["x"], label: "Select focused PR", match: ["x"], shift: false },

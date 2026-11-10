@@ -53,17 +53,20 @@ pub fn run(state: &AppState, input: GithubQueryInput) -> GithubQueryDto {
 }
 
 fn search(state: &AppState, input: GithubQueryInput) -> Result<GithubQueryDto, AppError> {
+    if input.query.trim().is_empty() {
+        return Ok(empty_query());
+    }
+    // Free text never reaches GitHub. Only qualifier tokens do, and a field
+    // that is only free text does not search at all.
+    let parts = match github_query::partition(&input.query) {
+        Ok(parts) => parts,
+        Err(err) => return Ok(fail(&err.message())),
+    };
+    if parts.github.is_empty() {
+        return Ok(empty_query());
+    }
     if state.demo {
         return Ok(fail("GitHub search is off in demo mode."));
-    }
-    if input.query.trim().is_empty() {
-        return Ok(GithubQueryDto {
-            ok: true,
-            message: String::new(),
-            ids: Vec::new(),
-            total: 0,
-            open_only: true,
-        });
     }
     let accounts = state::github_accounts(&state.store)?;
     if accounts.is_empty() {
@@ -76,7 +79,7 @@ fn search(state: &AppState, input: GithubQueryInput) -> Result<GithubQueryDto, A
     let limit = input.limit.clamp(1, RESULT_CAP);
     let mut plans = Vec::new();
     for account in &accounts {
-        let prepared = match github_query::prepare(&input.query, &account.login, &clock) {
+        let prepared = match github_query::prepare(&parts.github, &account.login, &clock) {
             Ok(prepared) => prepared,
             Err(err) => return Ok(fail(&err.message())),
         };
@@ -372,6 +375,16 @@ fn calm(err: &AppError) -> String {
     }
 }
 
+fn empty_query() -> GithubQueryDto {
+    GithubQueryDto {
+        ok: true,
+        message: String::new(),
+        ids: Vec::new(),
+        total: 0,
+        open_only: true,
+    }
+}
+
 fn fail(message: &str) -> GithubQueryDto {
     GithubQueryDto {
         ok: false,
@@ -413,6 +426,34 @@ mod tests {
                 created_at: Utc.with_ymd_and_hms(2026, 11, 1, 0, 0, 0).unwrap(),
             })
             .unwrap()
+    }
+
+    #[test]
+    fn free_text_does_not_search_github() {
+        let (_dir, state) = state();
+        let plain = run(
+            &state,
+            GithubQueryInput {
+                query: "passkeys".into(),
+                repos: Vec::new(),
+                offset_minutes: 0,
+                limit: 100,
+            },
+        );
+        assert!(plain.ok);
+        assert!(plain.ids.is_empty());
+        assert!(plain.message.is_empty());
+        let mixed = run(
+            &state,
+            GithubQueryInput {
+                query: "author:octocat passkeys".into(),
+                repos: Vec::new(),
+                offset_minutes: 0,
+                limit: 100,
+            },
+        );
+        assert!(!mixed.ok);
+        assert_eq!(mixed.message, "Connect GitHub to search.");
     }
 
     #[test]

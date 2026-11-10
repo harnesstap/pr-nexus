@@ -167,21 +167,21 @@ test("a GitHub query counts every row Select all checks, and Sort says the query
   expect(within(toolbar).getByText("2 PRs")).toBeInTheDocument();
   expect(within(toolbar).queryByText(/open PRs?/)).toBeNull();
   expect(screen.getByText(/1 open PR/)).toBeInTheDocument();
-  const sort = within(toolbar).getByRole("combobox", { name: "Sort by, from the GitHub query" });
-  expect(sort).toBeDisabled();
-  expect(sort).toHaveValue("query");
-  expect(within(sort).getByRole("option", { name: "From query" })).toBeInTheDocument();
+  expect(within(toolbar).queryByRole("combobox")).toBeNull();
+  expect(within(toolbar).getByRole("textbox", { name: "Search" })).toHaveValue("is:pr author:octocat sort:updated-desc");
   fireEvent.click(screen.getByRole("button", { name: "Filter menu" }));
-  expect(screen.getByRole("button", { name: /Ordering/ })).toHaveTextContent("From query");
-  fireEvent.click(screen.getByRole("button", { name: /Ordering/ }));
-  expect(screen.getByText("The GitHub query sets this order. Clear the query to choose another.")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /Sort/ })).toHaveTextContent("From query");
+  fireEvent.click(screen.getByRole("button", { name: /^Sort/ }));
+  expect(screen.getByText("The GitHub query sets this order. Clear the search to choose another.")).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Needs attention" })).toBeNull();
 
-  fireEvent.click(within(toolbar).getByRole("button", { name: "Clear GitHub query" }));
+  fireEvent.click(within(toolbar).getByRole("button", { name: "Clear search" }));
   await settle();
-  const restored = within(toolbar).getByRole("combobox", { name: "Sort by" });
-  expect(restored).toBeEnabled();
-  expect(restored).toHaveValue("attention");
+  // Clearing the field is a click outside the menu, so the menu closes.
+  if (!screen.queryByRole("menu")) {
+    fireEvent.click(screen.getByRole("button", { name: "Filter menu" }));
+  }
+  expect(screen.getByRole("button", { name: /Sort/ })).toHaveTextContent("Needs attention");
 });
 
 test("a rejected GitHub query shows GitHub's sentence", async () => {
@@ -416,12 +416,12 @@ test("an empty project keeps its section, renames on double-click, and opens its
   await act(async () => undefined);
   expect(onRename).toHaveBeenCalledWith(3, "Discovery");
 
-  fireEvent.change(screen.getByPlaceholderText(/Search projects/), { target: { value: "passkeys" } });
+  fireEvent.change(screen.getByRole("textbox", { name: "Search" }), { target: { value: "passkeys" } });
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 250));
   });
   expect(screen.queryByRole("region", { name: "Search" })).not.toBeInTheDocument();
-  fireEvent.change(screen.getByPlaceholderText(/Search projects/), { target: { value: "" } });
+  fireEvent.change(screen.getByRole("textbox", { name: "Search" }), { target: { value: "" } });
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 250));
   });
@@ -618,7 +618,8 @@ test("the empty list says why and offers the way out", async () => {
   await settle();
   expect(screen.getByText("No pull requests in My PRs match your search.")).toBeInTheDocument();
   expect(screen.queryByText(/Matches elsewhere/)).not.toBeInTheDocument();
-  fireEvent.click(screen.getByRole("button", { name: "Clear search" }));
+  const empty = screen.getByText("No pull requests in My PRs match your search.").parentElement as HTMLElement;
+  fireEvent.click(within(empty).getByRole("button", { name: "Clear search" }));
   await act(async () => {
     vi.advanceTimersByTime(200);
   });
@@ -1006,7 +1007,8 @@ test("every list command sits on the one toolbar row, the header keeps only the 
   expect(inToolbar.getByRole("checkbox", { name: "Select all" })).toBeInTheDocument();
   expect(inToolbar.getByText("3 open PRs")).toBeInTheDocument();
   expect(inToolbar.getByRole("textbox", { name: "Search" })).toBeInTheDocument();
-  expect(inToolbar.getByRole("combobox", { name: "Sort by" })).toBeInTheDocument();
+  expect(inToolbar.queryByRole("combobox")).toBeNull();
+  expect(inToolbar.queryByRole("textbox", { name: "GitHub query" })).toBeNull();
   expect(inToolbar.getByRole("group", { name: "Quick filters" }).className).toContain("flex-nowrap");
   expect(inToolbar.getByRole("button", { name: "Repository" })).toBeInTheDocument();
   expect(inToolbar.getByRole("button", { name: "Filter menu" })).toBeInTheDocument();
@@ -1217,4 +1219,43 @@ test("other views have no stand-up menu or open-limit hint", async () => {
   await show(<Harness rows={rows} viewKey="to_review" wipLimit={1} />);
   expect(screen.queryByRole("button", { name: "More" })).not.toBeInTheDocument();
   expect(screen.queryByText(/Over the open PR limit/)).not.toBeInTheDocument();
+});
+
+test("a qualifier and free text both apply, and only the qualifier is a GitHub query", async () => {
+  vi.useFakeTimers();
+  const seen: PageRequest[] = [];
+  const loadPage = (request: PageRequest) => {
+    seen.push(request);
+    return Promise.resolve(pageFromRows(rows, [auth, billing], request));
+  };
+  await show(<Harness rows={rows} loadPage={loadPage} />);
+  const input = screen.getByRole("textbox", { name: "Search" }) as HTMLInputElement;
+  fireEvent.change(input, { target: { value: "passkeys", selectionStart: 8, selectionEnd: 8 } });
+  expect(screen.queryByRole("button", { name: "Clear filters" })).not.toBeInTheDocument();
+  fireEvent.change(input, { target: { value: "author:ada passkeys", selectionStart: 19, selectionEnd: 19 } });
+  await act(async () => {
+    vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS);
+  });
+  await settle();
+  expect(screen.getByText("Add passkeys")).toBeInTheDocument();
+  expect(screen.queryByText("Migrate login")).not.toBeInTheDocument();
+  const last = seen.at(-1);
+  expect(last?.query).toBe("passkeys");
+  expect(last?.filters.github).toBe("author:ada");
+  expect(screen.getByRole("button", { name: "Clear filters" })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Filter menu" }));
+  expect(screen.getByRole("button", { name: /Sort/ })).toHaveTextContent("From query");
+});
+
+test("the search field suggests qualifiers and inserts the chosen one", async () => {
+  await show(<Harness rows={rows} />);
+  const input = screen.getByRole("textbox", { name: "Search" }) as HTMLInputElement;
+  fireEvent.focus(input);
+  fireEvent.change(input, { target: { value: "au", selectionStart: 2, selectionEnd: 2 } });
+  expect(screen.getByRole("option", { name: /author:/ })).toBeInTheDocument();
+  fireEvent.keyDown(input, { key: "Enter" });
+  expect(input).toHaveValue("author:");
+  fireEvent.change(input, { target: { value: "is:", selectionStart: 3, selectionEnd: 3 } });
+  fireEvent.click(screen.getByRole("option", { name: "is:draft" }));
+  expect(input).toHaveValue("is:draft ");
 });

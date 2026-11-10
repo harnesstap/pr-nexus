@@ -355,6 +355,8 @@ test("a GitHub query lists its ids in order, keeps merged rows, and still applie
   const openOnly = pageFromRows(rows, [], request("to_review", view, "", { github_ids: [3, 1, 2, 4], github_any_state: false }));
   expect(openOnly.sections.flatMap((section) => section.ids)).toEqual([4, 1]);
   expect(pageFromRows(rows, [], request("to_review", defaultView())).sections.flatMap((section) => section.ids)).toEqual([]);
+  const narrowed = pageFromRows(rows, [], request("to_review", view, "starred", { github_ids: [3, 1, 2, 4], github_any_state: true }));
+  expect(narrowed.sections.flatMap((section) => section.ids)).toEqual([4]);
 });
 
 test("stack grouping keeps members in merge order and marks each row", () => {
