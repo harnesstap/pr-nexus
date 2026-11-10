@@ -1,0 +1,9 @@
+# `id` is the pull request node id, not the merge queue entry id.
+mutation DequeuePullRequest($id: ID!) {
+  dequeuePullRequest(input: { id: $id }) {
+    mergeQueueEntry {
+      id
+      state
+    }
+  }
+}

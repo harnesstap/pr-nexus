@@ -575,6 +575,10 @@ export interface ListRow {
   readiness_notes: string[];
   /** GitHub reports merge conflicts. */
   conflicts: boolean;
+  /** GitHub's merge state, lower case. Absent on older list payloads. */
+  merge_state?: string;
+  /** Merge queue facts from the last status read. Absent until that read. */
+  merge_queue?: MergeQueueInfo | null;
   /** At least one reviewer or team is requested on GitHub. */
   reviewers_requested: boolean;
   /** Who still has to review: users first, then teams, each by login. */
@@ -805,6 +809,8 @@ export interface PrOverview {
   };
   merge_settings: { auto_merge_allowed: boolean; squash: boolean; merge: boolean; rebase: boolean };
   auto_merge: { method: MergeMethod; enabled_by: string | null; enabled_at: string | null } | null;
+  /** Absent on overviews cached before the queue was read. */
+  merge_queue?: MergeQueueInfo | null;
   fetched_at: string;
 }
 
@@ -822,6 +828,27 @@ export interface BotReviews {
   unresolved: number;
   latest_snippet: string | null;
   notes: BotReviewNote[];
+}
+
+/** Where a pull request sits in its base branch's merge queue. */
+export interface MergeQueueInfo {
+  required: boolean;
+  phase: "queued" | "merging" | "failed" | "removed" | null;
+  position: number | null;
+  eta_seconds: number | null;
+  reason: string | null;
+}
+
+/** What a bulk add to the merge queue did to one pull request. */
+export type QueueOutcome = "added" | "skipped" | "failed";
+
+export interface QueueReport {
+  id: number;
+  repo: string;
+  number: number;
+  title: string;
+  outcome: QueueOutcome;
+  message: string | null;
 }
 
 /** What happened to one pull request in a close. */
@@ -1162,6 +1189,15 @@ export interface Api {
   setPrDraft(id: number, draft: boolean): Promise<PrOverview>;
   /** Merges now with `method`; irreversible, so the UI confirms first. Returns the fresh overview. */
   mergePr(id: number, method: MergeMethod): Promise<PrOverview>;
+  /** Adds one pull request to the merge queue. The UI confirms first. */
+  enqueuePullRequest(id: number): Promise<PrOverview>;
+  /** Removes one pull request from the merge queue. The UI confirms first. */
+  dequeuePullRequest(id: number): Promise<PrOverview>;
+  /**
+   * Adds each pull request whose base branch requires a merge queue.
+   * Ineligible ones are skipped. The UI confirms first.
+   */
+  enqueuePullRequests(ids: number[]): Promise<QueueReport[]>;
   /**
    * Closes these pull requests. A non-empty comment is posted on each open
    * one first. The branch stays. One failure does not stop the others.
@@ -1321,6 +1357,9 @@ export const tauriApi: Api = {
   setAutoMerge: (id, method) => invoke("set_auto_merge", { id, method }),
   setPrDraft: (id, draft) => invoke("set_pr_draft", { id, draft }),
   mergePr: (id, method) => invoke("merge_pr", { id, method }),
+  enqueuePullRequest: (id) => invoke("enqueue_pull_request", { id }),
+  dequeuePullRequest: (id) => invoke("dequeue_pull_request", { id }),
+  enqueuePullRequests: (ids) => invoke("enqueue_pull_requests", { ids }),
   closePullRequests: (ids, comment) => invoke("close_pull_requests", { ids, comment }),
   prBranchStatus: (id, refresh) => invoke("pr_branch_status", { id, refresh }),
   updatePrBranch: (id, method) => invoke("update_pr_branch", { id, method }),

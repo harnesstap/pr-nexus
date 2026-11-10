@@ -181,6 +181,10 @@ pub struct PrOverview {
     pub viewer: ViewerAccess,
     pub merge_settings: MergeSettings,
     pub auto_merge: Option<AutoMergeState>,
+    /// Merge queue for this pull request's base branch.
+    /// `None` on overviews cached before the queue was read.
+    #[serde(default)]
+    pub merge_queue: Option<crate::merge_queue::MergeQueueSnapshot>,
     /// RFC 3339; when the provider answered.
     pub fetched_at: String,
 }
@@ -224,6 +228,9 @@ pub fn refresh(
     let json = serde_json::to_string(&overview)
         .map_err(|err| CoreError::Store(format!("encode overview: {err}")))?;
     store.upsert_pr_overview(pr.id, json, Utc::now())?;
+    if let Some(queue) = &overview.merge_queue {
+        store.set_merge_queue(pr.id, queue)?;
+    }
     Ok(overview)
 }
 

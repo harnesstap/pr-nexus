@@ -239,6 +239,9 @@ pub struct PrStatus {
     pub unresolved_threads: u32,
     pub total_threads: u32,
     pub last_commit_at: Option<DateTime<Utc>>,
+    /// `None` when this payload did not include the merge queue fields, so
+    /// the stored queue is left as it is.
+    pub merge_queue: Option<crate::merge_queue::MergeQueueSnapshot>,
 }
 
 impl PrStatus {
@@ -270,6 +273,7 @@ impl PrStatus {
             unresolved_threads: pr.unresolved_threads,
             total_threads: pr.total_threads,
             last_commit_at: (pr.last_activity_at > pr.updated_at).then_some(pr.last_activity_at),
+            merge_queue: None,
         }
     }
 }
@@ -281,6 +285,8 @@ pub struct SyncedPullRequest {
     pub repo_node_id: Option<String>,
     pub default_branch: Option<String>,
     pub repo_archived: bool,
+    /// `None` when this payload did not include the merge queue fields.
+    pub merge_queue: Option<crate::merge_queue::MergeQueueSnapshot>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -516,6 +522,23 @@ pub trait VcsProvider: Send + Sync {
     ) -> Result<(), ProviderError> {
         Err(ProviderError::Unsupported(
             "commenting on pull requests is not available".into(),
+        ))
+    }
+    /// Adds the pull request to its base branch's merge queue.
+    /// `expected_head_oid` is the head commit the user looked at.
+    fn enqueue_pull_request(
+        &self,
+        _pr: &PullRequest,
+        _expected_head_oid: &str,
+    ) -> Result<crate::merge_queue::MergeQueueSnapshot, ProviderError> {
+        Err(ProviderError::Unsupported(
+            "merge queue is not available".into(),
+        ))
+    }
+    /// Removes the pull request from its base branch's merge queue.
+    fn dequeue_pull_request(&self, _pr: &PullRequest) -> Result<(), ProviderError> {
+        Err(ProviderError::Unsupported(
+            "merge queue is not available".into(),
         ))
     }
     /// Closes the pull request. Does not delete its branch and does not merge.

@@ -398,6 +398,46 @@ fn close_graphql_does_not_delete_a_branch_or_merge() {
 }
 
 #[test]
+fn enqueue_sends_the_node_id_and_expected_head() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let server = runtime.block_on(async {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(body_string_contains("mutation EnqueuePullRequest"))
+            .and(body_string_contains(r#""id":"PR_1""#))
+            .and(body_string_contains(r#""expectedHeadOid":"h1""#))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"data":{"enqueuePullRequest":{"mergeQueueEntry":{"position":2,"state":"QUEUED","estimatedTimeToMerge":300}}}}"#,
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(body_string_contains("mutation DequeuePullRequest"))
+            .and(body_string_contains(r#""id":"PR_1""#))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"data":{"dequeuePullRequest":{"mergeQueueEntry":null}}}"#,
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+        server
+    });
+    let client = GithubClient::with_base(server.uri(), AccountId(1), "token").unwrap();
+    let queued = client.enqueue_pull_request(&pr(), "h1").unwrap();
+    assert!(queued.required);
+    assert_eq!(
+        queued.phase,
+        Some(pr_nexus_core::merge_queue::MergeQueuePhase::Queued)
+    );
+    assert_eq!(queued.position, Some(2));
+    assert_eq!(queued.eta_seconds, Some(300));
+    client.dequeue_pull_request(&pr()).unwrap();
+}
+
+#[test]
 fn update_branch_sends_expected_head_and_method_and_surfaces_errors() {
     let server = mock_github();
     let client = GithubClient::with_base(server.uri(), AccountId(1), "token").unwrap();

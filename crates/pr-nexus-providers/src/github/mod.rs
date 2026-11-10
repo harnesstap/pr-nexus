@@ -12,6 +12,7 @@ mod auth;
 mod branch;
 mod http;
 mod issue_search;
+mod merge_queue;
 mod notifications;
 mod overview;
 mod ownership;
@@ -498,6 +499,18 @@ impl VcsProvider for GithubClient {
 
     fn close_pull_request(&self, pr: &PullRequest) -> Result<(), ProviderError> {
         overview::close(self, pr)
+    }
+
+    fn enqueue_pull_request(
+        &self,
+        pr: &PullRequest,
+        expected_head_oid: &str,
+    ) -> Result<pr_nexus_core::merge_queue::MergeQueueSnapshot, ProviderError> {
+        merge_queue::enqueue(self, pr, expected_head_oid)
+    }
+
+    fn dequeue_pull_request(&self, pr: &PullRequest) -> Result<(), ProviderError> {
+        merge_queue::dequeue(self, pr)
     }
 
     fn compare_branches(

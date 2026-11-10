@@ -1,6 +1,6 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import type { Api, Bootstrap, BulkPreview, BulkRequest, ContextThread, ProfileDto, ProjectDto, ReviewTarget } from "./api";
+import type { Api, Bootstrap, BulkPreview, BulkRequest, ContextThread, MergeQueueInfo, ProfileDto, ProjectDto, PrOverview, ReviewTarget } from "./api";
 import { ProfileReuse } from "./wizard/ProfileReuse";
 import { mockBranch, mockDetail, mockOverview } from "./detail/mock";
 import { DetailPanel } from "./detail/DetailPanel";
@@ -355,6 +355,137 @@ if (attentionScene) {
   }
 }
 
+function mergeQueuePreviewRows(): SearchRow[] {
+  const queue = (phase: MergeQueueInfo["phase"], extra: Partial<MergeQueueInfo> = {}): MergeQueueInfo => ({
+    required: true,
+    phase,
+    position: null,
+    eta_seconds: null,
+    reason: null,
+    ...extra,
+  });
+  return [
+    row({
+      id: 1,
+      number: 142,
+      title: "Tighten the latch",
+      author_login: "octocat",
+      review_decision: "approved",
+      checks: "success",
+      readiness: "ready",
+      project_ids: [1],
+      slack: null,
+      merge_state: "clean",
+      merge_queue: queue(null),
+    }),
+    row({
+      id: 2,
+      number: 138,
+      title: "Add passkeys support",
+      author_login: "octocat",
+      review_decision: "approved",
+      checks: "success",
+      readiness: "ready",
+      project_ids: [1],
+      slack: null,
+      merge_state: "clean",
+      merge_queue: queue("queued", { position: 2, eta_seconds: 300 }),
+    }),
+    row({
+      id: 3,
+      number: 135,
+      title: "Refresh token rotation",
+      author_login: "octocat",
+      review_decision: "approved",
+      checks: "pending",
+      readiness: "ready",
+      project_ids: [1],
+      slack: null,
+      merge_state: "clean",
+      merge_queue: queue("merging", { position: 1 }),
+    }),
+    row({
+      id: 4,
+      number: 151,
+      title: "Fix the latch sensor",
+      author_login: "octocat",
+      repo: "acme/widgets",
+      checks: "failure",
+      review_decision: "approved",
+      readiness: "blocked",
+      project_ids: [],
+      slack: null,
+      merge_state: "unstable",
+      merge_queue: queue("failed", { reason: "Required status check build failed." }),
+    }),
+    row({
+      id: 5,
+      number: 160,
+      title: "Draft the release notes",
+      author_login: "octocat",
+      is_draft: true,
+      checks: "pending",
+      review_decision: null,
+      readiness: "blocked",
+      project_ids: [],
+      slack: null,
+      merge_state: "draft",
+      merge_queue: queue("removed", { reason: "The pull request was marked a draft." }),
+    }),
+  ];
+}
+
+function mergeStateOf(value: string | undefined): PrOverview["merge_state"] {
+  switch (value) {
+    case "clean":
+    case "blocked":
+    case "behind":
+    case "dirty":
+    case "unstable":
+    case "has_hooks":
+    case "draft":
+    case "unknown":
+      return value;
+    default:
+      return "clean";
+  }
+}
+
+function reviewOf(value: string | null): PrOverview["review_decision"] {
+  switch (value) {
+    case "approved":
+    case "changes_requested":
+    case "review_required":
+    case null:
+      return value;
+    default:
+      return null;
+  }
+}
+
+function overviewForQueue(found: SearchRow): PrOverview {
+  const queue = found.merge_queue ?? { required: true, phase: null, position: null, eta_seconds: null, reason: null };
+  return mockOverview({
+    state: found.state === "closed" || found.state === "merged" ? found.state : "open",
+    is_draft: found.is_draft,
+    mergeable: found.conflicts ? "conflicting" : "mergeable",
+    merge_state: mergeStateOf(found.merge_state),
+    review_decision: reviewOf(found.review_decision),
+    head_sha: "abc123",
+    head_ref: found.head_ref,
+    base_ref: "main",
+    checks: [],
+    checks_total: 0,
+    approvals: 1,
+    required_approvals: 1,
+    merge_queue: queue,
+  });
+}
+
+if (new URLSearchParams(window.location.search).get("screen") === "merge-queue") {
+  rows.splice(0, rows.length, ...mergeQueuePreviewRows());
+}
+
 /** Demo plan for the bulk Slack dialog: one card per acme channel, or one card for "All to one channel". */
 const DUE_BUMPS = [
   { pr_id: 1, number: 142, title: "Migrate login to new auth", repo: "acme/widgets", asked_at: "2026-11-06T16:00:00Z", quiet_hours: 52, bump_count: 1 },
@@ -582,6 +713,9 @@ const api: Api = {
   prDetail: (id) => Promise.resolve(mockDetail(id)),
   prOverview: (id) => {
     const item = rows.find((entry) => entry.id === id);
+    if (previewParams.get("screen") === "merge-queue" && item?.merge_queue?.required) {
+      return Promise.resolve(overviewForQueue(item));
+    }
     if (previewParams.get("rows") === "stack" && item) {
       return Promise.resolve(stackOverview(item));
     }
@@ -594,9 +728,44 @@ const api: Api = {
   setAutoMerge: (_id, method) =>
     Promise.resolve(mockOverview(method ? { auto_merge: { method, enabled_by: "ada", enabled_at: null } } : {})),
   mergePr: () => Promise.resolve(mockOverview({ state: "merged", merge_state: "unknown" })),
+  enqueuePullRequest: (id) => {
+    const found = rows.find((item) => item.id === id);
+    const base = found ? overviewForQueue(found) : mockOverview();
+    return Promise.resolve({
+      ...base,
+      merge_queue: { required: true, phase: "queued", position: 3, eta_seconds: 240, reason: null },
+    });
+  },
+  dequeuePullRequest: (id) => {
+    const found = rows.find((item) => item.id === id);
+    const base = found ? overviewForQueue(found) : mockOverview();
+    return Promise.resolve({
+      ...base,
+      merge_queue: { required: true, phase: "removed", position: null, eta_seconds: null, reason: null },
+    });
+  },
+  enqueuePullRequests: (ids) =>
+    Promise.resolve(
+      ids.map((id) => {
+        const found = rows.find((item) => item.id === id);
+        return {
+          id,
+          repo: found?.repo ?? "acme/widgets",
+          number: found?.number ?? 0,
+          title: found?.title ?? "",
+          outcome: "added" as const,
+          message: null,
+        };
+      }),
+    ),
   closePullRequests: () => Promise.resolve([]),
   setPrDraft: (_id, draft) => Promise.resolve(mockOverview({ is_draft: draft, merge_state: draft ? "draft" : "blocked" })),
-  prBranchStatus: () => Promise.resolve(mockBranch({ state: "behind", behind_by: 3 })),
+  prBranchStatus: () =>
+    Promise.resolve(
+      new URLSearchParams(window.location.search).get("screen") === "merge-queue"
+        ? mockBranch()
+        : mockBranch({ state: "behind", behind_by: 3 }),
+    ),
   updatePrBranch: () => Promise.resolve({ overview: mockOverview(), branch: mockBranch() }),
   prSlackContext: () => Promise.resolve(previewParams.get("rows") === "stack" ? [] : previewThreads),
   prSlackMentions: () => Promise.resolve([]),

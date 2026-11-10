@@ -1319,6 +1319,8 @@ mod tests {
                 readiness: "ready".into(),
                 readiness_notes: Vec::new(),
                 conflicts: false,
+                merge_state: "clean".into(),
+                merge_queue: None,
                 reviewers_requested: false,
                 pending_reviewers: Vec::new(),
                 slack: None,

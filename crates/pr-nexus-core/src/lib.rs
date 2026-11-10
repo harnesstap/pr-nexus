@@ -13,6 +13,7 @@ pub mod jira;
 pub mod linking;
 pub mod live;
 pub mod mapping;
+pub mod merge_queue;
 pub mod notify;
 pub mod onboarding;
 pub mod overview;

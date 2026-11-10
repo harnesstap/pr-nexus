@@ -235,6 +235,7 @@ fn parse_pr(
             .pointer("/repository/isArchived")
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        merge_queue: status.merge_queue.clone(),
     };
     status.apply_to(&mut synced.pull_request);
     Ok(synced)
@@ -295,6 +296,7 @@ fn parse_status_node(node: &Value) -> Result<PrStatus, ProviderError> {
             .pointer("/commits/nodes/0/commit/committedDate")
             .and_then(Value::as_str)
             .and_then(parse_time),
+        merge_queue: super::merge_queue::snapshot_from_node(node),
     })
 }
 

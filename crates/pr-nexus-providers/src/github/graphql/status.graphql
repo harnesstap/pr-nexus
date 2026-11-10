@@ -29,6 +29,20 @@ query PullRequestStatus($ids: [ID!]!) {
           isResolved
         }
       }
+      # isMergeQueueEnabled is GitHub's answer for branch protection
+      # "Require merge queue" and a ruleset rule of type MERGE_QUEUE.
+      # BranchProtectionRule has no requiresMergeQueue field, and Ref has
+      # no mergeQueue field. mergeQueue is the queue for the base branch.
+      isMergeQueueEnabled
+      isInMergeQueue
+      mergeQueue { id }
+      mergeQueueEntry { position state estimatedTimeToMerge }
+      timelineItems(last: 5, itemTypes: [ADDED_TO_MERGE_QUEUE_EVENT, REMOVED_FROM_MERGE_QUEUE_EVENT]) {
+        nodes {
+          __typename
+          ... on RemovedFromMergeQueueEvent { reason }
+        }
+      }
     }
   }
 }
