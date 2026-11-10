@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import type { ListRow, ProjectDto } from "../api";
-import { AlertIcon, ChevronDownIcon, ChevronRightIcon, ClockIcon, CloseIcon, CommentIcon, DraftIcon, FunnelIcon, GitHubIcon, MoreIcon, SearchIcon, SlackLogo } from "../icons";
+import type { StackPlace } from "./stack";
+import { AlertIcon, ChevronDownIcon, ChevronRightIcon, ClockIcon, CloseIcon, CommentIcon, DraftIcon, FunnelIcon, GitHubIcon, MoreIcon, SearchIcon, SlackLogo, StackIcon } from "../icons";
 import { Tooltip } from "../Tooltip";
 import { ReviewerAvatars } from "./ReviewerAvatars";
 import { NextActionBadge } from "./NextActionBadge";
@@ -155,6 +156,7 @@ const GROUPINGS: { id: Grouping; label: string }[] = [
   { id: "org", label: "Org" },
   { id: "status", label: "Status" },
   { id: "updated", label: "Updated" },
+  { id: "stack", label: "Stack" },
 ];
 
 const ORDERINGS: { id: Ordering; label: string }[] = [
@@ -289,6 +291,17 @@ export function PrList({
     onSelectionChange?.(activeKey === "" ? [] : activeKey.split(",").map(Number));
   }, [activeKey, onSelectionChange]);
   const singleSelected = active.size === 1 ? (flat.find((item) => active.has(item.row.id))?.row ?? null) : null;
+  // Opening a pull request from the stack moves the highlight with the panel.
+  const [seenDetail, setSeenDetail] = useState(detailId);
+  if (seenDetail !== detailId) {
+    setSeenDetail(detailId);
+    if (detailId !== null) {
+      const index = flat.findIndex((item) => item.row.id === detailId);
+      if (index >= 0) {
+        setFocusIndex(index);
+      }
+    }
+  }
   // The focused row stays in range when filters or a sync shrink the list.
   const focus = flat.length === 0 ? -1 : Math.min(focusIndex, flat.length - 1);
   const listRef = useRef<HTMLDivElement>(null);
@@ -1295,7 +1308,21 @@ function TitleLine({ row, view, now, onDetails }: { row: ListRow; view: SavedVie
           <span className="shrink-0 rounded bg-slate-800 px-1 text-xs text-slate-400">+{row.project_ids.length - 1}</span>
         </Tooltip>
       )}
+      {row.stack && <StackBadge stack={row.stack} />}
     </div>
+  );
+}
+
+/** Compact place in a stack, for example 2/4. Hidden when the pull request is not stacked. */
+function StackBadge({ stack }: { stack: StackPlace }) {
+  const detail = stack.blocking ? "Merge this one first" : `Merge #${stack.root_number} first`;
+  return (
+    <Tooltip label={`Stack ${stack.position} of ${stack.size}`} detail={detail} className="shrink-0">
+      <span className="inline-flex items-center gap-0.5 text-xs text-slate-400" aria-label={`Stack ${stack.position} of ${stack.size}. ${detail}`}>
+        <StackIcon size={12} />
+        {stack.position}/{stack.size}
+      </span>
+    </Tooltip>
   );
 }
 
@@ -1362,6 +1389,7 @@ function CompactRow({
               <CiStatus checks={row.checks} />
             </>
           )}
+          {row.stack && <StackBadge stack={row.stack} />}
           <RowCues row={row} now={now} />
         </div>
       </div>

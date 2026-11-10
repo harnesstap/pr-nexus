@@ -1,6 +1,7 @@
 import type { ListRow, ProjectDto } from "../api";
 import { attentionRank } from "./nextAction";
 import { waitingSince } from "./rowCues";
+import { stackIndex, type StackPlace, type StackState } from "./stack";
 import {
   AUTHOR,
   REVIEW_REQUESTED,
@@ -213,14 +214,16 @@ export function pageFromRows(rows: readonly SearchRow[], projects: readonly Proj
     return compare(left, right, request.ordering, request.direction, { viewKey: request.view_key, now });
   });
   const keepEmpty = keptEmpty(live, request.view_key, filters, terms.length > 0);
-  const groups = group(ordered, live, request, keepEmpty);
+  const marks = stackMarks(rows);
+  const groups = group(ordered, live, request, keepEmpty, marks);
   const collapsed = new Set(request.collapsed);
   const stream: PageEntry[] = [];
   for (const section of groups) {
     stream.push({ section: section.key, row: null });
     if (!collapsed.has(section.key)) {
       for (const row of section.rows) {
-        stream.push({ section: section.key, row: listRow(row) });
+        const listed = listRow(row);
+        stream.push({ section: section.key, row: { ...listed, stack: marks.get(row.id) ?? null } });
       }
     }
   }
@@ -314,6 +317,11 @@ function listRow(row: SearchRow): ListRow {
   return rest;
 }
 
+/** The same stack mark `list_page` and `rows_by_id` attach, from every stored row. */
+export function rowWithStack(rows: readonly SearchRow[], row: SearchRow): ListRow {
+  return { ...listRow(row), stack: stackMarks(rows).get(row.id) ?? null };
+}
+
 function resume(stream: readonly PageEntry[], cursor: Cursor | null): number {
   if (!cursor) {
     return 0;
@@ -372,7 +380,54 @@ interface Group {
   rows: SearchRow[];
 }
 
-function group(rows: readonly SearchRow[], live: readonly ProjectDto[], request: PageRequest, keepEmpty: ReadonlySet<number>): Group[] {
+function stackMarks(rows: readonly SearchRow[]): Map<number, StackPlace> {
+  const stateOf = (state: string): StackState => (state === "merged" || state === "closed" ? state : "open");
+  return stackIndex(
+    rows.map((row) => ({
+      id: row.id,
+      repo: row.repo,
+      number: row.number,
+      state: stateOf(row.state),
+      head_ref: row.head_ref,
+      base_ref: row.base_ref ?? "",
+    })),
+  ).places;
+}
+
+/** One section per stack, members bottom to top. Everything else is "Not stacked". */
+function groupStacks(rows: readonly SearchRow[], marks: ReadonlyMap<number, StackPlace>): Group[] {
+  const index = new Map(rows.map((row, at) => [row.id, at]));
+  const buckets = new Map<number, SearchRow[]>();
+  const plain: SearchRow[] = [];
+  for (const row of rows) {
+    const mark = marks.get(row.id);
+    if (!mark) {
+      plain.push(row);
+      continue;
+    }
+    const bucket = buckets.get(mark.root_id);
+    if (bucket) {
+      bucket.push(row);
+    } else {
+      buckets.set(mark.root_id, [row]);
+    }
+  }
+  const roots = [...buckets.keys()].sort((left, right) => {
+    const rank = (root: number) => index.get(root) ?? Math.min(...(buckets.get(root) ?? []).map((row) => index.get(row.id) ?? Number.MAX_SAFE_INTEGER));
+    return rank(left) - rank(right);
+  });
+  const groups: Group[] = roots.map((root) => {
+    const members = [...(buckets.get(root) ?? [])].sort((left, right) => (marks.get(left.id)?.position ?? 0) - (marks.get(right.id)?.position ?? 0));
+    const number = marks.get(root)?.root_number ?? members.map((row) => marks.get(row.id)?.root_number).find((value) => value !== undefined) ?? 0;
+    return { key: `stack:${root}`, title: `Stack · #${number}`, projectId: null, rows: members };
+  });
+  if (plain.length > 0) {
+    groups.push({ key: "unstacked", title: "Not stacked", projectId: null, rows: plain });
+  }
+  return groups;
+}
+
+function group(rows: readonly SearchRow[], live: readonly ProjectDto[], request: PageRequest, keepEmpty: ReadonlySet<number>, marks: ReadonlyMap<number, StackPlace>): Group[] {
   switch (request.grouping) {
     case "project": {
       const ids = new Set(live.map((project) => project.id));
@@ -397,6 +452,8 @@ function group(rows: readonly SearchRow[], live: readonly ProjectDto[], request:
       return groupBy(rows, (row) => row.owner);
     case "status":
       return groupBy(rows, (row) => statusTitle(row.readiness));
+    case "stack":
+      return groupStacks(rows, marks);
     case "updated": {
       const day = new Date(request.day_start).getTime();
       const week = new Date(request.week_start).getTime();

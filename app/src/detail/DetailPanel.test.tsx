@@ -699,3 +699,91 @@ test("BlockerList renders any per-blocker action beside its text", () => {
   expect(within(rows[0]).getByRole("button", { name: "Update branch" })).toBeTruthy();
   expect(within(rows[1]).queryByRole("button")).toBeNull();
 });
+
+test("a stacked pull request lists the chain and notes a merge into the parent branch", async () => {
+  const onOpenPr = vi.fn();
+  const api = fakeApi({
+    prOverview: vi.fn(() =>
+      Promise.resolve(
+        mockOverview({
+          base_ref: "feat-a",
+          merge_state: "clean",
+          mergeable: "mergeable",
+          review_decision: "approved",
+          checks: [{ name: "build", state: "passed", url: null, required: true }],
+          checks_total: 1,
+          approvals: 1,
+          required_approvals: 1,
+        }),
+      ),
+    ),
+    prStack: vi.fn(() =>
+      Promise.resolve({
+        root_id: 1,
+        root_number: 10,
+        blocking_id: 1,
+        members: [
+          {
+            id: 1,
+            number: 10,
+            title: "Bottom",
+            url: "https://github.com/acme/widgets/pull/10",
+            repo: "acme/widgets",
+            base_ref: "main",
+            head_ref: "feat-a",
+            state: "open",
+            is_draft: false,
+            checks: "success",
+            review_decision: "approved",
+            mergeable: "mergeable" as const,
+            position: 1,
+            depth: 0,
+            blocking: true,
+          },
+          {
+            id: 7,
+            number: 42,
+            title: "Split the checkout into steps",
+            url: row.url,
+            repo: "acme/web",
+            base_ref: "feat-a",
+            head_ref: "feat-b",
+            state: "open",
+            is_draft: false,
+            checks: "success",
+            review_decision: "approved",
+            mergeable: "mergeable" as const,
+            position: 2,
+            depth: 1,
+            blocking: false,
+          },
+        ],
+      }),
+    ),
+  });
+  renderPanel(api, {
+    onOpenPr,
+    row: {
+      ...row,
+      stack: {
+        position: 2,
+        size: 2,
+        root_id: 1,
+        root_number: 10,
+        parent_id: 1,
+        parent_number: 10,
+        parent_head: "feat-a",
+        depth: 1,
+        blocking: false,
+      },
+    },
+  });
+  const section = await screen.findByRole("region", { name: "Stack" });
+  expect(section.textContent).toContain("Merge from the bottom. #10 is next.");
+  expect(section.textContent).toContain("Passing · Approved · Mergeable");
+  expect(within(section).getByText("Merge first")).toBeTruthy();
+  expect((await screen.findByTestId("stack-merge-note")).textContent).toContain("lands this on feat-a, the branch of #10");
+  expect(screen.getByRole("button", { name: "Merge" })).toBeTruthy();
+  fireEvent.click(within(section).getByRole("button", { name: /#10 Bottom/ }));
+  expect(onOpenPr).toHaveBeenCalledWith(1);
+});

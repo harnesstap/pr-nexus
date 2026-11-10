@@ -8,9 +8,10 @@
 //! then its rows unless it is collapsed. A row linked to two projects appears
 //! under both. Counts come from the full result, never from the loaded slice.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
+use pr_nexus_core::stack::{self, StackPlace, StackRef, StackState};
 use serde::{Deserialize, Serialize};
 
 use crate::commands::{ListRow, ProjectDto};
@@ -286,6 +287,7 @@ pub fn page(
         });
     }
 
+    let marks = stack_marks(items);
     let keep_empty: HashSet<i64> = if search.is_some() || filters.active() {
         HashSet::new()
     } else if let Some(id) = project_view {
@@ -296,7 +298,7 @@ pub fn page(
     } else {
         live_ids.clone()
     };
-    let groups = group(&shown, &live, &live_ids, request, &keep_empty);
+    let groups = group(&shown, &live, &live_ids, request, &keep_empty, &marks);
 
     let collapsed: HashSet<&str> = request.collapsed.iter().map(String::as_str).collect();
     let mut stream: Vec<(&str, Option<&Item>)> = Vec::new();
@@ -318,7 +320,11 @@ pub fn page(
         .iter()
         .map(|(section, item)| PageEntry {
             section: (*section).to_owned(),
-            row: item.map(|item| item.row.clone()),
+            row: item.map(|item| {
+                let mut row = item.row.clone();
+                row.stack = marks.get(&row.id).cloned();
+                row
+            }),
         })
         .collect();
     let next_cursor = (end < stream.len() && end > start).then(|| {
@@ -865,17 +871,47 @@ fn status_title(readiness: &str) -> &'static str {
     }
 }
 
+/// Places for stacks of two or more, from every row the page can see.
+pub fn stack_marks(items: &[Item]) -> HashMap<i64, StackPlace> {
+    let refs: Vec<StackRef> = items
+        .iter()
+        .map(|item| StackRef {
+            id: item.row.id,
+            repo: item.row.repo.clone(),
+            number: item.row.number,
+            state: match item.row.state.as_str() {
+                "merged" => StackState::Merged,
+                "closed" => StackState::Closed,
+                _ => StackState::Open,
+            },
+            head_ref: item.row.head_ref.clone(),
+            base_ref: item.row.base_ref.clone(),
+        })
+        .collect();
+    stack::index(&refs).places().clone()
+}
+
+/// Writes [`stack_marks`] onto each row, for callers that return rows outside a page.
+pub fn stamp_stacks(items: &mut [Item]) {
+    let marks = stack_marks(items);
+    for item in items {
+        item.row.stack = marks.get(&item.row.id).cloned();
+    }
+}
+
 fn group<'a>(
     rows: &[&'a Item],
     live: &[&ProjectDto],
     live_ids: &HashSet<i64>,
     request: &PageRequest,
     keep_empty: &HashSet<i64>,
+    marks: &HashMap<i64, StackPlace>,
 ) -> Vec<Group<'a>> {
     match request.grouping.as_str() {
         "repository" => group_by(rows, |item| item.row.repo.clone()),
         "org" => group_by(rows, |item| item.row.owner.clone()),
         "status" => group_by(rows, |item| status_title(&item.row.readiness).to_owned()),
+        "stack" => group_stacks(rows, marks),
         "updated" => {
             let day = request.day_start.timestamp_millis();
             let week = request.week_start.timestamp_millis();
@@ -945,6 +981,74 @@ fn group<'a>(
     }
 }
 
+/// One section per stack, members bottom to top. Everything else is "Not stacked".
+fn group_stacks<'a>(rows: &[&'a Item], marks: &HashMap<i64, StackPlace>) -> Vec<Group<'a>> {
+    let index: HashMap<i64, usize> = rows
+        .iter()
+        .enumerate()
+        .map(|(at, item)| (item.row.id, at))
+        .collect();
+    let mut buckets: HashMap<i64, Vec<&'a Item>> = HashMap::new();
+    let mut plain: Vec<&'a Item> = Vec::new();
+    for item in rows {
+        match marks.get(&item.row.id) {
+            Some(mark) => buckets.entry(mark.root_id).or_default().push(*item),
+            None => plain.push(*item),
+        }
+    }
+    let mut roots: Vec<i64> = buckets.keys().copied().collect();
+    roots.sort_by_key(|root| {
+        index.get(root).copied().unwrap_or_else(|| {
+            buckets
+                .get(root)
+                .and_then(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| index.get(&item.row.id))
+                        .min()
+                        .copied()
+                })
+                .unwrap_or(usize::MAX)
+        })
+    });
+    let mut groups: Vec<Group<'a>> = roots
+        .into_iter()
+        .map(|root| {
+            let mut items = buckets.remove(&root).unwrap_or_default();
+            items.sort_by_key(|item| {
+                marks
+                    .get(&item.row.id)
+                    .map(|mark| mark.position)
+                    .unwrap_or(0)
+            });
+            let number = marks
+                .get(&root)
+                .map(|mark| mark.root_number)
+                .unwrap_or_else(|| {
+                    items
+                        .iter()
+                        .find_map(|item| marks.get(&item.row.id).map(|mark| mark.root_number))
+                        .unwrap_or(0)
+                });
+            Group {
+                key: format!("stack:{root}"),
+                title: format!("Stack · #{number}"),
+                project_id: None,
+                items,
+            }
+        })
+        .collect();
+    if !plain.is_empty() {
+        groups.push(Group {
+            key: "unstacked".to_owned(),
+            title: "Not stacked".to_owned(),
+            project_id: None,
+            items: plain,
+        });
+    }
+    groups
+}
+
 fn group_by<'a>(rows: &[&'a Item], key_of: impl Fn(&Item) -> String) -> Vec<Group<'a>> {
     let mut order: Vec<String> = Vec::new();
     let mut buckets: std::collections::HashMap<String, Vec<&'a Item>> =
@@ -996,6 +1100,8 @@ mod tests {
                 repo: "acme/api".into(),
                 author_login: "octo".into(),
                 head_ref: format!("topic-{id}"),
+                base_ref: "main".into(),
+                stack: None,
                 is_draft: false,
                 state: "open".into(),
                 checks: "success".into(),
@@ -1680,5 +1786,49 @@ mod tests {
             crate::commands::pending_reviewers(&reversed),
             crate::commands::pending_reviewers(&requests)
         );
+    }
+
+    #[test]
+    fn stack_grouping_keeps_members_in_merge_order_and_marks_the_row() {
+        let mut bottom = item(1, &[], 1);
+        bottom.row.number = 10;
+        bottom.row.repo = "acme/api".into();
+        bottom.row.head_ref = "feat-a".into();
+        bottom.row.base_ref = "main".into();
+        let mut middle = item(2, &[], 2);
+        middle.row.number = 11;
+        middle.row.repo = "acme/api".into();
+        middle.row.head_ref = "feat-b".into();
+        middle.row.base_ref = "feat-a".into();
+        let mut top = item(3, &[], 3);
+        top.row.number = 12;
+        top.row.repo = "acme/api".into();
+        top.row.head_ref = "feat-c".into();
+        top.row.base_ref = "feat-b".into();
+        // The same branch name in another repository is not part of the stack.
+        let mut alone = item(4, &[], 4);
+        alone.row.repo = "acme/billing".into();
+        alone.row.head_ref = "feat-a".into();
+        let page = page(&[bottom, middle, top, alone], &[], &request("stack"), None);
+        let titles: Vec<&str> = page
+            .sections
+            .iter()
+            .map(|section| section.title.as_str())
+            .collect();
+        assert_eq!(titles, vec!["Stack · #10", "Not stacked"]);
+        assert_eq!(
+            row_ids(&page),
+            vec![None, Some(1), Some(2), Some(3), None, Some(4)]
+        );
+        let marked = page
+            .entries
+            .iter()
+            .find_map(|entry| entry.row.as_ref().filter(|row| row.id == 2))
+            .unwrap();
+        let place = marked.stack.as_ref().unwrap();
+        assert_eq!(place.position, 2);
+        assert_eq!(place.size, 3);
+        assert!(!place.blocking);
+        assert_eq!(place.parent_number, Some(10));
     }
 }

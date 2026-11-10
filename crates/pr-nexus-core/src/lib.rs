@@ -21,6 +21,7 @@ pub mod review;
 pub mod review_filter;
 pub mod search;
 pub mod settings;
+pub mod stack;
 pub mod stats;
 pub mod store;
 pub mod sync;
