@@ -24,6 +24,7 @@ import {
   sentToast,
   syncLabel,
   type SavedView,
+  type SnoozeChoice,
   type Toast,
 } from "./model";
 import { PrList, type ListActions } from "./PrList";
@@ -499,6 +500,57 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
     forgetOpenPrs([id]);
   }
 
+  function openDetail(row: ListRow) {
+    setDetailRow(row.unread ? { ...row, unread: false } : row);
+    if (row.unread) {
+      void markRead([row.id], null, row.id);
+    }
+  }
+
+  async function markRead(ids: number[], notice: string | null, rollbackId?: number) {
+    if (ids.length === 0) {
+      return;
+    }
+    const marked = new Set(ids);
+    setDetailRow((current) => (current && marked.has(current.id) ? { ...current, unread: false } : current));
+    try {
+      await api.markPrsRead(ids);
+      if (notice) {
+        setNotice({ text: notice });
+      }
+      setVersion((value) => value + 1);
+    } catch (err) {
+      if (rollbackId !== undefined) {
+        setDetailRow((current) => (current && current.id === rollbackId ? { ...current, unread: true } : current));
+      }
+      setError(errorMessage(err));
+    }
+  }
+
+  async function snoozeRows(ids: number[], choice: SnoozeChoice) {
+    try {
+      await api.setPrsSnooze(ids, choice);
+      const marked = new Set(ids);
+      setDetailRow((current) => (current && marked.has(current.id) ? { ...current, snoozed: choice !== "off" } : current));
+      setNotice({ text: snoozeNotice(choice) });
+      setVersion((value) => value + 1);
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  }
+
+  async function muteRows(ids: number[], muted: boolean) {
+    try {
+      await api.setPrsMuted(ids, muted);
+      const marked = new Set(ids);
+      setDetailRow((current) => (current && marked.has(current.id) ? { ...current, muted, unread: muted ? false : current.unread } : current));
+      setNotice({ text: muted ? "Muted" : "Unmuted" });
+      setVersion((value) => value + 1);
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  }
+
   /** Stars or unstars a PR, then reloads so it moves to (or out of) the pinned top. */
   async function toggleStar(row: ListRow) {
     const starred = !row.starred;
@@ -916,7 +968,11 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
                 onCreateProjectWithPrs={createProjectWithPrs}
                 onSelectionChange={setSelection}
                 detailId={detailRow?.id ?? null}
-                onDetails={setDetailRow}
+                onDetails={openDetail}
+                onMarkRead={(ids) => void markRead(ids, "Marked as read")}
+                onMarkAllRead={(ids) => void markRead(ids, "Marked all as read")}
+                onSnooze={(ids, choice) => void snoozeRows(ids, choice)}
+                onMute={(ids, muted) => void muteRows(ids, muted)}
                 onRequestReview={setReviewRow}
                 onToggleStar={(row) => void toggleStar(row)}
                 onBulkReview={setBulkIds}
@@ -946,10 +1002,12 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
                   void api.rowsById([id]).then((found) => {
                     const next = found[0];
                     if (next) {
-                      setDetailRow(next);
+                      openDetail(next);
                     }
                   });
                 }}
+                onSnooze={(choice) => void snoozeRows([detailRow.id], choice)}
+                onMute={(muted) => void muteRows([detailRow.id], muted)}
               />
             )}
             {closeTargets && closeTargets.length > 0 && (
@@ -1049,7 +1107,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
           actions={listActions}
           listShown={viewKey !== "settings"}
           onView={setViewKey}
-          onDetails={setDetailRow}
+          onDetails={openDetail}
           onSync={(full) => void refresh(full)}
           syncing={syncing}
         />
@@ -1057,6 +1115,23 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
       </main>
     </div>
   );
+}
+
+function snoozeNotice(choice: SnoozeChoice): string {
+  switch (choice) {
+    case "day":
+      return "Snoozed for 1 day";
+    case "week":
+      return "Snoozed for 1 week";
+    case "activity":
+      return "Snoozed until the next update";
+    case "off":
+      return "Unsnoozed";
+    default: {
+      const unexpected: never = choice;
+      return unexpected;
+    }
+  }
 }
 
 function NavButton({

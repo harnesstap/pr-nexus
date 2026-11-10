@@ -7,7 +7,23 @@ const counts = { draft: 2, no_review: 1, ci_trouble: 3, declined: 0, ready: 4 };
 function setup(props: Partial<Parameters<typeof QuickFilters>[0]> = {}) {
   const onChange = vi.fn();
   const onStarredChange = vi.fn();
-  render(<QuickFilters active={null} counts={counts} onChange={onChange} starred={false} starredCount={5} onStarredChange={onStarredChange} {...props} />);
+  render(
+    <QuickFilters
+      active={null}
+      counts={counts}
+      onChange={onChange}
+      starred={false}
+      starredCount={5}
+      onStarredChange={onStarredChange}
+      unread={false}
+      unreadCount={1}
+      onUnreadChange={vi.fn()}
+      snoozed={false}
+      snoozedCount={2}
+      onSnoozedChange={vi.fn()}
+      {...props}
+    />,
+  );
   return { onChange, onStarredChange };
 }
 
@@ -65,9 +81,16 @@ test("chips that do not fit the measured width fold into More", () => {
     expect(screen.getByRole("button", { name: "Ready (4)" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: "Draft (2)" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Starred (5)" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "More quick filters (4)" }));
+    fireEvent.click(screen.getByRole("button", { name: "More quick filters (6)" }));
     const menu = screen.getByRole("menu", { name: "More quick filters" });
-    expect(within(menu).getAllByRole("menuitemcheckbox").map((item) => item.textContent)).toEqual(["No review1", "CI or conflicts3", "Changes requested0", "Starred5"]);
+    expect(within(menu).getAllByRole("menuitemcheckbox").map((item) => item.textContent)).toEqual([
+      "No review1",
+      "CI or conflicts3",
+      "Changes requested0",
+      "Starred5",
+      "Unread1",
+      "Snoozed2",
+    ]);
   } finally {
     width.mockRestore();
     client.mockRestore();

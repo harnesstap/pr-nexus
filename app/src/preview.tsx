@@ -115,6 +115,9 @@ function row(partial: Partial<SearchRow> & Pick<SearchRow, "id" | "title" | "num
     pending_reviewers: [],
     slack: null,
     starred: false,
+    unread: false,
+    muted: false,
+    snoozed: false,
     ...partial,
   };
 }
@@ -252,6 +255,8 @@ function previewStack(list: readonly SearchRow[], id: number) {
   };
 }
 
+const attentionScene = new URLSearchParams(window.location.search).get("attention");
+
 const rows: SearchRow[] = [
   row({
     id: 1,
@@ -329,6 +334,23 @@ if (previewParams.get("rows") === "varied") {
   rows.splice(0, rows.length, ...variedRows(row));
 } else if (previewParams.get("rows") === "stack") {
   rows.splice(0, rows.length, ...stackRows(row));
+}
+
+// `?attention=1` marks demo rows unread, snoozed, or muted. `?attention=snoozed` also turns the Snoozed chip on.
+if (attentionScene) {
+  const [first, second, third, fourth] = rows;
+  if (first) {
+    first.unread = true;
+  }
+  if (second) {
+    second.snoozed = true;
+  }
+  if (third) {
+    third.muted = true;
+  }
+  if (fourth) {
+    fourth.unread = true;
+  }
 }
 
 /** Demo plan for the bulk Slack dialog: one card per acme channel, or one card for "All to one channel". */
@@ -459,14 +481,41 @@ const api: Api = {
   prNote: (prId: number) => Promise.resolve({ pr_id: prId, note: "", updated_at: null }),
   setPrNote: (prId: number, note: string) => Promise.resolve({ pr_id: prId, note, updated_at: null }),
   setPrStarred: (_id: number, starred: boolean) => Promise.resolve(starred),
+  markPrsRead: (ids: number[]) => {
+    for (const item of rows) {
+      if (ids.includes(item.id)) {
+        item.unread = false;
+      }
+    }
+    return Promise.resolve();
+  },
+  setPrsSnooze: (ids: number[], choice: "day" | "week" | "activity" | "off") => {
+    for (const item of rows) {
+      if (ids.includes(item.id)) {
+        item.snoozed = choice !== "off";
+      }
+    }
+    return Promise.resolve();
+  },
+  setPrsMuted: (ids: number[], muted: boolean) => {
+    for (const item of rows) {
+      if (ids.includes(item.id)) {
+        item.muted = muted;
+        if (muted) {
+          item.unread = false;
+        }
+      }
+    }
+    return Promise.resolve();
+  },
   ...memoryProjectApi(rows, projects, [{ id: 1, project_id: 1, kind: "ticket_key_in_branch", pattern: "AUTH-*", priority: 10 }]),
   loadViewState: () =>
     Promise.resolve(
-      JSON.stringify(
-        previewParams.get("rows") === "stack"
-          ? { grouping: "stack", show: { notRequested: true } }
-          : { show: { notRequested: true } },
-      ),
+      JSON.stringify({
+        show: { notRequested: true },
+        ...(previewParams.get("rows") === "stack" ? { grouping: "stack" } : {}),
+        ...(attentionScene === "snoozed" ? { filters: { snoozed: true } } : {}),
+      }),
     ),
   saveViewState: () => Promise.resolve(),
   openExternal: () => Promise.resolve(),

@@ -45,6 +45,9 @@ function row(partial: Partial<SearchRow> & Pick<SearchRow, "id" | "title">): Sea
     pending_reviewers: [],
     slack: null,
     starred: false,
+    unread: false,
+    muted: false,
+    snoozed: false,
     ...partial,
   };
 }

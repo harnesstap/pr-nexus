@@ -32,6 +32,9 @@ function row(partial: Partial<SearchRow> & Pick<SearchRow, "id" | "title">): Sea
     pending_reviewers: [],
     slack: null,
     starred: false,
+    unread: false,
+    muted: false,
+    snoozed: false,
     ...partial,
   };
 }
@@ -369,4 +372,31 @@ test("stack grouping keeps members in merge order and marks each row", () => {
   expect(middle?.stack).toMatchObject({ position: 2, size: 3, blocking: false, parent_number: 10, parent_head: "feat-a" });
   expect(page.entries.find((entry) => entry.row?.id === 1)?.row?.stack?.blocking).toBe(true);
   expect(page.entries.find((entry) => entry.row?.id === 4)?.row?.stack).toBeNull();
+});
+
+test("snoozed rows leave the default list and the unread chip combines", () => {
+  const rows = [
+    row({ id: 1, title: "Quiet" }),
+    row({ id: 2, title: "Fresh", unread: true }),
+    row({ id: 3, title: "Asleep", unread: true, snoozed: true }),
+    row({ id: 4, title: "Hushed", muted: true }),
+  ];
+  const view = defaultView();
+  const page = pageFromRows(rows, [], request("mine", view));
+  expect(page.sections.flatMap((section) => section.ids)).toEqual([1, 2, 4]);
+  expect(page.in_view).toBe(3);
+  expect(page.attention).toBe(1);
+  expect(page.snoozed_count).toBe(1);
+  expect(summaryText(page.summary, "mine")).toBe("3 open PRs across 0 projects");
+
+  const unread = { ...view, filters: { ...view.filters, unread: true } };
+  const only = pageFromRows(rows, [], request("mine", unread));
+  expect(only.sections.flatMap((section) => section.ids)).toEqual([2]);
+  expect(only.attention).toBe(1);
+
+  const snoozed = { ...view, filters: { ...view.filters, snoozed: true } };
+  const waiting = pageFromRows(rows, [], request("mine", snoozed));
+  expect(waiting.sections.flatMap((section) => section.ids)).toEqual([3]);
+  expect(waiting.attention).toBe(1);
+  expect(summaryText(waiting.summary, "mine", null, true)).toBe("1 snoozed PR");
 });

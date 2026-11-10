@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use chrono::Utc;
+use pr_nexus_core::attention::{AttentionFlags, PrActivity};
 use pr_nexus_core::domain::{
     Account, AccountId, AccountKind, AuthMode, LinkSource, PrId, PrState, PullRequest,
     RequestedReviewer, Reviewer, ViewState,
@@ -231,6 +232,12 @@ pub struct ListRow {
     pub hidden: bool,
     /// Starred by the user; starred rows sort first within any ordering.
     pub starred: bool,
+    /// New commits, comments, reviews, or CI since this detail was last opened.
+    pub unread: bool,
+    /// The unread dot is hidden and the row is left out of the unread count.
+    pub muted: bool,
+    /// Left out of the default list until the snooze ends.
+    pub snoozed: bool,
     pub project_ids: Vec<i64>,
     pub readiness: String,
     pub readiness_notes: Vec<String>,
@@ -927,9 +934,18 @@ pub(crate) fn list_items(state: &AppState) -> Result<Vec<listing::Item>, AppErro
         .list_pull_requests_for_account_slim(account.id)?;
     let mut facts = state.store.list_facts(account.id)?;
     let workspaces = pr_nexus_core::review::route::workspaces(&state.store)?;
+    let flags = attention_flags(state, prs.iter())?;
     let mut items: Vec<listing::Item> = prs
         .iter()
-        .map(|pr| to_item(&mut facts, &workspaces, pr, flag))
+        .map(|pr| {
+            to_item(
+                &mut facts,
+                &workspaces,
+                pr,
+                flag,
+                flags.get(&pr.id).copied(),
+            )
+        })
         .collect();
     listing::stamp_stacks(&mut items);
     Ok(items)
@@ -1000,11 +1016,18 @@ pub(crate) fn items_for_ids(
         if !prs.iter().any(|pr| wanted.contains(&pr.id.0)) {
             continue;
         }
+        let wanted_prs: Vec<&PullRequest> =
+            prs.iter().filter(|pr| wanted.contains(&pr.id.0)).collect();
+        let flags = attention_flags(state, wanted_prs.iter().copied())?;
         let mut facts = state.store.list_facts(account.id)?;
-        for pr in &prs {
-            if wanted.contains(&pr.id.0) {
-                out.push(to_item(&mut facts, &workspaces, pr, flag));
-            }
+        for pr in wanted_prs {
+            out.push(to_item(
+                &mut facts,
+                &workspaces,
+                pr,
+                flag,
+                flags.get(&pr.id).copied(),
+            ));
         }
     }
     Ok(out)
@@ -1691,12 +1714,25 @@ pub(crate) fn indicator(
     }
 }
 
+fn attention_flags<'a>(
+    state: &AppState,
+    prs: impl IntoIterator<Item = &'a PullRequest>,
+) -> Result<HashMap<PrId, AttentionFlags>, AppError> {
+    let current: Vec<PrActivity> = prs.into_iter().map(PrActivity::from_pull_request).collect();
+    state
+        .store
+        .sync_attention(&current, Utc::now())
+        .map_err(Into::into)
+}
+
 fn to_item(
     facts: &mut ListFacts,
     workspaces: &[pr_nexus_core::review::route::Workspace],
     pr: &PullRequest,
     flag: bool,
+    attention: Option<AttentionFlags>,
 ) -> listing::Item {
+    let attention = attention.unwrap_or_default();
     let links = facts.links.remove(&pr.id).unwrap_or_default();
     let request = facts.active_requests.remove(&pr.id);
     let slack_requested_ms = request
@@ -1737,6 +1773,9 @@ fn to_item(
             created_at: pr.created_at.to_rfc3339(),
             hidden: pr.hidden,
             starred: facts.starred.contains(&pr.id),
+            unread: attention.unread,
+            muted: attention.muted,
+            snoozed: attention.snoozed,
             project_ids: links
                 .into_iter()
                 .filter(|link| !matches!(link.source, LinkSource::Excluded))

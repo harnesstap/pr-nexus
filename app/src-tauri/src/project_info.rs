@@ -70,3 +70,25 @@ pub async fn set_pr_starred(app: Shared<'_>, pr_id: i64, starred: bool) -> Resul
     let app = blocking::Handle::new(&app);
     blocking::run(move || project_info::set_pr_starred(app.inner().as_ref(), pr_id, starred)).await
 }
+
+#[tauri::command]
+pub async fn mark_prs_read(app: Shared<'_>, ids: Vec<i64>) -> Result<(), AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || project_info::mark_prs_read(app.inner().as_ref(), &ids)).await
+}
+
+#[tauri::command]
+pub async fn set_prs_snooze(
+    app: Shared<'_>,
+    ids: Vec<i64>,
+    choice: String,
+) -> Result<(), AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || project_info::set_prs_snooze(app.inner().as_ref(), &ids, &choice)).await
+}
+
+#[tauri::command]
+pub async fn set_prs_muted(app: Shared<'_>, ids: Vec<i64>, muted: bool) -> Result<(), AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || project_info::set_prs_muted(app.inner().as_ref(), &ids, muted)).await
+}
