@@ -98,6 +98,9 @@ function row(partial: Partial<SearchRow> & Pick<SearchRow, "id" | "number" | "ti
     pending_reviewers: [],
     slack: null,
     starred: false,
+    unread: false,
+    muted: false,
+    snoozed: false,
     ...partial,
     reviewers_requested: (partial.pending_reviewers?.length ?? 0) > 0,
   };

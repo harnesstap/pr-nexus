@@ -556,6 +556,12 @@ export interface ListRow {
   hidden: boolean;
   /** Starred by the user; pinned above the rest within the sort. */
   starred: boolean;
+  /** New commits, comments, reviews, or CI since this detail was last opened. */
+  unread: boolean;
+  /** The unread dot is hidden and the row is left out of the unread count. */
+  muted: boolean;
+  /** Left out of the default list until the snooze ends. */
+  snoozed: boolean;
   project_ids: number[];
   readiness: "ready" | "blocked" | "unknown";
   readiness_notes: string[];
@@ -1094,6 +1100,12 @@ export interface Api {
   setPrNote(prId: number, note: string): Promise<PrNoteDto>;
   /** Idempotent; resolves to the new state. */
   setPrStarred(prId: number, starred: boolean): Promise<boolean>;
+  /** Records current activity as seen for these pull requests. */
+  markPrsRead(ids: number[]): Promise<void>;
+  /** `day`, `week`, `activity`, or `off`. */
+  setPrsSnooze(ids: number[], choice: "day" | "week" | "activity" | "off"): Promise<void>;
+  /** Hides unread until unmuted. */
+  setPrsMuted(ids: number[], muted: boolean): Promise<void>;
   listProjectRules(projectId: number): Promise<ProjectRuleDto[]>;
   saveProjectRule(rule: ProjectRuleDto): Promise<ProjectRuleDto>;
   deleteProjectRule(id: number): Promise<void>;
@@ -1257,6 +1269,9 @@ export const tauriApi: Api = {
   prNote: (prId) => invoke("pr_note", { prId }),
   setPrNote: (prId, note) => invoke("set_pr_note", { prId, note }),
   setPrStarred: (prId, starred) => invoke("set_pr_starred", { prId, starred }),
+  markPrsRead: (ids) => invoke("mark_prs_read", { ids }),
+  setPrsSnooze: (ids, choice) => invoke("set_prs_snooze", { ids, choice }),
+  setPrsMuted: (ids, muted) => invoke("set_prs_muted", { ids, muted }),
   listProjectRules: (projectId) => invoke("list_project_rules", { projectId }),
   saveProjectRule: (rule) => invoke("save_project_rule", { rule }),
   deleteProjectRule: (id) => invoke("delete_project_rule", { id }),

@@ -14,6 +14,7 @@ import {
   SlackLogo,
 } from "../icons";
 import { Tooltip } from "../Tooltip";
+import type { SnoozeChoice } from "./model";
 import { hint } from "./shortcuts";
 
 /** Below this list width the secondary actions move into the More menu. */
@@ -44,6 +45,12 @@ interface Props {
   onClear: () => void;
   /** Opens the close confirmation for the active selection. */
   onClose: () => void;
+  /** Marks the active selection read. */
+  onMarkRead: () => void;
+  /** Marks every pull request in the current filtered view read. */
+  onMarkAllRead: () => void;
+  onSnooze: (choice: SnoozeChoice) => void;
+  onMute: (muted: boolean) => void;
 }
 
 const secondary =
@@ -54,8 +61,8 @@ const secondary =
  * and never wider than it, so it stays clear of the detail panel; as the
  * column narrows, Add to project and Copy as Markdown move into the More
  * menu, then the count and the Slack button shorten. More is always there:
- * on a wide column it holds only Close. Clear and the Slack button always
- * stay visible.
+ * it holds mark read, snooze, mute and Close, and Add and Copy when the
+ * column is narrow. Clear and the Slack button always stay visible.
  */
 export function SelectionBar({
   count,
@@ -67,6 +74,10 @@ export function SelectionBar({
   onCopy,
   onClose,
   onClear,
+  onMarkRead,
+  onMarkAllRead,
+  onSnooze,
+  onMute,
 }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
@@ -89,6 +100,10 @@ export function SelectionBar({
 
   const layout = barLayout(width);
   const folded = layout !== "full";
+  const run = (action: () => void) => {
+    setMoreOpen(false);
+    action();
+  };
 
   useEffect(() => {
     if (!moreOpen) {
@@ -208,8 +223,8 @@ export function SelectionBar({
               label="More actions"
               detail={
                 folded
-                  ? "Add to project, Copy as Markdown, Close pull requests"
-                  : "Close pull requests"
+                  ? "Add to project, copy as Markdown, mark as read, snooze, mute, or close"
+                  : "Mark as read, snooze, mute, or close"
               }
               side="top"
             >
@@ -266,20 +281,21 @@ export function SelectionBar({
                     <div role="separator" className="my-1 h-px bg-slate-800" />
                   </>
                 )}
-                <button
-                  type="button"
-                  role="menuitem"
+                <MenuButton label="Mark as read" disabled={count === 0} onClick={() => run(onMarkRead)} />
+                <MenuButton label="Mark all as read" onClick={() => run(onMarkAllRead)} />
+                <MenuButton label="Snooze for 1 day" disabled={count === 0} onClick={() => run(() => onSnooze("day"))} />
+                <MenuButton label="Snooze for 1 week" disabled={count === 0} onClick={() => run(() => onSnooze("week"))} />
+                <MenuButton label="Snooze until update" disabled={count === 0} onClick={() => run(() => onSnooze("activity"))} />
+                <MenuButton label="Unsnooze" disabled={count === 0} onClick={() => run(() => onSnooze("off"))} />
+                <MenuButton label="Mute" disabled={count === 0} onClick={() => run(() => onMute(true))} />
+                <MenuButton label="Unmute" disabled={count === 0} onClick={() => run(() => onMute(false))} />
+                <div role="separator" className="my-1 h-px bg-slate-800" />
+                <MenuButton
+                  label={count === 1 ? "Close PR" : `Close ${count} PRs`}
                   disabled={count === 0}
-                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-rose-300 hover:bg-slate-800 focus:bg-slate-800 focus:outline-none disabled:text-slate-500"
-                  onClick={() => {
-                    setMoreOpen(false);
-                    onClose();
-                  }}
-                >
-                  <span className="flex-1">
-                    {count === 1 ? "Close PR" : `Close ${count} PRs`}
-                  </span>
-                </button>
+                  danger
+                  onClick={() => run(onClose)}
+                />
               </div>
             )}
             {folded && addMenuOpen && addMenu}
@@ -301,5 +317,29 @@ export function SelectionBar({
         </Tooltip>
       </div>
     </div>
+  );
+}
+
+function MenuButton({
+  label,
+  disabled,
+  danger,
+  onClick,
+}: {
+  label: string;
+  disabled?: boolean;
+  danger?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      disabled={disabled}
+      className={`flex w-full items-center gap-2 px-3 py-1.5 text-left hover:bg-slate-800 focus:bg-slate-800 focus:outline-none disabled:text-slate-500 ${danger ? "text-rose-300" : "text-slate-200"}`}
+      onClick={onClick}
+    >
+      <span className="flex-1">{label}</span>
+    </button>
   );
 }

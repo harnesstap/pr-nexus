@@ -13,7 +13,7 @@ import { GitHubRowButton, StarButton } from "./StarButton";
 import { ProjectInfo } from "./JiraChips";
 import { isTypingTarget, wantsRowEnter } from "./keys";
 import { copyText, prsToMarkdown } from "./markdown";
-import type { Toast } from "./model";
+import type { SnoozeChoice, Toast } from "./model";
 import { displayKey, hint, matchShortcut, shortcut, type ShortcutId } from "./shortcuts";
 import {
   ago,
@@ -102,6 +102,14 @@ interface Props {
   onBulkReview: (ids: number[]) => void;
   /** Opens the close confirmation for the active selection. */
   onClosePullRequests?: (rows: { id: number; repo: string; number: number; title: string }[]) => void;
+  /** Marks these pull requests read. */
+  onMarkRead?: (ids: number[]) => void;
+  /** Marks every id in the current filtered view read. */
+  onMarkAllRead?: (ids: number[]) => void;
+  /** Snoozes or unsnoozes these pull requests. */
+  onSnooze?: (ids: number[], choice: SnoozeChoice) => void;
+  /** Mutes or unmutes these pull requests. */
+  onMute?: (ids: number[], muted: boolean) => void;
   /** Shows a toast, e.g. after "Copy as Markdown". */
   onNotice?: (toast: Toast) => void;
   /** Draft flags changed in the app ahead of the reload, by PR id. */
@@ -196,6 +204,10 @@ export function PrList({
   onToggleStar,
   onBulkReview,
   onClosePullRequests,
+  onMarkRead,
+  onMarkAllRead,
+  onSnooze,
+  onMute,
   onNotice,
   draftPatches,
   removedIds,
@@ -600,7 +612,7 @@ export function PrList({
           )}
           {editing?.error && editing.where === "title" && <p className="text-xs text-rose-300">{editing.error}</p>}
           {titleProject && <ProjectInfo project={titleProject} onOpen={onOpen} className="mt-0.5 max-w-md" />}
-          <p className="text-sm text-slate-400">{page ? summaryText(page.summary, viewKey, syncProgress) : (syncProgress ?? "\u00a0")}</p>
+          <p className="text-sm text-slate-400">{page ? summaryText(page.summary, viewKey, syncProgress, view.filters.snoozed) : (syncProgress ?? "\u00a0")}</p>
         </div>
       </header>
       {/* One toolbar row for every list command, quick filter chips included: controls share one height and never
@@ -617,6 +629,12 @@ export function PrList({
             starred={view.filters.starred}
             starredCount={page ? new Set(list.entries.flatMap((entry) => (entry.row?.starred ? [entry.row.id] : []))).size : null}
             onStarredChange={(starred) => onViewChange({ ...view, filters: { ...view.filters, starred } })}
+            unread={view.filters.unread}
+            unreadCount={page?.attention ?? null}
+            onUnreadChange={(unread) => onViewChange({ ...view, filters: { ...view.filters, unread } })}
+            snoozed={view.filters.snoozed}
+            snoozedCount={page?.snoozed_count ?? null}
+            onSnoozedChange={(snoozed) => onViewChange({ ...view, filters: { ...view.filters, snoozed } })}
           />
           <RepoPicker
             options={page?.repos ?? []}
@@ -931,12 +949,15 @@ export function PrList({
             query={query}
             filtered={filtersActive(view.filters)}
             starredOnly={view.filters.starred}
+            snoozedOnly={view.filters.snoozed}
+            snoozedCount={page.snoozed_count}
             elsewhere={page.elsewhere}
             viewTitle={(key) => viewTitle(key, projects)}
             onClearSearch={() => setQuery("")}
             onResetFilters={() => onViewChange(resetFilters(view))}
             onShowView={onShowView}
             onShowFinished={() => onViewChange({ ...view, filters: { ...view.filters, archived: true } })}
+            onShowSnoozed={() => onViewChange({ ...view, filters: { ...view.filters, snoozed: true } })}
           />
         )}
       </div>
@@ -975,6 +996,10 @@ export function PrList({
             );
           }}
           onClear={() => setSelected(new Set())}
+          onMarkRead={() => onMarkRead?.(activeIds)}
+          onMarkAllRead={() => onMarkAllRead?.(page ? pageIds(page.sections) : [])}
+          onSnooze={(choice) => onSnooze?.(activeIds, choice)}
+          onMute={(muted) => onMute?.(activeIds, muted)}
         />
       )}
       {deleteFor?.projectId !== null && deleteFor && (
@@ -1030,26 +1055,51 @@ function EmptyList({
   query,
   filtered,
   starredOnly,
+  snoozedOnly,
+  snoozedCount,
   elsewhere,
   viewTitle,
   onClearSearch,
   onResetFilters,
   onShowView,
   onShowFinished,
+  onShowSnoozed,
 }: {
   title: string;
   inView: number;
   query: string;
   filtered: boolean;
   starredOnly: boolean;
+  snoozedOnly: boolean;
+  snoozedCount: number;
   elsewhere: Elsewhere | null;
   viewTitle: (viewKey: string) => string;
   onClearSearch: () => void;
   onResetFilters: () => void;
   onShowView?: (viewKey: string) => void;
   onShowFinished: () => void;
+  onShowSnoozed: () => void;
 }) {
   const searching = query.trim() !== "";
+  if (inView === 0 && !searching && snoozedCount > 0 && !snoozedOnly) {
+    return (
+      <div className="px-2 py-10 text-center text-sm text-slate-400">
+        <p className="font-medium text-slate-300">All pull requests in {title} are snoozed.</p>
+        <div className="mt-3 flex justify-center">
+          <button type="button" className="rounded border border-slate-700 px-3 py-1 hover:bg-slate-800" onClick={onShowSnoozed}>
+            Show snoozed
+          </button>
+        </div>
+      </div>
+    );
+  }
+  if (snoozedOnly && inView === 0 && !searching) {
+    return (
+      <div className="px-2 py-10 text-center text-sm text-slate-400">
+        <p className="font-medium text-slate-300">No snoozed pull requests in {title}.</p>
+      </div>
+    );
+  }
   if (inView === 0 && !searching) {
     return (
       <div className="px-2 py-10 text-center text-sm text-slate-400">
@@ -1289,9 +1339,21 @@ function RowCues({ row, now }: { row: ListRow; now: Date }) {
   );
 }
 
+function UnreadDot({ unread, className = "shrink-0" }: { unread: boolean; className?: string }) {
+  if (!unread) {
+    return null;
+  }
+  return (
+    <Tooltip label="Unread" detail="New commits, comments, reviews, or CI since you last opened this pull request" className={className}>
+      <span aria-label="Unread" className="inline-block h-1.5 w-1.5 rounded-full bg-violet-400" />
+    </Tooltip>
+  );
+}
+
 function TitleLine({ row, view, now, onDetails }: { row: ListRow; view: SavedView; now: Date; onDetails: (row: ListRow) => void }) {
   return (
     <div className="flex min-w-0 items-center gap-2 text-sm">
+      <UnreadDot unread={row.unread} />
       {view.show.numberTitle && (
         <Tooltip label="Readiness and code owners" shortcut="Enter" align="start" className="min-w-0">
           <button type="button" className="min-w-0 truncate text-left hover:underline" onClick={() => onDetails(row)}>
@@ -1366,6 +1428,7 @@ function CompactRow({
     <div className="flex min-w-0 flex-1 items-start gap-2">
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-start gap-1.5 text-sm leading-snug">
+          <UnreadDot unread={row.unread} className="mt-1.5 shrink-0" />
           {view.show.numberTitle && (
             <Tooltip label={fullTitle} align="start" className="min-w-0">
               <button type="button" className="line-clamp-2 min-w-0 text-left break-words hover:underline" onClick={() => onDetails(row)}>

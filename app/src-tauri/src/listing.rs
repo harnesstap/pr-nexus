@@ -42,6 +42,12 @@ pub struct FiltersDto {
     /// Only starred pull requests.
     #[serde(default)]
     pub starred: bool,
+    /// Only unread pull requests. Combines with the other filters.
+    #[serde(default)]
+    pub unread: bool,
+    /// Only snoozed pull requests. Off leaves them out of the list and its counts.
+    #[serde(default)]
+    pub snoozed: bool,
     /// One quick status filter from the bar above the list, or none.
     #[serde(default)]
     pub quick: Option<String>,
@@ -61,6 +67,8 @@ impl FiltersDto {
             || !self.slack.is_empty()
             || self.archived
             || self.starred
+            || self.unread
+            || self.snoozed
             || self.quick.is_some()
             || !self.github.trim().is_empty()
     }
@@ -164,6 +172,10 @@ pub struct PageDto {
     pub orgs: Vec<OrgCount>,
     pub repos: Vec<OrgCount>,
     pub quick: QuickCounts,
+    /// Unread rows in this snooze scope after the other filters, including the quick filter.
+    pub attention: usize,
+    /// Snoozed rows that pass the other filters. Stable when the Snoozed chip toggles.
+    pub snoozed_count: usize,
     /// Only while searching.
     pub elsewhere: Option<Elsewhere>,
 }
@@ -211,13 +223,18 @@ pub fn page(
         .as_ref()
         .map(|ids| ids.iter().copied().collect());
 
-    let scoped: Vec<&Item> = items
+    let viewed: Vec<&Item> = items
         .iter()
         .filter(|item| match &github {
             Some(ids) => ids.contains(&item.row.id),
             None => in_view(&item.row, &request.view_key, project_view),
         })
         .filter(|item| scope_row(&item.row, &live_ids, filters, request.github_any_state))
+        .collect();
+    let scoped: Vec<&Item> = viewed
+        .iter()
+        .copied()
+        .filter(|item| in_attention(&item.row, filters))
         .collect();
     let matched: Vec<&Item> = scoped
         .iter()
@@ -366,8 +383,61 @@ pub fn page(
             .collect(),
         repos: repo_choices(&scoped, filters, search, now_ms),
         quick,
+        attention: attention_count(&scoped, filters, search, now_ms),
+        snoozed_count: snoozed_count(&viewed, filters, search, now_ms),
         elsewhere,
     }
+}
+
+/// Snoozed rows leave the default list. The Snoozed chip shows only those rows.
+fn in_attention(row: &ListRow, filters: &FiltersDto) -> bool {
+    if filters.snoozed {
+        row.snoozed
+    } else {
+        !row.snoozed
+    }
+}
+
+fn attention_count(
+    scoped: &[&Item],
+    filters: &FiltersDto,
+    search: Option<&HashSet<i64>>,
+    now_ms: i64,
+) -> usize {
+    let mut cleared = filters.clone();
+    cleared.unread = false;
+    scoped
+        .iter()
+        .filter(|item| {
+            passes_menu(item, &cleared, now_ms)
+                && search.is_none_or(|ids| ids.contains(&item.row.id))
+                && filters
+                    .quick
+                    .as_deref()
+                    .is_none_or(|quick| quick_matches(&item.row, quick))
+                && item.row.unread
+        })
+        .count()
+}
+
+fn snoozed_count(
+    viewed: &[&Item],
+    filters: &FiltersDto,
+    search: Option<&HashSet<i64>>,
+    now_ms: i64,
+) -> usize {
+    viewed
+        .iter()
+        .filter(|item| {
+            item.row.snoozed
+                && passes_menu(item, filters, now_ms)
+                && search.is_none_or(|ids| ids.contains(&item.row.id))
+                && filters
+                    .quick
+                    .as_deref()
+                    .is_none_or(|quick| quick_matches(&item.row, quick))
+        })
+        .count()
 }
 
 /// The quick status filters (§8.2). Unknown keys match nothing.
@@ -474,6 +544,7 @@ fn elsewhere(
                 .iter()
                 .filter(|item| in_view(&item.row, key, None))
                 .filter(|item| scope_row(&item.row, live_ids, filters, false))
+                .filter(|item| in_attention(&item.row, filters))
                 .count(),
         })
         .collect();
@@ -488,6 +559,7 @@ fn elsewhere(
         .iter()
         .copied()
         .filter(|item| in_view(&item.row, view_key, project_view))
+        .filter(|item| in_attention(&item.row, filters))
         .collect();
     let filtered = here
         .iter()
@@ -579,6 +651,9 @@ fn repo_choices(
 fn passes_menu(item: &Item, filters: &FiltersDto, now_ms: i64) -> bool {
     let row = &item.row;
     if filters.starred && !row.starred {
+        return false;
+    }
+    if filters.unread && !row.unread {
         return false;
     }
     if !filters.orgs.is_empty()
@@ -848,13 +923,13 @@ const MINE_ATTENTION: &[NextAction] = &[
 
 const REVIEW_ATTENTION: &[NextAction] = &[NextAction::Review, NextAction::ReviewOverdue];
 
-/// Counts from the same [`next_action`] rules as the list. Hidden and closed
-/// rows are skipped. To review uses the reviewer rules; Mine uses the author
-/// rules, including a pull request that is both.
+/// Counts from the same [`next_action`] rules as the list. Hidden, closed,
+/// snoozed, and muted rows are skipped. To review uses the reviewer rules;
+/// Mine uses the author rules, including a pull request that is both.
 pub fn attention_counts(items: &[Item], now_ms: i64) -> AttentionCounts {
     let mut counts = AttentionCounts::default();
     for item in items {
-        if item.row.state != "open" || item.row.hidden {
+        if item.row.state != "open" || item.row.hidden || item.row.snoozed || item.row.muted {
             continue;
         }
         let author = item.row.involvement & AUTHOR != 0;
@@ -1154,6 +1229,9 @@ mod tests {
                 created_at: updated.to_rfc3339(),
                 hidden: false,
                 starred: false,
+                unread: false,
+                muted: false,
+                snoozed: false,
                 project_ids: projects.to_vec(),
                 readiness: "ready".into(),
                 readiness_notes: Vec::new(),
@@ -1198,6 +1276,45 @@ mod tests {
             github_ids: None,
             github_any_state: false,
         }
+    }
+
+    #[test]
+    fn snoozed_rows_leave_the_default_list_and_unread_combines() {
+        let quiet = item(1, &[], 1);
+        let mut fresh = item(2, &[], 2);
+        fresh.row.unread = true;
+        let mut asleep = item(3, &[], 3);
+        asleep.row.unread = true;
+        asleep.row.snoozed = true;
+        let mut hushed = item(4, &[], 4);
+        hushed.row.muted = true;
+        let items = vec![quiet, fresh, asleep, hushed];
+
+        let shown = page(&items, &[], &request("repository"), None);
+        let ids: Vec<i64> = row_ids(&shown).into_iter().flatten().collect();
+        assert_eq!(ids, vec![1, 2, 4]);
+        assert_eq!(shown.in_view, 3);
+        assert_eq!(shown.summary.open, 3);
+        assert_eq!(shown.attention, 1);
+        assert_eq!(shown.snoozed_count, 1);
+
+        let mut unread = request("repository");
+        unread.filters.unread = true;
+        let only: Vec<i64> = row_ids(&page(&items, &[], &unread, None))
+            .into_iter()
+            .flatten()
+            .collect();
+        assert_eq!(only, vec![2]);
+        assert_eq!(page(&items, &[], &unread, None).attention, 1);
+
+        let mut snoozed = request("repository");
+        snoozed.filters.snoozed = true;
+        let waiting = page(&items, &[], &snoozed, None);
+        let waiting_ids: Vec<i64> = row_ids(&waiting).into_iter().flatten().collect();
+        assert_eq!(waiting_ids, vec![3]);
+        assert_eq!(waiting.attention, 1);
+        assert_eq!(waiting.snoozed_count, 1);
+        assert!(waiting.summary.open == 1);
     }
 
     fn row_ids(page: &PageDto) -> Vec<Option<i64>> {
@@ -1726,8 +1843,17 @@ mod tests {
         closed.row.state = "closed".into();
         let mut draft = item(7, &[], 1);
         draft.row.is_draft = true;
+        let mut snoozed = item(8, &[], 1);
+        snoozed.row.snoozed = true;
+        snoozed.row.checks = "failure".into();
+        let mut muted = item(9, &[], 1);
+        muted.row.muted = true;
+        muted.row.involvement = REVIEW_REQUESTED;
+        muted.created_ms = at(1).timestamp_millis();
         let counts = attention_counts(
-            &[mine, waiting, review, both, hidden, closed, draft],
+            &[
+                mine, waiting, review, both, hidden, closed, draft, snoozed, muted,
+            ],
             now_ms,
         );
         assert_eq!(

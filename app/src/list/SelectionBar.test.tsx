@@ -15,6 +15,10 @@ function bar(
     onClear: vi.fn(),
     onClose: vi.fn(),
     onToggleAddMenu: vi.fn(),
+    onMarkRead: vi.fn(),
+    onMarkAllRead: vi.fn(),
+    onSnooze: vi.fn(),
+    onMute: vi.fn(),
   };
   render(
     <SelectionBar
@@ -58,8 +62,18 @@ test("a wide column keeps Add and Copy inline and puts Close in More", () => {
   ).toBeTruthy();
   fireEvent.click(within(region).getByRole("button", { name: "More actions" }));
   const items = within(region).getAllByRole("menuitem");
-  expect(items.map((item) => item.textContent)).toEqual(["Close 5 PRs"]);
-  fireEvent.click(items[0]);
+  expect(items.map((item) => item.textContent)).toEqual([
+    "Mark as read",
+    "Mark all as read",
+    "Snooze for 1 day",
+    "Snooze for 1 week",
+    "Snooze until update",
+    "Unsnooze",
+    "Mute",
+    "Unmute",
+    "Close 5 PRs",
+  ]);
+  fireEvent.click(within(region).getByRole("menuitem", { name: "Close 5 PRs" }));
   expect(onClose).toHaveBeenCalledTimes(1);
   expect(region.textContent).toContain("5 selected");
 });
@@ -72,6 +86,14 @@ test("the More menu holds the folded actions and fires them", () => {
   expect(items.map((item) => item.textContent)).toEqual([
     expect.stringContaining("Add to project"),
     expect.stringContaining("Copy as Markdown"),
+    "Mark as read",
+    "Mark all as read",
+    "Snooze for 1 day",
+    "Snooze for 1 week",
+    "Snooze until update",
+    "Unsnooze",
+    "Mute",
+    "Unmute",
     "Close 5 PRs",
   ]);
   expect(document.activeElement).toBe(items[0]);

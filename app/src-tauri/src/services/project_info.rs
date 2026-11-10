@@ -4,6 +4,7 @@
 //! front end (an MCP server).
 
 use chrono::Utc;
+use pr_nexus_core::attention::parse_choice;
 use pr_nexus_core::domain::{JiraLink, PrId, Project, ProjectId};
 use pr_nexus_core::{jira, settings};
 use serde::{Deserialize, Serialize};
@@ -178,4 +179,31 @@ pub fn set_pr_starred(state: &AppState, pr_id: i64, starred: bool) -> Result<boo
 
 pub fn is_pr_starred(state: &AppState, pr_id: i64) -> Result<bool, AppError> {
     Ok(state.store.is_pr_starred(PrId(pr_id))?)
+}
+
+fn pr_ids(ids: &[i64]) -> Vec<PrId> {
+    ids.iter().copied().map(PrId).collect()
+}
+
+/// Records the current activity as seen, so the unread dot clears.
+pub fn mark_prs_read(state: &AppState, ids: &[i64]) -> Result<(), AppError> {
+    state.store.mark_attention_read(&pr_ids(ids), Utc::now())?;
+    Ok(())
+}
+
+/// `day`, `week`, `activity`, or `off`.
+pub fn set_prs_snooze(state: &AppState, ids: &[i64], choice: &str) -> Result<(), AppError> {
+    let choice = parse_choice(choice)?;
+    state
+        .store
+        .set_attention_snooze(&pr_ids(ids), choice, Utc::now())?;
+    Ok(())
+}
+
+/// Hides unread for these pull requests until unmuted.
+pub fn set_prs_muted(state: &AppState, ids: &[i64], muted: bool) -> Result<(), AppError> {
+    state
+        .store
+        .set_attention_muted(&pr_ids(ids), muted, Utc::now())?;
+    Ok(())
 }

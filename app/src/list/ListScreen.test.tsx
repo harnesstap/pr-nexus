@@ -102,6 +102,9 @@ function api(projects: ProjectDto[], rows: SearchRow[] = []): Api {
     prNote: (prId: number) => Promise.resolve({ pr_id: prId, note: "", updated_at: null }),
     setPrNote: (prId: number, note: string) => Promise.resolve({ pr_id: prId, note, updated_at: null }),
     setPrStarred: (_id: number, starred: boolean) => Promise.resolve(starred),
+    markPrsRead: () => Promise.resolve(),
+    setPrsSnooze: () => Promise.resolve(),
+    setPrsMuted: () => Promise.resolve(),
     ...memoryProjectApi(rows, projects),
     loadViewState: () => Promise.resolve(null),
     saveViewState: () => Promise.resolve(),
@@ -257,6 +260,9 @@ function pr(id: number, title: string): SearchRow {
     pending_reviewers: [],
     slack: null,
     starred: false,
+    unread: false,
+    muted: false,
+    snoozed: false,
   };
 }
 
@@ -324,6 +330,9 @@ function listRow(id: number, title: string): SearchRow {
     pending_reviewers: [],
     slack: null,
     starred: false,
+    unread: false,
+    muted: false,
+    snoozed: false,
   };
 }
 

@@ -87,6 +87,10 @@ export interface PageDto {
   repos: { name: string; count: number }[];
   /** Rows per quick filter, over the menu filters and search but ignoring the quick filter. */
   quick: Record<QuickFilter, number>;
+  /** Unread rows in this snooze scope after the other filters, including the quick filter. */
+  attention: number;
+  /** Snoozed rows that pass the other filters. Stable when the Snoozed chip toggles. */
+  snoozed_count: number;
   /** Where else the search matches, so an empty result can point there. Null without a query. */
   elsewhere: Elsewhere | null;
 }
@@ -151,9 +155,14 @@ export function selectionCountText(selectable: number, finished: number, selecte
 }
 
 /** Header subtitle (§8.2) from backend counts: "5 open PRs across 2 projects · 1 unassigned". */
-export function summaryText(summary: PageSummary, viewKey: string, syncProgress: string | null = null): string {
-  const text = countsText(summary, viewKey);
+export function summaryText(summary: PageSummary, viewKey: string, syncProgress: string | null = null, snoozed = false): string {
+  const text = snoozed ? snoozedText(summary) : countsText(summary, viewKey);
   return syncProgress ? `${text} · ${syncProgress}` : text;
+}
+
+function snoozedText(summary: PageSummary): string {
+  const count = summary.open + summary.finished;
+  return `${count} snoozed ${count === 1 ? "PR" : "PRs"}`;
 }
 
 function countsText(summary: PageSummary, viewKey: string): string {
@@ -185,7 +194,8 @@ export function pageFromRows(rows: readonly SearchRow[], projects: readonly Proj
   const githubIds = request.github_ids ?? null;
   const anyState = request.github_any_state === true;
   const nav = githubIds ? rows.filter((row) => githubIds.includes(row.id)) : rowsForView(rows, request.view_key);
-  const scoped = nav.filter((row) => scopeRow(row, projects, filters, anyState));
+  const viewed = nav.filter((row) => scopeRow(row, projects, filters, anyState));
+  const scoped = viewed.filter((row) => inAttention(row, filters));
   const terms = normalizeSearch(request.query).split(/\s+/).filter((term) => term.length > 0);
   const matched = scoped.filter((row) => passesMenu(row, filters, now) && matchesTerms(row, projects, terms));
   const quick = Object.fromEntries(QUICK_FILTERS.map((key) => [key, matched.filter((row) => quickMatches(row, key)).length])) as Record<QuickFilter, number>;
@@ -251,8 +261,24 @@ export function pageFromRows(rows: readonly SearchRow[], projects: readonly Proj
     orgs: [...orgCounts.entries()].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)).map(([name, count]) => ({ name, count })),
     repos: repoChoices(scoped, filters, projects, terms, now),
     quick,
+    attention: attentionCount(scoped, filters, projects, terms, now),
+    snoozed_count: snoozedCount(viewed, filters, projects, terms, now),
     elsewhere: terms.length > 0 ? elsewhereFor(rows, projects, request, terms, now) : null,
   };
+}
+
+/** Snoozed rows leave the default list. The Snoozed chip shows only those rows. */
+function inAttention(row: ListRow, filters: Filters): boolean {
+  return filters.snoozed ? row.snoozed : !row.snoozed;
+}
+
+function attentionCount(scoped: readonly SearchRow[], filters: Filters, projects: readonly ProjectDto[], terms: readonly string[], now: Date): number {
+  const cleared = { ...filters, unread: false };
+  return scoped.filter((row) => passesMenu(row, cleared, now) && matchesTerms(row, projects, terms) && (!filters.quick || quickMatches(row, filters.quick)) && row.unread).length;
+}
+
+function snoozedCount(viewed: readonly SearchRow[], filters: Filters, projects: readonly ProjectDto[], terms: readonly string[], now: Date): number {
+  return viewed.filter((row) => row.snoozed && passesMenu(row, filters, now) && matchesTerms(row, projects, terms) && (!filters.quick || quickMatches(row, filters.quick))).length;
 }
 
 /** First casing wins. A selected repository missing from the view stays, at count 0. */
@@ -286,11 +312,11 @@ function elsewhereFor(rows: readonly SearchRow[], projects: readonly ProjectDto[
   const filters = request.filters;
   const found = rows.filter((row) => !row.hidden && matchesTerms(row, projects, terms));
   const passes = (row: SearchRow) => passesMenu(row, filters, now) && (!filters.quick || quickMatches(row, filters.quick));
-  const here = rowsForView(found, request.view_key);
+  const here = rowsForView(found, request.view_key).filter((row) => inAttention(row, filters));
   return {
     views: NAV_VIEWS.filter((key) => key !== request.view_key).map((key) => ({
       view_key: key,
-      count: rowsForView(found, key).filter((row) => scopeRow(row, projects, filters)).length,
+      count: rowsForView(found, key).filter((row) => scopeRow(row, projects, filters) && inAttention(row, filters)).length,
     })),
     filtered: here.filter((row) => scopeRow(row, projects, filters) && !passes(row)).length,
     finished: here.filter((row) => !scopeRow(row, projects, filters) && passes(row)).length,

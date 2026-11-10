@@ -46,6 +46,10 @@ interface Props {
   onToggleStar?: () => void;
   /** Opens another pull request in this panel, for example a stack neighbour. */
   onOpenPr?: (id: number) => void;
+  /** Snooze choices from the header menu. Absent keeps the menu to Close. */
+  onSnooze?: (choice: "day" | "week" | "activity" | "off") => void;
+  /** Mute or unmute from the header menu. */
+  onMute?: (muted: boolean) => void;
 }
 
 /** Panel width as a share of the window, remembered across launches. */
@@ -72,7 +76,7 @@ function storedWidth(): number {
  * The PR detail slide-over (§7.2): docked on the right while the list stays usable, so a
  * click or ↑/↓ in the list switches the PR. Esc or ✕ closes it.
  */
-export function DetailPanel({ api, row, version, onClose, onOpen, onRequestReview, onNotice, onDraftChange, onMerged, onClosed, slack, onToggleStar, onOpenPr }: Props) {
+export function DetailPanel({ api, row, version, onClose, onOpen, onRequestReview, onNotice, onDraftChange, onMerged, onClosed, slack, onToggleStar, onOpenPr, onSnooze, onMute }: Props) {
   const [overview, setOverview] = useState<PrOverview | null>(null);
   const [overviewError, setOverviewError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -270,6 +274,10 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
             <HeaderMenu
               canClose={overview?.viewer.can_close !== false}
               onClosePr={() => setConfirmClose(true)}
+              snoozed={row.snoozed}
+              muted={row.muted}
+              onSnooze={onSnooze}
+              onMute={onMute}
             />
           )}
           <CloseButton label="Close details" onClick={onClose} />
@@ -469,7 +477,21 @@ function DraftAction({ draft, busy, onToggle }: { draft: DraftView; busy: boolea
   );
 }
 
-function HeaderMenu({ canClose, onClosePr }: { canClose: boolean; onClosePr: () => void }) {
+function HeaderMenu({
+  canClose,
+  onClosePr,
+  snoozed,
+  muted,
+  onSnooze,
+  onMute,
+}: {
+  canClose: boolean;
+  onClosePr: () => void;
+  snoozed: boolean;
+  muted: boolean;
+  onSnooze?: (choice: "day" | "week" | "activity" | "off") => void;
+  onMute?: (muted: boolean) => void;
+}) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -494,6 +516,20 @@ function HeaderMenu({ canClose, onClosePr }: { canClose: boolean; onClosePr: () 
     setOpen(false);
     ref.current?.querySelector<HTMLElement>("[aria-haspopup]")?.focus();
   }
+  const pick = (label: string, action: () => void) => (
+    <button
+      key={label}
+      type="button"
+      role="menuitem"
+      className="flex w-full px-3 py-1.5 text-left text-slate-200 hover:bg-slate-800 focus:bg-slate-800 focus:outline-none"
+      onClick={() => {
+        setOpen(false);
+        action();
+      }}
+    >
+      {label}
+    </button>
+  );
   const item = (
     <button
       type="button"
@@ -508,9 +544,10 @@ function HeaderMenu({ canClose, onClosePr }: { canClose: boolean; onClosePr: () 
       Close PR
     </button>
   );
+  const attention = onSnooze || onMute;
   return (
     <div ref={ref} className="relative" onKeyDown={onMenuKey}>
-      <Tooltip label="More actions" detail="Close this pull request" align="end">
+      <Tooltip label="More actions" detail={attention ? "Snooze, mute, or close this pull request" : "Close this pull request"} align="end">
         <button
           type="button"
           aria-label="More actions"
@@ -526,8 +563,14 @@ function HeaderMenu({ canClose, onClosePr }: { canClose: boolean; onClosePr: () 
         <div
           role="menu"
           aria-label="More actions"
-          className="absolute right-0 top-full z-30 mt-1 min-w-40 rounded-md border border-slate-700 bg-slate-900 py-1 text-sm shadow-xl"
+          className="absolute right-0 top-full z-30 mt-1 min-w-44 whitespace-nowrap rounded-md border border-slate-700 bg-slate-900 py-1 text-sm shadow-xl"
         >
+          {onSnooze && pick("Snooze for 1 day", () => onSnooze("day"))}
+          {onSnooze && pick("Snooze for 1 week", () => onSnooze("week"))}
+          {onSnooze && pick("Snooze until update", () => onSnooze("activity"))}
+          {onSnooze && snoozed && pick("Unsnooze", () => onSnooze("off"))}
+          {onMute && pick(muted ? "Unmute" : "Mute", () => onMute(!muted))}
+          {attention && <div role="separator" className="my-1 h-px bg-slate-800" />}
           {canClose ? (
             item
           ) : (
