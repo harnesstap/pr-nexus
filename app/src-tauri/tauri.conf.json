@@ -4,7 +4,7 @@
   "identifier": "dev.pr-nexus",
   "build": {
     "beforeDevCommand": "bun run dev",
-    "devUrl": "http://127.0.0.1:1420",
+    "devUrl": "http://127.0.0.1:1477",
     "beforeBuildCommand": "bun run build",
     "frontendDist": "../dist"
   },
