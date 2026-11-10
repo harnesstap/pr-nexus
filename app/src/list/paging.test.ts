@@ -353,3 +353,20 @@ test("a GitHub query lists its ids in order, keeps merged rows, and still applie
   expect(openOnly.sections.flatMap((section) => section.ids)).toEqual([4, 1]);
   expect(pageFromRows(rows, [], request("to_review", defaultView())).sections.flatMap((section) => section.ids)).toEqual([]);
 });
+
+test("stack grouping keeps members in merge order and marks each row", () => {
+  const rows = [
+    row({ id: 1, title: "Bottom", number: 10, repo: "acme/api", head_ref: "feat-a", base_ref: "main" }),
+    row({ id: 3, title: "Top", number: 12, repo: "acme/api", head_ref: "feat-c", base_ref: "feat-b" }),
+    row({ id: 2, title: "Middle", number: 11, repo: "acme/api", head_ref: "feat-b", base_ref: "feat-a" }),
+    row({ id: 4, title: "Alone", repo: "acme/billing", head_ref: "feat-a", base_ref: "main" }),
+  ];
+  const view = { ...defaultView(), grouping: "stack" as const };
+  const page = pageFromRows(rows, [], request("all", view));
+  expect(page.sections.map((section) => section.title)).toEqual(["Stack · #10", "Not stacked"]);
+  expect(page.sections.map((section) => section.ids)).toEqual([[1, 2, 3], [4]]);
+  const middle = page.entries.find((entry) => entry.row?.id === 2)?.row;
+  expect(middle?.stack).toMatchObject({ position: 2, size: 3, blocking: false, parent_number: 10, parent_head: "feat-a" });
+  expect(page.entries.find((entry) => entry.row?.id === 1)?.row?.stack?.blocking).toBe(true);
+  expect(page.entries.find((entry) => entry.row?.id === 4)?.row?.stack).toBeNull();
+});

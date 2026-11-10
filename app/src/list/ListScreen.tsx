@@ -942,6 +942,14 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
                 onClosed={forgetOpenPrs}
                 slack={{ mentions: boot.slack_mentions, workspaces: boot.slack_workspaces }}
                 onToggleStar={() => void toggleStar(detailRow)}
+                onOpenPr={(id) => {
+                  void api.rowsById([id]).then((found) => {
+                    const next = found[0];
+                    if (next) {
+                      setDetailRow(next);
+                    }
+                  });
+                }}
               />
             )}
             {closeTargets && closeTargets.length > 0 && (

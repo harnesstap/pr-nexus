@@ -6,6 +6,7 @@ import { AlertIcon, CheckIcon, DeclinedIcon, GitHubIcon, MoreIcon } from "../ico
 import { isTypingTarget } from "../list/keys";
 import { ago } from "../list/model";
 import { SlackContextPanel } from "../list/SlackContextPanel";
+import { stackMergeNote } from "../list/stack";
 import { StarButton } from "../list/StarButton";
 import { Tooltip } from "../Tooltip";
 import { AutoMerge } from "./AutoMerge";
@@ -17,6 +18,7 @@ import { draftView, type DraftView } from "./draft";
 import { peopleGroups, PeopleRow, requiredSeats } from "./People";
 import { SlackLine } from "./SlackLine";
 import { StatCards, VerdictIcon } from "./StatCards";
+import { StackSection } from "./StackSection";
 import { behindLine, CONFLICTS_BLOCKER, DRAFT_BLOCKER, mergeVerdict, TONE_TEXT } from "./status";
 
 interface Props {
@@ -42,6 +44,8 @@ interface Props {
   slack?: { mentions: MentionsScope; workspaces?: SlackWorkspace[] };
   /** Stars or unstars this PR; the header shows the star when set. */
   onToggleStar?: () => void;
+  /** Opens another pull request in this panel, for example a stack neighbour. */
+  onOpenPr?: (id: number) => void;
 }
 
 /** Panel width as a share of the window, remembered across launches. */
@@ -68,7 +72,7 @@ function storedWidth(): number {
  * The PR detail slide-over (§7.2): docked on the right while the list stays usable, so a
  * click or ↑/↓ in the list switches the PR. Esc or ✕ closes it.
  */
-export function DetailPanel({ api, row, version, onClose, onOpen, onRequestReview, onNotice, onDraftChange, onMerged, onClosed, slack, onToggleStar }: Props) {
+export function DetailPanel({ api, row, version, onClose, onOpen, onRequestReview, onNotice, onDraftChange, onMerged, onClosed, slack, onToggleStar, onOpenPr }: Props) {
   const [overview, setOverview] = useState<PrOverview | null>(null);
   const [overviewError, setOverviewError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -310,7 +314,15 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
                 />
                 {overview.state === "open" && (
                   <div data-testid="merge-controls" className="flex flex-wrap items-center gap-2 border-t border-slate-800/70 pt-2">
-                    <AutoMerge api={api} prId={row.id} overview={overview} onChange={setOverview} onNotice={onNotice} onMerged={onMerged} />
+                    <AutoMerge
+                      api={api}
+                      prId={row.id}
+                      overview={overview}
+                      onChange={setOverview}
+                      onNotice={onNotice}
+                      onMerged={onMerged}
+                      hint={stackMergeNote(overview.base_ref, row.stack)}
+                    />
                     {!draft.draft && <DraftAction draft={draft} busy={flipping} onToggle={() => void toggleDraft()} />}
                   </div>
                 )}
@@ -323,6 +335,7 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
                 Showing the copy from {ago(overview.fetched_at, new Date())}; refreshing failed: {overviewError}
               </p>
             )}
+            <StackSection api={api} prId={row.id} onOpen={(id) => onOpenPr?.(id)} />
             <PeopleRow
               groups={peopleGroups(overview, detail ? requiredSeats(overview.reviewers, detail.mandatory_teams, detail.approved_teams) : [])}
               missing={overview.required_approvals === null ? 0 : Math.max(0, overview.required_approvals - overview.approvals)}

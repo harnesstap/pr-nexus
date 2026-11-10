@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { PageDto, PageRequest } from "./list/paging";
+import type { StackPlace } from "./list/stack";
 
 export type StepId = "choose_vcs" | "choose_chat" | "connect_vcs" | "choose_vcs_scope" | "connect_chat" | "chat_mapping" | "done";
 
@@ -522,6 +523,10 @@ export interface ListRow {
   repo: string;
   author_login: string;
   head_ref: string;
+  /** Base branch. Omitted only by older fixtures; the list always sends it. */
+  base_ref?: string;
+  /** Set when this pull request is in a stack of two or more. */
+  stack?: StackPlace | null;
   is_draft: boolean;
   state: string;
   checks: string;
@@ -695,6 +700,33 @@ export interface BranchStatus {
 export interface BranchUpdate {
   overview: PrOverview;
   branch: BranchStatus;
+}
+
+/** One pull request in a stack, bottom to top. */
+export interface StackMemberDto {
+  id: number;
+  number: number;
+  title: string;
+  url: string;
+  repo: string;
+  base_ref: string;
+  head_ref: string;
+  state: string;
+  is_draft: boolean;
+  checks: string;
+  review_decision: string | null;
+  mergeable: "mergeable" | "conflicting" | "unknown";
+  position: number;
+  depth: number;
+  blocking: boolean;
+}
+
+/** The stack containing one pull request. Null when it is not stacked. */
+export interface PrStack {
+  root_id: number;
+  root_number: number;
+  blocking_id: number;
+  members: StackMemberDto[];
 }
 
 /** The detail panel's at-a-glance facts (§7.2), cached per PR. */
@@ -1056,6 +1088,8 @@ export interface Api {
   prDetail(id: number): Promise<PrDetail>;
   /** The detail panel's cards. `refresh: false` reads only the cache (null when empty). */
   prOverview(id: number, refresh: boolean): Promise<PrOverview | null>;
+  /** The stack this pull request belongs to, from stored refs. Null when it is not stacked. */
+  prStack?(id: number): Promise<PrStack | null>;
   /** Turns auto-merge on with `method`, or off with null; returns the fresh overview. */
   setAutoMerge(id: number, method: MergeMethod | null): Promise<PrOverview>;
   /** Converts to a draft (`true`) or marks ready for review (`false`); returns the fresh overview. */
@@ -1211,6 +1245,7 @@ export const tauriApi: Api = {
   openExternal: (url) => invoke("open_external", { url }),
   prDetail: (id) => invoke("pr_detail", { id }),
   prOverview: (id, refresh) => invoke("pr_overview", { id, refresh }),
+  prStack: (id) => invoke("pr_stack", { id }),
   setAutoMerge: (id, method) => invoke("set_auto_merge", { id, method }),
   setPrDraft: (id, draft) => invoke("set_pr_draft", { id, draft }),
   mergePr: (id, method) => invoke("merge_pr", { id, method }),

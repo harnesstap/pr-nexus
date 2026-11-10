@@ -13,13 +13,15 @@ interface Props {
   onNotice: (text: string) => void;
   /** Called once GitHub confirmed the merge, after the notice. */
   onMerged?: () => void;
+  /** Grey note when this would merge into a parent that is still open. */
+  hint?: string | null;
 }
 
 /**
  * The merge controls: the method, a direct Merge (confirmed first) when it can
  * merge now, and GitHub auto-merge on or off (no confirmation).
  */
-export function AutoMerge({ api, prId, overview, onChange, onNotice, onMerged }: Props) {
+export function AutoMerge({ api, prId, overview, onChange, onNotice, onMerged, hint }: Props) {
   const view = autoMergeView(overview);
   const [method, setMethod] = useState<MergeMethod | null>(overview.auto_merge?.method ?? view.defaultMethod);
   const [busy, setBusy] = useState(false);
@@ -68,13 +70,18 @@ export function AutoMerge({ api, prId, overview, onChange, onNotice, onMerged }:
       </button>
     );
     return (
-      <div className="flex items-center gap-2" aria-label="Auto-merge">
+      <div className="flex flex-wrap items-center gap-2" aria-label="Auto-merge">
         <span className="flex items-center gap-1.5 rounded-full bg-teal-500/15 px-2 py-0.5 text-xs text-teal-200">
           <span className="h-1.5 w-1.5 rounded-full bg-teal-300" aria-hidden="true" />
           Auto-merge on · {METHOD_LABEL[overview.auto_merge.method]}
           {by ? ` · by @${by}` : ""}
         </span>
         {view.available ? button : <Disabled reason={view.reason}>{button}</Disabled>}
+        {hint && (
+          <p data-testid="stack-merge-note" className="basis-full text-xs text-slate-500">
+            {hint}
+          </p>
+        )}
       </div>
     );
   }
@@ -126,6 +133,11 @@ export function AutoMerge({ api, prId, overview, onChange, onNotice, onMerged }:
       <div aria-label="Auto-merge" className={view.available ? "" : "opacity-60"}>
         {view.available ? enable : <Disabled reason={view.reason}>{enable}</Disabled>}
       </div>
+      {hint && (
+        <p data-testid="stack-merge-note" className="basis-full text-xs text-slate-500">
+          {hint}
+        </p>
+      )}
     </div>
   );
 }

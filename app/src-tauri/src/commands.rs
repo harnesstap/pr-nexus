@@ -1,9 +1,9 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use chrono::Utc;
 use pr_nexus_core::domain::{
-    Account, AccountId, AccountKind, AuthMode, LinkSource, PrId, PullRequest, RequestedReviewer,
-    Reviewer, ViewState,
+    Account, AccountId, AccountKind, AuthMode, LinkSource, PrId, PrState, PullRequest,
+    RequestedReviewer, Reviewer, ViewState,
 };
 use pr_nexus_core::mapping::{self, ImportMode};
 use pr_nexus_core::onboarding::{self, OnboardingState};
@@ -13,6 +13,7 @@ use pr_nexus_core::providers::{SetupStep, VcsProvider};
 use pr_nexus_core::review_filter::RemoteReviewFilter;
 use pr_nexus_core::search;
 use pr_nexus_core::settings::{self, DEFAULT_REDIRECT};
+use pr_nexus_core::stack::{self, StackRef, StackState};
 use pr_nexus_core::store::ListFacts;
 use pr_nexus_core::sync::SyncKind;
 use pr_nexus_providers::github::{self, GithubClient};
@@ -215,6 +216,9 @@ pub struct ListRow {
     pub repo: String,
     pub author_login: String,
     pub head_ref: String,
+    pub base_ref: String,
+    /// Set when this pull request is in a stack of two or more.
+    pub stack: Option<pr_nexus_core::stack::StackPlace>,
     pub is_draft: bool,
     pub state: String,
     pub checks: String,
@@ -923,10 +927,12 @@ pub(crate) fn list_items(state: &AppState) -> Result<Vec<listing::Item>, AppErro
         .list_pull_requests_for_account_slim(account.id)?;
     let mut facts = state.store.list_facts(account.id)?;
     let workspaces = pr_nexus_core::review::route::workspaces(&state.store)?;
-    Ok(prs
+    let mut items: Vec<listing::Item> = prs
         .iter()
         .map(|pr| to_item(&mut facts, &workspaces, pr, flag))
-        .collect())
+        .collect();
+    listing::stamp_stacks(&mut items);
+    Ok(items)
 }
 
 /// Ids matching `query` in SQLite: title, description, repo, number, author,
@@ -1246,6 +1252,110 @@ pub struct PrDetail {
     pub rules_error: Option<String>,
     pub protection: String,
     pub from_cache: bool,
+}
+
+/// One member of a stack, in merge order, from pull requests already stored.
+#[derive(Serialize)]
+pub struct StackMemberDto {
+    pub id: i64,
+    pub number: u64,
+    pub title: String,
+    pub url: String,
+    pub repo: String,
+    pub base_ref: String,
+    pub head_ref: String,
+    pub state: String,
+    pub is_draft: bool,
+    pub checks: String,
+    pub review_decision: Option<String>,
+    pub mergeable: String,
+    pub position: u32,
+    pub depth: u32,
+    pub blocking: bool,
+}
+
+/// The stack containing one pull request, bottom to top. `None` when it is not stacked.
+#[derive(Serialize)]
+pub struct PrStackDto {
+    pub root_id: i64,
+    pub root_number: u64,
+    pub blocking_id: i64,
+    pub members: Vec<StackMemberDto>,
+}
+
+/// The chain for `id`, using stored head and base refs. No network call.
+#[tauri::command]
+pub async fn pr_stack(
+    app: State<'_, std::sync::Arc<AppState>>,
+    id: i64,
+) -> Result<Option<PrStackDto>, AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || stack_for(app.inner().as_ref(), id)).await
+}
+
+fn stack_for(state: &AppState, id: i64) -> Result<Option<PrStackDto>, AppError> {
+    // The same account the list is built from, so a chain member is a row the list can open.
+    let Some(account) = state::github_account(&state.store)? else {
+        return Ok(None);
+    };
+    let prs = state
+        .store
+        .list_pull_requests_for_account_slim(account.id)?;
+    let refs: Vec<StackRef> = prs
+        .iter()
+        .map(|pr| StackRef {
+            id: pr.id.0,
+            repo: format!("{}/{}", pr.repo.owner, pr.repo.name),
+            number: pr.number,
+            state: match pr.state {
+                PrState::Open => StackState::Open,
+                PrState::Closed => StackState::Closed,
+                PrState::Merged => StackState::Merged,
+            },
+            head_ref: pr.head_ref.clone(),
+            base_ref: pr.base_ref.clone(),
+        })
+        .collect();
+    let built = stack::index(&refs);
+    let Some(chain) = built.chain_of(id) else {
+        return Ok(None);
+    };
+    let by_id: HashMap<i64, &PullRequest> = prs.iter().map(|pr| (pr.id.0, pr)).collect();
+    let mut members = Vec::with_capacity(chain.member_ids.len());
+    for member in &chain.member_ids {
+        let Some(pr) = by_id.get(member) else {
+            continue;
+        };
+        let Some(place) = built.place(*member) else {
+            continue;
+        };
+        members.push(StackMemberDto {
+            id: pr.id.0,
+            number: pr.number,
+            title: pr.title.clone(),
+            url: pr.url.clone(),
+            repo: format!("{}/{}", pr.repo.owner, pr.repo.name),
+            base_ref: pr.base_ref.clone(),
+            head_ref: pr.head_ref.clone(),
+            state: pr.state.as_str().to_owned(),
+            is_draft: pr.is_draft,
+            checks: pr.checks.as_str().to_owned(),
+            review_decision: pr.review_decision.map(|value| value.as_str().to_owned()),
+            mergeable: pr.mergeable.as_str().to_owned(),
+            position: place.position,
+            depth: place.depth,
+            blocking: place.blocking,
+        });
+    }
+    Ok(Some(PrStackDto {
+        root_id: chain.root_id,
+        root_number: built
+            .place(chain.root_id)
+            .map(|place| place.root_number)
+            .unwrap_or(0),
+        blocking_id: chain.blocking_id,
+        members,
+    }))
 }
 
 /// Resolves ownership off the UI thread. Demo mode uses the fixture provider.
@@ -1614,6 +1724,8 @@ fn to_item(
             repo: format!("{}/{}", pr.repo.owner, pr.repo.name),
             author_login: pr.author_login.clone(),
             head_ref: pr.head_ref.clone(),
+            base_ref: pr.base_ref.clone(),
+            stack: None,
             is_draft: pr.is_draft,
             state: pr.state.as_str().to_owned(),
             checks: pr.checks.as_str().to_owned(),

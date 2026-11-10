@@ -196,6 +196,7 @@ pub fn run() {
             commands::save_view_state,
             commands::open_external,
             commands::pr_detail,
+            commands::pr_stack,
             commands::pr_overview,
             commands::set_auto_merge,
             commands::set_pr_draft,

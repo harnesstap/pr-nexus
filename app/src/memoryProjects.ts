@@ -1,5 +1,5 @@
 import type { Api, LinkOutcomeDto, ProjectDto, ProjectLinkDto, ProjectRuleDto, ReplacedLinkDto } from "./api";
-import { candidatesFromRows, pageFromRows, type SearchRow } from "./list/paging";
+import { candidatesFromRows, pageFromRows, rowWithStack, type SearchRow } from "./list/paging";
 
 type ProjectApi = Pick<
   Api,
@@ -74,12 +74,11 @@ export function memoryProjectApi(rows: SearchRow[], projects: ProjectDto[], rule
     sync();
     return reverted;
   };
-  const strip = ({ body: _body, ...row }: SearchRow) => (void _body, row);
   return {
     listPage: (request) => Promise.resolve(structuredClone(pageFromRows(rows, projects, request))),
     rowsById: (ids) => {
       const byId = new Map(rows.map((row) => [row.id, row]));
-      return Promise.resolve(ids.flatMap((id) => (byId.has(id) ? [strip({ ...byId.get(id)! })] : [])));
+      return Promise.resolve(ids.flatMap((id) => (byId.has(id) ? [rowWithStack(rows, { ...byId.get(id)! })] : [])));
     },
     linkCandidates: (projectId, query, limit) => {
       const linked = new Set(links.filter((link) => link.project_id === projectId && link.source !== "excluded").map((link) => link.pr_id));

@@ -1,0 +1,3 @@
+kind: Added
+body: Stacked pull requests show their place in the stack, can be grouped in merge order, and the detail panel lists the chain. Merging one whose parent is still open notes that it would land on the parent branch.
+time: 2026-11-10T01:40:00.000000Z

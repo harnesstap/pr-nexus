@@ -7,6 +7,7 @@ import "./index.css";
 import { ListScreen } from "./list/ListScreen";
 import { memoryProjectApi } from "./memoryProjects";
 import type { SearchRow } from "./list/paging";
+import { chainOf, stackIndex } from "./list/stack";
 import { variedRows } from "./previewRows";
 import { Wizard } from "./wizard/Wizard";
 import { recordSeenVersion } from "./changelog/changelog";
@@ -118,6 +119,139 @@ function row(partial: Partial<SearchRow> & Pick<SearchRow, "id" | "title" | "num
   };
 }
 
+/** A stack of four in acme/widgets, plus one pull request that is not stacked. */
+function stackRows(make: typeof row): SearchRow[] {
+  return [
+    make({
+      id: 1,
+      number: 201,
+      title: "Add a retry budget",
+      head_ref: "feat/retry",
+      base_ref: "main",
+      checks: "success",
+      review_decision: "approved",
+    }),
+    make({
+      id: 2,
+      number: 202,
+      title: "Count retries in the budget",
+      head_ref: "feat/retry-budget",
+      base_ref: "feat/retry",
+      checks: "success",
+      review_decision: "approved",
+    }),
+    make({
+      id: 3,
+      number: 203,
+      title: "Export retry metrics",
+      head_ref: "feat/retry-metrics",
+      base_ref: "feat/retry-budget",
+      checks: "pending",
+      review_decision: "review_required",
+    }),
+    make({
+      id: 4,
+      number: 204,
+      title: "Log each retry",
+      head_ref: "feat/retry-log",
+      base_ref: "feat/retry",
+      checks: "failure",
+      review_decision: "changes_requested",
+    }),
+    make({
+      id: 5,
+      number: 23,
+      title: "Fix tax calculation",
+      repo: "acme/billing",
+      head_ref: "fix/tax",
+      base_ref: "main",
+      project_ids: [],
+      checks: "success",
+      review_decision: "review_required",
+    }),
+  ];
+}
+
+function reviewDecision(value: string | null): "approved" | "changes_requested" | "review_required" | null {
+  switch (value) {
+    case "approved":
+    case "changes_requested":
+    case "review_required":
+    case null:
+      return value;
+    default:
+      return null;
+  }
+}
+
+/** Detail cards that match the stack row, so the chain and the merge note agree. */
+function stackOverview(item: SearchRow) {
+  const decision = reviewDecision(item.review_decision);
+  const passing = item.checks === "success";
+  const ready = passing && decision === "approved" && !item.conflicts;
+  const checkState = passing ? "passed" : item.checks === "pending" || item.checks === "expected" ? "pending" : "failed";
+  return mockOverview({
+    base_ref: item.base_ref ?? "main",
+    head_ref: item.head_ref,
+    mergeable: item.conflicts ? "conflicting" : "mergeable",
+    merge_state: ready ? "clean" : "blocked",
+    review_decision: decision,
+    checks: [{ name: "build", state: checkState, url: null, required: true }],
+    checks_total: 1,
+    approvals: decision === "approved" ? 1 : 0,
+    required_approvals: 1,
+  });
+}
+
+function previewStack(list: readonly SearchRow[], id: number) {
+  const built = stackIndex(
+    list.map((item) => ({
+      id: item.id,
+      repo: item.repo,
+      number: item.number,
+      state: item.state === "merged" ? "merged" : item.state === "closed" ? "closed" : "open",
+      head_ref: item.head_ref,
+      base_ref: item.base_ref ?? "",
+    })),
+  );
+  const chain = chainOf(built, id);
+  if (!chain) {
+    return null;
+  }
+  const members = chain.member_ids.flatMap((memberId) => {
+    const item = list.find((entry) => entry.id === memberId);
+    const place = built.places.get(memberId);
+    if (!item || !place) {
+      return [];
+    }
+    return [
+      {
+        id: item.id,
+        number: item.number,
+        title: item.title,
+        url: item.url,
+        repo: item.repo,
+        base_ref: item.base_ref ?? "",
+        head_ref: item.head_ref,
+        state: item.state,
+        is_draft: item.is_draft,
+        checks: item.checks,
+        review_decision: item.review_decision,
+        mergeable: item.conflicts ? ("conflicting" as const) : ("mergeable" as const),
+        position: place.position,
+        depth: place.depth,
+        blocking: place.blocking,
+      },
+    ];
+  });
+  return {
+    root_id: chain.root_id,
+    root_number: built.places.get(chain.root_id)?.root_number ?? 0,
+    blocking_id: chain.blocking_id,
+    members,
+  };
+}
+
 const rows: SearchRow[] = [
   row({
     id: 1,
@@ -189,8 +323,12 @@ const rows: SearchRow[] = [
 ];
 
 // `?rows=varied` swaps in one PR per next action (§8.2) for the badges and the "Needs attention" sort.
-if (new URLSearchParams(window.location.search).get("rows") === "varied") {
+// `?rows=stack` shows one stack (with a branch) grouped in merge order.
+const previewParams = new URLSearchParams(window.location.search);
+if (previewParams.get("rows") === "varied") {
   rows.splice(0, rows.length, ...variedRows(row));
+} else if (previewParams.get("rows") === "stack") {
+  rows.splice(0, rows.length, ...stackRows(row));
 }
 
 /** Demo plan for the bulk Slack dialog: one card per acme channel, or one card for "All to one channel". */
@@ -322,11 +460,25 @@ const api: Api = {
   setPrNote: (prId: number, note: string) => Promise.resolve({ pr_id: prId, note, updated_at: null }),
   setPrStarred: (_id: number, starred: boolean) => Promise.resolve(starred),
   ...memoryProjectApi(rows, projects, [{ id: 1, project_id: 1, kind: "ticket_key_in_branch", pattern: "AUTH-*", priority: 10 }]),
-  loadViewState: () => Promise.resolve(JSON.stringify({ show: { notRequested: true } })),
+  loadViewState: () =>
+    Promise.resolve(
+      JSON.stringify(
+        previewParams.get("rows") === "stack"
+          ? { grouping: "stack", show: { notRequested: true } }
+          : { show: { notRequested: true } },
+      ),
+    ),
   saveViewState: () => Promise.resolve(),
   openExternal: () => Promise.resolve(),
   prDetail: (id) => Promise.resolve(mockDetail(id)),
-  prOverview: () => Promise.resolve(mockOverview()),
+  prOverview: (id) => {
+    const item = rows.find((entry) => entry.id === id);
+    if (previewParams.get("rows") === "stack" && item) {
+      return Promise.resolve(stackOverview(item));
+    }
+    return Promise.resolve(mockOverview(item?.base_ref ? { base_ref: item.base_ref, head_ref: item.head_ref } : {}));
+  },
+  prStack: (id) => Promise.resolve(previewStack(rows, id)),
   setAutoMerge: (_id, method) =>
     Promise.resolve(mockOverview(method ? { auto_merge: { method, enabled_by: "ada", enabled_at: null } } : {})),
   mergePr: () => Promise.resolve(mockOverview({ state: "merged", merge_state: "unknown" })),
@@ -334,7 +486,7 @@ const api: Api = {
   setPrDraft: (_id, draft) => Promise.resolve(mockOverview({ is_draft: draft, merge_state: draft ? "draft" : "blocked" })),
   prBranchStatus: () => Promise.resolve(mockBranch({ state: "behind", behind_by: 3 })),
   updatePrBranch: () => Promise.resolve({ overview: mockOverview(), branch: mockBranch() }),
-  prSlackContext: () => Promise.resolve(previewThreads),
+  prSlackContext: () => Promise.resolve(previewParams.get("rows") === "stack" ? [] : previewThreads),
   prSlackMentions: () => Promise.resolve([]),
   saveSlackMentions: () => Promise.resolve(),
   ...fakeSettingsApi(),
