@@ -3,6 +3,7 @@
 
 pub mod branch;
 pub mod bulk;
+pub mod bumps;
 pub mod project_info;
 pub mod projects;
 pub mod prs;

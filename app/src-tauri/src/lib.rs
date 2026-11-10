@@ -1,5 +1,6 @@
 mod blocking;
 mod bulk;
+mod bumps;
 mod commands;
 mod context;
 mod demo;
@@ -133,6 +134,9 @@ pub fn run() {
             slack::send_review,
             bulk::bulk_preview,
             bulk::send_bulk,
+            bumps::due_bumps,
+            bumps::snooze_bump,
+            bumps::skip_bump,
             project_info::set_project_description,
             project_info::add_jira_link,
             project_info::remove_jira_link,

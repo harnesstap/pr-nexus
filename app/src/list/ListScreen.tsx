@@ -4,7 +4,7 @@ import type { Api, Bootstrap, ListRow, ProjectDto, RemoteReviewFilter, ReplacedL
 import { CloseDialog, type CloseTarget } from "../detail/CloseDialog";
 import { errorMessage } from "../api";
 import { parseOpenRequest } from "./openRequest";
-import { ClockIcon, CloseIcon, FolderIcon, HomeIcon, LogoIcon, PlusIcon, RefreshIcon } from "../icons";
+import { ClockIcon, CloseIcon, FolderIcon, HomeIcon, LogoIcon, PlusIcon, RefreshIcon, SlackLogo } from "../icons";
 import { Tooltip } from "../Tooltip";
 import { OrgOption } from "../orgs";
 import {
@@ -57,6 +57,7 @@ import { UpdateIndicator } from "./UpdateIndicator";
 import { AccountMenu } from "./AccountMenu";
 import { showMappingHint } from "./hints";
 import { plainText } from "../textInput";
+import { BumpQueue } from "./BumpQueue";
 import { WhatsNew } from "../changelog/WhatsNew";
 
 interface Props {
@@ -69,13 +70,17 @@ interface Props {
   onSwitchProfile?: (id: string) => void;
   /** Account menu → Add a profile. */
   onAddProfile?: () => void;
+  /** First view, for the preview harness. */
+  startView?: string;
 }
 
-export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, onAddProfile }: Props) {
+export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, onAddProfile, startView = "mine" }: Props) {
   /** Bumped whenever stored rows may have changed; the list re-reads in place. */
   const [version, setVersion] = useState(0);
   const [projects, setProjects] = useState<ProjectDto[]>([]);
-  const [viewKey, setViewKey] = useState("mine");
+  const [viewKey, setViewKey] = useState(startView);
+  const [dueCount, setDueCount] = useState(0);
+  const [dueTick, setDueTick] = useState(0);
   const [views, setViews] = useState<Record<string, SavedView>>({});
   const [loaded, setLoaded] = useState<string | null>(null);
   const [sync, setSync] = useState(boot.sync);
@@ -412,6 +417,31 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
   }, [api, attempt]);
 
   useEffect(() => {
+    if (!api.dueBumps) {
+      return;
+    }
+    let cancel = false;
+    void api.dueBumps().then(
+      (items) => {
+        if (!cancel) {
+          setDueCount(items.length);
+        }
+      },
+      () => {
+        if (!cancel) {
+          setDueCount(0);
+        }
+      },
+    );
+    return () => {
+      cancel = true;
+    };
+  }, [api, dueTick, version]);
+
+  useEffect(() => {
+    if (viewKey === "bumps_due") {
+      return;
+    }
     let cancel = false;
     void api.loadViewState(viewKey).then((json) => {
       if (cancel) {
@@ -426,7 +456,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
   }, [api, viewKey]);
 
   useEffect(() => {
-    if (loaded !== viewKey) {
+    if (viewKey === "bumps_due" || loaded !== viewKey) {
       return;
     }
     const timer = window.setTimeout(() => {
@@ -662,6 +692,9 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
           <NavButton current={viewKey} id="to_review" icon={<ClockIcon />} onSelect={setViewKey}>
             To review
           </NavButton>
+          <NavButton current={viewKey} id="bumps_due" icon={<SlackLogo variant="mono" size={16} />} badge={dueCount} onSelect={setViewKey}>
+            Bumps due
+          </NavButton>
         </nav>
         <section aria-labelledby="projects-heading" className="mt-4 flex min-h-0 flex-1 flex-col px-2 text-sm">
           <div className="flex items-center justify-between px-2 pb-1">
@@ -842,6 +875,8 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
               }
             />
           </section>
+        ) : viewKey === "bumps_due" ? (
+          <BumpQueue api={api} onOpen={(url) => void api.openExternal(url)} onNotice={setNotice} onChanged={() => setDueTick((value) => value + 1)} />
         ) : needsOrgs ? (
           <section className="max-w-xl px-6 py-8">{orgPicker()}</section>
         ) : listState.phase === "loading" ? (
@@ -1067,6 +1102,7 @@ function NavButton({
   onDropPrs,
   projectId,
   flash = false,
+  badge = 0,
   children,
 }: {
   current: string;
@@ -1079,6 +1115,8 @@ function NavButton({
   projectId?: number;
   /** Briefly highlighted after PRs were added to the project. */
   flash?: boolean;
+  /** A count shown at the end of the row. Zero stays hidden. */
+  badge?: number;
   children: string;
 }) {
   const [over, setOver] = useState(false);
@@ -1116,7 +1154,8 @@ function NavButton({
       }
     >
       <span className="flex w-4 shrink-0 justify-center text-slate-400">{icon}</span>
-      <span className="truncate">{children}</span>
+      <span className="min-w-0 flex-1 truncate">{children}</span>
+      {badge > 0 && <span className="rounded bg-slate-800 px-1.5 text-xs tabular-nums text-slate-200">{badge}</span>}
     </button>
   );
 }

@@ -185,6 +185,10 @@ export interface Preferences {
   notify_approved: boolean;
   notify_changes_requested: boolean;
   notify_comment: boolean;
+  /** Hours after the last request or bump, with no review, before a bump is due. */
+  bump_due_hours: number;
+  /** Saturday and Sunday (UTC) do not count toward `bump_due_hours`. */
+  bump_due_working_days: boolean;
 }
 
 /** One editable Slack review-request template (§7.6). */
@@ -408,6 +412,8 @@ export interface BulkRequest {
   channel_moves?: ChannelMove[];
   /** Cards left out, by the channel they were routed to. */
   skipped_channels?: ChannelKey[];
+  /** Appended to each message that includes the pull request. Blank notes are ignored. */
+  notes?: { pr_id: number; text: string }[];
 }
 
 export interface GroupChannelChoice {
@@ -493,6 +499,17 @@ export interface BulkOutcome {
   outcome: "sent" | "skipped" | "failed";
   detail: string;
   permalink: string | null;
+}
+
+/** A pull request whose scheduled bump is due. The channel comes from the bulk preview. */
+export interface DueBump {
+  pr_id: number;
+  number: number;
+  title: string;
+  repo: string;
+  asked_at: string;
+  quiet_hours: number;
+  bump_count: number;
 }
 
 export interface BulkResult {
@@ -1023,6 +1040,12 @@ export interface Api {
   sendReview(prId: number, target: ReviewTarget, teams: string[], note?: string): Promise<SlackIndicator>;
   bulkPreview(request: BulkRequest): Promise<BulkPreview>;
   sendBulk(request: BulkRequest, fingerprints: string[]): Promise<BulkResult>;
+  /** Pull requests whose bump is due. Does not post. */
+  dueBumps?(): Promise<DueBump[]>;
+  /** Hide one due bump for 24 hours. Does not post. */
+  snoozeBump?(prId: number): Promise<DueBump[]>;
+  /** Hide one due bump until a newer request or bump. Does not post. */
+  skipBump?(prId: number): Promise<DueBump[]>;
   importMapping(csv: string, workspace: string): Promise<{ rows: number }>;
   /** Native open dialog filtered to .csv (with All files); null when cancelled. */
   pickMappingFile(): Promise<MappingFile | null>;
@@ -1191,6 +1214,9 @@ export const tauriApi: Api = {
   sendReview: (prId, target, teams, note) => invoke("send_review", { prId, target, teams, note: note?.trim() ? note : null }),
   bulkPreview: (request) => invoke("bulk_preview", { request }),
   sendBulk: (request, fingerprints) => invoke("send_bulk", { request, fingerprints }),
+  dueBumps: () => invoke("due_bumps"),
+  snoozeBump: (prId) => invoke("snooze_bump", { prId }),
+  skipBump: (prId) => invoke("skip_bump", { prId }),
   importMapping: (csv, workspace) => invoke("import_mapping", { csv, workspace }),
   pickMappingFile: async () => {
     const path = await open({
