@@ -158,6 +158,12 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     keep_closed_days: 14,
     live_updates: true,
     jira_base_url: jiraBaseUrl,
+    notify_enabled: true,
+    notify_review_requested: true,
+    notify_ci_red: true,
+    notify_approved: true,
+    notify_changes_requested: true,
+    notify_comment: false,
   }),
   set_pr_starred: (args) => {
     const row = rows.find((item) => item.id === args.prId);

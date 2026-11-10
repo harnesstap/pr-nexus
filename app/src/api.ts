@@ -177,6 +177,13 @@ export interface Preferences {
   live_updates: boolean;
   /** JIRA site, e.g. `https://acme-labs.atlassian.net`; turns bare keys into links. Empty: none. */
   jira_base_url: string;
+  /** Desktop notifications (§8.5). New review threads stay off until turned on. */
+  notify_enabled: boolean;
+  notify_review_requested: boolean;
+  notify_ci_red: boolean;
+  notify_approved: boolean;
+  notify_changes_requested: boolean;
+  notify_comment: boolean;
 }
 
 /** One editable Slack review-request template (§7.6). */
@@ -883,6 +890,9 @@ export interface McpActivityEntry {
 /** Emitted after an agent changed local data, so the list reloads at once. */
 export const DATA_CHANGED_EVENT = "pr-nexus://data-changed";
 
+/** A tray menu item or a notification click. `pr_id` is set for a single pull request. */
+export const OPEN_EVENT = "pr-nexus://open";
+
 /** The Stats view's periods, in days. */
 export type StatsPeriod = 7 | 30 | 90;
 
@@ -1099,6 +1109,12 @@ export interface Api {
   decideMcpSlackProposal(id: number, approve: boolean): Promise<SlackProposal>;
   /** Calls `onChange` after an agent write; returns the unsubscribe. Absent in fakes without a backend. */
   onDataChanged?(onChange: () => void): () => void;
+  /** `granted`, `denied` or `prompt`. Absent in fakes that never ask. */
+  notificationPermission?(): Promise<string>;
+  /** Asks the operating system, when it still can. A denial is not an error. */
+  requestNotificationPermission?(): Promise<string>;
+  /** A notification or tray click. The payload is whatever the shell sent. */
+  onOpenRequest?(onOpen: (payload: unknown) => void): () => void;
 }
 
 export const tauriApi: Api = {
@@ -1228,6 +1244,12 @@ export const tauriApi: Api = {
   decideMcpSlackProposal: (id, approve) => invoke("decide_mcp_slack_proposal", { id, approve }),
   onDataChanged: (onChange) => {
     const stop = listen(DATA_CHANGED_EVENT, () => onChange());
+    return () => void stop.then((unlisten) => unlisten());
+  },
+  notificationPermission: () => invoke("notification_permission"),
+  requestNotificationPermission: () => invoke("request_notification_permission"),
+  onOpenRequest: (onOpen) => {
+    const stop = listen(OPEN_EVENT, (event) => onOpen(event.payload));
     return () => void stop.then((unlisten) => unlisten());
   },
 };

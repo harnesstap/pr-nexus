@@ -822,6 +822,47 @@ pub fn next_action(item: &Item, view_key: &str, now_ms: i64) -> NextAction {
     }
 }
 
+/// Open pull requests that need the user (§8.5). A row counts once in
+/// `badge` even when it is both authored and waiting on the user's review.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct AttentionCounts {
+    pub to_review: usize,
+    pub mine: usize,
+    pub badge: usize,
+}
+
+const MINE_ATTENTION: &[NextAction] = &[
+    NextAction::Conflicts,
+    NextAction::CiFailing,
+    NextAction::ChangesRequested,
+    NextAction::ReadyToMerge,
+    NextAction::RequestReview,
+    NextAction::Nudge,
+];
+
+const REVIEW_ATTENTION: &[NextAction] = &[NextAction::Review, NextAction::ReviewOverdue];
+
+/// Counts from the same [`next_action`] rules as the list. Hidden and closed
+/// rows are skipped. To review uses the reviewer rules; Mine uses the author
+/// rules, including a pull request that is both.
+pub fn attention_counts(items: &[Item], now_ms: i64) -> AttentionCounts {
+    let mut counts = AttentionCounts::default();
+    for item in items {
+        if item.row.state != "open" || item.row.hidden {
+            continue;
+        }
+        let author = item.row.involvement & AUTHOR != 0;
+        let requested = item.row.involvement & REVIEW_REQUESTED != 0;
+        let review =
+            requested && REVIEW_ATTENTION.contains(&next_action(item, "to_review", now_ms));
+        let mine = author && MINE_ATTENTION.contains(&next_action(item, "mine", now_ms));
+        counts.to_review += usize::from(review);
+        counts.mine += usize::from(mine);
+        counts.badge += usize::from(review || mine);
+    }
+    counts
+}
+
 /// Mirrors `attentionRank` in `nextAction.ts`.
 pub fn attention_rank(item: &Item, view_key: &str, now_ms: i64) -> i64 {
     let since = waiting_since(item).unwrap_or(item.created_ms);
@@ -1559,6 +1600,38 @@ mod tests {
             NextAction::Nudge,
         );
         check(&|entry| entry.row.state = "merged".into(), NextAction::Done);
+    }
+
+    #[test]
+    fn attention_counts_badge_each_open_pr_once() {
+        let now_ms = now().timestamp_millis();
+        let mine = item(1, &[], 1);
+        let mut waiting = item(2, &[], 1);
+        waiting.row.reviewers_requested = true;
+        let mut review = item(3, &[], 1);
+        review.row.involvement = REVIEW_REQUESTED;
+        review.created_ms = at(1).timestamp_millis();
+        let mut both = item(4, &[], 1);
+        both.row.involvement = AUTHOR | REVIEW_REQUESTED;
+        both.row.checks = "failure".into();
+        let mut hidden = item(5, &[], 1);
+        hidden.row.hidden = true;
+        let mut closed = item(6, &[], 1);
+        closed.row.state = "closed".into();
+        let mut draft = item(7, &[], 1);
+        draft.row.is_draft = true;
+        let counts = attention_counts(
+            &[mine, waiting, review, both, hidden, closed, draft],
+            now_ms,
+        );
+        assert_eq!(
+            counts,
+            AttentionCounts {
+                to_review: 1,
+                mine: 2,
+                badge: 3,
+            }
+        );
     }
 
     #[test]

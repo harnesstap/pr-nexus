@@ -172,6 +172,8 @@ pub struct AppState {
     pub branch_cache: pr_nexus_core::branch::BranchCache,
     /// `PR_NEXUS_DEMO=1`: seeded local data only, never talk to GitHub.
     pub demo: bool,
+    /// Last sync snapshot, so desktop notifications fire only on changes (§8.5).
+    pub notifier: Mutex<pr_nexus_core::notify::Watcher>,
 }
 
 impl AppState {
@@ -221,6 +223,7 @@ impl AppState {
             live: crate::live::LiveShared::default(),
             branch_cache: pr_nexus_core::branch::BranchCache::default(),
             demo,
+            notifier: Mutex::new(pr_nexus_core::notify::Watcher::default()),
         })
     }
 
@@ -273,6 +276,11 @@ impl AppState {
         *self.device.lock().unwrap_or_else(PoisonError::into_inner) = None;
         self.branch_cache.clear();
         self.reviews_active.store(false, Ordering::Relaxed);
+        self.notifier
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .reset();
+        crate::presence::refresh_counts(self);
         {
             let mut status = lock_status(self);
             let revision = status.revision + 1;
@@ -513,6 +521,7 @@ fn lock_status(state: &AppState) -> std::sync::MutexGuard<'_, SyncStatus> {
 fn sync_once(state: &AppState, kind: SyncKind) -> Result<sync::SyncReport, AppError> {
     if state.demo {
         *state.sync.lock().expect("sync status") = SyncStatus::demo();
+        crate::presence::refresh_counts(state);
         return Ok(sync::SyncReport {
             message: "Demo data · sync disabled".into(),
             ..sync::SyncReport::default()
@@ -537,6 +546,7 @@ fn sync_once(state: &AppState, kind: SyncKind) -> Result<sync::SyncReport, AppEr
     })?;
     // Then review requests, once this session asked for them (§6). The
     // list stays usable: their progress shows in the To review tab only.
+    let mut include_reviews = false;
     if !report.paused && state.reviews_active.load(Ordering::Relaxed) {
         let (window, known) = {
             let status = lock_status(state);
@@ -545,7 +555,14 @@ fn sync_once(state: &AppState, kind: SyncKind) -> Result<sync::SyncReport, AppEr
         // The first pass of a session reads the window in full, for its
         // total; later ones only what changed.
         let kind = if known { kind } else { SyncKind::Full };
-        let _ = review_pass(state, kind, sync::BucketPlan::reviews(Some(window)));
+        include_reviews = review_pass(state, kind, sync::BucketPlan::reviews(Some(window))).is_ok();
+    }
+    // A paused pass can be partial, so it only refreshes the badge. The
+    // first successful pass of a launch is the baseline and stays quiet.
+    if report.paused {
+        crate::presence::refresh_counts(state);
+    } else {
+        crate::presence::note_sync(state, include_reviews);
     }
     Ok(report)
 }

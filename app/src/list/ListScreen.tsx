@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import type { Api, Bootstrap, ListRow, ProjectDto, RemoteReviewFilter, ReplacedLinkDto } from "../api";
 import { CloseDialog, type CloseTarget } from "../detail/CloseDialog";
 import { errorMessage } from "../api";
+import { parseOpenRequest } from "./openRequest";
 import { ClockIcon, CloseIcon, FolderIcon, HomeIcon, LogoIcon, PlusIcon, RefreshIcon } from "../icons";
 import { Tooltip } from "../Tooltip";
 import { OrgOption } from "../orgs";
@@ -356,6 +357,29 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
       stop?.();
     };
   }, [api, noteRevision]);
+
+  useEffect(() => {
+    const stop = api.onOpenRequest?.((payload) => {
+      const request = parseOpenRequest(payload);
+      if (!request) {
+        return;
+      }
+      setViewKey(request.view);
+      if (request.prId == null) {
+        return;
+      }
+      void api
+        .rowsById([request.prId])
+        .then((rows) => {
+          const row = rows.find((item) => item.id === request.prId);
+          if (row) {
+            setDetailRow(row);
+          }
+        })
+        .catch(() => undefined);
+    });
+    return () => stop?.();
+  }, [api]);
 
   const [openCount, setOpenCount] = useState<number | null>(null);
   const loadPage = useCallback(

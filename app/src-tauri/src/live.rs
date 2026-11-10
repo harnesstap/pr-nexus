@@ -207,6 +207,9 @@ fn step(state: &AppState, poller: &mut LivePoller, client: &mut Option<Client>) 
                     "live update"
                 );
                 state.sync.lock().expect("sync status").revision += 1;
+                let reviews_ready =
+                    state.sync.lock().expect("sync status").reviews.state == "ready";
+                crate::presence::note_change(state, reviews_ready);
             }
         }
         Err(CoreError::Provider(ProviderError::Unauthorized(_))) => *client = None,

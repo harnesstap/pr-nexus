@@ -606,6 +606,11 @@ if (screenName === "codeowners") {
     document.querySelector<HTMLInputElement>('section[aria-label^="Choose a channel"] input[role="combobox"]')?.focus();
   }, 400);
 }
+if (screenName === "notifications") {
+  const permission = new URLSearchParams(window.location.search).get("permission") === "denied" ? "denied" : "granted";
+  previewApi.notificationPermission = () => Promise.resolve(permission);
+  previewApi.requestNotificationPermission = () => Promise.resolve(permission);
+}
 const root = document.getElementById("root");
 if (!root) {
   throw new Error("root element missing");
@@ -643,6 +648,10 @@ createRoot(root).render(
     ) : screenName === "profile-reuse" ? (
       <div className="min-h-screen bg-slate-950 px-6 py-8 text-slate-200">
         <ProfileReuse api={api} profiles={previewProfiles} onCreated={() => undefined} onCancel={() => undefined} />
+      </div>
+    ) : screenName === "notifications" ? (
+      <div className="min-h-screen bg-slate-950 px-6 py-8 text-slate-200">
+        <SettingsScreen api={previewApi} boot={boot} onBoot={() => undefined} accounts={null} tab="sync" onTabChange={() => undefined} onRerunSetup={() => undefined} />
       </div>
     ) : settingsScene === "profiles" ? (
       <div className="min-h-screen bg-slate-950 px-6 py-8 text-slate-200">

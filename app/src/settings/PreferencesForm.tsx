@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import type { Api, Preferences } from "../api";
 import { Switch } from "../Switch";
 import { SaveBar, useSaveBar } from "./SaveBar";
+import { notificationHint, type NotificationPermission } from "./notifications";
 import { toMinutes } from "./tabs";
 import { plainText } from "../textInput";
 import { Tooltip } from "../Tooltip";
@@ -10,13 +11,15 @@ interface Props {
   api: Api;
   prefs: Preferences;
   section: "review" | "sync";
+  permission: NotificationPermission;
+  onRequestPermission: () => void;
   onSaved: (prefs: Preferences) => void;
 }
 
 const input = "mt-1 w-28 rounded border border-slate-700 bg-slate-900 px-2 py-1";
 
 /** Settings → Review and Settings → Sync: the §7.12 keys, saved together. */
-export function PreferencesForm({ api, prefs, section, onSaved }: Props) {
+export function PreferencesForm({ api, prefs, section, permission, onRequestPermission, onSaved }: Props) {
   const { draft, setDraft, bar } = useSaveBar(prefs, async (next) => {
     const saved = await api.savePreferences(next);
     onSaved(saved);
@@ -140,6 +143,56 @@ export function PreferencesForm({ api, prefs, section, onSaved }: Props) {
               onChange={(event) => patch({ keep_closed_days: Number(event.target.value) })}
             />
           </Field>
+          <div className="space-y-3 border-t border-slate-800 pt-4">
+            <p className="text-sm text-slate-200">Notifications</p>
+            <Check
+              label="Desktop notifications"
+              help="While PR Nexus is open, including when the window is closed. The first sync after launch stays quiet."
+              checked={draft.notify_enabled}
+              onChange={(on) => {
+                patch({ notify_enabled: on });
+                if (on) {
+                  onRequestPermission();
+                }
+              }}
+            />
+            <Check
+              label="Review requests"
+              help="Someone asks you to review a pull request."
+              checked={draft.notify_review_requested}
+              disabled={!draft.notify_enabled}
+              onChange={(on) => patch({ notify_review_requested: on })}
+            />
+            <Check
+              label="CI failed"
+              help="Checks on your pull request turn red."
+              checked={draft.notify_ci_red}
+              disabled={!draft.notify_enabled}
+              onChange={(on) => patch({ notify_ci_red: on })}
+            />
+            <Check
+              label="Approved"
+              help="Your pull request is approved."
+              checked={draft.notify_approved}
+              disabled={!draft.notify_enabled}
+              onChange={(on) => patch({ notify_approved: on })}
+            />
+            <Check
+              label="Changes requested"
+              help="A reviewer asks for changes on your pull request."
+              checked={draft.notify_changes_requested}
+              disabled={!draft.notify_enabled}
+              onChange={(on) => patch({ notify_changes_requested: on })}
+            />
+            <Check
+              label="New comments"
+              help="A new review thread on a pull request you wrote or were asked to review. Off until you turn it on."
+              checked={draft.notify_comment}
+              disabled={!draft.notify_enabled}
+              onChange={(on) => patch({ notify_comment: on })}
+            />
+            {notificationHint(permission) && <p className="text-xs text-slate-500">{notificationHint(permission)}</p>}
+          </div>
         </>
       )}
       <SaveBar {...bar} submit />
@@ -157,10 +210,22 @@ function Field({ label, help, children }: { label: string; help: string; childre
   );
 }
 
-function Check({ label, help, checked, onChange }: { label: string; help: string; checked: boolean; onChange: (on: boolean) => void }) {
+function Check({
+  label,
+  help,
+  checked,
+  disabled = false,
+  onChange,
+}: {
+  label: string;
+  help: string;
+  checked: boolean;
+  disabled?: boolean;
+  onChange: (on: boolean) => void;
+}) {
   return (
     <div>
-      <Switch label={label} className="text-sm" checked={checked} onChange={onChange}>
+      <Switch label={label} className="text-sm" checked={checked} disabled={disabled} onChange={onChange}>
         {label}
       </Switch>
       <p className="mt-1 text-xs text-slate-500">{help}</p>

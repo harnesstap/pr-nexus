@@ -16,7 +16,7 @@ PR Nexus reimplements, natively in Rust, the workflow of the existing Claude ski
 - Not a code review tool. No diff viewer, no commenting, no approving.
 - Not a Slack client. It never syncs whole channels. It reads only messages tied to a PR (§7.9).
 - Not a team dashboard. It serves one user, holds local state, and has no server.
-- No webhooks and no background daemon when the app is closed.
+- No webhooks. Closing the window leaves this process in the menu bar (§8.5); Quit exits it. There is no separate daemon, and nothing runs after Quit.
 - No AI features in v1. The MCP server is *Future* (§10.1).
 
 ## 2. Scope: v1 vs later
@@ -61,7 +61,7 @@ pr-nexus/
 - Splitting `adapters` into `vcs` and `chat` crates is rejected: 2 implementations do not justify 2 crates.
 
 **Runtime model**
-- A single Tauri process. Commands that touch the store or GitHub block on OS threads. The store does not use an async runtime, and neither does the GitHub client.
+- A single Tauri process. Closing the window hides it and leaves that process in the menu bar (§8.5); Quit exits it. There is no second process. Commands that touch the store or GitHub block on OS threads. The store does not use an async runtime, and neither does the GitHub client.
 - Store: one SQLite file at the Tauri app-data dir `pr-nexus.db` (override with `PR_NEXUS_DB_PATH`), in WAL mode, `foreign_keys=ON`, `busy_timeout=5000`. Access goes through a `Store` that owns one write connection on a dedicated thread plus a small read pool. There is no `tokio` runtime and no `tokio-rusqlite` actor (§4). WAL already prepares for a second process, the *Future* MCP server.
 - The frontend never runs SQL. Everything goes through typed Tauri commands. TS types are generated with `tauri-specta`. If the specta crates are unstable at bootstrap time, hand-write `app/src/bindings.ts` and add a test that keeps it in sync. Push events (`sync://updated`, `review://progress`) use Tauri events.
 - `tauri-plugin-sql` is rejected, because it exposes raw SQL to the webview.
@@ -467,7 +467,7 @@ fragment PrListFields on PullRequest {
 Unresolved threads come from counting `reviewThreads.nodes[].isResolved == false`. With more than 100 threads, show "100+".
 
 **Polling** (no webhooks: a desktop app has no public endpoint):
-- every 3 min while the window is focused, every 15 min while unfocused or minimised, and never while the app is quit;
+- every 3 min while the window is focused, every 15 min while it is unfocused, minimised or hidden in the menu bar, and never after Quit;
 - immediately when a PR detail view opens (that one PR, plus its ownership inputs if `head_sha` changed);
 - **always** right before any Slack write for the affected PRs (§7.8);
 - the manual refresh button in the sidebar footer (§8.2), which also shows sync status: `Synced · 2m ago`, `Syncing my PRs… 42`, `Checking my PRs… 40/132`, or an error such as `Rate limited · resets 14:32` (time from `resetAt`, shown in local time) or `Sync failed · <reason>`.
@@ -1026,6 +1026,9 @@ Nothing org-specific is hard-coded or shipped: GitHub orgs, Slack workspaces, te
 | `github.files_cap` | 3000 | same |
 | `sync.focused_interval_s` / `unfocused_interval_s` | 180 / 900 | same |
 | `sync.keep_closed_days` | 7 | same |
+| `notify.enabled` | `true` | false turns every desktop notification off (§8.5) |
+| `notify.review_requested` / `notify.ci_red` / `notify.approved` / `notify.changes_requested` | `true` | each can be turned off on its own |
+| `notify.comment` | `false` | true also notifies on a new review thread |
 | `slack.workspaces` | none: derived from connected Slack accounts | `acme`, `acme-labs` |
 | `slack.mcp.url` | `https://mcp.slack.com/mcp` | same |
 | `slack.mcp.client_id` | unset: the wizard asks for it; no client ID ships with the app (D20). The client secret is not a setting: it lives in the keychain (§9). | `<client ID of the user's Slack app>` |
@@ -1309,7 +1312,7 @@ Keyboard: `j/k` move, `x` toggle select, `Shift+x` toggle the focused row's sect
 - Accounts. It starts with a **Providers** row showing the chosen git and communication providers (from the registry: GitHub and Slack only, so there is nothing to switch to in v1; no other provider is mentioned). Then: the GitHub account (re-connect with any of the three auth modes) plus the **tracked orgs picker**: checkboxes from `viewer.organizations` and orgs seen in search, and a "personal repos" toggle; Slack with the MCP client settings (the **Create your Slack app** link and its help text, client ID, client secret stored in the keychain, redirect URI; §7.11), one row per connected workspace, each with its own status, re-auth, remove, and an optional client override, and an "Add workspace" button);
 - Mappings (table, import/export, dry-run diff; this is where a mapping skipped in the wizard is done later);
 - Review (the config keys in §7.12);
-- Sync;
+- Sync (intervals, how long closed pull requests stay, live updates, and desktop notifications, §8.5);
 - Changelog (see **Release notes** below);
 - About (version, log folder, DB path, and **Re-run setup**, which reopens the wizard at step 1 with current values pre-filled).
 
@@ -1514,6 +1517,33 @@ the store and reloads every view.
   through the active profile only, since their approval shows in its
   window. With two or more profiles, confirmations name the profile next
   to the workspace, and the audit records which profile a call used.
+
+### 8.5 Tray and notifications
+
+Closing the window hides it. The same process stays in the menu bar and keeps syncing on the unfocused interval (§6). Quit, in the menu, exits the process. There is no separate daemon, and nothing runs after Quit. A click on the icon's **Open PR Nexus**, a double-click, or reopening the app from the dock shows the window again.
+
+The menu is **Open PR Nexus**, **To review: N**, **Mine: N**, **Refresh**, **Quit**. The two counts are open, not hidden pull requests on the GitHub account the list reads:
+
+- **To review** counts rows whose next action (§8.2), read as a reviewer, is Review or Review overdue.
+- **Mine** counts rows the user authored whose next action, read as the author, is Resolve conflicts, Fix CI, Changes requested, Ready to merge, Request review, or Nudge.
+- Drafts, checks still running, waiting on review, waiting on the author, already reviewed, and closed rows count in neither.
+- A pull request that is both authored and assigned to the user counts once. The menu bar title is that number (empty at zero). On macOS and Linux the title sits beside the icon; Windows shows the same number in the tooltip, and the menu counts on every platform. On macOS the same number is the dock badge (`set_badge_count`); Windows does not show a dock badge.
+
+Refresh runs one manual sync. It does not block the menu.
+
+**Notifications** compare successive sync snapshots in `pr-nexus-core` (`notify`). The first successful sync after launch, and the first snapshot of a session that includes review requests, produce none: pull requests already stored are not news. A paused or failed sync does not move that baseline. Switching profile starts it over. Live updates notify only after a baseline exists.
+
+| Event | When | Default |
+|---|---|---|
+| Review requested | The review-requested flag turns on, or a pull request appears with it set, after review requests have been synced once this session | on |
+| CI failed | Checks on a pull request the user authored go from not-failing to `failure` or `error` | on |
+| Approved | That pull request's review decision becomes approved | on |
+| Changes requested | That decision becomes changes requested | on |
+| New comment | `total_threads` increases on an open pull request the user authored or was asked to review. Issue comments are not in the sync row, so a comment outside a review thread is not detected | off |
+
+Events of one kind in one snapshot become one notification. One pull request names the repo, number and title, and a click opens that pull request. Several name the first three and "and N more", and a click opens To review for a review request (or a comment on a pull request the user does not author) and Mine otherwise. The same event on the same pull request stays quiet for two minutes. Turning a kind off does not replay it later.
+
+Settings → Sync has **Desktop notifications** and one switch per event. The per-event switches stay as set, and are disabled, while the master switch is off. The desktop notification plugin reports permission as granted and does not ask; macOS shows its own prompt the first time a notification is posted. When the plugin does report denied, Settings shows a grey line, "Notifications are off for PR Nexus in system settings." That line is not an error. A failure to post is logged and not shown as a toast.
 
 ## 9. Auth, secrets & security
 

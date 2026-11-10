@@ -13,6 +13,7 @@ mod mapping_file;
 mod mcp;
 mod parallel;
 mod preferences;
+mod presence;
 mod profiles;
 mod project_info;
 pub mod services;
@@ -31,6 +32,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         // Remembers size, position and maximized state; VISIBLE stays with the config.
         .plugin(
             tauri_plugin_window_state::Builder::new()
@@ -70,6 +72,9 @@ pub fn run() {
             }
             app.manage(agents);
             app.manage(shared);
+            if let Err(err) = presence::install(app.handle()) {
+                tracing::warn!(error = %err, "menu bar icon unavailable");
+            }
             if let Some(window) = app.get_webview_window("main") {
                 fit_to_monitor(&window);
                 if !has_saved_window_state(app.handle()) {
@@ -80,9 +85,21 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::Focused(focused) = event {
-                let state = window.state::<Arc<state::AppState>>();
-                state::set_focused(&state, *focused);
+            match event {
+                // Closing the window leaves the process in the menu bar (§8.5).
+                tauri::WindowEvent::CloseRequested { api, .. } => {
+                    if !presence::is_quitting() {
+                        api.prevent_close();
+                        let _ = window.hide();
+                        let state = window.state::<Arc<state::AppState>>();
+                        state::set_focused(&state, false);
+                    }
+                }
+                tauri::WindowEvent::Focused(focused) => {
+                    let state = window.state::<Arc<state::AppState>>();
+                    state::set_focused(&state, *focused);
+                }
+                _ => {}
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -132,6 +149,8 @@ pub fn run() {
             templates::preview_message_template,
             preferences::load_preferences,
             preferences::save_preferences,
+            presence::notification_permission,
+            presence::request_notification_permission,
             preferences::list_mappings,
             preferences::save_mapping,
             preferences::reset_mapping,
@@ -196,8 +215,16 @@ pub fn run() {
             mcp::control::mcp_slack_proposals,
             mcp::control::decide_mcp_slack_proposal,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running PR Nexus");
+        .build(tauri::generate_context!())
+        .expect("error while building PR Nexus")
+        .run(|app, event| match event {
+            tauri::RunEvent::ExitRequested { .. } => presence::begin_quit(),
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Reopen { .. } => presence::show_main(app),
+            _ => {
+                let _ = app;
+            }
+        });
 }
 
 fn window_state_flags() -> tauri_plugin_window_state::StateFlags {
