@@ -10,6 +10,8 @@ use pr_nexus_core::domain::{
     LinkSource, PrId, Project, ProjectId, ProjectRule, PullRequest, ReplacedLink, RuleKind,
 };
 use pr_nexus_core::linking;
+use pr_nexus_core::settings;
+use pr_nexus_core::sla::local_offset_east_minutes;
 use serde::{Deserialize, Serialize};
 
 use crate::commands::{ListRow, ProjectDto, list_items, search_ids};
@@ -47,7 +49,12 @@ pub fn page_for(
         }
     }
     let found = search_ids(state, &projects, &request.query)?;
-    Ok(listing::page(&items, &projects, request, found.as_ref()))
+    let sla = settings::review_sla(&state.store)?;
+    let mut request = request.clone();
+    request.review_sla_hours = sla.hours;
+    request.review_sla_working_days = sla.working_days;
+    request.tz_offset_minutes = local_offset_east_minutes();
+    Ok(listing::page(&items, &projects, &request, found.as_ref()))
 }
 
 /// Rows by id, in the order asked, for dialogs that outlive the loaded pages.

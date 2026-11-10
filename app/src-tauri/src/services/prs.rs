@@ -60,11 +60,11 @@ pub enum PrStatus {
     /// Not a draft, approved, checks green and no conflicts.
     MergeReady,
     /// The list's "Waiting" chip: open, asked for review (GitHub or Slack),
-    /// not approved, and waiting longer than
-    /// [`listing::STALE_REVIEW_HOURS`] (48h) since the Slack request, else
-    /// since creation.
+    /// not approved, and waiting longer than `review_sla_hours` (default 48)
+    /// since the Slack request, else since creation. Weekends are skipped
+    /// when `review_sla_working_days` is on.
     #[schemars(
-        description = "Open, asked for review (GitHub or Slack), not approved, and waiting more than 48h since the Slack request, else since creation."
+        description = "Open, asked for review (GitHub or Slack), not approved, and waiting longer than review_sla_hours (default 48) since the Slack request, else since creation."
     )]
     Waiting,
     /// The list's "Idle" chip: open, no GitHub update and no Slack request
@@ -91,8 +91,18 @@ impl PrStatus {
     ];
 
     /// Whether `item` is in this status at `now_ms` (only the stale cues
-    /// depend on the time).
+    /// depend on the time). Uses the 48 hour default.
     pub fn matches(self, item: &listing::Item, now_ms: i64) -> bool {
+        self.matches_with(item, now_ms, &pr_nexus_core::sla::ReviewSla::default(), 0)
+    }
+
+    fn matches_with(
+        self,
+        item: &listing::Item,
+        now_ms: i64,
+        sla: &pr_nexus_core::sla::ReviewSla,
+        offset_east_minutes: i32,
+    ) -> bool {
         let row = &item.row;
         match self {
             PrStatus::Draft => listing::status_matches(row, "draft"),
@@ -104,17 +114,30 @@ impl PrStatus {
             PrStatus::Declined => listing::quick_matches(row, "declined"),
             PrStatus::MergeReady => listing::quick_matches(row, "ready"),
             PrStatus::Waiting => {
-                listing::stale_cue(item, now_ms) == Some(listing::StaleCue::Waiting)
+                listing::stale_cue_with(item, now_ms, sla, offset_east_minutes)
+                    == Some(listing::StaleCue::Waiting)
             }
-            PrStatus::Idle => listing::stale_cue(item, now_ms) == Some(listing::StaleCue::Idle),
+            PrStatus::Idle => {
+                listing::stale_cue_with(item, now_ms, sla, offset_east_minutes)
+                    == Some(listing::StaleCue::Idle)
+            }
         }
     }
 
-    /// Every status `row` is in.
+    /// Every status `row` is in. Uses the 48 hour default.
     pub fn of(item: &listing::Item, now_ms: i64) -> Vec<PrStatus> {
+        Self::of_with(item, now_ms, &pr_nexus_core::sla::ReviewSla::default(), 0)
+    }
+
+    fn of_with(
+        item: &listing::Item,
+        now_ms: i64,
+        sla: &pr_nexus_core::sla::ReviewSla,
+        offset_east_minutes: i32,
+    ) -> Vec<PrStatus> {
         Self::ALL
             .into_iter()
-            .filter(|status| status.matches(item, now_ms))
+            .filter(|status| status.matches_with(item, now_ms, sla, offset_east_minutes))
             .collect()
     }
 }
@@ -190,6 +213,8 @@ pub struct PrListPage {
 /// update first, as the list pins them.
 pub fn list_prs(state: &AppState, filter: &PrFilter) -> Result<PrListPage, AppError> {
     let now_ms = Utc::now().timestamp_millis();
+    let sla = settings::review_sla(&state.store)?;
+    let zone = pr_nexus_core::sla::local_offset_east_minutes();
     let offset = match filter.cursor.as_deref() {
         None | Some("") => 0,
         Some(value) => value
@@ -203,7 +228,7 @@ pub fn list_prs(state: &AppState, filter: &PrFilter) -> Result<PrListPage, AppEr
     };
     let mut items: Vec<listing::Item> = list_items(state)?
         .into_iter()
-        .filter(|item| matches_filter(item, filter, now_ms))
+        .filter(|item| matches_filter(item, filter, now_ms, &sla, zone))
         .filter(|item| found.as_ref().is_none_or(|ids| ids.contains(&item.row.id)))
         .collect();
     items.sort_by(|left, right| {
@@ -220,7 +245,7 @@ pub fn list_prs(state: &AppState, filter: &PrFilter) -> Result<PrListPage, AppEr
         .skip(offset)
         .take(limit)
         .map(|item| PrListItem {
-            statuses: PrStatus::of(&item, now_ms),
+            statuses: PrStatus::of_with(&item, now_ms, &sla, zone),
             row: item.row,
         })
         .collect();
@@ -233,7 +258,13 @@ pub fn list_prs(state: &AppState, filter: &PrFilter) -> Result<PrListPage, AppEr
 }
 
 /// Everything in [`PrFilter`] that only looks at one row.
-pub fn matches_filter(item: &listing::Item, filter: &PrFilter, now_ms: i64) -> bool {
+pub fn matches_filter(
+    item: &listing::Item,
+    filter: &PrFilter,
+    now_ms: i64,
+    sla: &pr_nexus_core::sla::ReviewSla,
+    offset_east_minutes: i32,
+) -> bool {
     let row = &item.row;
     if row.hidden {
         return false;
@@ -245,7 +276,7 @@ pub fn matches_filter(item: &listing::Item, filter: &PrFilter, now_ms: i64) -> b
         && !filter
             .statuses
             .iter()
-            .any(|status| status.matches(item, now_ms))
+            .any(|status| status.matches_with(item, now_ms, sla, offset_east_minutes))
     {
         return false;
     }
@@ -287,6 +318,8 @@ pub struct PrInfo {
 
 pub fn pr_info(state: &AppState, id: i64) -> Result<PrInfo, AppError> {
     let now_ms = Utc::now().timestamp_millis();
+    let sla = settings::review_sla(&state.store)?;
+    let zone = pr_nexus_core::sla::local_offset_east_minutes();
     let item = list_items(state)?
         .into_iter()
         .find(|item| item.row.id == id)
@@ -296,7 +329,7 @@ pub fn pr_info(state: &AppState, id: i64) -> Result<PrInfo, AppError> {
     let branch = crate::services::branch::branch_status_if_cached(state, id).unwrap_or(None);
     Ok(PrInfo {
         item: PrListItem {
-            statuses: PrStatus::of(&item, now_ms),
+            statuses: PrStatus::of_with(&item, now_ms, &sla, zone),
             row: item.row,
         },
         note: note.note,

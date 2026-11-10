@@ -118,7 +118,7 @@ fn read_tools() -> Vec<ToolSpec> {
                 filter menu (a PR matches if it is in any of them): draft; ready (every mandatory code owner covered); \
                 blocked (owners or rules missing); unknown (readiness not worked out yet); no_review (nobody asked yet); \
                 ci_trouble (failing checks or merge conflicts); declined (changes requested); merge_ready (approved, \
-                green, no conflicts); waiting (asked for review over 48h ago, not approved); idle (no activity for 7 days). \
+                green, no conflicts); waiting (asked for review longer ago than review_sla_hours, default 48 hours, not approved); idle (no activity for 7 days). \
                 Each item lists its `statuses`, `starred`, `project_ids`, checks, review state and Slack request (`slack`, \
                 null when none). Returns `items`, `total` (over all pages) and `next_cursor` (null on the last page). Review requests are \
                 synced lazily, newest first: `reviews` says how many are loaded of GitHub's `total` and whether the list \

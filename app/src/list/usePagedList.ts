@@ -50,7 +50,7 @@ export function usePagedList(loadPage: (request: PageRequest) => Promise<PageDto
   const request = useCallback(
     (cursor: string | null, limit: number): PageRequest => {
       const at = nowRef.current;
-      return { ...(JSON.parse(key) as PageParams), cursor, limit, now: at.toISOString(), ...dayBounds(at) };
+      return { ...(JSON.parse(key) as PageParams), cursor, limit, now: at.toISOString(), ...dayBounds(at), tz_offset_minutes: -at.getTimezoneOffset() };
     },
     [key],
   );

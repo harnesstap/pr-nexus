@@ -3,6 +3,7 @@ import type { ListRow } from "../api";
 import { AlertIcon, CheckIcon, ClockIcon, CommentIcon, DeclinedIcon, DraftIcon, EyeOffIcon, MergeIcon, SlackLogo } from "../icons";
 import { Tooltip } from "../Tooltip";
 import { nextAction, type NextAction } from "./nextAction";
+import { DEFAULT_REVIEW_SLA, type ReviewSla } from "./sla";
 
 /** What clicking the badge does; null when there is nothing to click. */
 export type BadgeClick = "slack" | "checks" | "pr" | "files" | "details" | null;
@@ -68,14 +69,16 @@ interface Props {
   now: Date;
   /** Icon only, for the compact row. */
   compact?: boolean;
+  /** Review wait from Settings. Defaults to 48 hours, every day. */
+  sla?: ReviewSla;
   onOpen: (url: string) => void;
   onRequestReview: (row: ListRow) => void;
   onDetails: (row: ListRow) => void;
 }
 
 /** The row's next-action badge (§8.2): label, colour, icon and a tooltip with the reason. */
-export function NextActionBadge({ row, viewKey, now, compact = false, onOpen, onRequestReview, onDetails }: Props) {
-  const { action, reason } = nextAction(row, viewKey, now);
+export function NextActionBadge({ row, viewKey, now, compact = false, sla = DEFAULT_REVIEW_SLA, onOpen, onRequestReview, onDetails }: Props) {
+  const { action, reason } = nextAction(row, viewKey, now, sla);
   const spec = BADGE_SPECS[action];
   const label = action === "done" ? reason : spec.label;
   const look = `inline-flex max-w-full items-center gap-1 rounded-full border text-xs font-medium whitespace-nowrap ${compact ? "h-5 w-5 justify-center" : "px-2 py-0.5"} ${spec.className}`;

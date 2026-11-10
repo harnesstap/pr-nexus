@@ -65,6 +65,37 @@ export function PreferencesForm({ api, prefs, section, permission, onRequestPerm
             checked={draft.bump_due_working_days}
             onChange={(on) => patch({ bump_due_working_days: on })}
           />
+          <Field
+            label="Review now after (hours)"
+            help="To review shows Review now after a review has waited this long. The same wait drives the Waiting chip and a follow-up when there is no Slack request. 1 to 336. Default 48. The Bumps due queue has its own hours."
+          >
+            <input {...plainText}
+              aria-label="Review now after (hours)"
+              className={input}
+              type="number"
+              min={1}
+              max={336}
+              value={draft.review_sla_hours}
+              onChange={(event) => patch({ review_sla_hours: Number(event.target.value) })}
+            />
+          </Field>
+          <Check
+            label="Count only weekdays"
+            help="Saturday and Sunday do not count toward the review wait."
+            checked={draft.review_sla_working_days}
+            onChange={(on) => patch({ review_sla_working_days: on })}
+          />
+          <Field label="Open PR limit" help="Optional. My PRs shows a hint when you have more open pull requests than this. Leave empty for no limit.">
+            <input {...plainText}
+              aria-label="Open PR limit"
+              className={input}
+              type="number"
+              min={1}
+              max={500}
+              value={draft.my_prs_wip_limit ?? ""}
+              onChange={(event) => patch({ my_prs_wip_limit: event.target.value === "" ? null : Number(event.target.value) })}
+            />
+          </Field>
           <Field label="Minimum hours between bumps" help="A PR bumped more recently is skipped, with a warning in the preview.">
             <input {...plainText}
               className={input}

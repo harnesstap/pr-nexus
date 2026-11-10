@@ -1911,6 +1911,9 @@ mod tests {
             week_start: now - Duration::days(7),
             github_ids: None,
             github_any_state: false,
+            review_sla_hours: 48,
+            review_sla_working_days: false,
+            tz_offset_minutes: 0,
         }
     }
 

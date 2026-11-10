@@ -1,9 +1,14 @@
 import { channelLabel, type ListRow } from "../api";
+import { DEFAULT_REVIEW_SLA, reviewElapsedMs, reviewWaitExceeded, type ReviewSla } from "./sla";
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 
-/** A PR waiting on review longer than this gets a "Waiting" chip. */
+/**
+ * Default hours before a review wait is stale. The live threshold is
+ * `review_sla_hours` ([`ReviewSla`]); this stays for callers that have not
+ * loaded settings yet.
+ */
 export const STALE_REVIEW_HOURS = 48;
 /** An open PR with no update and no Slack bump for this many days gets an "Idle" chip. */
 export const IDLE_DAYS = 7;
@@ -60,16 +65,15 @@ function span(ms: number): string {
 }
 
 /** The age chip for a row, or null when it is fresh. A long review wait wins over idleness. Mirrors `stale_cue` in `app/src-tauri/src/listing.rs` (the `waiting`/`idle` MCP statuses). */
-export function staleCue(row: ListRow, now: Date): StaleCue | null {
+export function staleCue(row: ListRow, now: Date, sla: ReviewSla = DEFAULT_REVIEW_SLA): StaleCue | null {
   if (row.state !== "open") {
     return null;
   }
   const since = waitingSince(row);
-  if (since !== null) {
-    const waited = now.getTime() - since;
-    if (waited > STALE_REVIEW_HOURS * HOUR_MS) {
-      return { kind: "waiting", label: `Waiting ${span(waited)}`, title: `Waiting on review for ${span(waited)} (over ${STALE_REVIEW_HOURS}h)` };
-    }
+  if (since !== null && reviewWaitExceeded(since, now, sla)) {
+    const waited = reviewElapsedMs(since, now, sla);
+    const counted = sla.workingDays ? `${sla.hours} weekday hours` : `${sla.hours}h`;
+    return { kind: "waiting", label: `Waiting ${span(waited)}`, title: `Waiting on review for ${span(waited)} (over ${counted})` };
   }
   const idle = now.getTime() - lastActivity(row);
   if (idle > IDLE_DAYS * DAY_MS) {

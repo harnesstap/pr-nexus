@@ -66,6 +66,13 @@ pub const NOTIFY_APPROVED: &str = "notify.approved";
 pub const NOTIFY_CHANGES_REQUESTED: &str = "notify.changes_requested";
 /// New review threads. Off by default: they are the noisy kind.
 pub const NOTIFY_COMMENT: &str = "notify.comment";
+/// Hours before Review now, the Waiting chip, and a follow-up with no Slack
+/// request. Scheduled bumps read this same key.
+pub const REVIEW_SLA_HOURS: &str = "review_sla_hours";
+/// When true, only Monday–Friday hours count toward [`REVIEW_SLA_HOURS`].
+pub const REVIEW_SLA_WORKING_DAYS: &str = "review_sla_working_days";
+/// Optional cap on open pull requests in My PRs. Missing or 0 means no cap.
+pub const MY_PRS_WIP_LIMIT: &str = "my_prs_wip_limit";
 
 pub const DEFAULT_REDIRECT: &str = "http://127.0.0.1:47821/mcp/oauth/callback";
 
@@ -435,6 +442,38 @@ pub fn bulk_bump_max_threads(store: &Store) -> Result<usize, CoreError> {
     Ok(json_or::<usize>(store, BULK_BUMP_MAX_THREADS, 3)?.max(1))
 }
 
+/// `review_sla_hours`. Missing or unreadable values use the 48 hour default.
+pub fn review_sla_hours(store: &Store) -> Result<i64, CoreError> {
+    let hours = json_or(
+        store,
+        REVIEW_SLA_HOURS,
+        crate::sla::DEFAULT_REVIEW_SLA_HOURS,
+    )?;
+    Ok(if REVIEW_SLA_RANGE.contains(&hours) {
+        hours
+    } else {
+        crate::sla::DEFAULT_REVIEW_SLA_HOURS
+    })
+}
+
+/// `review_sla_working_days`. Off unless the user turns it on.
+pub fn review_sla_working_days(store: &Store) -> Result<bool, CoreError> {
+    json_or(store, REVIEW_SLA_WORKING_DAYS, false)
+}
+
+/// The list's review wait: hours plus whether weekends count.
+pub fn review_sla(store: &Store) -> Result<crate::sla::ReviewSla, CoreError> {
+    Ok(crate::sla::ReviewSla {
+        hours: review_sla_hours(store)?,
+        working_days: review_sla_working_days(store)?,
+    })
+}
+
+/// `my_prs_wip_limit`. `None` when unset or not a positive cap.
+pub fn my_prs_wip_limit(store: &Store) -> Result<Option<u32>, CoreError> {
+    Ok(json_or::<Option<u32>>(store, MY_PRS_WIP_LIMIT, None)?.filter(|limit| *limit > 0))
+}
+
 /// The user-editable settings behind Settings → Review and Sync (§7.12).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Preferences {
@@ -472,6 +511,19 @@ pub struct Preferences {
     pub notify_changes_requested: bool,
     #[serde(default)]
     pub notify_comment: bool,
+    /// `review_sla_hours`. Older clients omit it and keep 48 hours.
+    #[serde(default = "default_review_sla_hours")]
+    pub review_sla_hours: i64,
+    /// `review_sla_working_days`. Older clients omit it and count every hour.
+    #[serde(default)]
+    pub review_sla_working_days: bool,
+    /// `my_prs_wip_limit`. `None` means My PRs has no open-PR cap.
+    #[serde(default)]
+    pub my_prs_wip_limit: Option<u32>,
+}
+
+fn default_review_sla_hours() -> i64 {
+    crate::sla::DEFAULT_REVIEW_SLA_HOURS
 }
 
 fn live_default() -> bool {
@@ -493,6 +545,8 @@ pub const BULK_THREADS: std::ops::RangeInclusive<usize> = 1..=20;
 pub const FOCUSED_SECS: std::ops::RangeInclusive<u64> = 60..=3600;
 pub const UNFOCUSED_SECS: std::ops::RangeInclusive<u64> = 60..=86_400;
 pub const KEEP_CLOSED: std::ops::RangeInclusive<i64> = 0..=90;
+pub const REVIEW_SLA_RANGE: std::ops::RangeInclusive<i64> = 1..=336;
+pub const WIP_LIMIT_RANGE: std::ops::RangeInclusive<u32> = 1..=500;
 
 pub fn preferences(store: &Store) -> Result<Preferences, CoreError> {
     Ok(Preferences {
@@ -515,6 +569,9 @@ pub fn preferences(store: &Store) -> Result<Preferences, CoreError> {
         notify_approved: json_or(store, NOTIFY_APPROVED, true)?,
         notify_changes_requested: json_or(store, NOTIFY_CHANGES_REQUESTED, true)?,
         notify_comment: json_or(store, NOTIFY_COMMENT, false)?,
+        review_sla_hours: review_sla_hours(store)?,
+        review_sla_working_days: review_sla_working_days(store)?,
+        my_prs_wip_limit: my_prs_wip_limit(store)?,
     })
 }
 
@@ -579,6 +636,14 @@ pub fn save_preferences(store: &Store, prefs: &Preferences) -> Result<Preference
         prefs.keep_closed_days,
         KEEP_CLOSED,
     )?;
+    check("Review now after", prefs.review_sla_hours, REVIEW_SLA_RANGE)?;
+    let wip_limit = match prefs.my_prs_wip_limit {
+        Some(0) | None => None,
+        Some(limit) => {
+            check("Open PR limit", limit, WIP_LIMIT_RANGE)?;
+            Some(limit)
+        }
+    };
     let regex = prefs.ticket_key_regex.trim();
     let regex = if regex.is_empty() {
         crate::linking::DEFAULT_TICKET_KEY_REGEX
@@ -618,6 +683,13 @@ pub fn save_preferences(store: &Store, prefs: &Preferences) -> Result<Preference
         &prefs.notify_changes_requested,
     )?;
     put_json(store, NOTIFY_COMMENT, &prefs.notify_comment)?;
+    put_json(store, REVIEW_SLA_HOURS, &prefs.review_sla_hours)?;
+    put_json(
+        store,
+        REVIEW_SLA_WORKING_DAYS,
+        &prefs.review_sla_working_days,
+    )?;
+    put_json(store, MY_PRS_WIP_LIMIT, &wip_limit)?;
     preferences(store)
 }
 
@@ -802,6 +874,9 @@ mod tests {
         assert!(prefs.notify_approved);
         assert!(prefs.notify_changes_requested);
         assert!(!prefs.notify_comment);
+        assert_eq!(prefs.review_sla_hours, 48);
+        assert!(!prefs.review_sla_working_days);
+        assert_eq!(prefs.my_prs_wip_limit, None);
     }
 
     #[test]
@@ -827,10 +902,17 @@ mod tests {
             notify_approved: false,
             notify_changes_requested: true,
             notify_comment: true,
+            review_sla_hours: 24,
+            review_sla_working_days: true,
+            my_prs_wip_limit: Some(8),
         };
         let saved = save_preferences(&store, &prefs).unwrap();
         assert_eq!(saved.jira_base_url, "https://acme-labs.atlassian.net");
         assert_eq!(saved.review_requester, "for Ada Acme");
+        assert_eq!(saved.review_sla_hours, 24);
+        assert!(saved.review_sla_working_days);
+        assert_eq!(saved.my_prs_wip_limit, Some(8));
+        assert_eq!(review_sla_hours(&store).unwrap(), 24);
         assert_eq!(
             saved.ticket_key_regex,
             crate::linking::DEFAULT_TICKET_KEY_REGEX
@@ -855,6 +937,22 @@ mod tests {
         prefs.ticket_key_regex = String::new();
         prefs.jira_base_url = "acme-labs.atlassian.net".into();
         assert!(save_preferences(&store, &prefs).is_err());
+        prefs.jira_base_url.clear();
+        prefs.review_sla_hours = 0;
+        assert!(save_preferences(&store, &prefs).is_err());
+        prefs.review_sla_hours = 48;
+        prefs.my_prs_wip_limit = Some(9_000);
+        assert!(save_preferences(&store, &prefs).is_err());
         assert!(bump_broadcast(&store).unwrap());
+        assert_eq!(review_sla_hours(&store).unwrap(), 48);
+    }
+
+    #[test]
+    fn a_zero_open_pr_limit_clears_the_cap() {
+        let (_dir, store) = store();
+        let mut prefs = preferences(&store).unwrap();
+        prefs.my_prs_wip_limit = Some(0);
+        let saved = save_preferences(&store, &prefs).unwrap();
+        assert_eq!(saved.my_prs_wip_limit, None);
     }
 }

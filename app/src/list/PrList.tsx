@@ -13,6 +13,7 @@ import { GitHubRowButton, StarButton } from "./StarButton";
 import { ProjectInfo } from "./JiraChips";
 import { isTypingTarget, wantsRowEnter } from "./keys";
 import { copyText, prsToMarkdown } from "./markdown";
+import { DEFAULT_REVIEW_SLA, wipHint, type ReviewSla } from "./sla";
 import type { SnoozeChoice, Toast } from "./model";
 import { displayKey, hint, matchShortcut, shortcut, type ShortcutId } from "./shortcuts";
 import {
@@ -131,6 +132,14 @@ interface Props {
   githubMore?: (() => void) | null;
   /** Opens Settings, from the "no open PRs" empty state. */
   onOpenSettings?: () => void;
+  /** Review wait from Settings. Defaults to 48 hours, every day. */
+  sla?: ReviewSla;
+  /** Optional open-PR cap for My PRs. Null means no hint. */
+  wipLimit?: number | null;
+  /** Copies the My PRs stand-up recap. */
+  onCopyStandup?: () => void;
+  /** Opens the toolbar More menu on first paint (preview). */
+  standupMenuInitiallyOpen?: boolean;
   /** Filled with the list's actions so the command palette reuses them. */
   actionsRef?: { current: ListActions | null };
 }
@@ -218,12 +227,18 @@ export function PrList({
   githubMore = null,
   actionsRef,
   onOpenSettings,
+  sla = DEFAULT_REVIEW_SLA,
+  wipLimit = null,
+  onCopyStandup,
+  standupMenuInitiallyOpen = false,
 }: Props) {
   const [query, setQuery] = useState("");
   const [debounced, setDebounced] = useState("");
   const [selectedByView, setSelectedByView] = useState<Record<string, number[]>>({});
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [menu, setMenu] = useState<string | null>(null);
+  const [standupMenu, setStandupMenu] = useState(standupMenuInitiallyOpen);
+  const standupMenuRef = useRef<HTMLDivElement>(null);
   const [sectionMenu, setSectionMenu] = useState<string | null>(null);
   const [editing, setEditing] = useState<Editing | null>(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
@@ -269,8 +284,10 @@ export function PrList({
       collapsed: collapsedKeys,
       github_ids: githubIds,
       github_any_state: githubAnyState,
+      review_sla_hours: sla.hours,
+      review_sla_working_days: sla.workingDays,
     }),
-    [viewKey, view.grouping, view.ordering, view.direction, view.filters, debounced, collapsedKeys, githubIds, githubAnyState],
+    [viewKey, view.grouping, view.ordering, view.direction, view.filters, debounced, collapsedKeys, githubIds, githubAnyState, sla.hours, sla.workingDays],
   );
   const list = usePagedList(loadPage, params, version, now);
   // To review also asks GitHub for matches past the loaded window.
@@ -542,6 +559,28 @@ export function PrList({
   });
 
   useEffect(() => {
+    if (!standupMenu) {
+      return;
+    }
+    function onDown(event: MouseEvent) {
+      if (!standupMenuRef.current?.contains(event.target as Node)) {
+        setStandupMenu(false);
+      }
+    }
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setStandupMenu(false);
+      }
+    }
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [standupMenu]);
+
+  useEffect(() => {
     function onKey(event: KeyboardEvent) {
       const target = event.target instanceof HTMLElement ? event.target : null;
       const typing = isTypingTarget(target);
@@ -577,6 +616,7 @@ export function PrList({
   });
 
   const header = selectionCountText(ids.length, page?.summary.finished ?? 0, activeIds.length, hidden);
+  const openLimitHint = page && viewKey === "mine" ? wipHint(page.summary.open, wipLimit) : null;
   const queryOrders = view.filters.github.trim() !== "";
 
   const titleProject = currentProject !== null ? projects.find((project) => project.id === currentProject) : undefined;
@@ -612,7 +652,10 @@ export function PrList({
           )}
           {editing?.error && editing.where === "title" && <p className="text-xs text-rose-300">{editing.error}</p>}
           {titleProject && <ProjectInfo project={titleProject} onOpen={onOpen} className="mt-0.5 max-w-md" />}
-          <p className="text-sm text-slate-400">{page ? summaryText(page.summary, viewKey, syncProgress, view.filters.snoozed) : (syncProgress ?? "\u00a0")}</p>
+          <p className="text-sm text-slate-400">
+            {page ? summaryText(page.summary, viewKey, syncProgress, view.filters.snoozed) : (syncProgress ?? "\u00a0")}
+            {openLimitHint && <span className="text-amber-200/80"> · {openLimitHint}</span>}
+          </p>
         </div>
       </header>
       {/* One toolbar row for every list command, quick filter chips included: controls share one height and never
@@ -698,6 +741,37 @@ export function PrList({
           </label>
           <SortPicker view={view} onViewChange={onViewChange} fromQuery={queryOrders} />
           <FilterMenu view={view} orgs={page?.orgs ?? []} menu={menu} setMenu={setMenu} onViewChange={onViewChange} fromQuery={queryOrders} />
+          {viewKey === "mine" && (
+            <div ref={standupMenuRef} className="relative shrink-0">
+              <Tooltip label="More" detail="Copy a stand-up recap of your pull requests" align="end">
+                <button
+                  type="button"
+                  aria-label="More"
+                  aria-haspopup="menu"
+                  aria-expanded={standupMenu}
+                  className="flex h-8 w-8 items-center justify-center rounded-md text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+                  onClick={() => setStandupMenu((open) => !open)}
+                >
+                  <MoreIcon />
+                </button>
+              </Tooltip>
+              {standupMenu && (
+                <div role="menu" aria-label="More" className="absolute right-0 top-8 z-30 w-max min-w-48 rounded-md border border-slate-700 bg-slate-900 py-1 text-sm shadow-xl">
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="block w-full px-3 py-1.5 text-left text-slate-200 hover:bg-slate-800"
+                    onClick={() => {
+                      setStandupMenu(false);
+                      onCopyStandup?.();
+                    }}
+                  >
+                    Copy stand-up recap
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
         {githubError !== "" && (
           <p role="status" data-github-query-error className="mt-1 truncate text-xs text-slate-400">
@@ -875,11 +949,11 @@ export function PrList({
                       {onToggleStar && <StarButton starred={row.starred} title={row.title} onToggle={() => onToggleStar(row)} />}
                       <GitHubRowButton title={row.title} onOpen={() => onOpen(row.url)} />
                       {compact ? (
-                        <CompactRow row={row} view={view} viewKey={viewKey} now={now} onDetails={onDetails} onOpen={onOpen} onRequestReview={onRequestReview} />
+                        <CompactRow row={row} view={view} viewKey={viewKey} now={now} sla={sla} onDetails={onDetails} onOpen={onOpen} onRequestReview={onRequestReview} />
                       ) : (
                         <>
                           <div className="min-w-64 flex-1 overflow-hidden">
-                            <TitleLine row={row} view={view} now={now} onDetails={onDetails} />
+                            <TitleLine row={row} view={view} now={now} sla={sla} onDetails={onDetails} />
                             <p className="flex items-center gap-1 truncate text-xs text-slate-500">
                               {view.show.repo && <span className="truncate">{row.repo}</span>}
                               {view.show.repo && view.show.ci && <span aria-hidden="true">·</span>}
@@ -889,7 +963,7 @@ export function PrList({
                           </div>
                           {view.show.review && (
                             <div className="flex w-40 shrink-0 items-center">
-                              <NextActionBadge row={row} viewKey={viewKey} now={now} onOpen={onOpen} onRequestReview={onRequestReview} onDetails={onDetails} />
+                              <NextActionBadge row={row} viewKey={viewKey} now={now} sla={sla} onOpen={onOpen} onRequestReview={onRequestReview} onDetails={onDetails} />
                             </div>
                           )}
                           {view.show.review && (
@@ -1327,8 +1401,8 @@ function StaleChip({ cue }: { cue: StaleCue }) {
 }
 
 /** Row cues after the title: draft and conflict pills, then the age chip. */
-function RowCues({ row, now }: { row: ListRow; now: Date }) {
-  const stale = staleCue(row, now);
+function RowCues({ row, now, sla }: { row: ListRow; now: Date; sla: ReviewSla }) {
+  const stale = staleCue(row, now, sla);
   return (
     <>
       {rowPills(row).map((pill) => (
@@ -1350,7 +1424,7 @@ function UnreadDot({ unread, className = "shrink-0" }: { unread: boolean; classN
   );
 }
 
-function TitleLine({ row, view, now, onDetails }: { row: ListRow; view: SavedView; now: Date; onDetails: (row: ListRow) => void }) {
+function TitleLine({ row, view, now, sla, onDetails }: { row: ListRow; view: SavedView; now: Date; sla: ReviewSla; onDetails: (row: ListRow) => void }) {
   return (
     <div className="flex min-w-0 items-center gap-2 text-sm">
       <UnreadDot unread={row.unread} />
@@ -1364,7 +1438,7 @@ function TitleLine({ row, view, now, onDetails }: { row: ListRow; view: SavedVie
       {row.state !== "open" && (
         <span className="shrink-0 rounded bg-slate-800 px-1 text-xs text-slate-300">{row.state === "merged" ? "Merged" : "Closed"}</span>
       )}
-      <RowCues row={row} now={now} />
+      <RowCues row={row} now={now} sla={sla} />
       {view.show.badges && row.project_ids.length > 1 && (
         <Tooltip label={`Also in ${row.project_ids.length - 1} other project${row.project_ids.length > 2 ? "s" : ""}`} className="shrink-0">
           <span className="shrink-0 rounded bg-slate-800 px-1 text-xs text-slate-400">+{row.project_ids.length - 1}</span>
@@ -1411,6 +1485,7 @@ function CompactRow({
   view,
   viewKey,
   now,
+  sla,
   onDetails,
   onOpen,
   onRequestReview,
@@ -1419,6 +1494,7 @@ function CompactRow({
   view: SavedView;
   viewKey: string;
   now: Date;
+  sla: ReviewSla;
   onDetails: (row: ListRow) => void;
   onOpen: (url: string) => void;
   onRequestReview: (row: ListRow) => void;
@@ -1453,11 +1529,11 @@ function CompactRow({
             </>
           )}
           {row.stack && <StackBadge stack={row.stack} />}
-          <RowCues row={row} now={now} />
+          <RowCues row={row} now={now} sla={sla} />
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-1.5 pt-0.5 text-xs text-slate-400">
-        {view.show.review && <NextActionBadge row={row} viewKey={viewKey} now={now} compact onOpen={onOpen} onRequestReview={onRequestReview} onDetails={onDetails} />}
+        {view.show.review && <NextActionBadge row={row} viewKey={viewKey} now={now} sla={sla} compact onOpen={onOpen} onRequestReview={onRequestReview} onDetails={onDetails} />}
         {view.show.threads && <Threads row={row} />}
         <SlackCell row={row} now={now} showMissing={view.show.notRequested} onOpen={onOpen} />
       </div>

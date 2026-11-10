@@ -1036,6 +1036,9 @@ Nothing org-specific is hard-coded or shipped: GitHub orgs, Slack workspaces, te
 | `slack.mcp.workspace_overrides` | `{}`: every workspace uses the global client | `{"T0000000":{"client_id":"<…>","redirect_uri":"http://127.0.0.1:<port>/mcp/oauth/callback"}}` (secret in the keychain under that client ID) |
 | `review.requester` | `""` | `""` |
 | `review.min_bump_interval_hours` | 24 | 24 |
+| `review_sla_hours` | 48 | 24. Hours before **Review now**. The same wait drives the Waiting chip and a follow-up when there is no Slack request. Range 1–336. Comparison is `review_wait_exceeded` (`crates/pr-nexus-core/src/sla.rs`); a stored value outside the range is treated as 48. Comparison is strict: a wait of exactly this many hours is not overdue. The Bumps due queue uses `review.bump_due_hours` and does not read this key. |
+| `review_sla_working_days` | `false` | `true`. When on, only Monday–Friday hours in the machine's timezone count toward `review_sla_hours`. A weekend does not add wait. This is weekday hours, not an 8-hour workday. |
+| `my_prs_wip_limit` | unset (no limit) | 8. Optional cap on open pull requests in My PRs, 1–500. Empty or 0 stores null and shows no hint. |
 | `review.blocked_review_required_is_ready` | `true` (§7.1 Δ, owner decision) | true |
 | `review.discovery_search` | `true` (if `search:read.public` is granted) | true |
 | `review.bulk_bump_max_threads` | 3 | 3 |
@@ -1109,10 +1112,10 @@ Approved mockups (AI-generated; style references, not pixel specs):
 - [`docs/ui/slack-preview.jpg`](ui/slack-preview.jpg): the Slack preview modal only (cropped; in the app it sits centered over the dimmed list view). The rendered message is illustrative: the real text is the §7.6 template, byte-exact, and the sender shown is **you** (messages are posted with your user token), not an "APP" bot. Bumps appear in a separate "Bump · thread reply" group per channel.
 
 **Layout.**
-- **Sidebar** (navigation only, no persistent filters): My PRs, To review, **Bumps due** (the count of due bumps, opening the queue in §7.14), then a **Projects** section listing active projects in alphabetical order (case-insensitive, numbers in numeric order, so `beta 2` comes before `beta 10`), with a `+` (New project) button. That order is display only: project identity, the selected view, and stored `sort_order` stay as they are, and My PRs, To review, New project, the empty state, and the footer are not part of the sort. A create or rename re-sorts on the next render. With no projects it shows an empty state ("No projects yet…") with a **Create project** button; both open an inline name field (`Enter` creates via `create_project`: trimmed, non-empty, unique; `Esc` cancels) and select the new project. Settings is **not** a project entry. There is no org checkbox list here; orgs are a filter in the menu.
+- **Sidebar** (navigation only, no persistent filters): My PRs, To review, **Bumps due** (the count of due bumps, opening the queue in §7.14), then a **Projects** section listing active projects in alphabetical order (case-insensitive, numbers in numeric order, so `beta 2` comes before `beta 10`), with a `+` (New project) button. My PRs has a copy icon beside it, **Copy stand-up recap** (same Markdown as the toolbar action below). That order is display only: project identity, the selected view, and stored `sort_order` stay as they are, and My PRs, To review, Bumps due, New project, the empty state, and the footer are not part of the sort. A create or rename re-sorts on the next render. With no projects it shows an empty state ("No projects yet…") with a **Create project** button; both open an inline name field (`Enter` creates via `create_project`: trimmed, non-empty, unique; `Esc` cancels) and select the new project. Settings is **not** a project entry. There is no org checkbox list here; orgs are a filter in the menu.
 - **Sidebar footer:** Settings, then sync status plus a refresh button: `● Synced · 2m ago  ⟳`, `◌ Checking my PRs… 40/132`, `▲ Rate limited · resets 14:32  ⟳`, or `▲ Sync failed · <reason>  ⟳` (§6). Clicking the text shows per-account detail.
-- **Header:** view title and subtitle, the **search bar**, and a single small **filter icon button** (funnel). There is **no** overflow `⋯` button in the header.
-- **Subtitle:** in My PRs and To review, `N open PRs across P projects`, where P counts the active projects (archived ones only when the Archived filter is on), plus `· U unassigned` when some shown PRs have no project. In a project view it reads `N open PRs in this project`. In a project view the title can be double-clicked to rename the project, like a section title.
+- **Header:** view title and subtitle, the **search bar**, and a single small **filter icon button** (funnel). There is **no** overflow `⋯` button in the header. On My PRs the list toolbar ends with **More** (`…`), whose menu is **Copy stand-up recap**.
+- **Subtitle:** in My PRs and To review, `N open PRs across P projects`, where P counts the active projects (archived ones only when the Archived filter is on), plus `· U unassigned` when some shown PRs have no project. In a project view it reads `N open PRs in this project`. In a project view the title can be double-clicked to rename the project, like a section title. On My PRs, when `my_prs_wip_limit` is set and open pull requests are over it, the subtitle adds an amber hint, `Over the open PR limit (N of M)`. It is a hint, not an error, and other views do not show it.
 - **Desktop shell:** the main window opens maximized on first launch; afterwards its size, position and maximized state are restored (`tauri-plugin-window-state`, never the visibility flag). Release builds (bundled frontend) suppress the WebView's native context menu (Reload, Inspect Element); dev builds keep it. Native file drops are disabled on the window so HTML5 row drag and drop works.
 - **List header:** a global tri-state checkbox with `N of M selected` (or, when nothing is selected, `M open PRs` when every row is open and `M PRs` when merged or closed rows are included). M is the number of rows the checkbox selects.
 
@@ -1162,6 +1165,17 @@ Approved mockups (AI-generated; style references, not pixel specs):
 
 **Copy as Markdown.** The selection bar has **Copy as Markdown** (copy icon; `Cmd/Ctrl+Shift+C` while something is selected). It writes the active selection to the clipboard as a Markdown list, one `- [title](url)` line per PR in the list's visible order, with a trailing newline. Titles are trimmed and `[`, `]` and `\` are escaped so the links stay intact. Only loaded rows are copied. The clipboard write uses `navigator.clipboard.writeText`, falling back to a hidden textarea and `execCommand("copy")`. A toast confirms (`Copied 3 PRs as Markdown`); a failure shows an error toast. While the selection bar is visible, toasts sit centered just above it, in the list column, so they never cover its buttons.
 
+**Copy stand-up recap.** My PRs has the same action in the toolbar **More** menu and on the sidebar copy icon. It is not a selection action. It loads My PRs with Archived and closed on (so merged rows still kept for `sync.keep_closed_days` are included), no other filters, up to 5,000 rows, and dedupes by id. Hidden rows stay out. Formatting is `standupRecap` in `app/src/list/standup.ts` (time injected). The header is `## Stand-up · since Monday` (the previous weekday: Tuesday starts Monday, and Monday, Saturday and Sunday start Friday, at local midnight). Empty sections are omitted. One line per PR, `- [title](url)`, with `[`, `]` and `\` escaped. A pull request is in the first matching group only:
+
+- **Merged** — `state` merged and `updated_at` on or after the last working day. The list has no merge time, so `updated_at` stands in for it.
+- **Drafts** — open drafts, including ones whose CI is failing.
+- **Changes requested** — open, changes requested. This wins over failing CI.
+- **Ready to merge** — open, approved, CI not pending or failing, no conflicts.
+- **CI failing** — open, checks failing. Informational.
+- **Waiting for review** — open, a reviewer or a Slack request, not approved. The line adds the age (` · 3d`, hours under 72, `<1h` under an hour), from the Slack request or else `created_at`. Oldest first. Other groups are newest `updated_at` first.
+
+**Reviewed by me** is a last section, since the last working day, only when a review time is passed in. The list does not store that time, so the app omits the section. Closed (not merged) rows are omitted. An empty recap is `Nothing to report.` A toast says `Copied stand-up recap`.
+
 **Selection bar and the detail panel.** The selection bar is centered in the list column, not the window, and is never wider than that column, so the detail panel never covers it. It watches the column width (`ResizeObserver`) and folds in steps. **More actions** (`…`) is always on the bar. On a wide column its menu holds **Mark as read**, **Mark all as read**, the snooze and mute items (§8.2 Unread, snooze and mute), then **Close PR** (or **Close N PRs**). Under 760 px, **Add to project** and **Copy as Markdown** move into that same menu, above those items: `Enter`/`Space` opens it, focus goes to the first item, arrow keys move, `Esc` closes it and returns focus to the button, and a click outside closes it. Add and Copy still show their shortcuts. Add to project then opens its menu above the `…` button. Under 480 px, the count shortens to `5` (`5 (+2 hidden)` with filtered-out picks) and the primary button to the Slack mark and **Slack** (accessible name unchanged). The primary action and **✕ Clear selection** are always visible, and `p` and `Cmd/Ctrl+Shift+C` work at every width.
 
 **Unread, snooze and mute.** A small violet dot on a row means new commits, comments, reviews, or a CI change since that pull request's detail was last opened. Activity is the head SHA, check rollup, review decision, review-thread counts, and `updated_at` (a conversation comment that does not open a review thread still moves `updated_at`; a title or label edit can too). The first time a pull request is seen, that activity is stored as already read, so existing rows do not all light up. Opening the detail marks it read. **Mark as read** marks the active selection; **Mark all as read** marks every pull request in the current filtered view. Both live in the selection **More actions** menu. Last-seen, snooze and mute are local (`pr_attention`, migration 0011), keyed by node id.
@@ -1182,7 +1196,7 @@ Approved mockups (AI-generated; style references, not pixel specs):
 
 Row content, each part toggled under **Show**: number and title; `owner/repo`; CI (colored dot + label); **next-action badge** (below); 💬 unresolved thread count (default on; icon + number, tooltip and accessible label `N unresolved of M review threads`, dimmed at 0; never a bare `0/0`); owning teams; last activity; project badges (`+1` when in several projects); the **Slack request indicator**. Layout matches the mockup: title and repo on the left, then aligned next-action, threads, and Slack columns.
 
-**Next-action badge.** Each row says what should happen next, computed by the pure `nextAction(row, viewKey, now)` (`app/src/list/nextAction.ts`, mirrored by `next_action` in `listing.rs`). It is read from the author's side, except in To review and for rows where I am a requested reviewer but not the author. The first matching rule wins; priorities are this table's order, top first, and drive **Needs attention**.
+**Next-action badge.** Each row says what should happen next, computed by the pure `nextAction(row, viewKey, now, sla)` (`app/src/list/nextAction.ts`, mirrored by `next_action` in `listing.rs`). It is read from the author's side, except in To review and for rows where I am a requested reviewer but not the author. The first matching rule wins; priorities are this table's order, top first, and drive **Needs attention**. `sla` is `review_sla_hours` and `review_sla_working_days` from Settings (default 48 hours, every day). `list_page` fills those from the store, so a client value cannot override them. The Waiting chip uses the same wait. The 24 h Slack follow-up (`NUDGE_HOURS`) stays on the calendar clock.
 
 | Action | Badge | Side | Rule | Click |
 |---|---|---|---|---|
@@ -1190,10 +1204,10 @@ Row content, each part toggled under **Show**: number and title; `owner/repo`; C
 | ci_failing | Fix CI (rose) | author | checks `failure` or `error` | opens `/checks` |
 | changes_requested | Address review (amber) | author | changes requested | opens the PR |
 | ready_to_merge | Ready to merge (emerald) | author | approved, CI not pending | opens details |
-| review_overdue | Review now (rose) | reviewer | waiting more than 48 h (`waitingSince`, else created) | opens `/files` |
+| review_overdue | Review now (rose) | reviewer | waiting longer than `review_sla_hours` (`waitingSince`, else created; weekday hours when `review_sla_working_days`) | opens `/files` |
 | draft | Mark ready (slate) | author | draft | opens details |
 | request_review | Request review (sky) | author | no reviewer requested and no Slack request | Slack request dialog |
-| nudge | Follow up (amber, Slack mark) | author | last Slack request or bump at least `NUDGE_HOURS` (24 h) old, or no Slack request and waiting more than 48 h | Slack dialog (bump) |
+| nudge | Follow up (amber, Slack mark) | author | last Slack request or bump at least `NUDGE_HOURS` (24 h) old, or no Slack request and waiting longer than `review_sla_hours` | Slack dialog (bump) |
 | review | Review (violet) | reviewer | otherwise | opens `/files` |
 | checks_running | Checks running (slate) | author | approved, CI pending | opens `/checks` |
 | waiting_review | Waiting for review (slate) | author | otherwise | none |
@@ -1559,7 +1573,7 @@ the store and reloads every view.
 
 Closing the window hides it. The same process stays in the menu bar and keeps syncing on the unfocused interval (§6). Quit, in the menu, exits the process. There is no separate daemon, and nothing runs after Quit. A click on the icon's **Open PR Nexus**, a double-click, or reopening the app from the dock shows the window again.
 
-The menu is **Open PR Nexus**, **To review: N**, **Mine: N**, **Refresh**, **Quit**. The two counts are open pull requests on the GitHub account the list reads. Hidden, snoozed, and muted rows are left out:
+The menu is **Open PR Nexus**, **To review: N**, **Mine: N**, **Refresh**, **Quit**. The two counts are open pull requests on the GitHub account the list reads. Hidden, snoozed, and muted rows are left out. They use the same next action as the list, including `review_sla_hours` and `review_sla_working_days`:
 
 - **To review** counts rows whose next action (§8.2), read as a reviewer, is Review or Review overdue.
 - **Mine** counts rows the user authored whose next action, read as the author, is Resolve conflicts, Fix CI, Changes requested, Ready to merge, Request review, or Nudge.
@@ -1753,6 +1767,7 @@ When the agent's client supports MCP elicitation, a held write is shown in the a
 - Slack direct Web API transport (`SlackWebApiChatProvider`), the documented fallback in §7.11, if a workspace cannot use the Slack MCP server.
 - Discord and Mattermost (`ChatProvider`): bump maps to "reply in thread and also to channel" where supported, otherwise a quote plus link.
 - Android/iOS via Tauri mobile. Keep `core` free of desktop-only dependencies. The keychain moves behind a trait.
+- Scheduled reminders that post on their own remain future work. They are not the Bumps due queue, which uses `review.bump_due_hours`. Review now stays on `review_sla_hours` and `review_wait_exceeded`.
 
 ## 11. CI/CD & release process (modeled on `harnesstap/harnesstap`)
 

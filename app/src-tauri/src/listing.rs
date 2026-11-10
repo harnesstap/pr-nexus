@@ -11,6 +11,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
+use pr_nexus_core::sla::{ReviewSla, review_wait_exceeded};
 use pr_nexus_core::stack::{self, StackPlace, StackRef, StackState};
 use serde::{Deserialize, Serialize};
 
@@ -100,6 +101,30 @@ pub struct PageRequest {
     /// Rows that live only in archived projects still wait for Archived.
     #[serde(default)]
     pub github_any_state: bool,
+    /// `review_sla_hours`. The command fills this from the store.
+    #[serde(default = "default_review_sla_hours")]
+    pub review_sla_hours: i64,
+    /// `review_sla_working_days`.
+    #[serde(default)]
+    pub review_sla_working_days: bool,
+    /// Minutes east of UTC, for weekday hours. The command sets the machine zone.
+    #[serde(default)]
+    pub tz_offset_minutes: i32,
+}
+
+fn default_review_sla_hours() -> i64 {
+    pr_nexus_core::sla::DEFAULT_REVIEW_SLA_HOURS
+}
+
+fn sla_of(request: &PageRequest) -> ReviewSla {
+    ReviewSla {
+        hours: if request.review_sla_hours < 1 {
+            pr_nexus_core::sla::DEFAULT_REVIEW_SLA_HOURS
+        } else {
+            request.review_sla_hours
+        },
+        working_days: request.review_sla_working_days,
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -751,7 +776,13 @@ fn slack_kinds(item: &Item, now_ms: i64) -> Vec<&'static str> {
 fn rank(item: &Item, request: &PageRequest, now_ms: i64) -> i64 {
     match request.ordering.as_str() {
         // Descending puts the most urgent next action first, oldest first within it.
-        "attention" => attention_rank(item, &request.view_key, now_ms),
+        "attention" => attention_rank_with(
+            item,
+            &request.view_key,
+            now_ms,
+            &sla_of(request),
+            request.tz_offset_minutes,
+        ),
         "created" => item.created_ms,
         "slack" => item.slack_requested_ms,
         "readiness" => match item.row.readiness.as_str() {
@@ -843,8 +874,20 @@ pub const NUDGE_HOURS: i64 = 24;
 /// Wider than any PR age in ms, so the action always wins over age.
 const ATTENTION_STEP: i64 = 10_000_000_000_000;
 
-/// Pure: mirrors `nextAction` in `nextAction.ts`.
+/// Pure: mirrors `nextAction` in `nextAction.ts`. Uses the 48 hour default.
+#[cfg(test)]
 pub fn next_action(item: &Item, view_key: &str, now_ms: i64) -> NextAction {
+    next_action_with(item, view_key, now_ms, &ReviewSla::default(), 0)
+}
+
+/// Next action for `sla`. The no-argument tests use the 48 hour default.
+pub fn next_action_with(
+    item: &Item,
+    view_key: &str,
+    now_ms: i64,
+    sla: &ReviewSla,
+    offset_east_minutes: i32,
+) -> NextAction {
     let row = &item.row;
     if row.state != "open" {
         return NextAction::Done;
@@ -864,7 +907,7 @@ pub fn next_action(item: &Item, view_key: &str, now_ms: i64) -> NextAction {
             return NextAction::Reviewed;
         }
         let since = waiting_since(item).unwrap_or(item.created_ms);
-        return if now_ms - since > STALE_REVIEW_HOURS * HOUR_MS {
+        return if review_wait_exceeded(since, now_ms, sla, offset_east_minutes) {
             NextAction::ReviewOverdue
         } else {
             NextAction::Review
@@ -894,7 +937,8 @@ pub fn next_action(item: &Item, view_key: &str, now_ms: i64) -> NextAction {
     }
     let due = match (row.slack.is_some(), item.slack_stamp_ms) {
         (true, Some(stamp)) => now_ms - stamp >= NUDGE_HOURS * HOUR_MS,
-        _ => waiting_since(item).is_some_and(|since| now_ms - since > STALE_REVIEW_HOURS * HOUR_MS),
+        _ => waiting_since(item)
+            .is_some_and(|since| review_wait_exceeded(since, now_ms, sla, offset_east_minutes)),
     };
     if due {
         NextAction::Nudge
@@ -923,10 +967,15 @@ const MINE_ATTENTION: &[NextAction] = &[
 
 const REVIEW_ATTENTION: &[NextAction] = &[NextAction::Review, NextAction::ReviewOverdue];
 
-/// Counts from the same [`next_action`] rules as the list. Hidden, closed,
-/// snoozed, and muted rows are skipped. To review uses the reviewer rules;
-/// Mine uses the author rules, including a pull request that is both.
-pub fn attention_counts(items: &[Item], now_ms: i64) -> AttentionCounts {
+/// Counts from the same next-action rules as the list, using `sla`. Hidden,
+/// closed, snoozed, and muted rows are skipped. To review uses the reviewer
+/// rules; Mine uses the author rules, including a pull request that is both.
+pub fn attention_counts(
+    items: &[Item],
+    now_ms: i64,
+    sla: &ReviewSla,
+    offset_east_minutes: i32,
+) -> AttentionCounts {
     let mut counts = AttentionCounts::default();
     for item in items {
         if item.row.state != "open" || item.row.hidden || item.row.snoozed || item.row.muted {
@@ -934,9 +983,22 @@ pub fn attention_counts(items: &[Item], now_ms: i64) -> AttentionCounts {
         }
         let author = item.row.involvement & AUTHOR != 0;
         let requested = item.row.involvement & REVIEW_REQUESTED != 0;
-        let review =
-            requested && REVIEW_ATTENTION.contains(&next_action(item, "to_review", now_ms));
-        let mine = author && MINE_ATTENTION.contains(&next_action(item, "mine", now_ms));
+        let review = requested
+            && REVIEW_ATTENTION.contains(&next_action_with(
+                item,
+                "to_review",
+                now_ms,
+                sla,
+                offset_east_minutes,
+            ));
+        let mine = author
+            && MINE_ATTENTION.contains(&next_action_with(
+                item,
+                "mine",
+                now_ms,
+                sla,
+                offset_east_minutes,
+            ));
         counts.to_review += usize::from(review);
         counts.mine += usize::from(mine);
         counts.badge += usize::from(review || mine);
@@ -944,35 +1006,56 @@ pub fn attention_counts(items: &[Item], now_ms: i64) -> AttentionCounts {
     counts
 }
 
-/// Mirrors `attentionRank` in `nextAction.ts`.
-pub fn attention_rank(item: &Item, view_key: &str, now_ms: i64) -> i64 {
+fn attention_rank_with(
+    item: &Item,
+    view_key: &str,
+    now_ms: i64,
+    sla: &ReviewSla,
+    offset_east_minutes: i32,
+) -> i64 {
     let since = waiting_since(item).unwrap_or(item.created_ms);
     let age = (now_ms - since).clamp(0, ATTENTION_STEP - 1);
-    next_action(item, view_key, now_ms).priority() * ATTENTION_STEP + age
+    next_action_with(item, view_key, now_ms, sla, offset_east_minutes).priority() * ATTENTION_STEP
+        + age
 }
 
 /// The age chip a row shows (§8.2). Mirrors `staleCue` in
 /// `app/src/list/rowCues.ts`, with the same thresholds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StaleCue {
-    /// Waiting on review longer than [`STALE_REVIEW_HOURS`].
+    /// Waiting on review longer than the review SLA.
     Waiting,
     /// No update and no Slack bump for longer than [`IDLE_DAYS`].
     Idle,
 }
 
-/// `STALE_REVIEW_HOURS` in `rowCues.ts`.
+/// `STALE_REVIEW_HOURS` in `rowCues.ts`. Tests use it as the default wait.
+#[cfg(test)]
 pub const STALE_REVIEW_HOURS: i64 = 48;
 /// `IDLE_DAYS` in `rowCues.ts`.
 pub const IDLE_DAYS: i64 = 7;
 const HOUR_MS: i64 = 60 * 60 * 1000;
 
 /// Closed and merged rows carry no cue; a long review wait wins over idleness.
+/// Uses the 48 hour default.
+#[cfg(test)]
 pub fn stale_cue(item: &Item, now_ms: i64) -> Option<StaleCue> {
+    stale_cue_with(item, now_ms, &ReviewSla::default(), 0)
+}
+
+/// [`stale_cue`] with the saved review SLA.
+pub fn stale_cue_with(
+    item: &Item,
+    now_ms: i64,
+    sla: &ReviewSla,
+    offset_east_minutes: i32,
+) -> Option<StaleCue> {
     if item.row.state != "open" {
         return None;
     }
-    if waiting_since(item).is_some_and(|since| now_ms - since > STALE_REVIEW_HOURS * HOUR_MS) {
+    if waiting_since(item)
+        .is_some_and(|since| review_wait_exceeded(since, now_ms, sla, offset_east_minutes))
+    {
         return Some(StaleCue::Waiting);
     }
     let last = item.updated_ms.max(item.slack_stamp_ms.unwrap_or(0));
@@ -1275,6 +1358,9 @@ mod tests {
             week_start: at(12 + 6 * 24),
             github_ids: None,
             github_any_state: false,
+            review_sla_hours: 48,
+            review_sla_working_days: false,
+            tz_offset_minutes: 0,
         }
     }
 
@@ -1855,6 +1941,8 @@ mod tests {
                 mine, waiting, review, both, hidden, closed, draft, snoozed, muted,
             ],
             now_ms,
+            &ReviewSla::default(),
+            0,
         );
         assert_eq!(
             counts,
@@ -1891,6 +1979,28 @@ mod tests {
         assert_eq!(
             next_action(&entry, "to_review", now_ms),
             NextAction::AuthorDraft
+        );
+    }
+
+    #[test]
+    fn a_shorter_review_sla_makes_review_now_sooner() {
+        let now_ms = now().timestamp_millis();
+        let mut entry = item(1, &[], 1);
+        entry.row.involvement = REVIEW_REQUESTED;
+        entry.row.reviewers_requested = true;
+        entry.created_ms = at(20).timestamp_millis();
+        let sla = ReviewSla {
+            hours: 12,
+            working_days: false,
+        };
+        assert_eq!(
+            next_action_with(&entry, "to_review", now_ms, &sla, 0),
+            NextAction::ReviewOverdue
+        );
+        assert_eq!(next_action(&entry, "to_review", now_ms), NextAction::Review);
+        assert_eq!(
+            stale_cue_with(&entry, now_ms, &sla, 0),
+            Some(StaleCue::Waiting)
         );
     }
 

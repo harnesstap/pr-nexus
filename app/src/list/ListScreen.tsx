@@ -3,8 +3,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import type { Api, Bootstrap, ListRow, ProjectDto, RemoteReviewFilter, ReplacedLinkDto } from "../api";
 import { CloseDialog, type CloseTarget } from "../detail/CloseDialog";
 import { errorMessage } from "../api";
+import { ClockIcon, CloseIcon, CopyIcon, FolderIcon, HomeIcon, LogoIcon, PlusIcon, RefreshIcon, SlackLogo } from "../icons";
 import { parseOpenRequest } from "./openRequest";
-import { ClockIcon, CloseIcon, FolderIcon, HomeIcon, LogoIcon, PlusIcon, RefreshIcon, SlackLogo } from "../icons";
 import { Tooltip } from "../Tooltip";
 import { OrgOption } from "../orgs";
 import {
@@ -27,7 +27,10 @@ import {
   type SnoozeChoice,
   type Toast,
 } from "./model";
+import { copyText } from "./markdown";
 import { PrList, type ListActions } from "./PrList";
+import { DEFAULT_REVIEW_SLA, type ReviewSla } from "./sla";
+import { loadStandupRows, standupRecap } from "./standup";
 import { sidebarProjects } from "./projects";
 import { GlobalCommands } from "./GlobalCommands";
 import type { PageRequest } from "./paging";
@@ -73,9 +76,11 @@ interface Props {
   onAddProfile?: () => void;
   /** First view, for the preview harness. */
   startView?: string;
+  /** Opens the My PRs toolbar menu on first paint (preview). */
+  openStandupMenu?: boolean;
 }
 
-export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, onAddProfile, startView = "mine" }: Props) {
+export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, onAddProfile, startView = "mine", openStandupMenu = false }: Props) {
   /** Bumped whenever stored rows may have changed; the list re-reads in place. */
   const [version, setVersion] = useState(0);
   const [projects, setProjects] = useState<ProjectDto[]>([]);
@@ -96,6 +101,8 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
   }, []);
   const [detail, setDetail] = useState(false);
   const [now, setNow] = useState(() => new Date());
+  const [sla, setSla] = useState<ReviewSla>(DEFAULT_REVIEW_SLA);
+  const [wipLimit, setWipLimit] = useState<number | null>(null);
   const [orgs, setOrgs] = useState(boot.tracked_orgs);
   const [personal, setPersonal] = useState(boot.include_personal);
   const [error, setError] = useState<string | null>(null);
@@ -120,6 +127,33 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
   const [bulkIds, setBulkIds] = useState<number[] | null>(null);
   const listActions = useRef<ListActions | null>(null);
   const [notice, setNotice] = useState<Toast | null>(null);
+
+  useEffect(() => {
+    if (viewKey === "settings") {
+      return;
+    }
+    let live = true;
+    void api.loadPreferences().then((prefs) => {
+      if (!live) {
+        return;
+      }
+      setSla({ hours: prefs.review_sla_hours, workingDays: prefs.review_sla_working_days });
+      setWipLimit(prefs.my_prs_wip_limit);
+    }).catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [api, viewKey]);
+
+  const copyStandup = useCallback(async () => {
+    try {
+      const rows = await loadStandupRows((request) => api.listPage(request), now);
+      await copyText(standupRecap(rows, now));
+      setNotice({ text: "Copied stand-up recap" });
+    } catch (error) {
+      setNotice({ text: errorMessage(error) });
+    }
+  }, [api, now, setNotice]);
   /** The list column; with a selection, toasts sit just above its bar, clear of the detail panel. */
   const [listColumn, setListColumn] = useState<HTMLDivElement | null>(null);
   /** The bulk run's summary, shown as a toast once its dialog closes. */
@@ -738,9 +772,23 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
           PR Nexus
         </p>
         <nav aria-label="Views" className="flex flex-col gap-0.5 px-2 text-sm">
-          <NavButton current={viewKey} id="mine" icon={<HomeIcon />} onSelect={setViewKey}>
-            My PRs
-          </NavButton>
+          <div className="flex items-center gap-0.5">
+            <div className="min-w-0 flex-1">
+              <NavButton current={viewKey} id="mine" icon={<HomeIcon />} onSelect={setViewKey}>
+                My PRs
+              </NavButton>
+            </div>
+            <Tooltip label="Copy stand-up recap" detail="Markdown grouped by status, since the last working day" align="end">
+              <button
+                type="button"
+                aria-label="Copy stand-up recap"
+                className="rounded p-1 text-slate-500 hover:bg-slate-800 hover:text-slate-200"
+                onClick={() => void copyStandup()}
+              >
+                <CopyIcon size={14} />
+              </button>
+            </Tooltip>
+          </div>
           <NavButton current={viewKey} id="to_review" icon={<ClockIcon />} onSelect={setViewKey}>
             To review
           </NavButton>
@@ -1013,6 +1061,10 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
                 onBulkReview={setBulkIds}
                 onClosePullRequests={setCloseTargets}
                 onNotice={setNotice}
+                sla={sla}
+                wipLimit={wipLimit}
+                onCopyStandup={() => void copyStandup()}
+                standupMenuInitiallyOpen={openStandupMenu}
                 draftPatches={shownDraftPatches}
                 removedIds={removedIds}
                 actionsRef={listActions}
