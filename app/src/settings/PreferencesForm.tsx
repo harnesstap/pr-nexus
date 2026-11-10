@@ -135,6 +135,23 @@ export function PreferencesForm({ api, prefs, section, permission, onRequestPerm
               onChange={(event) => patch({ ticket_key_regex: event.target.value })}
             />
           </Field>
+          <Field
+            label="Extra bot logins"
+            help="GitHub Bot accounts and logins ending in [bot] already count as bots. Add other logins here, one per line, when a bot posts as a normal user."
+          >
+            <textarea
+              {...plainText}
+              aria-label="Extra bot logins"
+              rows={3}
+              className="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 font-mono text-sm"
+              placeholder={"review-helper\nci-helper"}
+              value={draft.bot_logins.join("\n")}
+              onChange={(event) => {
+                const lines = event.target.value.split("\n").map((line) => line.trim());
+                patch({ bot_logins: lines });
+              }}
+            />
+          </Field>
           <Field label="JIRA base URL" help="Your JIRA site, like https://acme-labs.atlassian.net. With it set, a bare key such as ACME-123 on a project links to its ticket. Empty turns bare keys into plain text.">
             <input {...plainText}
               aria-label="JIRA base URL"

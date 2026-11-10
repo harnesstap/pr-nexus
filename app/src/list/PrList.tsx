@@ -1403,11 +1403,20 @@ function StaleChip({ cue }: { cue: StaleCue }) {
 /** Row cues after the title: draft and conflict pills, then the age chip. */
 function RowCues({ row, now, sla }: { row: ListRow; now: Date; sla: ReviewSla }) {
   const stale = staleCue(row, now, sla);
+  const bots = row.bot_comments ?? 0;
+  const botLabel = bots === 1 ? "1 bot comment" : `${bots} bot comments`;
   return (
     <>
       {rowPills(row).map((pill) => (
         <RowPillTag key={pill} pill={pill} />
       ))}
+      {bots > 0 && (
+        <Tooltip label={botLabel} className="shrink-0">
+          <span aria-label={botLabel} className="inline-flex shrink-0 items-center rounded-full bg-slate-800 px-1.5 text-[11px] leading-4 text-slate-400">
+            bot
+          </span>
+        </Tooltip>
+      )}
       {stale && <StaleChip cue={stale} />}
     </>
   );

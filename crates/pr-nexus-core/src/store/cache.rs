@@ -111,6 +111,20 @@ impl Store {
         })
     }
 
+    /// Every cached overview, as stored. Used to mark list rows that have
+    /// bot comments without parsing rows that were never opened.
+    pub fn list_pr_overviews(&self) -> Result<Vec<(PrId, String)>, CoreError> {
+        self.read(|conn| {
+            let mut stmt = conn
+                .prepare("SELECT pr_id, overview_json FROM pr_overview_cache")
+                .map_err(db)?;
+            let rows = stmt
+                .query_map([], |row| Ok((PrId(row.get(0)?), row.get::<_, String>(1)?)))
+                .map_err(db)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+        })
+    }
+
     /// The cached detail-panel overview JSON for `pr`.
     pub fn get_pr_overview(&self, pr: PrId) -> Result<Option<String>, CoreError> {
         self.read(move |conn| {

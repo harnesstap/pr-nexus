@@ -193,6 +193,8 @@ fn overview(mergeable: &str, merge_state: &str) -> PrOverview {
         author: None,
         assignees: Vec::new(),
         commenters: Vec::new(),
+        feedback: Vec::new(),
+        bot_reviews: crate::bots::BotReviews::default(),
         viewer: ViewerAccess {
             login: "Alice".into(),
             permission: Some("write".into()),

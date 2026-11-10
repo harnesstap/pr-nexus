@@ -17,6 +17,7 @@ pub mod clients;
 pub mod config;
 pub mod control;
 pub mod profiles;
+pub mod prompts;
 pub mod server;
 pub mod slack;
 pub mod token;

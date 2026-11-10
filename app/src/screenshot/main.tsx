@@ -169,6 +169,7 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     review_sla_hours: 48,
     review_sla_working_days: false,
     my_prs_wip_limit: null,
+    bot_logins: [],
   }),
   set_pr_starred: (args) => {
     const row = rows.find((item) => item.id === args.prId);

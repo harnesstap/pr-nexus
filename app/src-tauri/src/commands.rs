@@ -248,6 +248,10 @@ pub struct ListRow {
     /// Who still has to review, in display order (see [`pending_reviewers`]).
     pub pending_reviewers: Vec<PendingReviewerDto>,
     pub slack: Option<SlackIndicator>,
+    /// Bot comments and reviews seen the last time this pull request's
+    /// detail was loaded. `0` until then: the list sync does not fetch them.
+    #[serde(default)]
+    pub bot_comments: u32,
 }
 
 /// One pending review request as the list row shows it.
@@ -923,6 +927,13 @@ pub async fn set_focus(
     Ok(())
 }
 
+/// Applies the extra bot logins before an overview reaches the panel.
+/// The cache keeps GitHub's totals and the raw notes.
+fn present_overview(state: &AppState, overview: PrOverview) -> Result<PrOverview, AppError> {
+    let extra = settings::bot_logins(&state.store)?;
+    Ok(overview::for_viewer(overview, &extra))
+}
+
 /// Every synced row of the GitHub account, built with one query per table.
 pub(crate) fn list_items(state: &AppState) -> Result<Vec<listing::Item>, AppError> {
     let Some(account) = state::github_account(&state.store)? else {
@@ -948,6 +959,7 @@ pub(crate) fn list_items(state: &AppState) -> Result<Vec<listing::Item>, AppErro
         })
         .collect();
     listing::stamp_stacks(&mut items);
+    attach_bot_comments(state, &mut items)?;
     Ok(items)
 }
 
@@ -1030,7 +1042,30 @@ pub(crate) fn items_for_ids(
             ));
         }
     }
+    attach_bot_comments(state, &mut out)?;
     Ok(out)
+}
+
+/// Bot-comment counts from overviews the detail panel has already fetched.
+fn attach_bot_comments(state: &AppState, items: &mut [listing::Item]) -> Result<(), AppError> {
+    if items.is_empty() {
+        return Ok(());
+    }
+    let cached = state.store.list_pr_overviews()?;
+    if cached.is_empty() {
+        return Ok(());
+    }
+    let extra = settings::bot_logins(&state.store)?;
+    let counts: HashMap<i64, u32> = cached
+        .into_iter()
+        .map(|(id, json)| (id.0, pr_nexus_core::bots::count_in_json(&json, &extra)))
+        .collect();
+    for item in items.iter_mut() {
+        if let Some(count) = counts.get(&item.row.id) {
+            item.row.bot_comments = *count;
+        }
+    }
+    Ok(())
 }
 
 pub use crate::services::projects::{LinkDto, LinkOutcomeDto, ReplacedLinkDto, RuleDto};
@@ -1440,13 +1475,15 @@ pub async fn pr_overview(
     blocking::run(move || {
         let state = app.inner().as_ref();
         if !refresh {
-            return Ok(overview::cached(&state.store, PrId(id))?);
+            return overview::cached(&state.store, PrId(id))?
+                .map(|overview| present_overview(state, overview))
+                .transpose();
         }
         let pr = stored_pr(state, PrId(id))?;
-        with_vcs(state, |provider| {
+        let overview = with_vcs(state, |provider| {
             overview::refresh(&state.store, provider, &pr)
-        })
-        .map(Some)
+        })?;
+        Ok(Some(present_overview(state, overview)?))
     })
     .await
 }
@@ -1470,9 +1507,10 @@ pub async fn set_auto_merge(
     blocking::run(move || {
         let state = app.inner().as_ref();
         let pr = stored_pr(state, PrId(id))?;
-        with_vcs(state, |provider| {
+        let overview = with_vcs(state, |provider| {
             overview::set_auto_merge(&state.store, provider, &pr, method)
-        })
+        })?;
+        present_overview(state, overview)
     })
     .await
 }
@@ -1512,9 +1550,10 @@ pub async fn merge_pr(
     blocking::run(move || {
         let state = app.inner().as_ref();
         let pr = stored_pr(state, PrId(id))?;
-        with_vcs(state, |provider| {
+        let overview = with_vcs(state, |provider| {
             overview::merge(&state.store, provider, &pr, method)
-        })
+        })?;
+        present_overview(state, overview)
     })
     .await
 }
@@ -1570,7 +1609,7 @@ pub async fn set_pr_draft(
         })?;
         // The next Slack preview must recompute readiness from the updated row.
         crate::slack::lock(&state.owners).remove(&id);
-        Ok(overview)
+        present_overview(state, overview)
     })
     .await
 }
@@ -1788,6 +1827,7 @@ fn to_item(
             reviewers_requested: !pr.requested_reviewers.is_empty(),
             pending_reviewers: pending_reviewers(&pr.requested_reviewers),
             slack: request.map(|request| indicator(request, workspaces)),
+            bot_comments: 0,
         },
         updated_ms: pr.updated_at.timestamp_millis(),
         created_ms: pr.created_at.timestamp_millis(),

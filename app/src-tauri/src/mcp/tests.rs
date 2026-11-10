@@ -104,6 +104,7 @@ impl Harness {
         let init = message(&response.text().await.unwrap());
         assert_eq!(init["result"]["serverInfo"]["name"], "pr-nexus");
         assert!(init["result"]["capabilities"]["tools"].is_object());
+        assert!(init["result"]["capabilities"]["prompts"].is_object());
         let ack = self
             .post(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
             .bearer_auth(&self.token)
@@ -158,6 +159,128 @@ impl Harness {
 fn initialize() -> Value {
     json!({"jsonrpc": "2.0", "id": 1, "method": "initialize",
         "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "acme-agent", "version": "1.0"}}})
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn prompts_return_context_and_do_not_send() {
+    let h = harness().await;
+    let session = h.session().await;
+    let listed = h.rpc(&session, 2, "prompts/list", json!({})).await;
+    let names: Vec<&str> = listed["result"]["prompts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|prompt| prompt["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        vec![
+            "summarize_pr",
+            "prepare_review_request",
+            "triage_my_reviews"
+        ]
+    );
+    let summarized = h
+        .rpc(
+            &session,
+            3,
+            "prompts/get",
+            json!({"name": "summarize_pr", "arguments": {"pr": "acme/widgets#4"}}),
+        )
+        .await;
+    let summarized_text = summarized.to_string();
+    assert!(summarized.get("error").is_none(), "{summarized}");
+    assert!(
+        summarized_text.contains("Document the latch"),
+        "{summarized_text}"
+    );
+    assert!(summarized_text.contains("Do not send"), "{summarized_text}");
+    let prepared = h
+        .rpc(
+            &session,
+            4,
+            "prompts/get",
+            json!({
+                "name": "prepare_review_request",
+                "arguments": {"pr": "https://github.com/acme/widgets/pull/4"}
+            }),
+        )
+        .await;
+    let prepared_text = prepared.to_string();
+    assert!(
+        prepared_text.contains("Do not send the note"),
+        "{prepared_text}"
+    );
+    assert!(
+        prepared_text.contains("Document the latch"),
+        "{prepared_text}"
+    );
+    let triaged = h
+        .rpc(
+            &session,
+            5,
+            "prompts/get",
+            json!({"name": "triage_my_reviews"}),
+        )
+        .await;
+    let triaged_text = triaged.to_string();
+    assert!(triaged.get("error").is_none(), "{triaged}");
+    assert!(
+        triaged_text.contains("Document the latch"),
+        "{triaged_text}"
+    );
+    assert!(triaged_text.contains("Do not send"), "{triaged_text}");
+    assert!(!triaged_text.contains("Add a latch"), "{triaged_text}");
+    let unknown = h
+        .rpc(&session, 6, "prompts/get", json!({"name": "nope"}))
+        .await;
+    assert!(
+        unknown["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Unknown prompt")
+    );
+    let missing = h
+        .rpc(
+            &session,
+            8,
+            "prompts/get",
+            json!({"name": "summarize_pr", "arguments": {"pr": "acme/widgets#99"}}),
+        )
+        .await;
+    assert!(missing.get("error").is_some(), "{missing}");
+    let events = h.audit.0.lock().unwrap().clone();
+    let logged = events
+        .iter()
+        .find(|event| event.tool == "summarize_pr" && event.outcome == Outcome::Ok)
+        .unwrap();
+    assert!(logged.summary.contains("acme/widgets#4"));
+    let logged_args = serde_json::to_string(&logged.arguments).unwrap();
+    assert!(!logged_args.contains("Demo pull request"));
+    h.control
+        .update(McpSettings {
+            enabled: true,
+            reads: false,
+            ..McpSettings::default()
+        })
+        .await
+        .unwrap();
+    let hidden = h.rpc(&session, 9, "prompts/list", json!({})).await;
+    assert!(hidden["result"]["prompts"].as_array().unwrap().is_empty());
+    let denied = h
+        .rpc(
+            &session,
+            10,
+            "prompts/get",
+            json!({"name": "triage_my_reviews"}),
+        )
+        .await;
+    assert!(
+        denied["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Reads are turned off")
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

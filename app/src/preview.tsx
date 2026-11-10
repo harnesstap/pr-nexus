@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import type { Api, Bootstrap, BulkPreview, BulkRequest, ContextThread, ProfileDto, ProjectDto, ReviewTarget } from "./api";
 import { ProfileReuse } from "./wizard/ProfileReuse";
 import { mockBranch, mockDetail, mockOverview } from "./detail/mock";
+import { DetailPanel } from "./detail/DetailPanel";
 import "./index.css";
 import { ListScreen } from "./list/ListScreen";
 import { memoryProjectApi } from "./memoryProjects";
@@ -303,6 +304,7 @@ const rows: SearchRow[] = [
     readiness: "blocked",
     unresolved_threads: 3,
     total_threads: 3,
+    bot_comments: 2,
   }),
   row({
     id: 4,
@@ -582,6 +584,9 @@ const api: Api = {
     const item = rows.find((entry) => entry.id === id);
     if (previewParams.get("rows") === "stack" && item) {
       return Promise.resolve(stackOverview(item));
+    }
+    if (id === 3) {
+      return Promise.resolve(mockOverview(botOverview()));
     }
     return Promise.resolve(mockOverview(item?.base_ref ? { base_ref: item.base_ref, head_ref: item.head_ref } : {}));
   },
@@ -881,6 +886,36 @@ if (screenName === "notifications") {
   previewApi.notificationPermission = () => Promise.resolve(permission);
   previewApi.requestNotificationPermission = () => Promise.resolve(permission);
 }
+function botOverview() {
+  return {
+    issue_comments: 2,
+    review_comments: 4,
+    bot_reviews: {
+      count: 2,
+      unresolved: 1,
+      latest_snippet: "Rename the helper before merging so the next reader can find it.",
+      notes: [
+        {
+          login: "ci-helper[bot]",
+          kind: "review" as const,
+          snippet: "Rename the helper before merging so the next reader can find it.",
+          url: "https://github.com/acme/widgets/pull/135#pullrequestreview-9",
+          unresolved: false,
+          at: "2026-10-04T00:00:00Z",
+        },
+        {
+          login: "copilot",
+          kind: "thread" as const,
+          snippet: "This token rotation still logs the old secret.",
+          url: "https://github.com/acme/widgets/pull/135#discussion_r1",
+          unresolved: true,
+          at: "2026-10-03T00:00:00Z",
+        },
+      ],
+    },
+  };
+}
+
 const root = document.getElementById("root");
 if (!root) {
   throw new Error("root element missing");
@@ -926,6 +961,14 @@ createRoot(root).render(
     ) : settingsScene === "profiles" ? (
       <div className="min-h-screen bg-slate-950 px-6 py-8 text-slate-200">
         <SettingsScreen api={previewApi} boot={boot} onBoot={() => undefined} accounts={null} tab="profiles" onTabChange={() => undefined} onRerunSetup={() => undefined} />
+      </div>
+    ) : screenName === "bot-reviews" ? (
+      <div className="flex min-h-screen justify-end bg-slate-950 text-slate-200">
+        <DetailPanel api={previewApi} row={rows[2]!} version={0} onClose={() => undefined} onOpen={() => undefined} onNotice={() => undefined} />
+      </div>
+    ) : screenName === "review-settings" ? (
+      <div className="min-h-screen bg-slate-950 px-6 py-8 text-slate-200">
+        <SettingsScreen api={previewApi} boot={boot} onBoot={() => undefined} accounts={null} tab="review" onTabChange={() => undefined} onRerunSetup={() => undefined} />
       </div>
     ) : screenName === "slack-scopes" ? (
       <div className="min-h-screen bg-slate-950 px-6 py-8 text-slate-200">

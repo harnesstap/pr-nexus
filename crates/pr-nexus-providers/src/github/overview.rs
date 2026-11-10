@@ -1,5 +1,6 @@
 //! The detail panel's overview query and the auto-merge mutations (§7.2).
 
+use pr_nexus_core::bots::{self, CommentNote, NoteKind};
 use pr_nexus_core::domain::PullRequest;
 use pr_nexus_core::error::ProviderError;
 use pr_nexus_core::overview::{
@@ -224,6 +225,8 @@ pub(crate) fn parse(body: &Value, fetched_at: String) -> Result<PrOverview, Prov
         author,
         assignees,
         commenters,
+        feedback: feedback(node),
+        bot_reviews: bots::BotReviews::default(),
         viewer: ViewerAccess {
             login: opt_str(root.pointer("/viewer/login")).unwrap_or_default(),
             permission: lower(repo.get("viewerPermission")),
@@ -311,6 +314,86 @@ fn dedupe(people: impl IntoIterator<Item = Person>) -> Vec<Person> {
         }
     }
     out
+}
+
+/// How many notes the cache keeps. Bot notes are never dropped ahead of
+/// people's notes, so a long thread does not hide a bot comment.
+const NOTE_CAP: usize = 80;
+const OTHER_CAP: usize = 40;
+const SNIPPET: usize = 180;
+
+/// Conversation comments, the first comments of each review thread, and
+/// submitted review bodies. Page sizes are the query's.
+fn feedback(node: &Value) -> Vec<CommentNote> {
+    let mut notes = Vec::new();
+    for comment in nodes(node.get("comments")) {
+        if let Some(note) = comment_note(comment, NoteKind::Issue, None, false) {
+            notes.push(note);
+        }
+    }
+    for (index, thread) in nodes(node.get("reviewThreads")).iter().enumerate() {
+        let unresolved = thread.get("isResolved").and_then(Value::as_bool) == Some(false);
+        let thread_id = u32::try_from(index).ok();
+        for comment in nodes(thread.get("comments")) {
+            if let Some(note) = comment_note(comment, NoteKind::Thread, thread_id, unresolved) {
+                notes.push(note);
+            }
+        }
+    }
+    for review in nodes(node.get("latestReviews")) {
+        match review.get("state").and_then(Value::as_str) {
+            Some("APPROVED" | "CHANGES_REQUESTED" | "COMMENTED" | "DISMISSED") => {}
+            _ => continue,
+        }
+        if let Some(note) = comment_note(review, NoteKind::Review, None, false) {
+            let mut note = note;
+            if note.at.is_empty() {
+                note.at = opt_str(review.get("submittedAt")).unwrap_or_default();
+            }
+            notes.push(note);
+        }
+    }
+    cap_notes(notes)
+}
+
+fn comment_note(
+    node: &Value,
+    kind: NoteKind,
+    thread_id: Option<u32>,
+    unresolved: bool,
+) -> Option<CommentNote> {
+    let author = node.get("author")?;
+    let login = opt_str(author.get("login"))?;
+    let actor_bot = author.get("__typename").and_then(Value::as_str) == Some("Bot")
+        || pr_nexus_core::stats::is_bot_login(&login);
+    let at = opt_str(node.get("createdAt"))
+        .or_else(|| opt_str(node.get("submittedAt")))
+        .unwrap_or_default();
+    Some(CommentNote {
+        login,
+        actor_bot,
+        kind,
+        thread_id,
+        snippet: bots::snippet(
+            node.get("body").and_then(Value::as_str).unwrap_or(""),
+            SNIPPET,
+        ),
+        url: opt_str(node.get("url")).unwrap_or_default(),
+        unresolved,
+        at,
+    })
+}
+
+fn cap_notes(notes: Vec<CommentNote>) -> Vec<CommentNote> {
+    let (mut bots, mut rest): (Vec<_>, Vec<_>) = notes.into_iter().partition(|note| note.actor_bot);
+    rest.sort_by(|a, b| b.at.cmp(&a.at));
+    rest.truncate(OTHER_CAP);
+    bots.append(&mut rest);
+    if bots.len() > NOTE_CAP {
+        bots.sort_by(|a, b| b.at.cmp(&a.at));
+        bots.truncate(NOTE_CAP);
+    }
+    bots
 }
 
 /// Authors of PR comments, then review-thread comments, deduped. Bots are
@@ -534,6 +617,49 @@ mod tests {
         assert_eq!(
             node.get("author").and_then(actor_person).map(|p| p.kind),
             Some(PersonKind::Bot)
+        );
+    }
+
+    #[test]
+    fn feedback_keeps_bot_comments_reviews_and_unresolved_threads() {
+        let node = json!({
+            "comments": {"totalCount": 2, "nodes": [
+                {"author": {"__typename": "Bot", "login": "dependabot[bot]"}, "body": "Bumps the date library from 1.0 to 1.1.", "url": "https://github.com/acme/widgets/pull/1#issuecomment-1", "createdAt": "2026-10-02T00:00:00Z"},
+                {"author": {"__typename": "User", "login": "octocat"}, "body": "Thanks", "url": "https://github.com/acme/widgets/pull/1#issuecomment-2", "createdAt": "2026-10-01T00:00:00Z"}
+            ]},
+            "reviewThreads": {"nodes": [
+                {"isResolved": false, "comments": {"totalCount": 1, "nodes": [
+                    {"author": {"__typename": "User", "login": "copilot"}, "body": "Rename this before merging.", "url": "https://github.com/acme/widgets/pull/1#discussion_r1", "createdAt": "2026-10-03T00:00:00Z"}
+                ]}},
+                {"isResolved": true, "comments": {"totalCount": 1, "nodes": [
+                    {"author": {"__typename": "User", "login": "sam"}, "body": "Looks good", "url": "https://github.com/acme/widgets/pull/1#discussion_r2", "createdAt": "2026-10-01T00:00:00Z"}
+                ]}}
+            ]},
+            "latestReviews": {"nodes": [
+                {"state": "COMMENTED", "body": "Left notes inline.", "url": "https://github.com/acme/widgets/pull/1#pullrequestreview-9", "submittedAt": "2026-10-04T00:00:00Z", "author": {"__typename": "Bot", "login": "review-app[bot]"}},
+                {"state": "PENDING", "body": "draft", "author": {"__typename": "User", "login": "ada"}}
+            ]}
+        });
+        let notes = feedback(&node);
+        let logins: Vec<_> = notes.iter().map(|note| note.login.as_str()).collect();
+        assert!(logins.contains(&"dependabot[bot]"));
+        assert!(logins.contains(&"copilot"));
+        assert!(logins.contains(&"review-app[bot]"));
+        assert!(logins.contains(&"octocat"));
+        assert!(!logins.contains(&"ada"));
+        let copilot = notes.iter().find(|note| note.login == "copilot").unwrap();
+        assert!(copilot.actor_bot);
+        assert!(copilot.unresolved);
+        assert_eq!(copilot.thread_id, Some(0));
+        assert_eq!(copilot.snippet, "Rename this before merging.");
+        let review = notes
+            .iter()
+            .find(|note| note.kind == NoteKind::Review)
+            .unwrap();
+        assert_eq!(review.at, "2026-10-04T00:00:00Z");
+        assert_eq!(
+            review.url,
+            "https://github.com/acme/widgets/pull/1#pullrequestreview-9"
         );
     }
 
