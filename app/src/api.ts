@@ -189,6 +189,12 @@ export interface Preferences {
   bump_due_hours: number;
   /** Saturday and Sunday (UTC) do not count toward `bump_due_hours`. */
   bump_due_working_days: boolean;
+  /** Hours before Review now. Separate from `bump_due_hours`. */
+  review_sla_hours: number;
+  /** When true, only weekday hours count toward `review_sla_hours`. */
+  review_sla_working_days: boolean;
+  /** Open pull requests in My PRs before a soft hint. Null means no cap. */
+  my_prs_wip_limit: number | null;
 }
 
 /** One editable Slack review-request template (§7.6). */

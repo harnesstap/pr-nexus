@@ -15,7 +15,7 @@ import { RELEASES } from "./changelog/data";
 import { SettingsScreen } from "./settings/SettingsScreen";
 import { BulkDialog } from "./slack/BulkDialog";
 import { ReviewDialog } from "./slack/ReviewDialog";
-import { FAKE_SLACK_WORKSPACES, fakeMcp, fakeSettingsApi, sampleActivity } from "./settings/fakes";
+import { DEFAULT_PREFERENCES, FAKE_SLACK_WORKSPACES, fakeMcp, fakeSettingsApi, sampleActivity } from "./settings/fakes";
 import { AgentsSettings } from "./settings/AgentsSettings";
 import { McpActivity } from "./settings/McpActivity";
 import { McpClientConfig } from "./settings/McpClientConfig";
@@ -647,6 +647,7 @@ api.deleteProfile = (id) => {
 api.ghAccounts = () => Promise.resolve(["ada", "ada-labs"]);
 const profilesScene = new URLSearchParams(window.location.search).get("profiles");
 const settingsScene = new URLSearchParams(window.location.search).get("settings");
+const standupScene = new URLSearchParams(window.location.search).get("standup");
 if (profilesScene === "menu") {
   window.setTimeout(() => document.querySelector<HTMLButtonElement>('button[aria-haspopup="menu"]')?.click(), 600);
 }
@@ -680,6 +681,9 @@ if (changelogPreview === "modal") {
 const previewApi: Api = changelogPreview
   ? { ...api, appInfo: () => api.appInfo().then((info) => ({ ...info, version: latest })) }
   : api;
+if (standupScene === "menu") {
+  previewApi.loadPreferences = () => Promise.resolve({ ...DEFAULT_PREFERENCES, my_prs_wip_limit: 1 });
+}
 // ?screen=remapped shows the bulk preview after a team moved to another channel:
 // a new request in the mapped channel, with a note that the old thread is not bumped.
 if (screenName === "remapped") {
@@ -942,12 +946,22 @@ createRoot(root).render(
           onCopy={() => undefined}
         />
       </div>
+    ) : settingsScene === "review" ? (
+      <div className="min-h-screen bg-slate-950 px-6 py-8 text-slate-200">
+        <SettingsScreen api={previewApi} boot={boot} onBoot={() => undefined} accounts={null} tab="review" onTabChange={() => undefined} onRerunSetup={() => undefined} />
+      </div>
     ) : changelogPreview === "tab" ? (
       <div className="min-h-screen bg-slate-950 px-6 py-8 text-slate-200">
         <SettingsScreen api={previewApi} boot={boot} onBoot={() => undefined} accounts={null} tab="changelog" onTabChange={() => undefined} onRerunSetup={() => undefined} />
       </div>
     ) : (
-      <ListScreen api={previewApi} boot={boot} onBoot={() => undefined} startView={screenName === "bumps" ? "bumps_due" : "mine"} />
+      <ListScreen
+        api={previewApi}
+        boot={boot}
+        onBoot={() => undefined}
+        startView={screenName === "bumps" ? "bumps_due" : "mine"}
+        openStandupMenu={standupScene === "menu"}
+      />
     )}
   </StrictMode>,
 );

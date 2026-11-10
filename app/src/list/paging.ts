@@ -1,5 +1,6 @@
 import type { ListRow, ProjectDto } from "../api";
 import { attentionRank } from "./nextAction";
+import { DEFAULT_REVIEW_SLA, type ReviewSla } from "./sla";
 import { waitingSince } from "./rowCues";
 import { stackIndex, type StackPlace, type StackState } from "./stack";
 import {
@@ -48,6 +49,12 @@ export interface PageRequest {
   github_ids?: number[] | null;
   /** Show merged and closed rows in `github_ids`. Hidden rows come back too. */
   github_any_state?: boolean;
+  /** `review_sla_hours`. Omitted until settings load; the server also fills it. */
+  review_sla_hours?: number;
+  /** `review_sla_working_days`. */
+  review_sla_working_days?: boolean;
+  /** Minutes east of UTC, so weekday hours match the machine zone. */
+  tz_offset_minutes?: number;
 }
 
 /** A section header (`row` null) or a row inside `section`. */
@@ -221,7 +228,14 @@ export function pageFromRows(rows: readonly SearchRow[], projects: readonly Proj
     if (githubIds) {
       return githubIds.indexOf(left.id) - githubIds.indexOf(right.id);
     }
-    return compare(left, right, request.ordering, request.direction, { viewKey: request.view_key, now });
+    return compare(left, right, request.ordering, request.direction, {
+      viewKey: request.view_key,
+      now,
+      sla: {
+        hours: request.review_sla_hours ?? DEFAULT_REVIEW_SLA.hours,
+        workingDays: request.review_sla_working_days ?? false,
+      },
+    });
   });
   const keepEmpty = keptEmpty(live, request.view_key, filters, terms.length > 0);
   const marks = stackMarks(rows);
@@ -522,6 +536,7 @@ function statusTitle(readiness: ListRow["readiness"]): string {
 interface RankContext {
   viewKey: string;
   now: Date;
+  sla?: ReviewSla;
 }
 
 function compare(left: ListRow, right: ListRow, ordering: Ordering, direction: Direction, context: RankContext = { viewKey: "mine", now: new Date(0) }): number {
@@ -534,7 +549,7 @@ function rank(row: ListRow, ordering: Ordering, context: RankContext): number {
   switch (ordering) {
     case "attention":
       // Descending: the most urgent next action first, the oldest PR first within it.
-      return attentionRank(row, context.viewKey, context.now);
+      return attentionRank(row, context.viewKey, context.now, context.sla);
     case "updated":
       return new Date(row.updated_at).getTime();
     case "created":

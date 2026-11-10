@@ -73,6 +73,8 @@ function Harness({
   initialView,
   githubIds = null,
   githubAnyState = false,
+  wipLimit = null,
+  onCopyStandup,
 }: {
   rows: SearchRow[];
   projects?: ProjectDto[];
@@ -95,6 +97,8 @@ function Harness({
   initialView?: SavedView;
   githubIds?: number[] | null;
   githubAnyState?: boolean;
+  wipLimit?: number | null;
+  onCopyStandup?: () => void;
 }) {
   const [view, setView] = useState<SavedView>(initialView ?? defaultView());
   const [currentView, setCurrentView] = useState(viewKey);
@@ -125,6 +129,8 @@ function Harness({
       githubError={githubError}
       githubIds={githubIds}
       githubAnyState={githubAnyState}
+      wipLimit={wipLimit}
+      onCopyStandup={onCopyStandup}
     />
   );
 }
@@ -1190,4 +1196,19 @@ test("a narrow list folds secondary actions into More, and they still work from 
   } finally {
     client.mockRestore();
   }
+});
+
+test("My PRs copies a stand-up recap and hints when over the open limit", async () => {
+  const copy = vi.fn();
+  await show(<Harness rows={rows} wipLimit={1} onCopyStandup={copy} />);
+  expect(screen.getByText(/Over the open PR limit \(3 of 1\)/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "More" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Copy stand-up recap" }));
+  expect(copy).toHaveBeenCalledOnce();
+});
+
+test("other views have no stand-up menu or open-limit hint", async () => {
+  await show(<Harness rows={rows} viewKey="to_review" wipLimit={1} />);
+  expect(screen.queryByRole("button", { name: "More" })).not.toBeInTheDocument();
+  expect(screen.queryByText(/Over the open PR limit/)).not.toBeInTheDocument();
 });

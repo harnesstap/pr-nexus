@@ -13,6 +13,7 @@ use std::thread;
 use pr_nexus_core::domain::{Involvement, ReviewDecision};
 use pr_nexus_core::notify::{self, Notice, NotifyToggles, WatchedPr};
 use pr_nexus_core::settings;
+use pr_nexus_core::sla::{self, ReviewSla};
 use pr_nexus_core::sync::SyncKind;
 use serde::Serialize;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
@@ -93,7 +94,9 @@ pub fn refresh_counts(state: &AppState) {
     let Ok(items) = crate::commands::list_items(state) else {
         return;
     };
-    let counts = listing::attention_counts(&items, chrono::Utc::now().timestamp_millis());
+    let (sla, offset) = review_clock(state);
+    let counts =
+        listing::attention_counts(&items, chrono::Utc::now().timestamp_millis(), &sla, offset);
     deliver(counts, Vec::new());
 }
 
@@ -137,7 +140,8 @@ fn observe(state: &AppState, include_reviews: bool) -> Option<Observed> {
         NotifyToggles::default()
     });
     let now = chrono::Utc::now().timestamp_millis();
-    let counts = listing::attention_counts(&items, now);
+    let (sla, offset) = review_clock(state);
+    let counts = listing::attention_counts(&items, now, &sla, offset);
     let rows: Vec<WatchedPr> = items
         .iter()
         .filter(|item| !item.row.hidden)
@@ -158,6 +162,11 @@ fn observe(state: &AppState, include_reviews: bool) -> Option<Observed> {
         counts,
         notices: notify::aggregate(&events),
     })
+}
+
+fn review_clock(state: &AppState) -> (ReviewSla, i32) {
+    let sla = settings::review_sla(&state.store).unwrap_or_default();
+    (sla, sla::local_offset_east_minutes())
 }
 
 fn watched(item: &Item) -> WatchedPr {

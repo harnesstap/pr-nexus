@@ -1,0 +1,3 @@
+kind: Added
+body: Copy stand-up recap groups pull requests by status. Review now uses review_sla_hours (default 48). My PRs can hint when over an optional open-PR limit.
+time: 2026-11-10T01:28:00Z
