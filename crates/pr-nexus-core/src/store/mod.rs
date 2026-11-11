@@ -5,10 +5,12 @@
 //! `busy_timeout` are set on every connection.
 
 mod accounts;
+mod attention;
 mod cache;
 mod listing;
 mod mappings;
 mod mcp_audit;
+mod merge_queue;
 pub use mcp_audit::{AUDIT_KEEP_DAYS, AUDIT_KEEP_ROWS, AuditEntry, AuditOutcome};
 mod migrate;
 mod project_info;
@@ -213,12 +215,14 @@ mod tests {
         assert_eq!(mode.to_ascii_lowercase(), "wal");
         assert_eq!(foreign_keys, 1);
         assert_eq!(busy, 5000);
-        assert_eq!(version, 10);
+        assert_eq!(version, 12);
         assert!(tables.contains(&"pull_requests".to_owned()));
         assert!(tables.contains(&"review_requests".to_owned()));
         assert!(tables.contains(&"view_state".to_owned()));
         assert!(tables.contains(&"team_channel_mappings".to_owned()));
         assert!(tables.contains(&"pr_close_notes".to_owned()));
+        assert!(tables.contains(&"pr_attention".to_owned()));
+        assert!(tables.contains(&"pr_merge_queue".to_owned()));
         drop(store);
 
         let again = Store::open(dir.path().join("pr-nexus.db")).unwrap();
@@ -228,7 +232,7 @@ mod tests {
                     .map_err(db)
             })
             .unwrap();
-        assert_eq!(version, 10);
+        assert_eq!(version, 12);
     }
 
     #[test]

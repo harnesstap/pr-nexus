@@ -102,6 +102,9 @@ function api(projects: ProjectDto[], rows: SearchRow[] = []): Api {
     prNote: (prId: number) => Promise.resolve({ pr_id: prId, note: "", updated_at: null }),
     setPrNote: (prId: number, note: string) => Promise.resolve({ pr_id: prId, note, updated_at: null }),
     setPrStarred: (_id: number, starred: boolean) => Promise.resolve(starred),
+    markPrsRead: () => Promise.resolve(),
+    setPrsSnooze: () => Promise.resolve(),
+    setPrsMuted: () => Promise.resolve(),
     ...memoryProjectApi(rows, projects),
     loadViewState: () => Promise.resolve(null),
     saveViewState: () => Promise.resolve(),
@@ -111,6 +114,9 @@ function api(projects: ProjectDto[], rows: SearchRow[] = []): Api {
     setAutoMerge: () => Promise.reject(new Error("unused")),
     setPrDraft: () => Promise.reject(new Error("unused")),
     mergePr: () => Promise.reject(new Error("unused")),
+    enqueuePullRequest: () => Promise.reject(new Error("unused")),
+    dequeuePullRequest: () => Promise.reject(new Error("unused")),
+    enqueuePullRequests: () => Promise.reject(new Error("unused")),
     closePullRequests: () => Promise.reject(new Error("unused")),
     prBranchStatus: () => Promise.reject(new Error("unused")),
     updatePrBranch: () => Promise.reject(new Error("unused")),
@@ -257,6 +263,9 @@ function pr(id: number, title: string): SearchRow {
     pending_reviewers: [],
     slack: null,
     starred: false,
+    unread: false,
+    muted: false,
+    snoozed: false,
   };
 }
 
@@ -324,6 +333,9 @@ function listRow(id: number, title: string): SearchRow {
     pending_reviewers: [],
     slack: null,
     starred: false,
+    unread: false,
+    muted: false,
+    snoozed: false,
   };
 }
 

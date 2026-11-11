@@ -1,12 +1,14 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import type { Api, Bootstrap, BulkPreview, ContextThread, ProfileDto, ProjectDto, ReviewTarget } from "./api";
+import type { Api, Bootstrap, BulkPreview, BulkRequest, ContextThread, MergeQueueInfo, ProfileDto, ProjectDto, PrOverview, ReviewTarget } from "./api";
 import { ProfileReuse } from "./wizard/ProfileReuse";
 import { mockBranch, mockDetail, mockOverview } from "./detail/mock";
+import { DetailPanel } from "./detail/DetailPanel";
 import "./index.css";
 import { ListScreen } from "./list/ListScreen";
 import { memoryProjectApi } from "./memoryProjects";
 import type { SearchRow } from "./list/paging";
+import { chainOf, stackIndex } from "./list/stack";
 import { variedRows } from "./previewRows";
 import { Wizard } from "./wizard/Wizard";
 import { recordSeenVersion } from "./changelog/changelog";
@@ -14,7 +16,7 @@ import { RELEASES } from "./changelog/data";
 import { SettingsScreen } from "./settings/SettingsScreen";
 import { BulkDialog } from "./slack/BulkDialog";
 import { ReviewDialog } from "./slack/ReviewDialog";
-import { FAKE_SLACK_WORKSPACES, fakeMcp, fakeSettingsApi, sampleActivity } from "./settings/fakes";
+import { DEFAULT_PREFERENCES, FAKE_SLACK_WORKSPACES, fakeMcp, fakeSettingsApi, sampleActivity } from "./settings/fakes";
 import { AgentsSettings } from "./settings/AgentsSettings";
 import { McpActivity } from "./settings/McpActivity";
 import { McpClientConfig } from "./settings/McpClientConfig";
@@ -114,9 +116,147 @@ function row(partial: Partial<SearchRow> & Pick<SearchRow, "id" | "title" | "num
     pending_reviewers: [],
     slack: null,
     starred: false,
+    unread: false,
+    muted: false,
+    snoozed: false,
     ...partial,
   };
 }
+
+/** A stack of four in acme/widgets, plus one pull request that is not stacked. */
+function stackRows(make: typeof row): SearchRow[] {
+  return [
+    make({
+      id: 1,
+      number: 201,
+      title: "Add a retry budget",
+      head_ref: "feat/retry",
+      base_ref: "main",
+      checks: "success",
+      review_decision: "approved",
+    }),
+    make({
+      id: 2,
+      number: 202,
+      title: "Count retries in the budget",
+      head_ref: "feat/retry-budget",
+      base_ref: "feat/retry",
+      checks: "success",
+      review_decision: "approved",
+    }),
+    make({
+      id: 3,
+      number: 203,
+      title: "Export retry metrics",
+      head_ref: "feat/retry-metrics",
+      base_ref: "feat/retry-budget",
+      checks: "pending",
+      review_decision: "review_required",
+    }),
+    make({
+      id: 4,
+      number: 204,
+      title: "Log each retry",
+      head_ref: "feat/retry-log",
+      base_ref: "feat/retry",
+      checks: "failure",
+      review_decision: "changes_requested",
+    }),
+    make({
+      id: 5,
+      number: 23,
+      title: "Fix tax calculation",
+      repo: "acme/billing",
+      head_ref: "fix/tax",
+      base_ref: "main",
+      project_ids: [],
+      checks: "success",
+      review_decision: "review_required",
+    }),
+  ];
+}
+
+function reviewDecision(value: string | null): "approved" | "changes_requested" | "review_required" | null {
+  switch (value) {
+    case "approved":
+    case "changes_requested":
+    case "review_required":
+    case null:
+      return value;
+    default:
+      return null;
+  }
+}
+
+/** Detail cards that match the stack row, so the chain and the merge note agree. */
+function stackOverview(item: SearchRow) {
+  const decision = reviewDecision(item.review_decision);
+  const passing = item.checks === "success";
+  const ready = passing && decision === "approved" && !item.conflicts;
+  const checkState = passing ? "passed" : item.checks === "pending" || item.checks === "expected" ? "pending" : "failed";
+  return mockOverview({
+    base_ref: item.base_ref ?? "main",
+    head_ref: item.head_ref,
+    mergeable: item.conflicts ? "conflicting" : "mergeable",
+    merge_state: ready ? "clean" : "blocked",
+    review_decision: decision,
+    checks: [{ name: "build", state: checkState, url: null, required: true }],
+    checks_total: 1,
+    approvals: decision === "approved" ? 1 : 0,
+    required_approvals: 1,
+  });
+}
+
+function previewStack(list: readonly SearchRow[], id: number) {
+  const built = stackIndex(
+    list.map((item) => ({
+      id: item.id,
+      repo: item.repo,
+      number: item.number,
+      state: item.state === "merged" ? "merged" : item.state === "closed" ? "closed" : "open",
+      head_ref: item.head_ref,
+      base_ref: item.base_ref ?? "",
+    })),
+  );
+  const chain = chainOf(built, id);
+  if (!chain) {
+    return null;
+  }
+  const members = chain.member_ids.flatMap((memberId) => {
+    const item = list.find((entry) => entry.id === memberId);
+    const place = built.places.get(memberId);
+    if (!item || !place) {
+      return [];
+    }
+    return [
+      {
+        id: item.id,
+        number: item.number,
+        title: item.title,
+        url: item.url,
+        repo: item.repo,
+        base_ref: item.base_ref ?? "",
+        head_ref: item.head_ref,
+        state: item.state,
+        is_draft: item.is_draft,
+        checks: item.checks,
+        review_decision: item.review_decision,
+        mergeable: item.conflicts ? ("conflicting" as const) : ("mergeable" as const),
+        position: place.position,
+        depth: place.depth,
+        blocking: place.blocking,
+      },
+    ];
+  });
+  return {
+    root_id: chain.root_id,
+    root_number: built.places.get(chain.root_id)?.root_number ?? 0,
+    blocking_id: chain.blocking_id,
+    members,
+  };
+}
+
+const attentionScene = new URLSearchParams(window.location.search).get("attention");
 
 const rows: SearchRow[] = [
   row({
@@ -164,6 +304,7 @@ const rows: SearchRow[] = [
     readiness: "blocked",
     unresolved_threads: 3,
     total_threads: 3,
+    bot_comments: 2,
   }),
   row({
     id: 4,
@@ -189,11 +330,221 @@ const rows: SearchRow[] = [
 ];
 
 // `?rows=varied` swaps in one PR per next action (§8.2) for the badges and the "Needs attention" sort.
-if (new URLSearchParams(window.location.search).get("rows") === "varied") {
+// `?rows=stack` shows one stack (with a branch) grouped in merge order.
+const previewParams = new URLSearchParams(window.location.search);
+if (previewParams.get("rows") === "varied") {
   rows.splice(0, rows.length, ...variedRows(row));
+} else if (previewParams.get("rows") === "stack") {
+  rows.splice(0, rows.length, ...stackRows(row));
+}
+
+// `?attention=1` marks demo rows unread, snoozed, or muted. `?attention=snoozed` also turns the Snoozed chip on.
+if (attentionScene) {
+  const [first, second, third, fourth] = rows;
+  if (first) {
+    first.unread = true;
+  }
+  if (second) {
+    second.snoozed = true;
+  }
+  if (third) {
+    third.muted = true;
+  }
+  if (fourth) {
+    fourth.unread = true;
+  }
+}
+
+function mergeQueuePreviewRows(): SearchRow[] {
+  const queue = (phase: MergeQueueInfo["phase"], extra: Partial<MergeQueueInfo> = {}): MergeQueueInfo => ({
+    required: true,
+    phase,
+    position: null,
+    eta_seconds: null,
+    reason: null,
+    ...extra,
+  });
+  return [
+    row({
+      id: 1,
+      number: 142,
+      title: "Tighten the latch",
+      author_login: "octocat",
+      review_decision: "approved",
+      checks: "success",
+      readiness: "ready",
+      project_ids: [1],
+      slack: null,
+      merge_state: "clean",
+      merge_queue: queue(null),
+    }),
+    row({
+      id: 2,
+      number: 138,
+      title: "Add passkeys support",
+      author_login: "octocat",
+      review_decision: "approved",
+      checks: "success",
+      readiness: "ready",
+      project_ids: [1],
+      slack: null,
+      merge_state: "clean",
+      merge_queue: queue("queued", { position: 2, eta_seconds: 300 }),
+    }),
+    row({
+      id: 3,
+      number: 135,
+      title: "Refresh token rotation",
+      author_login: "octocat",
+      review_decision: "approved",
+      checks: "pending",
+      readiness: "ready",
+      project_ids: [1],
+      slack: null,
+      merge_state: "clean",
+      merge_queue: queue("merging", { position: 1 }),
+    }),
+    row({
+      id: 4,
+      number: 151,
+      title: "Fix the latch sensor",
+      author_login: "octocat",
+      repo: "acme/widgets",
+      checks: "failure",
+      review_decision: "approved",
+      readiness: "blocked",
+      project_ids: [],
+      slack: null,
+      merge_state: "unstable",
+      merge_queue: queue("failed", { reason: "Required status check build failed." }),
+    }),
+    row({
+      id: 5,
+      number: 160,
+      title: "Draft the release notes",
+      author_login: "octocat",
+      is_draft: true,
+      checks: "pending",
+      review_decision: null,
+      readiness: "blocked",
+      project_ids: [],
+      slack: null,
+      merge_state: "draft",
+      merge_queue: queue("removed", { reason: "The pull request was marked a draft." }),
+    }),
+  ];
+}
+
+function mergeStateOf(value: string | undefined): PrOverview["merge_state"] {
+  switch (value) {
+    case "clean":
+    case "blocked":
+    case "behind":
+    case "dirty":
+    case "unstable":
+    case "has_hooks":
+    case "draft":
+    case "unknown":
+      return value;
+    default:
+      return "clean";
+  }
+}
+
+function reviewOf(value: string | null): PrOverview["review_decision"] {
+  switch (value) {
+    case "approved":
+    case "changes_requested":
+    case "review_required":
+    case null:
+      return value;
+    default:
+      return null;
+  }
+}
+
+function overviewForQueue(found: SearchRow): PrOverview {
+  const queue = found.merge_queue ?? { required: true, phase: null, position: null, eta_seconds: null, reason: null };
+  return mockOverview({
+    state: found.state === "closed" || found.state === "merged" ? found.state : "open",
+    is_draft: found.is_draft,
+    mergeable: found.conflicts ? "conflicting" : "mergeable",
+    merge_state: mergeStateOf(found.merge_state),
+    review_decision: reviewOf(found.review_decision),
+    head_sha: "abc123",
+    head_ref: found.head_ref,
+    base_ref: "main",
+    checks: [],
+    checks_total: 0,
+    approvals: 1,
+    required_approvals: 1,
+    merge_queue: queue,
+  });
+}
+
+if (new URLSearchParams(window.location.search).get("screen") === "merge-queue") {
+  rows.splice(0, rows.length, ...mergeQueuePreviewRows());
 }
 
 /** Demo plan for the bulk Slack dialog: one card per acme channel, or one card for "All to one channel". */
+const DUE_BUMPS = [
+  { pr_id: 1, number: 142, title: "Migrate login to new auth", repo: "acme/widgets", asked_at: "2026-11-06T16:00:00Z", quiet_hours: 52, bump_count: 1 },
+  { pr_id: 2, number: 138, title: "Add passkeys support", repo: "acme/widgets", asked_at: "2026-11-04T09:00:00Z", quiet_hours: 96, bump_count: 0 },
+];
+
+/** The queue's preview: one bump in the thread that was requested, and one new request after a remap. */
+function bumpsPreview(request: BulkRequest): BulkPreview {
+  const noteFor = (id: number) => request.notes?.find((note) => note.pr_id === id)?.text.trim() ?? "";
+  const withNote = (text: string, id: number) => {
+    const note = noteFor(id);
+    return note ? `${text}\n\n${note}\n` : text;
+  };
+  const cards = [];
+  if (request.pr_ids.includes(1)) {
+    cards.push({
+      target: { workspace: "acme", workspace_name: "Acme", channel_id: "C0ACME0001", channel_name: "team-reviews" },
+      messages: [
+        {
+          action: "bump" as const,
+          prs: [{ pr_id: 1, number: 142, title: "Migrate login to new auth", repo: "acme/widgets" }],
+          text: withNote("Hello team\nCould someone please take another look?\n• `Migrate login to new auth`\nhttps://github.com/acme/widgets/pull/142\nThanks!", 1),
+          permalink: "https://acme.slack.com/archives/C0ACME0001/p1700000000000100",
+        },
+      ],
+      warnings: [],
+      signed_in: true,
+      single_top_level: false,
+      can_switch: false,
+      fingerprint: "fp-team-reviews",
+      notes: [] as string[],
+    });
+  }
+  if (request.pr_ids.includes(2)) {
+    cards.push({
+      target: { workspace: "acme", workspace_name: "Acme", channel_id: "C0ACME0002", channel_name: "payments" },
+      messages: [
+        {
+          action: "request" as const,
+          prs: [{ pr_id: 2, number: 138, title: "Add passkeys support", repo: "acme/widgets" }],
+          text: withNote("Hello team\nCould someone please review this pull request?\n• `Add passkeys support`\nhttps://github.com/acme/widgets/pull/138\nThanks!", 2),
+          permalink: null,
+        },
+      ],
+      warnings: [],
+      signed_in: true,
+      single_top_level: false,
+      can_switch: false,
+      fingerprint: "fp-payments",
+      notes: ["Channel changed since the last request: new request in #payments for #138. The old thread in #team-reviews is not bumped."],
+    });
+  }
+  return {
+    cards,
+    skipped: [],
+    pr_warnings: request.pr_ids.includes(1) ? [{ kind: "checks", pr_id: 1, number: 142, message: "#142 has failing checks." }] : [],
+  };
+}
+
 function demoBulkPreview(ids: number[], target: ReviewTarget | null): BulkPreview {
   const prs = rows.filter((item) => ids.includes(item.id)).map((item) => ({ pr_id: item.id, number: item.number, title: item.title, repo: item.repo }));
   const text = (list: typeof prs) =>
@@ -321,20 +672,102 @@ const api: Api = {
   prNote: (prId: number) => Promise.resolve({ pr_id: prId, note: "", updated_at: null }),
   setPrNote: (prId: number, note: string) => Promise.resolve({ pr_id: prId, note, updated_at: null }),
   setPrStarred: (_id: number, starred: boolean) => Promise.resolve(starred),
+  markPrsRead: (ids: number[]) => {
+    for (const item of rows) {
+      if (ids.includes(item.id)) {
+        item.unread = false;
+      }
+    }
+    return Promise.resolve();
+  },
+  setPrsSnooze: (ids: number[], choice: "day" | "week" | "activity" | "off") => {
+    for (const item of rows) {
+      if (ids.includes(item.id)) {
+        item.snoozed = choice !== "off";
+      }
+    }
+    return Promise.resolve();
+  },
+  setPrsMuted: (ids: number[], muted: boolean) => {
+    for (const item of rows) {
+      if (ids.includes(item.id)) {
+        item.muted = muted;
+        if (muted) {
+          item.unread = false;
+        }
+      }
+    }
+    return Promise.resolve();
+  },
   ...memoryProjectApi(rows, projects, [{ id: 1, project_id: 1, kind: "ticket_key_in_branch", pattern: "AUTH-*", priority: 10 }]),
-  loadViewState: () => Promise.resolve(JSON.stringify({ show: { notRequested: true } })),
+  loadViewState: () =>
+    Promise.resolve(
+      JSON.stringify({
+        show: { notRequested: true },
+        ...(previewParams.get("rows") === "stack" ? { grouping: "stack" } : {}),
+        ...(attentionScene === "snoozed" ? { filters: { snoozed: true } } : {}),
+      }),
+    ),
   saveViewState: () => Promise.resolve(),
   openExternal: () => Promise.resolve(),
   prDetail: (id) => Promise.resolve(mockDetail(id)),
-  prOverview: () => Promise.resolve(mockOverview()),
+  prOverview: (id) => {
+    const item = rows.find((entry) => entry.id === id);
+    if (previewParams.get("screen") === "merge-queue" && item?.merge_queue?.required) {
+      return Promise.resolve(overviewForQueue(item));
+    }
+    if (previewParams.get("rows") === "stack" && item) {
+      return Promise.resolve(stackOverview(item));
+    }
+    if (id === 3) {
+      return Promise.resolve(mockOverview(botOverview()));
+    }
+    return Promise.resolve(mockOverview(item?.base_ref ? { base_ref: item.base_ref, head_ref: item.head_ref } : {}));
+  },
+  prStack: (id) => Promise.resolve(previewStack(rows, id)),
   setAutoMerge: (_id, method) =>
     Promise.resolve(mockOverview(method ? { auto_merge: { method, enabled_by: "ada", enabled_at: null } } : {})),
   mergePr: () => Promise.resolve(mockOverview({ state: "merged", merge_state: "unknown" })),
+  enqueuePullRequest: (id) => {
+    const found = rows.find((item) => item.id === id);
+    const base = found ? overviewForQueue(found) : mockOverview();
+    return Promise.resolve({
+      ...base,
+      merge_queue: { required: true, phase: "queued", position: 3, eta_seconds: 240, reason: null },
+    });
+  },
+  dequeuePullRequest: (id) => {
+    const found = rows.find((item) => item.id === id);
+    const base = found ? overviewForQueue(found) : mockOverview();
+    return Promise.resolve({
+      ...base,
+      merge_queue: { required: true, phase: "removed", position: null, eta_seconds: null, reason: null },
+    });
+  },
+  enqueuePullRequests: (ids) =>
+    Promise.resolve(
+      ids.map((id) => {
+        const found = rows.find((item) => item.id === id);
+        return {
+          id,
+          repo: found?.repo ?? "acme/widgets",
+          number: found?.number ?? 0,
+          title: found?.title ?? "",
+          outcome: "added" as const,
+          message: null,
+        };
+      }),
+    ),
   closePullRequests: () => Promise.resolve([]),
   setPrDraft: (_id, draft) => Promise.resolve(mockOverview({ is_draft: draft, merge_state: draft ? "draft" : "blocked" })),
-  prBranchStatus: () => Promise.resolve(mockBranch({ state: "behind", behind_by: 3 })),
+  prBranchStatus: () =>
+    Promise.resolve(
+      new URLSearchParams(window.location.search).get("screen") === "merge-queue"
+        ? mockBranch()
+        : mockBranch({ state: "behind", behind_by: 3 }),
+    ),
   updatePrBranch: () => Promise.resolve({ overview: mockOverview(), branch: mockBranch() }),
-  prSlackContext: () => Promise.resolve(previewThreads),
+  prSlackContext: () => Promise.resolve(previewParams.get("rows") === "stack" ? [] : previewThreads),
   prSlackMentions: () => Promise.resolve([]),
   saveSlackMentions: () => Promise.resolve(),
   ...fakeSettingsApi(),
@@ -388,6 +821,7 @@ api.deleteProfile = (id) => {
 api.ghAccounts = () => Promise.resolve(["ada", "ada-labs"]);
 const profilesScene = new URLSearchParams(window.location.search).get("profiles");
 const settingsScene = new URLSearchParams(window.location.search).get("settings");
+const standupScene = new URLSearchParams(window.location.search).get("standup");
 if (profilesScene === "menu") {
   window.setTimeout(() => document.querySelector<HTMLButtonElement>('button[aria-haspopup="menu"]')?.click(), 600);
 }
@@ -396,6 +830,13 @@ document.body.style.margin = "0";
 document.body.style.background = "#020617";
 
 const screenName = new URLSearchParams(window.location.search).get("screen");
+if (screenName === "bumps") {
+  api.dueBumps = () => Promise.resolve(DUE_BUMPS);
+  api.snoozeBump = () => Promise.resolve(DUE_BUMPS);
+  api.skipBump = () => Promise.resolve(DUE_BUMPS);
+  api.bulkPreview = (request) => Promise.resolve(bumpsPreview(request));
+  api.sendBulk = () => Promise.resolve({ batch_id: "preview", results: [], indicators: [] });
+}
 // ?changelog=modal opens "What's new" as after an update from the oldest embedded release;
 // ?changelog=tab shows Settings → Changelog.
 const changelogPreview = new URLSearchParams(window.location.search).get("changelog");
@@ -414,6 +855,9 @@ if (changelogPreview === "modal") {
 const previewApi: Api = changelogPreview
   ? { ...api, appInfo: () => api.appInfo().then((info) => ({ ...info, version: latest })) }
   : api;
+if (standupScene === "menu") {
+  previewApi.loadPreferences = () => Promise.resolve({ ...DEFAULT_PREFERENCES, my_prs_wip_limit: 1 });
+}
 // ?screen=remapped shows the bulk preview after a team moved to another channel:
 // a new request in the mapped channel, with a note that the old thread is not bumped.
 if (screenName === "remapped") {
@@ -611,6 +1055,36 @@ if (screenName === "notifications") {
   previewApi.notificationPermission = () => Promise.resolve(permission);
   previewApi.requestNotificationPermission = () => Promise.resolve(permission);
 }
+function botOverview() {
+  return {
+    issue_comments: 2,
+    review_comments: 4,
+    bot_reviews: {
+      count: 2,
+      unresolved: 1,
+      latest_snippet: "Rename the helper before merging so the next reader can find it.",
+      notes: [
+        {
+          login: "ci-helper[bot]",
+          kind: "review" as const,
+          snippet: "Rename the helper before merging so the next reader can find it.",
+          url: "https://github.com/acme/widgets/pull/135#pullrequestreview-9",
+          unresolved: false,
+          at: "2026-10-04T00:00:00Z",
+        },
+        {
+          login: "copilot",
+          kind: "thread" as const,
+          snippet: "This token rotation still logs the old secret.",
+          url: "https://github.com/acme/widgets/pull/135#discussion_r1",
+          unresolved: true,
+          at: "2026-10-03T00:00:00Z",
+        },
+      ],
+    },
+  };
+}
+
 const root = document.getElementById("root");
 if (!root) {
   throw new Error("root element missing");
@@ -657,6 +1131,14 @@ createRoot(root).render(
       <div className="min-h-screen bg-slate-950 px-6 py-8 text-slate-200">
         <SettingsScreen api={previewApi} boot={boot} onBoot={() => undefined} accounts={null} tab="profiles" onTabChange={() => undefined} onRerunSetup={() => undefined} />
       </div>
+    ) : screenName === "bot-reviews" ? (
+      <div className="flex min-h-screen justify-end bg-slate-950 text-slate-200">
+        <DetailPanel api={previewApi} row={rows[2]!} version={0} onClose={() => undefined} onOpen={() => undefined} onNotice={() => undefined} />
+      </div>
+    ) : screenName === "review-settings" ? (
+      <div className="min-h-screen bg-slate-950 px-6 py-8 text-slate-200">
+        <SettingsScreen api={previewApi} boot={boot} onBoot={() => undefined} accounts={null} tab="review" onTabChange={() => undefined} onRerunSetup={() => undefined} />
+      </div>
     ) : screenName === "slack-scopes" ? (
       <div className="min-h-screen bg-slate-950 px-6 py-8 text-slate-200">
         <AgentsSettings api={slackScopesApi()} />
@@ -676,12 +1158,22 @@ createRoot(root).render(
           onCopy={() => undefined}
         />
       </div>
+    ) : settingsScene === "review" ? (
+      <div className="min-h-screen bg-slate-950 px-6 py-8 text-slate-200">
+        <SettingsScreen api={previewApi} boot={boot} onBoot={() => undefined} accounts={null} tab="review" onTabChange={() => undefined} onRerunSetup={() => undefined} />
+      </div>
     ) : changelogPreview === "tab" ? (
       <div className="min-h-screen bg-slate-950 px-6 py-8 text-slate-200">
         <SettingsScreen api={previewApi} boot={boot} onBoot={() => undefined} accounts={null} tab="changelog" onTabChange={() => undefined} onRerunSetup={() => undefined} />
       </div>
     ) : (
-      <ListScreen api={previewApi} boot={boot} onBoot={() => undefined} />
+      <ListScreen
+        api={previewApi}
+        boot={boot}
+        onBoot={() => undefined}
+        startView={screenName === "bumps" ? "bumps_due" : "mine"}
+        openStandupMenu={standupScene === "menu"}
+      />
     )}
   </StrictMode>,
 );

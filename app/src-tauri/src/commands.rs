@@ -1,9 +1,10 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use chrono::Utc;
+use pr_nexus_core::attention::{AttentionFlags, PrActivity};
 use pr_nexus_core::domain::{
-    Account, AccountId, AccountKind, AuthMode, LinkSource, PrId, PullRequest, RequestedReviewer,
-    Reviewer, ViewState,
+    Account, AccountId, AccountKind, AuthMode, LinkSource, PrId, PrState, PullRequest,
+    RequestedReviewer, Reviewer, ViewState,
 };
 use pr_nexus_core::mapping::{self, ImportMode};
 use pr_nexus_core::onboarding::{self, OnboardingState};
@@ -13,6 +14,7 @@ use pr_nexus_core::providers::{SetupStep, VcsProvider};
 use pr_nexus_core::review_filter::RemoteReviewFilter;
 use pr_nexus_core::search;
 use pr_nexus_core::settings::{self, DEFAULT_REDIRECT};
+use pr_nexus_core::stack::{self, StackRef, StackState};
 use pr_nexus_core::store::ListFacts;
 use pr_nexus_core::sync::SyncKind;
 use pr_nexus_providers::github::{self, GithubClient};
@@ -215,6 +217,9 @@ pub struct ListRow {
     pub repo: String,
     pub author_login: String,
     pub head_ref: String,
+    pub base_ref: String,
+    /// Set when this pull request is in a stack of two or more.
+    pub stack: Option<pr_nexus_core::stack::StackPlace>,
     pub is_draft: bool,
     pub state: String,
     pub checks: String,
@@ -227,16 +232,30 @@ pub struct ListRow {
     pub hidden: bool,
     /// Starred by the user; starred rows sort first within any ordering.
     pub starred: bool,
+    /// New commits, comments, reviews, or CI since this detail was last opened.
+    pub unread: bool,
+    /// The unread dot is hidden and the row is left out of the unread count.
+    pub muted: bool,
+    /// Left out of the default list until the snooze ends.
+    pub snoozed: bool,
     pub project_ids: Vec<i64>,
     pub readiness: String,
     pub readiness_notes: Vec<String>,
     /// GitHub reports merge conflicts (dirty merge state or conflicting).
     pub conflicts: bool,
+    /// GitHub's merge state, lower case. Used to explain a bulk queue skip.
+    pub merge_state: String,
+    /// Merge queue facts from the last status read. Absent until that read.
+    pub merge_queue: Option<pr_nexus_core::merge_queue::MergeQueueSnapshot>,
     /// At least one reviewer or team is requested on GitHub.
     pub reviewers_requested: bool,
     /// Who still has to review, in display order (see [`pending_reviewers`]).
     pub pending_reviewers: Vec<PendingReviewerDto>,
     pub slack: Option<SlackIndicator>,
+    /// Bot comments and reviews seen the last time this pull request's
+    /// detail was loaded. `0` until then: the list sync does not fetch them.
+    #[serde(default)]
+    pub bot_comments: u32,
 }
 
 /// One pending review request as the list row shows it.
@@ -912,6 +931,13 @@ pub async fn set_focus(
     Ok(())
 }
 
+/// Applies the extra bot logins before an overview reaches the panel.
+/// The cache keeps GitHub's totals and the raw notes.
+fn present_overview(state: &AppState, overview: PrOverview) -> Result<PrOverview, AppError> {
+    let extra = settings::bot_logins(&state.store)?;
+    Ok(overview::for_viewer(overview, &extra))
+}
+
 /// Every synced row of the GitHub account, built with one query per table.
 pub(crate) fn list_items(state: &AppState) -> Result<Vec<listing::Item>, AppError> {
     let Some(account) = state::github_account(&state.store)? else {
@@ -923,10 +949,22 @@ pub(crate) fn list_items(state: &AppState) -> Result<Vec<listing::Item>, AppErro
         .list_pull_requests_for_account_slim(account.id)?;
     let mut facts = state.store.list_facts(account.id)?;
     let workspaces = pr_nexus_core::review::route::workspaces(&state.store)?;
-    Ok(prs
+    let flags = attention_flags(state, prs.iter())?;
+    let mut items: Vec<listing::Item> = prs
         .iter()
-        .map(|pr| to_item(&mut facts, &workspaces, pr, flag))
-        .collect())
+        .map(|pr| {
+            to_item(
+                &mut facts,
+                &workspaces,
+                pr,
+                flag,
+                flags.get(&pr.id).copied(),
+            )
+        })
+        .collect();
+    listing::stamp_stacks(&mut items);
+    attach_bot_comments(state, &mut items)?;
+    Ok(items)
 }
 
 /// Ids matching `query` in SQLite: title, description, repo, number, author,
@@ -994,14 +1032,44 @@ pub(crate) fn items_for_ids(
         if !prs.iter().any(|pr| wanted.contains(&pr.id.0)) {
             continue;
         }
+        let wanted_prs: Vec<&PullRequest> =
+            prs.iter().filter(|pr| wanted.contains(&pr.id.0)).collect();
+        let flags = attention_flags(state, wanted_prs.iter().copied())?;
         let mut facts = state.store.list_facts(account.id)?;
-        for pr in &prs {
-            if wanted.contains(&pr.id.0) {
-                out.push(to_item(&mut facts, &workspaces, pr, flag));
-            }
+        for pr in wanted_prs {
+            out.push(to_item(
+                &mut facts,
+                &workspaces,
+                pr,
+                flag,
+                flags.get(&pr.id).copied(),
+            ));
         }
     }
+    attach_bot_comments(state, &mut out)?;
     Ok(out)
+}
+
+/// Bot-comment counts from overviews the detail panel has already fetched.
+fn attach_bot_comments(state: &AppState, items: &mut [listing::Item]) -> Result<(), AppError> {
+    if items.is_empty() {
+        return Ok(());
+    }
+    let cached = state.store.list_pr_overviews()?;
+    if cached.is_empty() {
+        return Ok(());
+    }
+    let extra = settings::bot_logins(&state.store)?;
+    let counts: HashMap<i64, u32> = cached
+        .into_iter()
+        .map(|(id, json)| (id.0, pr_nexus_core::bots::count_in_json(&json, &extra)))
+        .collect();
+    for item in items.iter_mut() {
+        if let Some(count) = counts.get(&item.row.id) {
+            item.row.bot_comments = *count;
+        }
+    }
+    Ok(())
 }
 
 pub use crate::services::projects::{LinkDto, LinkOutcomeDto, ReplacedLinkDto, RuleDto};
@@ -1248,6 +1316,110 @@ pub struct PrDetail {
     pub from_cache: bool,
 }
 
+/// One member of a stack, in merge order, from pull requests already stored.
+#[derive(Serialize)]
+pub struct StackMemberDto {
+    pub id: i64,
+    pub number: u64,
+    pub title: String,
+    pub url: String,
+    pub repo: String,
+    pub base_ref: String,
+    pub head_ref: String,
+    pub state: String,
+    pub is_draft: bool,
+    pub checks: String,
+    pub review_decision: Option<String>,
+    pub mergeable: String,
+    pub position: u32,
+    pub depth: u32,
+    pub blocking: bool,
+}
+
+/// The stack containing one pull request, bottom to top. `None` when it is not stacked.
+#[derive(Serialize)]
+pub struct PrStackDto {
+    pub root_id: i64,
+    pub root_number: u64,
+    pub blocking_id: i64,
+    pub members: Vec<StackMemberDto>,
+}
+
+/// The chain for `id`, using stored head and base refs. No network call.
+#[tauri::command]
+pub async fn pr_stack(
+    app: State<'_, std::sync::Arc<AppState>>,
+    id: i64,
+) -> Result<Option<PrStackDto>, AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || stack_for(app.inner().as_ref(), id)).await
+}
+
+fn stack_for(state: &AppState, id: i64) -> Result<Option<PrStackDto>, AppError> {
+    // The same account the list is built from, so a chain member is a row the list can open.
+    let Some(account) = state::github_account(&state.store)? else {
+        return Ok(None);
+    };
+    let prs = state
+        .store
+        .list_pull_requests_for_account_slim(account.id)?;
+    let refs: Vec<StackRef> = prs
+        .iter()
+        .map(|pr| StackRef {
+            id: pr.id.0,
+            repo: format!("{}/{}", pr.repo.owner, pr.repo.name),
+            number: pr.number,
+            state: match pr.state {
+                PrState::Open => StackState::Open,
+                PrState::Closed => StackState::Closed,
+                PrState::Merged => StackState::Merged,
+            },
+            head_ref: pr.head_ref.clone(),
+            base_ref: pr.base_ref.clone(),
+        })
+        .collect();
+    let built = stack::index(&refs);
+    let Some(chain) = built.chain_of(id) else {
+        return Ok(None);
+    };
+    let by_id: HashMap<i64, &PullRequest> = prs.iter().map(|pr| (pr.id.0, pr)).collect();
+    let mut members = Vec::with_capacity(chain.member_ids.len());
+    for member in &chain.member_ids {
+        let Some(pr) = by_id.get(member) else {
+            continue;
+        };
+        let Some(place) = built.place(*member) else {
+            continue;
+        };
+        members.push(StackMemberDto {
+            id: pr.id.0,
+            number: pr.number,
+            title: pr.title.clone(),
+            url: pr.url.clone(),
+            repo: format!("{}/{}", pr.repo.owner, pr.repo.name),
+            base_ref: pr.base_ref.clone(),
+            head_ref: pr.head_ref.clone(),
+            state: pr.state.as_str().to_owned(),
+            is_draft: pr.is_draft,
+            checks: pr.checks.as_str().to_owned(),
+            review_decision: pr.review_decision.map(|value| value.as_str().to_owned()),
+            mergeable: pr.mergeable.as_str().to_owned(),
+            position: place.position,
+            depth: place.depth,
+            blocking: place.blocking,
+        });
+    }
+    Ok(Some(PrStackDto {
+        root_id: chain.root_id,
+        root_number: built
+            .place(chain.root_id)
+            .map(|place| place.root_number)
+            .unwrap_or(0),
+        blocking_id: chain.blocking_id,
+        members,
+    }))
+}
+
 /// Resolves ownership off the UI thread. Demo mode uses the fixture provider.
 #[tauri::command]
 pub async fn pr_detail(
@@ -1307,13 +1479,15 @@ pub async fn pr_overview(
     blocking::run(move || {
         let state = app.inner().as_ref();
         if !refresh {
-            return Ok(overview::cached(&state.store, PrId(id))?);
+            return overview::cached(&state.store, PrId(id))?
+                .map(|overview| present_overview(state, overview))
+                .transpose();
         }
         let pr = stored_pr(state, PrId(id))?;
-        with_vcs(state, |provider| {
+        let overview = with_vcs(state, |provider| {
             overview::refresh(&state.store, provider, &pr)
-        })
-        .map(Some)
+        })?;
+        Ok(Some(present_overview(state, overview)?))
     })
     .await
 }
@@ -1337,9 +1511,10 @@ pub async fn set_auto_merge(
     blocking::run(move || {
         let state = app.inner().as_ref();
         let pr = stored_pr(state, PrId(id))?;
-        with_vcs(state, |provider| {
+        let overview = with_vcs(state, |provider| {
             overview::set_auto_merge(&state.store, provider, &pr, method)
-        })
+        })?;
+        present_overview(state, overview)
     })
     .await
 }
@@ -1365,6 +1540,61 @@ pub async fn close_pull_requests(
     .await
 }
 
+/// Adds the pull request to its base branch's merge queue and returns the
+/// refreshed overview. The UI confirms first. Never called by sync.
+#[tauri::command]
+pub async fn enqueue_pull_request(
+    app: State<'_, std::sync::Arc<AppState>>,
+    id: i64,
+) -> Result<PrOverview, AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        let pr = stored_pr(state, PrId(id))?;
+        with_vcs(state, |provider| {
+            pr_nexus_core::merge_queue::enqueue(&state.store, provider, &pr)
+        })
+    })
+    .await
+}
+
+/// Removes the pull request from the merge queue and returns the refreshed
+/// overview. The UI confirms first.
+#[tauri::command]
+pub async fn dequeue_pull_request(
+    app: State<'_, std::sync::Arc<AppState>>,
+    id: i64,
+) -> Result<PrOverview, AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        let pr = stored_pr(state, PrId(id))?;
+        with_vcs(state, |provider| {
+            pr_nexus_core::merge_queue::dequeue(&state.store, provider, &pr)
+        })
+    })
+    .await
+}
+
+/// Adds each selected pull request whose base branch requires a merge queue.
+/// Ineligible ones are skipped with a short reason. One failure does not
+/// stop the others. The UI confirms first.
+#[tauri::command]
+pub async fn enqueue_pull_requests(
+    app: State<'_, std::sync::Arc<AppState>>,
+    ids: Vec<i64>,
+) -> Result<Vec<pr_nexus_core::merge_queue::QueueReport>, AppError> {
+    let ids: Vec<PrId> = ids.into_iter().map(PrId).collect();
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        with_vcs(state, |provider| {
+            pr_nexus_core::merge_queue::enqueue_pull_requests(&state.store, provider, &ids)
+        })
+    })
+    .await
+}
+
 /// Merges the pull request now with `method` (`squash`, `merge`, `rebase`)
 /// and returns the refreshed overview. The UI confirms first.
 #[tauri::command]
@@ -1379,9 +1609,10 @@ pub async fn merge_pr(
     blocking::run(move || {
         let state = app.inner().as_ref();
         let pr = stored_pr(state, PrId(id))?;
-        with_vcs(state, |provider| {
+        let overview = with_vcs(state, |provider| {
             overview::merge(&state.store, provider, &pr, method)
-        })
+        })?;
+        present_overview(state, overview)
     })
     .await
 }
@@ -1437,7 +1668,7 @@ pub async fn set_pr_draft(
         })?;
         // The next Slack preview must recompute readiness from the updated row.
         crate::slack::lock(&state.owners).remove(&id);
-        Ok(overview)
+        present_overview(state, overview)
     })
     .await
 }
@@ -1581,12 +1812,25 @@ pub(crate) fn indicator(
     }
 }
 
+fn attention_flags<'a>(
+    state: &AppState,
+    prs: impl IntoIterator<Item = &'a PullRequest>,
+) -> Result<HashMap<PrId, AttentionFlags>, AppError> {
+    let current: Vec<PrActivity> = prs.into_iter().map(PrActivity::from_pull_request).collect();
+    state
+        .store
+        .sync_attention(&current, Utc::now())
+        .map_err(Into::into)
+}
+
 fn to_item(
     facts: &mut ListFacts,
     workspaces: &[pr_nexus_core::review::route::Workspace],
     pr: &PullRequest,
     flag: bool,
+    attention: Option<AttentionFlags>,
 ) -> listing::Item {
+    let attention = attention.unwrap_or_default();
     let links = facts.links.remove(&pr.id).unwrap_or_default();
     let request = facts.active_requests.remove(&pr.id);
     let slack_requested_ms = request
@@ -1614,6 +1858,8 @@ fn to_item(
             repo: format!("{}/{}", pr.repo.owner, pr.repo.name),
             author_login: pr.author_login.clone(),
             head_ref: pr.head_ref.clone(),
+            base_ref: pr.base_ref.clone(),
+            stack: None,
             is_draft: pr.is_draft,
             state: pr.state.as_str().to_owned(),
             checks: pr.checks.as_str().to_owned(),
@@ -1625,6 +1871,9 @@ fn to_item(
             created_at: pr.created_at.to_rfc3339(),
             hidden: pr.hidden,
             starred: facts.starred.contains(&pr.id),
+            unread: attention.unread,
+            muted: attention.muted,
+            snoozed: attention.snoozed,
             project_ids: links
                 .into_iter()
                 .filter(|link| !matches!(link.source, LinkSource::Excluded))
@@ -1634,9 +1883,12 @@ fn to_item(
             readiness_notes: notes,
             conflicts: pr.mergeable == pr_nexus_core::domain::Mergeable::Conflicting
                 || pr.merge_state == pr_nexus_core::domain::MergeStateStatus::Dirty,
+            merge_state: pr.merge_state.as_str().to_owned(),
+            merge_queue: facts.merge_queues.get(&pr.id).cloned(),
             reviewers_requested: !pr.requested_reviewers.is_empty(),
             pending_reviewers: pending_reviewers(&pr.requested_reviewers),
             slack: request.map(|request| indicator(request, workspaces)),
+            bot_comments: 0,
         },
         updated_ms: pr.updated_at.timestamp_millis(),
         created_ms: pr.created_at.timestamp_millis(),
@@ -1760,6 +2012,9 @@ mod tests {
             week_start: now - Duration::days(7),
             github_ids: None,
             github_any_state: false,
+            review_sla_hours: 48,
+            review_sla_working_days: false,
+            tz_offset_minutes: 0,
         }
     }
 

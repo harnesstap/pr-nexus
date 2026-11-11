@@ -19,6 +19,12 @@ export const DEFAULT_PREFERENCES: Preferences = {
   notify_approved: true,
   notify_changes_requested: true,
   notify_comment: false,
+  bump_due_hours: 48,
+  bump_due_working_days: true,
+  review_sla_hours: 48,
+  review_sla_working_days: false,
+  my_prs_wip_limit: null,
+  bot_logins: [],
 };
 
 type SettingsApi = Pick<

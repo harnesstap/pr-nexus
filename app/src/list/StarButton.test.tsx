@@ -67,7 +67,22 @@ test("the row GitHub button opens the PR without bubbling to the row", () => {
 
 test("the Starred chip shows its count and toggles", () => {
   const onChange = vi.fn();
-  render(<QuickFilters active={null} counts={null} onChange={vi.fn()} starred={false} starredCount={3} onStarredChange={onChange} />);
+  render(
+    <QuickFilters
+      active={null}
+      counts={null}
+      onChange={vi.fn()}
+      starred={false}
+      starredCount={3}
+      onStarredChange={onChange}
+      unread={false}
+      unreadCount={null}
+      onUnreadChange={vi.fn()}
+      snoozed={false}
+      snoozedCount={null}
+      onSnoozedChange={vi.fn()}
+    />,
+  );
   fireEvent.click(screen.getByRole("button", { name: "Starred (3)" }));
   expect(onChange).toHaveBeenCalledWith(true);
 });

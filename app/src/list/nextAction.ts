@@ -1,12 +1,13 @@
 import type { ListRow } from "../api";
 import { AUTHOR, ciBucket, REVIEW_REQUESTED } from "./model";
-import { STALE_REVIEW_HOURS, waitingSince } from "./rowCues";
+import { DEFAULT_REVIEW_SLA, reviewElapsedMs, reviewWaitExceeded, type ReviewSla } from "./sla";
+import { waitingSince } from "./rowCues";
 
 const HOUR_MS = 60 * 60 * 1000;
 
 /**
  * A Slack request or bump older than this (or, without one, a GitHub review
- * request waiting longer than `STALE_REVIEW_HOURS`) makes a reminder due.
+ * request waiting longer than the review SLA, `review_sla_hours`) makes a reminder due.
  * Same 24 h as the "Bump due" Slack filter. Mirrors `NUDGE_HOURS` in
  * `app/src-tauri/src/listing.rs`.
  */
@@ -58,15 +59,15 @@ function hours(ms: number): string {
   return total < 72 ? `${total}h` : `${Math.floor(total / 24)}d`;
 }
 
-/** Pure: same row, view and clock always give the same action. */
-export function nextAction(row: ListRow, viewKey: string, now: Date): NextActionResult {
+/** Pure: same row, view, clock and SLA always give the same action. */
+export function nextAction(row: ListRow, viewKey: string, now: Date, sla: ReviewSla = DEFAULT_REVIEW_SLA): NextActionResult {
   if (row.state !== "open") {
     return { action: "done", reason: row.state === "merged" ? "Merged" : "Closed" };
   }
-  return perspectiveOf(row, viewKey) === "reviewer" ? reviewerAction(row, now) : authorAction(row, now);
+  return perspectiveOf(row, viewKey) === "reviewer" ? reviewerAction(row, now, sla) : authorAction(row, now, sla);
 }
 
-function authorAction(row: ListRow, now: Date): NextActionResult {
+function authorAction(row: ListRow, now: Date, sla: ReviewSla): NextActionResult {
   const ci = ciBucket(row.checks);
   const decision = row.review_decision;
   if (row.conflicts) {
@@ -89,7 +90,7 @@ function authorAction(row: ListRow, now: Date): NextActionResult {
   if (!row.reviewers_requested && !row.slack) {
     return { action: "request_review", reason: "Nobody is asked to review it yet, on GitHub or Slack" };
   }
-  const nudge = nudgeDue(row, now);
+  const nudge = nudgeDue(row, now, sla);
   if (nudge) {
     return { action: "nudge", reason: nudge };
   }
@@ -97,7 +98,7 @@ function authorAction(row: ListRow, now: Date): NextActionResult {
 }
 
 /** Why a reminder is due, or null while the last request is recent. */
-export function nudgeDue(row: ListRow, now: Date): string | null {
+export function nudgeDue(row: ListRow, now: Date, sla: ReviewSla = DEFAULT_REVIEW_SLA): string | null {
   if (row.slack) {
     const stamp = row.slack.last_bumped_at ?? row.slack.requested_at;
     const age = now.getTime() - new Date(stamp).getTime();
@@ -108,11 +109,11 @@ export function nudgeDue(row: ListRow, now: Date): string | null {
   if (since === null) {
     return null;
   }
-  const age = now.getTime() - since;
-  return age > STALE_REVIEW_HOURS * HOUR_MS ? `Waiting on review for ${hours(age)} with no Slack request: send one` : null;
+  const age = reviewElapsedMs(since, now, sla);
+  return reviewWaitExceeded(since, now, sla) ? `Waiting on review for ${hours(age)} with no Slack request: send one` : null;
 }
 
-function reviewerAction(row: ListRow, now: Date): NextActionResult {
+function reviewerAction(row: ListRow, now: Date, sla: ReviewSla): NextActionResult {
   const decision = row.review_decision;
   if (row.is_draft) {
     return { action: "author_draft", reason: "Still a draft: the author has not asked for review yet" };
@@ -127,8 +128,8 @@ function reviewerAction(row: ListRow, now: Date): NextActionResult {
     return { action: "reviewed", reason: "Already approved: nothing needed from you" };
   }
   const since = waitingSince(row) ?? new Date(row.created_at).getTime();
-  const age = now.getTime() - since;
-  if (age > STALE_REVIEW_HOURS * HOUR_MS) {
+  const age = reviewElapsedMs(since, now, sla);
+  if (reviewWaitExceeded(since, now, sla)) {
     return { action: "review_overdue", reason: `Waiting on your review for ${hours(age)}` };
   }
   return { action: "review", reason: `Review requested ${hours(age)} ago` };
@@ -139,8 +140,8 @@ function reviewerAction(row: ListRow, now: Date): NextActionResult {
  * first, then the oldest PR within an action. Mirrors `attention_rank` in
  * `listing.rs`.
  */
-export function attentionRank(row: ListRow, viewKey: string, now: Date): number {
-  const priority = NEXT_ACTIONS.length - NEXT_ACTIONS.indexOf(nextAction(row, viewKey, now).action);
+export function attentionRank(row: ListRow, viewKey: string, now: Date, sla: ReviewSla = DEFAULT_REVIEW_SLA): number {
+  const priority = NEXT_ACTIONS.length - NEXT_ACTIONS.indexOf(nextAction(row, viewKey, now, sla).action);
   const since = waitingSince(row) ?? new Date(row.created_at).getTime();
   const age = Math.max(0, now.getTime() - since);
   return priority * ATTENTION_STEP + Math.min(age, ATTENTION_STEP - 1);

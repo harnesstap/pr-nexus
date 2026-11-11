@@ -193,6 +193,8 @@ fn overview(mergeable: &str, merge_state: &str) -> PrOverview {
         author: None,
         assignees: Vec::new(),
         commenters: Vec::new(),
+        feedback: Vec::new(),
+        bot_reviews: crate::bots::BotReviews::default(),
         viewer: ViewerAccess {
             login: "Alice".into(),
             permission: Some("write".into()),
@@ -208,6 +210,7 @@ fn overview(mergeable: &str, merge_state: &str) -> PrOverview {
             rebase: true,
         },
         auto_merge: None,
+        merge_queue: None,
         fetched_at: "2026-10-26T12:00:00Z".into(),
     }
 }

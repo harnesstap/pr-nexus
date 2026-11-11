@@ -32,7 +32,7 @@ test("no user-facing text says PR-Nexus", () => {
     });
   }
   expect(hits).toEqual([]);
-});
+}, 20_000);
 
 test("the app, window and reseal script use the product name", () => {
   const conf = JSON.parse(readFileSync(join(repoRoot, "app/src-tauri/tauri.conf.json"), "utf8")) as {

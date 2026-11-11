@@ -99,6 +99,35 @@ impl Store {
         self.read(move |conn| load_request(conn, id))
     }
 
+    /// Active review requests on pull requests of `account_id`.
+    pub fn active_requests_for_account(
+        &self,
+        account_id: AccountId,
+    ) -> Result<Vec<ReviewRequest>, CoreError> {
+        self.read(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT rr.id FROM review_requests rr
+                     JOIN pull_requests pr ON pr.id = rr.pr_id
+                     JOIN repositories r ON r.id = pr.repo_id
+                     WHERE rr.status = 'active' AND r.account_id = ?1
+                     ORDER BY rr.id",
+                )
+                .map_err(db)?;
+            let ids = stmt
+                .query_map([account_id.0], |row| row.get::<_, i64>(0))
+                .map_err(db)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(db)?;
+            ids.into_iter()
+                .map(|id| {
+                    load_request(conn, ReviewRequestId(id))?
+                        .ok_or_else(|| CoreError::Store(format!("review request {id} disappeared")))
+                })
+                .collect()
+        })
+    }
+
     pub fn list_review_requests(&self, pr: PrId) -> Result<Vec<ReviewRequest>, CoreError> {
         self.read(move |conn| {
             let mut stmt = conn

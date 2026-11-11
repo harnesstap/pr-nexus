@@ -1,6 +1,8 @@
 import type { ListRow, ProjectDto } from "../api";
 import { attentionRank } from "./nextAction";
+import { DEFAULT_REVIEW_SLA, type ReviewSla } from "./sla";
 import { waitingSince } from "./rowCues";
+import { stackIndex, type StackPlace, type StackState } from "./stack";
 import {
   AUTHOR,
   REVIEW_REQUESTED,
@@ -47,6 +49,12 @@ export interface PageRequest {
   github_ids?: number[] | null;
   /** Show merged and closed rows in `github_ids`. Hidden rows come back too. */
   github_any_state?: boolean;
+  /** `review_sla_hours`. Omitted until settings load; the server also fills it. */
+  review_sla_hours?: number;
+  /** `review_sla_working_days`. */
+  review_sla_working_days?: boolean;
+  /** Minutes east of UTC, so weekday hours match the machine zone. */
+  tz_offset_minutes?: number;
 }
 
 /** A section header (`row` null) or a row inside `section`. */
@@ -86,6 +94,10 @@ export interface PageDto {
   repos: { name: string; count: number }[];
   /** Rows per quick filter, over the menu filters and search but ignoring the quick filter. */
   quick: Record<QuickFilter, number>;
+  /** Unread rows in this snooze scope after the other filters, including the quick filter. */
+  attention: number;
+  /** Snoozed rows that pass the other filters. Stable when the Snoozed chip toggles. */
+  snoozed_count: number;
   /** Where else the search matches, so an empty result can point there. Null without a query. */
   elsewhere: Elsewhere | null;
 }
@@ -150,9 +162,14 @@ export function selectionCountText(selectable: number, finished: number, selecte
 }
 
 /** Header subtitle (§8.2) from backend counts: "5 open PRs across 2 projects · 1 unassigned". */
-export function summaryText(summary: PageSummary, viewKey: string, syncProgress: string | null = null): string {
-  const text = countsText(summary, viewKey);
+export function summaryText(summary: PageSummary, viewKey: string, syncProgress: string | null = null, snoozed = false): string {
+  const text = snoozed ? snoozedText(summary) : countsText(summary, viewKey);
   return syncProgress ? `${text} · ${syncProgress}` : text;
+}
+
+function snoozedText(summary: PageSummary): string {
+  const count = summary.open + summary.finished;
+  return `${count} snoozed ${count === 1 ? "PR" : "PRs"}`;
 }
 
 function countsText(summary: PageSummary, viewKey: string): string {
@@ -184,7 +201,8 @@ export function pageFromRows(rows: readonly SearchRow[], projects: readonly Proj
   const githubIds = request.github_ids ?? null;
   const anyState = request.github_any_state === true;
   const nav = githubIds ? rows.filter((row) => githubIds.includes(row.id)) : rowsForView(rows, request.view_key);
-  const scoped = nav.filter((row) => scopeRow(row, projects, filters, anyState));
+  const viewed = nav.filter((row) => scopeRow(row, projects, filters, anyState));
+  const scoped = viewed.filter((row) => inAttention(row, filters));
   const terms = normalizeSearch(request.query).split(/\s+/).filter((term) => term.length > 0);
   const matched = scoped.filter((row) => passesMenu(row, filters, now) && matchesTerms(row, projects, terms));
   const quick = Object.fromEntries(QUICK_FILTERS.map((key) => [key, matched.filter((row) => quickMatches(row, key)).length])) as Record<QuickFilter, number>;
@@ -210,17 +228,26 @@ export function pageFromRows(rows: readonly SearchRow[], projects: readonly Proj
     if (githubIds) {
       return githubIds.indexOf(left.id) - githubIds.indexOf(right.id);
     }
-    return compare(left, right, request.ordering, request.direction, { viewKey: request.view_key, now });
+    return compare(left, right, request.ordering, request.direction, {
+      viewKey: request.view_key,
+      now,
+      sla: {
+        hours: request.review_sla_hours ?? DEFAULT_REVIEW_SLA.hours,
+        workingDays: request.review_sla_working_days ?? false,
+      },
+    });
   });
   const keepEmpty = keptEmpty(live, request.view_key, filters, terms.length > 0);
-  const groups = group(ordered, live, request, keepEmpty);
+  const marks = stackMarks(rows);
+  const groups = group(ordered, live, request, keepEmpty, marks);
   const collapsed = new Set(request.collapsed);
   const stream: PageEntry[] = [];
   for (const section of groups) {
     stream.push({ section: section.key, row: null });
     if (!collapsed.has(section.key)) {
       for (const row of section.rows) {
-        stream.push({ section: section.key, row: listRow(row) });
+        const listed = listRow(row);
+        stream.push({ section: section.key, row: { ...listed, stack: marks.get(row.id) ?? null } });
       }
     }
   }
@@ -248,8 +275,24 @@ export function pageFromRows(rows: readonly SearchRow[], projects: readonly Proj
     orgs: [...orgCounts.entries()].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)).map(([name, count]) => ({ name, count })),
     repos: repoChoices(scoped, filters, projects, terms, now),
     quick,
+    attention: attentionCount(scoped, filters, projects, terms, now),
+    snoozed_count: snoozedCount(viewed, filters, projects, terms, now),
     elsewhere: terms.length > 0 ? elsewhereFor(rows, projects, request, terms, now) : null,
   };
+}
+
+/** Snoozed rows leave the default list. The Snoozed chip shows only those rows. */
+function inAttention(row: ListRow, filters: Filters): boolean {
+  return filters.snoozed ? row.snoozed : !row.snoozed;
+}
+
+function attentionCount(scoped: readonly SearchRow[], filters: Filters, projects: readonly ProjectDto[], terms: readonly string[], now: Date): number {
+  const cleared = { ...filters, unread: false };
+  return scoped.filter((row) => passesMenu(row, cleared, now) && matchesTerms(row, projects, terms) && (!filters.quick || quickMatches(row, filters.quick)) && row.unread).length;
+}
+
+function snoozedCount(viewed: readonly SearchRow[], filters: Filters, projects: readonly ProjectDto[], terms: readonly string[], now: Date): number {
+  return viewed.filter((row) => row.snoozed && passesMenu(row, filters, now) && matchesTerms(row, projects, terms) && (!filters.quick || quickMatches(row, filters.quick))).length;
 }
 
 /** First casing wins. A selected repository missing from the view stays, at count 0. */
@@ -283,11 +326,11 @@ function elsewhereFor(rows: readonly SearchRow[], projects: readonly ProjectDto[
   const filters = request.filters;
   const found = rows.filter((row) => !row.hidden && matchesTerms(row, projects, terms));
   const passes = (row: SearchRow) => passesMenu(row, filters, now) && (!filters.quick || quickMatches(row, filters.quick));
-  const here = rowsForView(found, request.view_key);
+  const here = rowsForView(found, request.view_key).filter((row) => inAttention(row, filters));
   return {
     views: NAV_VIEWS.filter((key) => key !== request.view_key).map((key) => ({
       view_key: key,
-      count: rowsForView(found, key).filter((row) => scopeRow(row, projects, filters)).length,
+      count: rowsForView(found, key).filter((row) => scopeRow(row, projects, filters) && inAttention(row, filters)).length,
     })),
     filtered: here.filter((row) => scopeRow(row, projects, filters) && !passes(row)).length,
     finished: here.filter((row) => !scopeRow(row, projects, filters) && passes(row)).length,
@@ -312,6 +355,11 @@ function listRow(row: SearchRow): ListRow {
   const { body: _body, ...rest } = row;
   void _body;
   return rest;
+}
+
+/** The same stack mark `list_page` and `rows_by_id` attach, from every stored row. */
+export function rowWithStack(rows: readonly SearchRow[], row: SearchRow): ListRow {
+  return { ...listRow(row), stack: stackMarks(rows).get(row.id) ?? null };
 }
 
 function resume(stream: readonly PageEntry[], cursor: Cursor | null): number {
@@ -372,7 +420,54 @@ interface Group {
   rows: SearchRow[];
 }
 
-function group(rows: readonly SearchRow[], live: readonly ProjectDto[], request: PageRequest, keepEmpty: ReadonlySet<number>): Group[] {
+function stackMarks(rows: readonly SearchRow[]): Map<number, StackPlace> {
+  const stateOf = (state: string): StackState => (state === "merged" || state === "closed" ? state : "open");
+  return stackIndex(
+    rows.map((row) => ({
+      id: row.id,
+      repo: row.repo,
+      number: row.number,
+      state: stateOf(row.state),
+      head_ref: row.head_ref,
+      base_ref: row.base_ref ?? "",
+    })),
+  ).places;
+}
+
+/** One section per stack, members bottom to top. Everything else is "Not stacked". */
+function groupStacks(rows: readonly SearchRow[], marks: ReadonlyMap<number, StackPlace>): Group[] {
+  const index = new Map(rows.map((row, at) => [row.id, at]));
+  const buckets = new Map<number, SearchRow[]>();
+  const plain: SearchRow[] = [];
+  for (const row of rows) {
+    const mark = marks.get(row.id);
+    if (!mark) {
+      plain.push(row);
+      continue;
+    }
+    const bucket = buckets.get(mark.root_id);
+    if (bucket) {
+      bucket.push(row);
+    } else {
+      buckets.set(mark.root_id, [row]);
+    }
+  }
+  const roots = [...buckets.keys()].sort((left, right) => {
+    const rank = (root: number) => index.get(root) ?? Math.min(...(buckets.get(root) ?? []).map((row) => index.get(row.id) ?? Number.MAX_SAFE_INTEGER));
+    return rank(left) - rank(right);
+  });
+  const groups: Group[] = roots.map((root) => {
+    const members = [...(buckets.get(root) ?? [])].sort((left, right) => (marks.get(left.id)?.position ?? 0) - (marks.get(right.id)?.position ?? 0));
+    const number = marks.get(root)?.root_number ?? members.map((row) => marks.get(row.id)?.root_number).find((value) => value !== undefined) ?? 0;
+    return { key: `stack:${root}`, title: `Stack · #${number}`, projectId: null, rows: members };
+  });
+  if (plain.length > 0) {
+    groups.push({ key: "unstacked", title: "Not stacked", projectId: null, rows: plain });
+  }
+  return groups;
+}
+
+function group(rows: readonly SearchRow[], live: readonly ProjectDto[], request: PageRequest, keepEmpty: ReadonlySet<number>, marks: ReadonlyMap<number, StackPlace>): Group[] {
   switch (request.grouping) {
     case "project": {
       const ids = new Set(live.map((project) => project.id));
@@ -397,6 +492,8 @@ function group(rows: readonly SearchRow[], live: readonly ProjectDto[], request:
       return groupBy(rows, (row) => row.owner);
     case "status":
       return groupBy(rows, (row) => statusTitle(row.readiness));
+    case "stack":
+      return groupStacks(rows, marks);
     case "updated": {
       const day = new Date(request.day_start).getTime();
       const week = new Date(request.week_start).getTime();
@@ -439,6 +536,7 @@ function statusTitle(readiness: ListRow["readiness"]): string {
 interface RankContext {
   viewKey: string;
   now: Date;
+  sla?: ReviewSla;
 }
 
 function compare(left: ListRow, right: ListRow, ordering: Ordering, direction: Direction, context: RankContext = { viewKey: "mine", now: new Date(0) }): number {
@@ -451,7 +549,7 @@ function rank(row: ListRow, ordering: Ordering, context: RankContext): number {
   switch (ordering) {
     case "attention":
       // Descending: the most urgent next action first, the oldest PR first within it.
-      return attentionRank(row, context.viewKey, context.now);
+      return attentionRank(row, context.viewKey, context.now, context.sla);
     case "updated":
       return new Date(row.updated_at).getTime();
     case "created":

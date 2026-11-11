@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactElement } from "react";
-import { AlertIcon, CheckIcon, DeclinedIcon, DraftIcon, EyeOffIcon, MergeIcon, MoreIcon, StarIcon } from "../icons";
+import { AlertIcon, CheckIcon, ClockIcon, DeclinedIcon, DraftIcon, EyeOffIcon, MergeIcon, MoreIcon, StarIcon } from "../icons";
 import { Tooltip } from "../Tooltip";
 import { QUICK_FILTERS, type QuickFilter } from "./model";
 import { hint } from "./shortcuts";
@@ -53,9 +53,9 @@ export const QUICK_SPECS: Record<QuickFilter, QuickSpec> = {
   },
 };
 
-type ChipKey = QuickFilter | "starred";
+type ChipKey = QuickFilter | "starred" | "unread" | "snoozed";
 
-const KEYS: ChipKey[] = [...QUICK_FILTERS, "starred"];
+const KEYS: ChipKey[] = [...QUICK_FILTERS, "starred", "unread", "snoozed"];
 /** Gap between chips, in px; matches `gap-1`. */
 const GAP = 4;
 
@@ -67,6 +67,12 @@ interface Props {
   starred: boolean;
   starredCount: number | null;
   onStarredChange: (on: boolean) => void;
+  unread: boolean;
+  unreadCount: number | null;
+  onUnreadChange: (on: boolean) => void;
+  snoozed: boolean;
+  snoozedCount: number | null;
+  onSnoozedChange: (on: boolean) => void;
 }
 
 // Same 28px height and rounded-md as the toolbar's inputs, a hairline border, and the accent only when on.
@@ -119,15 +125,25 @@ export function fitChips(keys: readonly ChipKey[], widths: readonly number[], av
 
 /**
  * Quick status filters (§8.2) as compact chips inside the toolbar row: one quick filter at a
- * time (clicking the active one again clears it), plus Starred, which stacks with them. Counts
+ * time (clicking the active one again clears it), plus Starred, Unread and Snoozed, which stack with them. Counts
  * cover the current search and menu filters, so a chip says what clicking leaves; a chip with
  * nothing to show is muted. Chips that do not fit the row's width fold into **More (N)**, with
  * active chips kept visible first. The toolbar's **Clear filters** turns them off.
  */
-export function QuickFilters({ active, counts, onChange, starred, starredCount, onStarredChange }: Props) {
-  const isOn = (key: ChipKey) => (key === "starred" ? starred : active === key);
-  const toggle = (key: ChipKey) => (key === "starred" ? onStarredChange(!starred) : onChange(active === key ? null : key));
-  const countOf = (key: ChipKey) => (key === "starred" ? starredCount : counts?.[key]);
+export function QuickFilters({ active, counts, onChange, starred, starredCount, onStarredChange, unread, unreadCount, onUnreadChange, snoozed, snoozedCount, onSnoozedChange }: Props) {
+  const isOn = (key: ChipKey) => stackOn(key, { starred, unread, snoozed, active });
+  const toggle = (key: ChipKey) => {
+    if (key === "starred") {
+      onStarredChange(!starred);
+    } else if (key === "unread") {
+      onUnreadChange(!unread);
+    } else if (key === "snoozed") {
+      onSnoozedChange(!snoozed);
+    } else {
+      onChange(active === key ? null : key);
+    }
+  };
+  const countOf = (key: ChipKey) => stackCount(key, { starredCount, unreadCount, snoozedCount, counts });
   const box = useRef<HTMLDivElement>(null);
   const ruler = useRef<HTMLDivElement>(null);
   const [shown, setShown] = useState<Set<ChipKey>>(() => new Set(KEYS));
@@ -184,16 +200,88 @@ export function QuickFilters({ active, counts, onChange, starred, starredCount, 
   );
 }
 
-function chipText(key: ChipKey): QuickSpec {
-  if (key === "starred") {
-    return { chip: "Starred", label: "Starred only", detail: "Show only the PRs you starred", icon: <StarIcon size={12} />, tint: "text-amber-400" };
+function stackOn(key: ChipKey, state: { starred: boolean; unread: boolean; snoozed: boolean; active: QuickFilter | null }): boolean {
+  switch (key) {
+    case "starred":
+      return state.starred;
+    case "unread":
+      return state.unread;
+    case "snoozed":
+      return state.snoozed;
+    case "draft":
+    case "no_review":
+    case "ci_trouble":
+    case "declined":
+    case "ready":
+      return state.active === key;
+    default: {
+      const unexpected: never = key;
+      return unexpected;
+    }
   }
-  return QUICK_SPECS[key];
+}
+
+function stackCount(
+  key: ChipKey,
+  counts: { starredCount: number | null; unreadCount: number | null; snoozedCount: number | null; counts: Record<QuickFilter, number> | null },
+): number | null | undefined {
+  switch (key) {
+    case "starred":
+      return counts.starredCount;
+    case "unread":
+      return counts.unreadCount;
+    case "snoozed":
+      return counts.snoozedCount;
+    case "draft":
+    case "no_review":
+    case "ci_trouble":
+    case "declined":
+    case "ready":
+      return counts.counts?.[key];
+    default: {
+      const unexpected: never = key;
+      return unexpected;
+    }
+  }
+}
+
+function chipText(key: ChipKey): QuickSpec {
+  switch (key) {
+    case "starred":
+      return { chip: "Starred", label: "Starred only", detail: "Show only the PRs you starred", icon: <StarIcon size={12} />, tint: "text-amber-400" };
+    case "unread":
+      return {
+        chip: "Unread",
+        label: "Unread only",
+        detail: "PRs with new commits, comments, reviews, or CI since you last opened them",
+        icon: <span className="inline-block h-1.5 w-1.5 rounded-full bg-violet-400" />,
+        tint: "text-violet-400",
+      };
+    case "snoozed":
+      return { chip: "Snoozed", label: "Snoozed only", detail: "PRs you hid until a time or the next update", icon: <ClockIcon size={12} />, tint: "text-slate-400" };
+    case "draft":
+    case "no_review":
+    case "ci_trouble":
+    case "declined":
+    case "ready":
+      return QUICK_SPECS[key];
+    default: {
+      const unexpected: never = key;
+      return unexpected;
+    }
+  }
+}
+
+function chipIcon(key: ChipKey, spec: QuickSpec, on: boolean): ReactElement {
+  if (key === "starred") {
+    return <StarIcon size={12} filled={on} />;
+  }
+  return spec.icon;
 }
 
 function ChipFace({ chipKey, on, count }: { chipKey: ChipKey; on: boolean; count: number | null | undefined }) {
   const spec = chipText(chipKey);
-  const icon = chipKey === "starred" ? <StarIcon size={12} filled={on} /> : spec.icon;
+  const icon = chipIcon(chipKey, spec, on);
   return (
     <span className={`${BASE} ${on ? `${ON} font-medium` : IDLE} ${!on && count === 0 ? EMPTY : ""}`}>
       <span className={`flex shrink-0 ${on ? "text-violet-300" : spec.tint}`}>{on ? <CheckIcon size={12} /> : icon}</span>
@@ -205,7 +293,7 @@ function ChipFace({ chipKey, on, count }: { chipKey: ChipKey; on: boolean; count
 
 function Chip({ chipKey, on, count, onToggle }: { chipKey: ChipKey; on: boolean; count: number | null | undefined; onToggle: () => void }) {
   const spec = chipText(chipKey);
-  const icon = chipKey === "starred" ? <StarIcon size={12} filled={on} /> : spec.icon;
+  const icon = chipIcon(chipKey, spec, on);
   return (
     <Tooltip
       label={spec.label}

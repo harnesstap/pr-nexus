@@ -54,6 +54,7 @@ mod tests {
     /// Every command source file. A new file with commands must be added here.
     const SOURCES: &[(&str, &str)] = &[
         ("bulk.rs", include_str!("bulk.rs")),
+        ("bumps.rs", include_str!("bumps.rs")),
         ("commands.rs", include_str!("commands.rs")),
         ("context.rs", include_str!("context.rs")),
         ("mapping_file.rs", include_str!("mapping_file.rs")),

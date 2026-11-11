@@ -36,6 +36,9 @@ function row(id: number, title: string, project_ids: number[]): SearchRow {
     pending_reviewers: [],
     slack: null,
     starred: false,
+    unread: false,
+    muted: false,
+    snoozed: false,
   };
 }
 

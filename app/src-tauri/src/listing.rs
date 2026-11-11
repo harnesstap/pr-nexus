@@ -8,9 +8,11 @@
 //! then its rows unless it is collapsed. A row linked to two projects appears
 //! under both. Counts come from the full result, never from the loaded slice.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
+use pr_nexus_core::sla::{ReviewSla, review_wait_exceeded};
+use pr_nexus_core::stack::{self, StackPlace, StackRef, StackState};
 use serde::{Deserialize, Serialize};
 
 use crate::commands::{ListRow, ProjectDto};
@@ -41,6 +43,12 @@ pub struct FiltersDto {
     /// Only starred pull requests.
     #[serde(default)]
     pub starred: bool,
+    /// Only unread pull requests. Combines with the other filters.
+    #[serde(default)]
+    pub unread: bool,
+    /// Only snoozed pull requests. Off leaves them out of the list and its counts.
+    #[serde(default)]
+    pub snoozed: bool,
     /// One quick status filter from the bar above the list, or none.
     #[serde(default)]
     pub quick: Option<String>,
@@ -60,6 +68,8 @@ impl FiltersDto {
             || !self.slack.is_empty()
             || self.archived
             || self.starred
+            || self.unread
+            || self.snoozed
             || self.quick.is_some()
             || !self.github.trim().is_empty()
     }
@@ -91,6 +101,30 @@ pub struct PageRequest {
     /// Rows that live only in archived projects still wait for Archived.
     #[serde(default)]
     pub github_any_state: bool,
+    /// `review_sla_hours`. The command fills this from the store.
+    #[serde(default = "default_review_sla_hours")]
+    pub review_sla_hours: i64,
+    /// `review_sla_working_days`.
+    #[serde(default)]
+    pub review_sla_working_days: bool,
+    /// Minutes east of UTC, for weekday hours. The command sets the machine zone.
+    #[serde(default)]
+    pub tz_offset_minutes: i32,
+}
+
+fn default_review_sla_hours() -> i64 {
+    pr_nexus_core::sla::DEFAULT_REVIEW_SLA_HOURS
+}
+
+fn sla_of(request: &PageRequest) -> ReviewSla {
+    ReviewSla {
+        hours: if request.review_sla_hours < 1 {
+            pr_nexus_core::sla::DEFAULT_REVIEW_SLA_HOURS
+        } else {
+            request.review_sla_hours
+        },
+        working_days: request.review_sla_working_days,
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -163,6 +197,10 @@ pub struct PageDto {
     pub orgs: Vec<OrgCount>,
     pub repos: Vec<OrgCount>,
     pub quick: QuickCounts,
+    /// Unread rows in this snooze scope after the other filters, including the quick filter.
+    pub attention: usize,
+    /// Snoozed rows that pass the other filters. Stable when the Snoozed chip toggles.
+    pub snoozed_count: usize,
     /// Only while searching.
     pub elsewhere: Option<Elsewhere>,
 }
@@ -210,13 +248,18 @@ pub fn page(
         .as_ref()
         .map(|ids| ids.iter().copied().collect());
 
-    let scoped: Vec<&Item> = items
+    let viewed: Vec<&Item> = items
         .iter()
         .filter(|item| match &github {
             Some(ids) => ids.contains(&item.row.id),
             None => in_view(&item.row, &request.view_key, project_view),
         })
         .filter(|item| scope_row(&item.row, &live_ids, filters, request.github_any_state))
+        .collect();
+    let scoped: Vec<&Item> = viewed
+        .iter()
+        .copied()
+        .filter(|item| in_attention(&item.row, filters))
         .collect();
     let matched: Vec<&Item> = scoped
         .iter()
@@ -286,6 +329,7 @@ pub fn page(
         });
     }
 
+    let marks = stack_marks(items);
     let keep_empty: HashSet<i64> = if search.is_some() || filters.active() {
         HashSet::new()
     } else if let Some(id) = project_view {
@@ -296,7 +340,7 @@ pub fn page(
     } else {
         live_ids.clone()
     };
-    let groups = group(&shown, &live, &live_ids, request, &keep_empty);
+    let groups = group(&shown, &live, &live_ids, request, &keep_empty, &marks);
 
     let collapsed: HashSet<&str> = request.collapsed.iter().map(String::as_str).collect();
     let mut stream: Vec<(&str, Option<&Item>)> = Vec::new();
@@ -318,7 +362,11 @@ pub fn page(
         .iter()
         .map(|(section, item)| PageEntry {
             section: (*section).to_owned(),
-            row: item.map(|item| item.row.clone()),
+            row: item.map(|item| {
+                let mut row = item.row.clone();
+                row.stack = marks.get(&row.id).cloned();
+                row
+            }),
         })
         .collect();
     let next_cursor = (end < stream.len() && end > start).then(|| {
@@ -360,8 +408,61 @@ pub fn page(
             .collect(),
         repos: repo_choices(&scoped, filters, search, now_ms),
         quick,
+        attention: attention_count(&scoped, filters, search, now_ms),
+        snoozed_count: snoozed_count(&viewed, filters, search, now_ms),
         elsewhere,
     }
+}
+
+/// Snoozed rows leave the default list. The Snoozed chip shows only those rows.
+fn in_attention(row: &ListRow, filters: &FiltersDto) -> bool {
+    if filters.snoozed {
+        row.snoozed
+    } else {
+        !row.snoozed
+    }
+}
+
+fn attention_count(
+    scoped: &[&Item],
+    filters: &FiltersDto,
+    search: Option<&HashSet<i64>>,
+    now_ms: i64,
+) -> usize {
+    let mut cleared = filters.clone();
+    cleared.unread = false;
+    scoped
+        .iter()
+        .filter(|item| {
+            passes_menu(item, &cleared, now_ms)
+                && search.is_none_or(|ids| ids.contains(&item.row.id))
+                && filters
+                    .quick
+                    .as_deref()
+                    .is_none_or(|quick| quick_matches(&item.row, quick))
+                && item.row.unread
+        })
+        .count()
+}
+
+fn snoozed_count(
+    viewed: &[&Item],
+    filters: &FiltersDto,
+    search: Option<&HashSet<i64>>,
+    now_ms: i64,
+) -> usize {
+    viewed
+        .iter()
+        .filter(|item| {
+            item.row.snoozed
+                && passes_menu(item, filters, now_ms)
+                && search.is_none_or(|ids| ids.contains(&item.row.id))
+                && filters
+                    .quick
+                    .as_deref()
+                    .is_none_or(|quick| quick_matches(&item.row, quick))
+        })
+        .count()
 }
 
 /// The quick status filters (§8.2). Unknown keys match nothing.
@@ -468,6 +569,7 @@ fn elsewhere(
                 .iter()
                 .filter(|item| in_view(&item.row, key, None))
                 .filter(|item| scope_row(&item.row, live_ids, filters, false))
+                .filter(|item| in_attention(&item.row, filters))
                 .count(),
         })
         .collect();
@@ -482,6 +584,7 @@ fn elsewhere(
         .iter()
         .copied()
         .filter(|item| in_view(&item.row, view_key, project_view))
+        .filter(|item| in_attention(&item.row, filters))
         .collect();
     let filtered = here
         .iter()
@@ -573,6 +676,9 @@ fn repo_choices(
 fn passes_menu(item: &Item, filters: &FiltersDto, now_ms: i64) -> bool {
     let row = &item.row;
     if filters.starred && !row.starred {
+        return false;
+    }
+    if filters.unread && !row.unread {
         return false;
     }
     if !filters.orgs.is_empty()
@@ -670,7 +776,13 @@ fn slack_kinds(item: &Item, now_ms: i64) -> Vec<&'static str> {
 fn rank(item: &Item, request: &PageRequest, now_ms: i64) -> i64 {
     match request.ordering.as_str() {
         // Descending puts the most urgent next action first, oldest first within it.
-        "attention" => attention_rank(item, &request.view_key, now_ms),
+        "attention" => attention_rank_with(
+            item,
+            &request.view_key,
+            now_ms,
+            &sla_of(request),
+            request.tz_offset_minutes,
+        ),
         "created" => item.created_ms,
         "slack" => item.slack_requested_ms,
         "readiness" => match item.row.readiness.as_str() {
@@ -762,8 +874,20 @@ pub const NUDGE_HOURS: i64 = 24;
 /// Wider than any PR age in ms, so the action always wins over age.
 const ATTENTION_STEP: i64 = 10_000_000_000_000;
 
-/// Pure: mirrors `nextAction` in `nextAction.ts`.
+/// Pure: mirrors `nextAction` in `nextAction.ts`. Uses the 48 hour default.
+#[cfg(test)]
 pub fn next_action(item: &Item, view_key: &str, now_ms: i64) -> NextAction {
+    next_action_with(item, view_key, now_ms, &ReviewSla::default(), 0)
+}
+
+/// Next action for `sla`. The no-argument tests use the 48 hour default.
+pub fn next_action_with(
+    item: &Item,
+    view_key: &str,
+    now_ms: i64,
+    sla: &ReviewSla,
+    offset_east_minutes: i32,
+) -> NextAction {
     let row = &item.row;
     if row.state != "open" {
         return NextAction::Done;
@@ -783,7 +907,7 @@ pub fn next_action(item: &Item, view_key: &str, now_ms: i64) -> NextAction {
             return NextAction::Reviewed;
         }
         let since = waiting_since(item).unwrap_or(item.created_ms);
-        return if now_ms - since > STALE_REVIEW_HOURS * HOUR_MS {
+        return if review_wait_exceeded(since, now_ms, sla, offset_east_minutes) {
             NextAction::ReviewOverdue
         } else {
             NextAction::Review
@@ -813,7 +937,8 @@ pub fn next_action(item: &Item, view_key: &str, now_ms: i64) -> NextAction {
     }
     let due = match (row.slack.is_some(), item.slack_stamp_ms) {
         (true, Some(stamp)) => now_ms - stamp >= NUDGE_HOURS * HOUR_MS,
-        _ => waiting_since(item).is_some_and(|since| now_ms - since > STALE_REVIEW_HOURS * HOUR_MS),
+        _ => waiting_since(item)
+            .is_some_and(|since| review_wait_exceeded(since, now_ms, sla, offset_east_minutes)),
     };
     if due {
         NextAction::Nudge
@@ -842,20 +967,38 @@ const MINE_ATTENTION: &[NextAction] = &[
 
 const REVIEW_ATTENTION: &[NextAction] = &[NextAction::Review, NextAction::ReviewOverdue];
 
-/// Counts from the same [`next_action`] rules as the list. Hidden and closed
-/// rows are skipped. To review uses the reviewer rules; Mine uses the author
-/// rules, including a pull request that is both.
-pub fn attention_counts(items: &[Item], now_ms: i64) -> AttentionCounts {
+/// Counts from the same next-action rules as the list, using `sla`. Hidden,
+/// closed, snoozed, and muted rows are skipped. To review uses the reviewer
+/// rules; Mine uses the author rules, including a pull request that is both.
+pub fn attention_counts(
+    items: &[Item],
+    now_ms: i64,
+    sla: &ReviewSla,
+    offset_east_minutes: i32,
+) -> AttentionCounts {
     let mut counts = AttentionCounts::default();
     for item in items {
-        if item.row.state != "open" || item.row.hidden {
+        if item.row.state != "open" || item.row.hidden || item.row.snoozed || item.row.muted {
             continue;
         }
         let author = item.row.involvement & AUTHOR != 0;
         let requested = item.row.involvement & REVIEW_REQUESTED != 0;
-        let review =
-            requested && REVIEW_ATTENTION.contains(&next_action(item, "to_review", now_ms));
-        let mine = author && MINE_ATTENTION.contains(&next_action(item, "mine", now_ms));
+        let review = requested
+            && REVIEW_ATTENTION.contains(&next_action_with(
+                item,
+                "to_review",
+                now_ms,
+                sla,
+                offset_east_minutes,
+            ));
+        let mine = author
+            && MINE_ATTENTION.contains(&next_action_with(
+                item,
+                "mine",
+                now_ms,
+                sla,
+                offset_east_minutes,
+            ));
         counts.to_review += usize::from(review);
         counts.mine += usize::from(mine);
         counts.badge += usize::from(review || mine);
@@ -863,35 +1006,56 @@ pub fn attention_counts(items: &[Item], now_ms: i64) -> AttentionCounts {
     counts
 }
 
-/// Mirrors `attentionRank` in `nextAction.ts`.
-pub fn attention_rank(item: &Item, view_key: &str, now_ms: i64) -> i64 {
+fn attention_rank_with(
+    item: &Item,
+    view_key: &str,
+    now_ms: i64,
+    sla: &ReviewSla,
+    offset_east_minutes: i32,
+) -> i64 {
     let since = waiting_since(item).unwrap_or(item.created_ms);
     let age = (now_ms - since).clamp(0, ATTENTION_STEP - 1);
-    next_action(item, view_key, now_ms).priority() * ATTENTION_STEP + age
+    next_action_with(item, view_key, now_ms, sla, offset_east_minutes).priority() * ATTENTION_STEP
+        + age
 }
 
 /// The age chip a row shows (§8.2). Mirrors `staleCue` in
 /// `app/src/list/rowCues.ts`, with the same thresholds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StaleCue {
-    /// Waiting on review longer than [`STALE_REVIEW_HOURS`].
+    /// Waiting on review longer than the review SLA.
     Waiting,
     /// No update and no Slack bump for longer than [`IDLE_DAYS`].
     Idle,
 }
 
-/// `STALE_REVIEW_HOURS` in `rowCues.ts`.
+/// `STALE_REVIEW_HOURS` in `rowCues.ts`. Tests use it as the default wait.
+#[cfg(test)]
 pub const STALE_REVIEW_HOURS: i64 = 48;
 /// `IDLE_DAYS` in `rowCues.ts`.
 pub const IDLE_DAYS: i64 = 7;
 const HOUR_MS: i64 = 60 * 60 * 1000;
 
 /// Closed and merged rows carry no cue; a long review wait wins over idleness.
+/// Uses the 48 hour default.
+#[cfg(test)]
 pub fn stale_cue(item: &Item, now_ms: i64) -> Option<StaleCue> {
+    stale_cue_with(item, now_ms, &ReviewSla::default(), 0)
+}
+
+/// [`stale_cue`] with the saved review SLA.
+pub fn stale_cue_with(
+    item: &Item,
+    now_ms: i64,
+    sla: &ReviewSla,
+    offset_east_minutes: i32,
+) -> Option<StaleCue> {
     if item.row.state != "open" {
         return None;
     }
-    if waiting_since(item).is_some_and(|since| now_ms - since > STALE_REVIEW_HOURS * HOUR_MS) {
+    if waiting_since(item)
+        .is_some_and(|since| review_wait_exceeded(since, now_ms, sla, offset_east_minutes))
+    {
         return Some(StaleCue::Waiting);
     }
     let last = item.updated_ms.max(item.slack_stamp_ms.unwrap_or(0));
@@ -906,17 +1070,47 @@ fn status_title(readiness: &str) -> &'static str {
     }
 }
 
+/// Places for stacks of two or more, from every row the page can see.
+pub fn stack_marks(items: &[Item]) -> HashMap<i64, StackPlace> {
+    let refs: Vec<StackRef> = items
+        .iter()
+        .map(|item| StackRef {
+            id: item.row.id,
+            repo: item.row.repo.clone(),
+            number: item.row.number,
+            state: match item.row.state.as_str() {
+                "merged" => StackState::Merged,
+                "closed" => StackState::Closed,
+                _ => StackState::Open,
+            },
+            head_ref: item.row.head_ref.clone(),
+            base_ref: item.row.base_ref.clone(),
+        })
+        .collect();
+    stack::index(&refs).places().clone()
+}
+
+/// Writes [`stack_marks`] onto each row, for callers that return rows outside a page.
+pub fn stamp_stacks(items: &mut [Item]) {
+    let marks = stack_marks(items);
+    for item in items {
+        item.row.stack = marks.get(&item.row.id).cloned();
+    }
+}
+
 fn group<'a>(
     rows: &[&'a Item],
     live: &[&ProjectDto],
     live_ids: &HashSet<i64>,
     request: &PageRequest,
     keep_empty: &HashSet<i64>,
+    marks: &HashMap<i64, StackPlace>,
 ) -> Vec<Group<'a>> {
     match request.grouping.as_str() {
         "repository" => group_by(rows, |item| item.row.repo.clone()),
         "org" => group_by(rows, |item| item.row.owner.clone()),
         "status" => group_by(rows, |item| status_title(&item.row.readiness).to_owned()),
+        "stack" => group_stacks(rows, marks),
         "updated" => {
             let day = request.day_start.timestamp_millis();
             let week = request.week_start.timestamp_millis();
@@ -986,6 +1180,74 @@ fn group<'a>(
     }
 }
 
+/// One section per stack, members bottom to top. Everything else is "Not stacked".
+fn group_stacks<'a>(rows: &[&'a Item], marks: &HashMap<i64, StackPlace>) -> Vec<Group<'a>> {
+    let index: HashMap<i64, usize> = rows
+        .iter()
+        .enumerate()
+        .map(|(at, item)| (item.row.id, at))
+        .collect();
+    let mut buckets: HashMap<i64, Vec<&'a Item>> = HashMap::new();
+    let mut plain: Vec<&'a Item> = Vec::new();
+    for item in rows {
+        match marks.get(&item.row.id) {
+            Some(mark) => buckets.entry(mark.root_id).or_default().push(*item),
+            None => plain.push(*item),
+        }
+    }
+    let mut roots: Vec<i64> = buckets.keys().copied().collect();
+    roots.sort_by_key(|root| {
+        index.get(root).copied().unwrap_or_else(|| {
+            buckets
+                .get(root)
+                .and_then(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| index.get(&item.row.id))
+                        .min()
+                        .copied()
+                })
+                .unwrap_or(usize::MAX)
+        })
+    });
+    let mut groups: Vec<Group<'a>> = roots
+        .into_iter()
+        .map(|root| {
+            let mut items = buckets.remove(&root).unwrap_or_default();
+            items.sort_by_key(|item| {
+                marks
+                    .get(&item.row.id)
+                    .map(|mark| mark.position)
+                    .unwrap_or(0)
+            });
+            let number = marks
+                .get(&root)
+                .map(|mark| mark.root_number)
+                .unwrap_or_else(|| {
+                    items
+                        .iter()
+                        .find_map(|item| marks.get(&item.row.id).map(|mark| mark.root_number))
+                        .unwrap_or(0)
+                });
+            Group {
+                key: format!("stack:{root}"),
+                title: format!("Stack · #{number}"),
+                project_id: None,
+                items,
+            }
+        })
+        .collect();
+    if !plain.is_empty() {
+        groups.push(Group {
+            key: "unstacked".to_owned(),
+            title: "Not stacked".to_owned(),
+            project_id: None,
+            items: plain,
+        });
+    }
+    groups
+}
+
 fn group_by<'a>(rows: &[&'a Item], key_of: impl Fn(&Item) -> String) -> Vec<Group<'a>> {
     let mut order: Vec<String> = Vec::new();
     let mut buckets: std::collections::HashMap<String, Vec<&'a Item>> =
@@ -1037,6 +1299,8 @@ mod tests {
                 repo: "acme/api".into(),
                 author_login: "octo".into(),
                 head_ref: format!("topic-{id}"),
+                base_ref: "main".into(),
+                stack: None,
                 is_draft: false,
                 state: "open".into(),
                 checks: "success".into(),
@@ -1048,13 +1312,19 @@ mod tests {
                 created_at: updated.to_rfc3339(),
                 hidden: false,
                 starred: false,
+                unread: false,
+                muted: false,
+                snoozed: false,
                 project_ids: projects.to_vec(),
                 readiness: "ready".into(),
                 readiness_notes: Vec::new(),
                 conflicts: false,
+                merge_state: "clean".into(),
+                merge_queue: None,
                 reviewers_requested: false,
                 pending_reviewers: Vec::new(),
                 slack: None,
+                bot_comments: 0,
             },
             updated_ms: updated.timestamp_millis(),
             created_ms: updated.timestamp_millis(),
@@ -1091,7 +1361,49 @@ mod tests {
             week_start: at(12 + 6 * 24),
             github_ids: None,
             github_any_state: false,
+            review_sla_hours: 48,
+            review_sla_working_days: false,
+            tz_offset_minutes: 0,
         }
+    }
+
+    #[test]
+    fn snoozed_rows_leave_the_default_list_and_unread_combines() {
+        let quiet = item(1, &[], 1);
+        let mut fresh = item(2, &[], 2);
+        fresh.row.unread = true;
+        let mut asleep = item(3, &[], 3);
+        asleep.row.unread = true;
+        asleep.row.snoozed = true;
+        let mut hushed = item(4, &[], 4);
+        hushed.row.muted = true;
+        let items = vec![quiet, fresh, asleep, hushed];
+
+        let shown = page(&items, &[], &request("repository"), None);
+        let ids: Vec<i64> = row_ids(&shown).into_iter().flatten().collect();
+        assert_eq!(ids, vec![1, 2, 4]);
+        assert_eq!(shown.in_view, 3);
+        assert_eq!(shown.summary.open, 3);
+        assert_eq!(shown.attention, 1);
+        assert_eq!(shown.snoozed_count, 1);
+
+        let mut unread = request("repository");
+        unread.filters.unread = true;
+        let only: Vec<i64> = row_ids(&page(&items, &[], &unread, None))
+            .into_iter()
+            .flatten()
+            .collect();
+        assert_eq!(only, vec![2]);
+        assert_eq!(page(&items, &[], &unread, None).attention, 1);
+
+        let mut snoozed = request("repository");
+        snoozed.filters.snoozed = true;
+        let waiting = page(&items, &[], &snoozed, None);
+        let waiting_ids: Vec<i64> = row_ids(&waiting).into_iter().flatten().collect();
+        assert_eq!(waiting_ids, vec![3]);
+        assert_eq!(waiting.attention, 1);
+        assert_eq!(waiting.snoozed_count, 1);
+        assert!(waiting.summary.open == 1);
     }
 
     fn row_ids(page: &PageDto) -> Vec<Option<i64>> {
@@ -1620,9 +1932,20 @@ mod tests {
         closed.row.state = "closed".into();
         let mut draft = item(7, &[], 1);
         draft.row.is_draft = true;
+        let mut snoozed = item(8, &[], 1);
+        snoozed.row.snoozed = true;
+        snoozed.row.checks = "failure".into();
+        let mut muted = item(9, &[], 1);
+        muted.row.muted = true;
+        muted.row.involvement = REVIEW_REQUESTED;
+        muted.created_ms = at(1).timestamp_millis();
         let counts = attention_counts(
-            &[mine, waiting, review, both, hidden, closed, draft],
+            &[
+                mine, waiting, review, both, hidden, closed, draft, snoozed, muted,
+            ],
             now_ms,
+            &ReviewSla::default(),
+            0,
         );
         assert_eq!(
             counts,
@@ -1659,6 +1982,28 @@ mod tests {
         assert_eq!(
             next_action(&entry, "to_review", now_ms),
             NextAction::AuthorDraft
+        );
+    }
+
+    #[test]
+    fn a_shorter_review_sla_makes_review_now_sooner() {
+        let now_ms = now().timestamp_millis();
+        let mut entry = item(1, &[], 1);
+        entry.row.involvement = REVIEW_REQUESTED;
+        entry.row.reviewers_requested = true;
+        entry.created_ms = at(20).timestamp_millis();
+        let sla = ReviewSla {
+            hours: 12,
+            working_days: false,
+        };
+        assert_eq!(
+            next_action_with(&entry, "to_review", now_ms, &sla, 0),
+            NextAction::ReviewOverdue
+        );
+        assert_eq!(next_action(&entry, "to_review", now_ms), NextAction::Review);
+        assert_eq!(
+            stale_cue_with(&entry, now_ms, &sla, 0),
+            Some(StaleCue::Waiting)
         );
     }
 
@@ -1753,5 +2098,49 @@ mod tests {
             crate::commands::pending_reviewers(&reversed),
             crate::commands::pending_reviewers(&requests)
         );
+    }
+
+    #[test]
+    fn stack_grouping_keeps_members_in_merge_order_and_marks_the_row() {
+        let mut bottom = item(1, &[], 1);
+        bottom.row.number = 10;
+        bottom.row.repo = "acme/api".into();
+        bottom.row.head_ref = "feat-a".into();
+        bottom.row.base_ref = "main".into();
+        let mut middle = item(2, &[], 2);
+        middle.row.number = 11;
+        middle.row.repo = "acme/api".into();
+        middle.row.head_ref = "feat-b".into();
+        middle.row.base_ref = "feat-a".into();
+        let mut top = item(3, &[], 3);
+        top.row.number = 12;
+        top.row.repo = "acme/api".into();
+        top.row.head_ref = "feat-c".into();
+        top.row.base_ref = "feat-b".into();
+        // The same branch name in another repository is not part of the stack.
+        let mut alone = item(4, &[], 4);
+        alone.row.repo = "acme/billing".into();
+        alone.row.head_ref = "feat-a".into();
+        let page = page(&[bottom, middle, top, alone], &[], &request("stack"), None);
+        let titles: Vec<&str> = page
+            .sections
+            .iter()
+            .map(|section| section.title.as_str())
+            .collect();
+        assert_eq!(titles, vec!["Stack · #10", "Not stacked"]);
+        assert_eq!(
+            row_ids(&page),
+            vec![None, Some(1), Some(2), Some(3), None, Some(4)]
+        );
+        let marked = page
+            .entries
+            .iter()
+            .find_map(|entry| entry.row.as_ref().filter(|row| row.id == 2))
+            .unwrap();
+        let place = marked.stack.as_ref().unwrap();
+        assert_eq!(place.position, 2);
+        assert_eq!(place.size, 3);
+        assert!(!place.blocking);
+        assert_eq!(place.parent_number, Some(10));
     }
 }

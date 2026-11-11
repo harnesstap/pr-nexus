@@ -101,6 +101,25 @@ test("Review saves the bump broadcast setting and passes it up to the app", asyn
   expect(booted.map((next) => next.bump_broadcast)).toEqual([false]);
 });
 
+test("Review saves the review wait and the open PR limit", async () => {
+  const saved: Preferences[] = [];
+  const api = fakeSettingsApi({
+    savePreferences: (prefs) => {
+      saved.push(prefs);
+      return Promise.resolve(prefs);
+    },
+  }) as Api;
+  render(<Harness api={api} start="review" />);
+  const hours = await screen.findByRole("spinbutton", { name: "Review now after (hours)" });
+  expect(hours).toHaveValue(48);
+  fireEvent.change(hours, { target: { value: "24" } });
+  fireEvent.click(screen.getByRole("switch", { name: "Count only weekdays" }));
+  fireEvent.change(screen.getByRole("spinbutton", { name: "Open PR limit" }), { target: { value: "8" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  expect(await screen.findByText("Saved")).toBeInTheDocument();
+  expect(saved).toEqual([{ ...DEFAULT_PREFERENCES, review_sla_hours: 24, review_sla_working_days: true, my_prs_wip_limit: 8 }]);
+});
+
 test("Sync edits intervals in minutes and shows an error from the backend", async () => {
   const saved: Preferences[] = [];
   const api = fakeSettingsApi({

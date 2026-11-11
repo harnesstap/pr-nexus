@@ -795,6 +795,9 @@ fn sync_bucket(
         });
         if let Some(status) = status {
             status.apply_to(&mut item.pull_request);
+            if status.merge_queue.is_some() {
+                item.merge_queue.clone_from(&status.merge_queue);
+            }
         }
         writer.write(item)?;
         stored_ids.push(id);
@@ -848,7 +851,11 @@ fn sync_bucket(
             } else {
                 let mut row = (*pr).clone();
                 status.apply_to(&mut row);
-                status_only.push(writer.synced_from(row));
+                let mut item = writer.synced_from(row);
+                if status.merge_queue.is_some() {
+                    item.merge_queue.clone_from(&status.merge_queue);
+                }
+                status_only.push(item);
             }
         }
         stale
@@ -877,6 +884,9 @@ fn sync_bucket(
         }
         if let Some(status) = statuses.get(&id) {
             status.apply_to(&mut item.pull_request);
+            if status.merge_queue.is_some() {
+                item.merge_queue.clone_from(&status.merge_queue);
+            }
         }
     }
     let refreshed = refreshed_rows.len();
@@ -1129,6 +1139,7 @@ impl<'a> Writer<'a> {
             repo_node_id: repo.and_then(|repo| repo.node_id.clone()),
             default_branch: repo.and_then(|repo| repo.default_branch.clone()),
             repo_archived: repo.is_some_and(|repo| repo.archived),
+            merge_queue: None,
             pull_request: pr,
         }
     }
@@ -1164,19 +1175,44 @@ impl<'a> Writer<'a> {
                 repo
             }
         };
-        if let Some(before) = self.rows.get(&id)
-            && same_content(before, &pr)
-        {
-            return Ok(false);
+        let unchanged = self
+            .rows
+            .get(&id)
+            .filter(|before| same_content(before, &pr))
+            .map(|before| before.id);
+        if let Some(pr_id) = unchanged {
+            return self.write_queue(pr_id, &id, item.merge_queue.as_ref());
         }
         pr.synced_at = self.now;
         let saved = self.store.upsert_pull_request(repo.id, pr)?;
         if !self.rows.contains_key(&id) {
             self.order.push(id.clone());
         }
-        self.rows.insert(id.clone(), saved);
+        self.rows.insert(id.clone(), saved.clone());
+        if let Some(queue) = &item.merge_queue {
+            self.store.set_merge_queue(saved.id, queue)?;
+        }
         self.changed.insert(id);
         Ok(true)
+    }
+
+    /// A queue position can move without any other pull request field changing.
+    /// `None` means this payload did not ask, so the stored row stays.
+    fn write_queue(
+        &mut self,
+        pr_id: crate::domain::PrId,
+        remote_id: &str,
+        queue: Option<&crate::merge_queue::MergeQueueSnapshot>,
+    ) -> Result<bool, CoreError> {
+        let Some(queue) = queue else {
+            return Ok(false);
+        };
+        let changed = self.store.merge_queue(pr_id)?.as_ref() != Some(queue);
+        if changed {
+            self.store.set_merge_queue(pr_id, queue)?;
+            self.changed.insert(remote_id.to_owned());
+        }
+        Ok(changed)
     }
 
     pub(crate) fn set_hidden(&mut self, pr: &PullRequest, hidden: bool) -> Result<(), CoreError> {
@@ -1273,6 +1309,7 @@ mod tests {
             repo_node_id: Some("R_1".into()),
             default_branch: Some("main".into()),
             repo_archived: false,
+            merge_queue: None,
         }
     }
 
@@ -2294,6 +2331,7 @@ mod tests {
             unresolved_threads: 2,
             total_threads: 5,
             last_commit_at: Some(ts(15)),
+            merge_queue: None,
         }
     }
 

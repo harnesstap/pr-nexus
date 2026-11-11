@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import type { ListRow, ProjectDto } from "../api";
-import { AlertIcon, ChevronDownIcon, ChevronRightIcon, ClockIcon, CloseIcon, CommentIcon, DraftIcon, FunnelIcon, GitHubIcon, MoreIcon, SearchIcon, SlackLogo } from "../icons";
+import type { StackPlace } from "./stack";
+import { AlertIcon, ChevronDownIcon, ChevronRightIcon, ClockIcon, CloseIcon, CommentIcon, DraftIcon, FunnelIcon, GitHubIcon, MoreIcon, SearchIcon, SlackLogo, StackIcon } from "../icons";
 import { Tooltip } from "../Tooltip";
 import { ReviewerAvatars } from "./ReviewerAvatars";
 import { NextActionBadge } from "./NextActionBadge";
@@ -12,7 +13,8 @@ import { GitHubRowButton, StarButton } from "./StarButton";
 import { ProjectInfo } from "./JiraChips";
 import { isTypingTarget, wantsRowEnter } from "./keys";
 import { copyText, prsToMarkdown } from "./markdown";
-import type { Toast } from "./model";
+import { DEFAULT_REVIEW_SLA, wipHint, type ReviewSla } from "./sla";
+import type { SnoozeChoice, Toast } from "./model";
 import { displayKey, hint, matchShortcut, shortcut, type ShortcutId } from "./shortcuts";
 import {
   ago,
@@ -49,6 +51,7 @@ import { setDragBadge } from "./dragBadge";
 import { pageIds, selectionCountText, summaryText, type Elsewhere, type PageDto, type PageEntry, type PageRequest, type PageSection } from "./paging";
 import { usePagedList, type PageParams } from "./usePagedList";
 import { plainText } from "../textInput";
+import { queueChip } from "../detail/mergeQueue";
 import { commentsText, compactSlack, rowPills, staleCue, viewEmptyState, type RowPill, type StaleCue } from "./rowCues";
 
 /** A section as drawn: its loaded rows, plus counts and ids over every match. */
@@ -101,6 +104,16 @@ interface Props {
   onBulkReview: (ids: number[]) => void;
   /** Opens the close confirmation for the active selection. */
   onClosePullRequests?: (rows: { id: number; repo: string; number: number; title: string }[]) => void;
+  /** Marks these pull requests read. */
+  onMarkRead?: (ids: number[]) => void;
+  /** Marks every id in the current filtered view read. */
+  onMarkAllRead?: (ids: number[]) => void;
+  /** Snoozes or unsnoozes these pull requests. */
+  onSnooze?: (ids: number[], choice: SnoozeChoice) => void;
+  /** Mutes or unmutes these pull requests. */
+  onMute?: (ids: number[], muted: boolean) => void;
+  /** Opens the merge-queue confirmation for the active selection. */
+  onEnqueuePullRequests?: (rows: ListRow[]) => void;
   /** Shows a toast, e.g. after "Copy as Markdown". */
   onNotice?: (toast: Toast) => void;
   /** Draft flags changed in the app ahead of the reload, by PR id. */
@@ -122,6 +135,14 @@ interface Props {
   githubMore?: (() => void) | null;
   /** Opens Settings, from the "no open PRs" empty state. */
   onOpenSettings?: () => void;
+  /** Review wait from Settings. Defaults to 48 hours, every day. */
+  sla?: ReviewSla;
+  /** Optional open-PR cap for My PRs. Null means no hint. */
+  wipLimit?: number | null;
+  /** Copies the My PRs stand-up recap. */
+  onCopyStandup?: () => void;
+  /** Opens the toolbar More menu on first paint (preview). */
+  standupMenuInitiallyOpen?: boolean;
   /** Filled with the list's actions so the command palette reuses them. */
   actionsRef?: { current: ListActions | null };
 }
@@ -155,6 +176,7 @@ const GROUPINGS: { id: Grouping; label: string }[] = [
   { id: "org", label: "Org" },
   { id: "status", label: "Status" },
   { id: "updated", label: "Updated" },
+  { id: "stack", label: "Stack" },
 ];
 
 const ORDERINGS: { id: Ordering; label: string }[] = [
@@ -194,6 +216,11 @@ export function PrList({
   onToggleStar,
   onBulkReview,
   onClosePullRequests,
+  onMarkRead,
+  onMarkAllRead,
+  onSnooze,
+  onMute,
+  onEnqueuePullRequests,
   onNotice,
   draftPatches,
   removedIds,
@@ -204,12 +231,18 @@ export function PrList({
   githubMore = null,
   actionsRef,
   onOpenSettings,
+  sla = DEFAULT_REVIEW_SLA,
+  wipLimit = null,
+  onCopyStandup,
+  standupMenuInitiallyOpen = false,
 }: Props) {
   const [query, setQuery] = useState("");
   const [debounced, setDebounced] = useState("");
   const [selectedByView, setSelectedByView] = useState<Record<string, number[]>>({});
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [menu, setMenu] = useState<string | null>(null);
+  const [standupMenu, setStandupMenu] = useState(standupMenuInitiallyOpen);
+  const standupMenuRef = useRef<HTMLDivElement>(null);
   const [sectionMenu, setSectionMenu] = useState<string | null>(null);
   const [editing, setEditing] = useState<Editing | null>(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
@@ -255,8 +288,10 @@ export function PrList({
       collapsed: collapsedKeys,
       github_ids: githubIds,
       github_any_state: githubAnyState,
+      review_sla_hours: sla.hours,
+      review_sla_working_days: sla.workingDays,
     }),
-    [viewKey, view.grouping, view.ordering, view.direction, view.filters, debounced, collapsedKeys, githubIds, githubAnyState],
+    [viewKey, view.grouping, view.ordering, view.direction, view.filters, debounced, collapsedKeys, githubIds, githubAnyState, sla.hours, sla.workingDays],
   );
   const list = usePagedList(loadPage, params, version, now);
   // To review also asks GitHub for matches past the loaded window.
@@ -289,6 +324,17 @@ export function PrList({
     onSelectionChange?.(activeKey === "" ? [] : activeKey.split(",").map(Number));
   }, [activeKey, onSelectionChange]);
   const singleSelected = active.size === 1 ? (flat.find((item) => active.has(item.row.id))?.row ?? null) : null;
+  // Opening a pull request from the stack moves the highlight with the panel.
+  const [seenDetail, setSeenDetail] = useState(detailId);
+  if (seenDetail !== detailId) {
+    setSeenDetail(detailId);
+    if (detailId !== null) {
+      const index = flat.findIndex((item) => item.row.id === detailId);
+      if (index >= 0) {
+        setFocusIndex(index);
+      }
+    }
+  }
   // The focused row stays in range when filters or a sync shrink the list.
   const focus = flat.length === 0 ? -1 : Math.min(focusIndex, flat.length - 1);
   const listRef = useRef<HTMLDivElement>(null);
@@ -517,6 +563,28 @@ export function PrList({
   });
 
   useEffect(() => {
+    if (!standupMenu) {
+      return;
+    }
+    function onDown(event: MouseEvent) {
+      if (!standupMenuRef.current?.contains(event.target as Node)) {
+        setStandupMenu(false);
+      }
+    }
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setStandupMenu(false);
+      }
+    }
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [standupMenu]);
+
+  useEffect(() => {
     function onKey(event: KeyboardEvent) {
       const target = event.target instanceof HTMLElement ? event.target : null;
       const typing = isTypingTarget(target);
@@ -552,6 +620,7 @@ export function PrList({
   });
 
   const header = selectionCountText(ids.length, page?.summary.finished ?? 0, activeIds.length, hidden);
+  const openLimitHint = page && viewKey === "mine" ? wipHint(page.summary.open, wipLimit) : null;
   const queryOrders = view.filters.github.trim() !== "";
 
   const titleProject = currentProject !== null ? projects.find((project) => project.id === currentProject) : undefined;
@@ -587,7 +656,10 @@ export function PrList({
           )}
           {editing?.error && editing.where === "title" && <p className="text-xs text-rose-300">{editing.error}</p>}
           {titleProject && <ProjectInfo project={titleProject} onOpen={onOpen} className="mt-0.5 max-w-md" />}
-          <p className="text-sm text-slate-400">{page ? summaryText(page.summary, viewKey, syncProgress) : (syncProgress ?? "\u00a0")}</p>
+          <p className="text-sm text-slate-400">
+            {page ? summaryText(page.summary, viewKey, syncProgress, view.filters.snoozed) : (syncProgress ?? "\u00a0")}
+            {openLimitHint && <span className="text-amber-200/80"> · {openLimitHint}</span>}
+          </p>
         </div>
       </header>
       {/* One toolbar row for every list command, quick filter chips included: controls share one height and never
@@ -604,6 +676,12 @@ export function PrList({
             starred={view.filters.starred}
             starredCount={page ? new Set(list.entries.flatMap((entry) => (entry.row?.starred ? [entry.row.id] : []))).size : null}
             onStarredChange={(starred) => onViewChange({ ...view, filters: { ...view.filters, starred } })}
+            unread={view.filters.unread}
+            unreadCount={page?.attention ?? null}
+            onUnreadChange={(unread) => onViewChange({ ...view, filters: { ...view.filters, unread } })}
+            snoozed={view.filters.snoozed}
+            snoozedCount={page?.snoozed_count ?? null}
+            onSnoozedChange={(snoozed) => onViewChange({ ...view, filters: { ...view.filters, snoozed } })}
           />
           <RepoPicker
             options={page?.repos ?? []}
@@ -667,6 +745,37 @@ export function PrList({
           </label>
           <SortPicker view={view} onViewChange={onViewChange} fromQuery={queryOrders} />
           <FilterMenu view={view} orgs={page?.orgs ?? []} menu={menu} setMenu={setMenu} onViewChange={onViewChange} fromQuery={queryOrders} />
+          {viewKey === "mine" && (
+            <div ref={standupMenuRef} className="relative shrink-0">
+              <Tooltip label="More" detail="Copy a stand-up recap of your pull requests" align="end">
+                <button
+                  type="button"
+                  aria-label="More"
+                  aria-haspopup="menu"
+                  aria-expanded={standupMenu}
+                  className="flex h-8 w-8 items-center justify-center rounded-md text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+                  onClick={() => setStandupMenu((open) => !open)}
+                >
+                  <MoreIcon />
+                </button>
+              </Tooltip>
+              {standupMenu && (
+                <div role="menu" aria-label="More" className="absolute right-0 top-8 z-30 w-max min-w-48 rounded-md border border-slate-700 bg-slate-900 py-1 text-sm shadow-xl">
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="block w-full px-3 py-1.5 text-left text-slate-200 hover:bg-slate-800"
+                    onClick={() => {
+                      setStandupMenu(false);
+                      onCopyStandup?.();
+                    }}
+                  >
+                    Copy stand-up recap
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
         {githubError !== "" && (
           <p role="status" data-github-query-error className="mt-1 truncate text-xs text-slate-400">
@@ -844,11 +953,11 @@ export function PrList({
                       {onToggleStar && <StarButton starred={row.starred} title={row.title} onToggle={() => onToggleStar(row)} />}
                       <GitHubRowButton title={row.title} onOpen={() => onOpen(row.url)} />
                       {compact ? (
-                        <CompactRow row={row} view={view} viewKey={viewKey} now={now} onDetails={onDetails} onOpen={onOpen} onRequestReview={onRequestReview} />
+                        <CompactRow row={row} view={view} viewKey={viewKey} now={now} sla={sla} onDetails={onDetails} onOpen={onOpen} onRequestReview={onRequestReview} />
                       ) : (
                         <>
                           <div className="min-w-64 flex-1 overflow-hidden">
-                            <TitleLine row={row} view={view} now={now} onDetails={onDetails} />
+                            <TitleLine row={row} view={view} now={now} sla={sla} onDetails={onDetails} />
                             <p className="flex items-center gap-1 truncate text-xs text-slate-500">
                               {view.show.repo && <span className="truncate">{row.repo}</span>}
                               {view.show.repo && view.show.ci && <span aria-hidden="true">·</span>}
@@ -858,7 +967,7 @@ export function PrList({
                           </div>
                           {view.show.review && (
                             <div className="flex w-40 shrink-0 items-center">
-                              <NextActionBadge row={row} viewKey={viewKey} now={now} onOpen={onOpen} onRequestReview={onRequestReview} onDetails={onDetails} />
+                              <NextActionBadge row={row} viewKey={viewKey} now={now} sla={sla} onOpen={onOpen} onRequestReview={onRequestReview} onDetails={onDetails} />
                             </div>
                           )}
                           {view.show.review && (
@@ -918,12 +1027,15 @@ export function PrList({
             query={query}
             filtered={filtersActive(view.filters)}
             starredOnly={view.filters.starred}
+            snoozedOnly={view.filters.snoozed}
+            snoozedCount={page.snoozed_count}
             elsewhere={page.elsewhere}
             viewTitle={(key) => viewTitle(key, projects)}
             onClearSearch={() => setQuery("")}
             onResetFilters={() => onViewChange(resetFilters(view))}
             onShowView={onShowView}
             onShowFinished={() => onViewChange({ ...view, filters: { ...view.filters, archived: true } })}
+            onShowSnoozed={() => onViewChange({ ...view, filters: { ...view.filters, snoozed: true } })}
           />
         )}
       </div>
@@ -961,7 +1073,23 @@ export function PrList({
               }),
             );
           }}
+          onEnqueue={
+            onEnqueuePullRequests &&
+            activeIds.some((id) => flat.some((item) => item.row.id === id && item.row.merge_queue?.required))
+              ? () => {
+                  const byId = new Map(flat.map((item) => [item.row.id, item.row]));
+                  onEnqueuePullRequests(activeIds.flatMap((id) => {
+                    const row = byId.get(id);
+                    return row ? [row] : [];
+                  }));
+                }
+              : undefined
+          }
           onClear={() => setSelected(new Set())}
+          onMarkRead={() => onMarkRead?.(activeIds)}
+          onMarkAllRead={() => onMarkAllRead?.(page ? pageIds(page.sections) : [])}
+          onSnooze={(choice) => onSnooze?.(activeIds, choice)}
+          onMute={(muted) => onMute?.(activeIds, muted)}
         />
       )}
       {deleteFor?.projectId !== null && deleteFor && (
@@ -1017,26 +1145,51 @@ function EmptyList({
   query,
   filtered,
   starredOnly,
+  snoozedOnly,
+  snoozedCount,
   elsewhere,
   viewTitle,
   onClearSearch,
   onResetFilters,
   onShowView,
   onShowFinished,
+  onShowSnoozed,
 }: {
   title: string;
   inView: number;
   query: string;
   filtered: boolean;
   starredOnly: boolean;
+  snoozedOnly: boolean;
+  snoozedCount: number;
   elsewhere: Elsewhere | null;
   viewTitle: (viewKey: string) => string;
   onClearSearch: () => void;
   onResetFilters: () => void;
   onShowView?: (viewKey: string) => void;
   onShowFinished: () => void;
+  onShowSnoozed: () => void;
 }) {
   const searching = query.trim() !== "";
+  if (inView === 0 && !searching && snoozedCount > 0 && !snoozedOnly) {
+    return (
+      <div className="px-2 py-10 text-center text-sm text-slate-400">
+        <p className="font-medium text-slate-300">All pull requests in {title} are snoozed.</p>
+        <div className="mt-3 flex justify-center">
+          <button type="button" className="rounded border border-slate-700 px-3 py-1 hover:bg-slate-800" onClick={onShowSnoozed}>
+            Show snoozed
+          </button>
+        </div>
+      </div>
+    );
+  }
+  if (snoozedOnly && inView === 0 && !searching) {
+    return (
+      <div className="px-2 py-10 text-center text-sm text-slate-400">
+        <p className="font-medium text-slate-300">No snoozed pull requests in {title}.</p>
+      </div>
+    );
+  }
   if (inView === 0 && !searching) {
     return (
       <div className="px-2 py-10 text-center text-sm text-slate-400">
@@ -1263,22 +1416,68 @@ function StaleChip({ cue }: { cue: StaleCue }) {
   );
 }
 
-/** Row cues after the title: draft and conflict pills, then the age chip. */
-function RowCues({ row, now }: { row: ListRow; now: Date }) {
-  const stale = staleCue(row, now);
+/** Row cues after the title: draft, conflict, queue, and bot pills, then the age chip. */
+function RowCues({ row, now, sla }: { row: ListRow; now: Date; sla: ReviewSla }) {
+  const stale = staleCue(row, now, sla);
+  const bots = row.bot_comments ?? 0;
+  const botLabel = bots === 1 ? "1 bot comment" : `${bots} bot comments`;
+  const queue = queueChip(row.merge_queue);
   return (
     <>
       {rowPills(row).map((pill) => (
         <RowPillTag key={pill} pill={pill} />
       ))}
+      {bots > 0 && (
+        <Tooltip label={botLabel} className="shrink-0">
+          <span aria-label={botLabel} className="inline-flex shrink-0 items-center rounded-full bg-slate-800 px-1.5 text-[11px] leading-4 text-slate-400">
+            bot
+          </span>
+        </Tooltip>
+      )}
+      {queue && <QueuePill chip={queue} />}
       {stale && <StaleChip cue={stale} />}
     </>
   );
 }
 
-function TitleLine({ row, view, now, onDetails }: { row: ListRow; view: SavedView; now: Date; onDetails: (row: ListRow) => void }) {
+const QUEUE_PILL: Record<"queue" | "merging" | "failed" | "removed", string> = {
+  queue: "bg-teal-500/15 text-teal-200",
+  merging: "bg-teal-500/15 text-teal-200",
+  failed: "bg-amber-500/15 text-amber-200",
+  removed: "bg-slate-800 text-slate-300",
+};
+
+function QueuePill({ chip }: { chip: { label: string; detail: string | null; tone: keyof typeof QUEUE_PILL } }) {
+  const pill = (
+    <span className={`inline-flex shrink-0 items-center rounded-full px-1.5 text-[11px] leading-4 ${QUEUE_PILL[chip.tone]}`}>
+      {chip.label}
+    </span>
+  );
+  if (!chip.detail) {
+    return pill;
+  }
+  return (
+    <Tooltip label={chip.detail} className="shrink-0">
+      {pill}
+    </Tooltip>
+  );
+}
+
+function UnreadDot({ unread, className = "shrink-0" }: { unread: boolean; className?: string }) {
+  if (!unread) {
+    return null;
+  }
+  return (
+    <Tooltip label="Unread" detail="New commits, comments, reviews, or CI since you last opened this pull request" className={className}>
+      <span aria-label="Unread" className="inline-block h-1.5 w-1.5 rounded-full bg-violet-400" />
+    </Tooltip>
+  );
+}
+
+function TitleLine({ row, view, now, sla, onDetails }: { row: ListRow; view: SavedView; now: Date; sla: ReviewSla; onDetails: (row: ListRow) => void }) {
   return (
     <div className="flex min-w-0 items-center gap-2 text-sm">
+      <UnreadDot unread={row.unread} />
       {view.show.numberTitle && (
         <Tooltip label="Readiness and code owners" shortcut="Enter" align="start" className="min-w-0">
           <button type="button" className="min-w-0 truncate text-left hover:underline" onClick={() => onDetails(row)}>
@@ -1289,13 +1488,27 @@ function TitleLine({ row, view, now, onDetails }: { row: ListRow; view: SavedVie
       {row.state !== "open" && (
         <span className="shrink-0 rounded bg-slate-800 px-1 text-xs text-slate-300">{row.state === "merged" ? "Merged" : "Closed"}</span>
       )}
-      <RowCues row={row} now={now} />
+      <RowCues row={row} now={now} sla={sla} />
       {view.show.badges && row.project_ids.length > 1 && (
         <Tooltip label={`Also in ${row.project_ids.length - 1} other project${row.project_ids.length > 2 ? "s" : ""}`} className="shrink-0">
           <span className="shrink-0 rounded bg-slate-800 px-1 text-xs text-slate-400">+{row.project_ids.length - 1}</span>
         </Tooltip>
       )}
+      {row.stack && <StackBadge stack={row.stack} />}
     </div>
+  );
+}
+
+/** Compact place in a stack, for example 2/4. Hidden when the pull request is not stacked. */
+function StackBadge({ stack }: { stack: StackPlace }) {
+  const detail = stack.blocking ? "Merge this one first" : `Merge #${stack.root_number} first`;
+  return (
+    <Tooltip label={`Stack ${stack.position} of ${stack.size}`} detail={detail} className="shrink-0">
+      <span className="inline-flex items-center gap-0.5 text-xs text-slate-400" aria-label={`Stack ${stack.position} of ${stack.size}. ${detail}`}>
+        <StackIcon size={12} />
+        {stack.position}/{stack.size}
+      </span>
+    </Tooltip>
   );
 }
 
@@ -1322,6 +1535,7 @@ function CompactRow({
   view,
   viewKey,
   now,
+  sla,
   onDetails,
   onOpen,
   onRequestReview,
@@ -1330,6 +1544,7 @@ function CompactRow({
   view: SavedView;
   viewKey: string;
   now: Date;
+  sla: ReviewSla;
   onDetails: (row: ListRow) => void;
   onOpen: (url: string) => void;
   onRequestReview: (row: ListRow) => void;
@@ -1339,6 +1554,7 @@ function CompactRow({
     <div className="flex min-w-0 flex-1 items-start gap-2">
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-start gap-1.5 text-sm leading-snug">
+          <UnreadDot unread={row.unread} className="mt-1.5 shrink-0" />
           {view.show.numberTitle && (
             <Tooltip label={fullTitle} align="start" className="min-w-0">
               <button type="button" className="line-clamp-2 min-w-0 text-left break-words hover:underline" onClick={() => onDetails(row)}>
@@ -1362,11 +1578,12 @@ function CompactRow({
               <CiStatus checks={row.checks} />
             </>
           )}
-          <RowCues row={row} now={now} />
+          {row.stack && <StackBadge stack={row.stack} />}
+          <RowCues row={row} now={now} sla={sla} />
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-1.5 pt-0.5 text-xs text-slate-400">
-        {view.show.review && <NextActionBadge row={row} viewKey={viewKey} now={now} compact onOpen={onOpen} onRequestReview={onRequestReview} onDetails={onDetails} />}
+        {view.show.review && <NextActionBadge row={row} viewKey={viewKey} now={now} sla={sla} compact onOpen={onOpen} onRequestReview={onRequestReview} onDetails={onDetails} />}
         {view.show.threads && <Threads row={row} />}
         <SlackCell row={row} now={now} showMissing={view.show.notRequested} onOpen={onOpen} />
       </div>

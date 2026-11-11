@@ -443,7 +443,10 @@ impl LivePoller {
                 } else {
                     let mut row = (*pr).clone();
                     status.apply_to(&mut row);
-                    let item = writer.synced_from(row);
+                    let mut item = writer.synced_from(row);
+                    if status.merge_queue.is_some() {
+                        item.merge_queue.clone_from(&status.merge_queue);
+                    }
                     out.changed += usize::from(writer.write(&item)?);
                 }
             }
@@ -569,6 +572,7 @@ mod tests {
             repo_node_id: Some("R_1".into()),
             default_branch: Some("main".into()),
             repo_archived: false,
+            merge_queue: None,
         }
     }
 
@@ -1170,6 +1174,7 @@ mod tests {
                 unresolved_threads: 0,
                 total_threads: 0,
                 last_commit_at: None,
+                merge_queue: None,
             }],
             ..Fake::default()
         };

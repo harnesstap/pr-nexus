@@ -6,7 +6,7 @@ export const AUTHOR = 1;
 export const REVIEW_REQUESTED = 2;
 const BUMP_DUE_MS = 24 * 60 * 60 * 1000;
 
-export type Grouping = "project" | "repository" | "org" | "status" | "updated";
+export type Grouping = "project" | "repository" | "org" | "status" | "updated" | "stack";
 export type Ordering = "attention" | "updated" | "created" | "slack" | "readiness" | "number" | "waiting" | "bumped";
 export const ORDERING_IDS: readonly Ordering[] = ["attention", "updated", "created", "slack", "readiness", "number", "waiting", "bumped"];
 export type Direction = "asc" | "desc";
@@ -42,10 +42,17 @@ export interface Filters {
   archived: boolean;
   /** Only starred PRs; combines with every other filter. */
   starred: boolean;
+  /** Only unread PRs; combines with every other filter. */
+  unread: boolean;
+  /** Only snoozed PRs. Off leaves them out of the list and its counts. */
+  snoozed: boolean;
   quick: QuickFilter | null;
   /** A GitHub pull-request query saved with this view. Empty keeps the usual list. */
   github: string;
 }
+
+/** How long to hide a pull request, or `off` to bring it back. */
+export type SnoozeChoice = "day" | "week" | "activity" | "off";
 
 export interface SavedView {
   grouping: Grouping;
@@ -77,7 +84,7 @@ export function defaultShow(): ShowFlags {
 }
 
 export function defaultFilters(): Filters {
-  return { orgs: [], repos: [], statuses: [], reviews: [], ci: [], slack: [], archived: false, starred: false, quick: null, github: "" };
+  return { orgs: [], repos: [], statuses: [], reviews: [], ci: [], slack: [], archived: false, starred: false, unread: false, snoozed: false, quick: null, github: "" };
 }
 
 export function defaultView(): SavedView {
@@ -107,7 +114,7 @@ export function parseViewState(json: string | null): SavedView {
   }
   const record = raw as Partial<SavedView>;
   return {
-    grouping: pick(record.grouping, ["project", "repository", "org", "status", "updated"], base.grouping),
+    grouping: pick(record.grouping, ["project", "repository", "org", "status", "updated", "stack"], base.grouping),
     ordering: pick(record.ordering, ORDERING_IDS, base.ordering),
     direction: pick(record.direction, ["asc", "desc"], base.direction),
     show: { ...base.show, ...(record.show ?? {}) },
@@ -122,6 +129,8 @@ export function parseViewState(json: string | null): SavedView {
       slack: pickList(record.filters?.slack, ["none", "requested", "bumped", "bump_due"]),
       archived: record.filters?.archived === true,
       starred: record.filters?.starred === true,
+      unread: record.filters?.unread === true,
+      snoozed: record.filters?.snoozed === true,
       quick: QUICK_FILTERS.includes(record.filters?.quick as QuickFilter) ? (record.filters?.quick as QuickFilter) : null,
       github: githubQueryText(record.filters?.github),
     },
@@ -138,6 +147,8 @@ export function filtersActive(filters: Filters): boolean {
     filters.slack.length > 0 ||
     filters.archived ||
     filters.starred ||
+    filters.unread ||
+    filters.snoozed ||
     filters.quick !== null ||
     filters.github.trim() !== ""
   );
@@ -244,6 +255,9 @@ export function normalizeSearch(value: string): string {
 
 export function passesMenu(row: ListRow, filters: Filters, now: Date): boolean {
   if (filters.starred && !row.starred) {
+    return false;
+  }
+  if (filters.unread && !row.unread) {
     return false;
   }
   if (filters.orgs.length > 0 && !filters.orgs.some((org) => org.toLowerCase() === row.owner.toLowerCase())) {
@@ -701,7 +715,7 @@ export function moreReviews(reviews: ReviewsStatus | undefined): boolean {
  * - Repository: `repo:owner/name` for each chosen repository (GitHub ORs them).
  *   A name that is not `owner/name` of plain logins is dropped from the query
  *   and still applied locally.
- * Local only: projects, Slack request, starred, archived, the search box,
+ * Local only: projects, Slack request, starred, unread, snoozed, archived, the search box,
  * readiness (Ready / Unknown / Blocked), "None" choices, several choices in
  * one submenu, and the No review and CI or conflicts quick filters.
  */

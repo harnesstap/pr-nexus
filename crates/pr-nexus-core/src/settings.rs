@@ -50,6 +50,12 @@ pub const SLACK_WORKSPACE_ORDER: &str = "slack.workspace_order";
 pub const SLACK_DISABLED_WORKSPACES: &str = "slack.disabled_workspaces";
 /// Bumps are thread replies; with this on they are also sent to the channel.
 pub const BUMP_BROADCAST: &str = "review.bump_broadcast";
+/// Hours after the last request or bump, with no review, before a bump is due.
+pub const BUMP_DUE_HOURS: &str = "review.bump_due_hours";
+/// When true, Saturday and Sunday UTC do not count toward [`BUMP_DUE_HOURS`].
+pub const BUMP_DUE_WORKING_DAYS: &str = "review.bump_due_working_days";
+/// Snooze and skip for the bumps-due queue. Never a send.
+pub const BUMP_DUE_HOLDS: &str = "review.bump_due_holds";
 /// Base URL bare JIRA keys link to, e.g. `https://acme-labs.atlassian.net`. Empty: no links.
 pub const JIRA_BASE_URL: &str = "jira.base_url";
 /// Master switch for desktop notifications (§8.5). On by default.
@@ -60,6 +66,15 @@ pub const NOTIFY_APPROVED: &str = "notify.approved";
 pub const NOTIFY_CHANGES_REQUESTED: &str = "notify.changes_requested";
 /// New review threads. Off by default: they are the noisy kind.
 pub const NOTIFY_COMMENT: &str = "notify.comment";
+/// Hours before Review now, the Waiting chip, and a follow-up with no Slack
+/// request. Scheduled bumps read this same key.
+pub const REVIEW_SLA_HOURS: &str = "review_sla_hours";
+/// When true, only Monday–Friday hours count toward [`REVIEW_SLA_HOURS`].
+pub const REVIEW_SLA_WORKING_DAYS: &str = "review_sla_working_days";
+/// Optional cap on open pull requests in My PRs. Missing or 0 means no cap.
+pub const MY_PRS_WIP_LIMIT: &str = "my_prs_wip_limit";
+/// Extra GitHub logins treated as bots, besides Bot actors and `[bot]` logins.
+pub const BOT_LOGINS: &str = "review.bot_logins";
 
 pub const DEFAULT_REDIRECT: &str = "http://127.0.0.1:47821/mcp/oauth/callback";
 
@@ -375,15 +390,139 @@ pub fn set_bump_broadcast(store: &Store, on: bool) -> Result<(), CoreError> {
     put_json(store, BUMP_BROADCAST, &on)
 }
 
+pub const DEFAULT_BUMP_DUE_HOURS: i64 = 48;
+
+pub fn bump_due_hours(store: &Store) -> Result<i64, CoreError> {
+    json_or(store, BUMP_DUE_HOURS, DEFAULT_BUMP_DUE_HOURS)
+}
+
+pub fn bump_due_working_days(store: &Store) -> Result<bool, CoreError> {
+    json_or(store, BUMP_DUE_WORKING_DAYS, true)
+}
+
+/// The scheduled-bump rule in effect (§7.14).
+pub fn bump_due_rule(store: &Store) -> Result<crate::review::due::BumpDueRule, CoreError> {
+    Ok(crate::review::due::BumpDueRule {
+        after_hours: bump_due_hours(store)?,
+        working_days: bump_due_working_days(store)?,
+    })
+}
+
+/// One snooze: hidden until `until`, and only for the ask it was set on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SnoozeHold {
+    pub until: String,
+    pub asked_at: String,
+}
+
+/// Per review-request holds for the bumps-due queue. Keys are request ids.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct BumpHolds {
+    #[serde(default)]
+    pub snooze: std::collections::BTreeMap<String, SnoozeHold>,
+    /// Request id → the ask instant (`rfc3339`) the user skipped.
+    #[serde(default)]
+    pub skip: std::collections::BTreeMap<String, String>,
+}
+
+pub fn bump_holds(store: &Store) -> Result<BumpHolds, CoreError> {
+    json_or(store, BUMP_DUE_HOLDS, BumpHolds::default())
+}
+
+pub fn set_bump_holds(store: &Store, holds: &BumpHolds) -> Result<(), CoreError> {
+    put_json(store, BUMP_DUE_HOLDS, holds)
+}
+
 /// `jira.base_url`, without a trailing slash; empty when unset.
 pub fn jira_base_url(store: &Store) -> Result<String, CoreError> {
     json_or(store, JIRA_BASE_URL, String::new())
+}
+
+/// Extra bot logins (`review.bot_logins`). Empty when unset.
+pub fn bot_logins(store: &Store) -> Result<Vec<String>, CoreError> {
+    json_or(store, BOT_LOGINS, Vec::new())
+}
+
+/// At most this many extra bot logins.
+pub const MAX_BOT_LOGINS: usize = 40;
+
+/// Trim, drop blanks, and reject anything that is not a GitHub login.
+/// Comparison later is case-insensitive; the saved spelling is kept.
+pub fn normalize_bot_logins(raw: &[String]) -> Result<Vec<String>, CoreError> {
+    let mut out = Vec::new();
+    for login in raw {
+        let login = login.trim();
+        if login.is_empty() {
+            continue;
+        }
+        if !valid_bot_login(login) {
+            return Err(CoreError::Validation(format!(
+                "{login} is not a GitHub login. Use letters, digits and hyphens."
+            )));
+        }
+        if out
+            .iter()
+            .any(|known: &String| known.eq_ignore_ascii_case(login))
+        {
+            continue;
+        }
+        out.push(login.to_owned());
+    }
+    if out.len() > MAX_BOT_LOGINS {
+        return Err(CoreError::Validation(format!(
+            "At most {MAX_BOT_LOGINS} extra bot logins"
+        )));
+    }
+    Ok(out)
+}
+
+fn valid_bot_login(login: &str) -> bool {
+    let base = login.strip_suffix("[bot]").unwrap_or(login);
+    !base.is_empty()
+        && base.len() <= 39
+        && base
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+        && !base.starts_with('-')
+        && !base.ends_with('-')
 }
 
 /// `review.bulk_bump_max_threads`: above this many distinct roots in one
 /// channel, a bulk bump becomes one top-level remind (§7.9). At least 1.
 pub fn bulk_bump_max_threads(store: &Store) -> Result<usize, CoreError> {
     Ok(json_or::<usize>(store, BULK_BUMP_MAX_THREADS, 3)?.max(1))
+}
+
+/// `review_sla_hours`. Missing or unreadable values use the 48 hour default.
+pub fn review_sla_hours(store: &Store) -> Result<i64, CoreError> {
+    let hours = json_or(
+        store,
+        REVIEW_SLA_HOURS,
+        crate::sla::DEFAULT_REVIEW_SLA_HOURS,
+    )?;
+    Ok(if REVIEW_SLA_RANGE.contains(&hours) {
+        hours
+    } else {
+        crate::sla::DEFAULT_REVIEW_SLA_HOURS
+    })
+}
+
+/// `review_sla_working_days`. Off unless the user turns it on.
+pub fn review_sla_working_days(store: &Store) -> Result<bool, CoreError> {
+    json_or(store, REVIEW_SLA_WORKING_DAYS, false)
+}
+
+/// The list's review wait: hours plus whether weekends count.
+pub fn review_sla(store: &Store) -> Result<crate::sla::ReviewSla, CoreError> {
+    Ok(crate::sla::ReviewSla {
+        hours: review_sla_hours(store)?,
+        working_days: review_sla_working_days(store)?,
+    })
+}
+
+/// `my_prs_wip_limit`. `None` when unset or not a positive cap.
+pub fn my_prs_wip_limit(store: &Store) -> Result<Option<u32>, CoreError> {
+    Ok(json_or::<Option<u32>>(store, MY_PRS_WIP_LIMIT, None)?.filter(|limit| *limit > 0))
 }
 
 /// The user-editable settings behind Settings → Review and Sync (§7.12).
@@ -393,6 +532,12 @@ pub struct Preferences {
     pub min_bump_interval_hours: i64,
     pub bulk_bump_max_threads: usize,
     pub bump_broadcast: bool,
+    /// Hours before a scheduled bump is due. Older clients omit it: 48.
+    #[serde(default = "default_bump_due_hours")]
+    pub bump_due_hours: i64,
+    /// Skip Saturday and Sunday (UTC). Older clients omit it: on.
+    #[serde(default = "default_working_days")]
+    pub bump_due_working_days: bool,
     pub blocked_review_required_is_ready: bool,
     pub ticket_key_regex: String,
     pub focused_interval_s: u64,
@@ -417,17 +562,45 @@ pub struct Preferences {
     pub notify_changes_requested: bool,
     #[serde(default)]
     pub notify_comment: bool,
+    /// `review_sla_hours`. Older clients omit it and keep 48 hours.
+    #[serde(default = "default_review_sla_hours")]
+    pub review_sla_hours: i64,
+    /// `review_sla_working_days`. Older clients omit it and count every hour.
+    #[serde(default)]
+    pub review_sla_working_days: bool,
+    /// `my_prs_wip_limit`. `None` means My PRs has no open-PR cap.
+    #[serde(default)]
+    pub my_prs_wip_limit: Option<u32>,
+    /// Extra bot logins. Older clients do not send it.
+    #[serde(default)]
+    pub bot_logins: Vec<String>,
+}
+
+fn default_review_sla_hours() -> i64 {
+    crate::sla::DEFAULT_REVIEW_SLA_HOURS
 }
 
 fn live_default() -> bool {
     true
 }
 
+fn default_bump_due_hours() -> i64 {
+    DEFAULT_BUMP_DUE_HOURS
+}
+
+fn default_working_days() -> bool {
+    true
+}
+
 pub const MIN_BUMP_HOURS: std::ops::RangeInclusive<i64> = 1..=168;
+/// `review.bump_due_hours`: one hour through two weeks.
+pub const DUE_HOURS: std::ops::RangeInclusive<i64> = 1..=336;
 pub const BULK_THREADS: std::ops::RangeInclusive<usize> = 1..=20;
 pub const FOCUSED_SECS: std::ops::RangeInclusive<u64> = 60..=3600;
 pub const UNFOCUSED_SECS: std::ops::RangeInclusive<u64> = 60..=86_400;
 pub const KEEP_CLOSED: std::ops::RangeInclusive<i64> = 0..=90;
+pub const REVIEW_SLA_RANGE: std::ops::RangeInclusive<i64> = 1..=336;
+pub const WIP_LIMIT_RANGE: std::ops::RangeInclusive<u32> = 1..=500;
 
 pub fn preferences(store: &Store) -> Result<Preferences, CoreError> {
     Ok(Preferences {
@@ -435,6 +608,8 @@ pub fn preferences(store: &Store) -> Result<Preferences, CoreError> {
         min_bump_interval_hours: min_bump_interval_hours(store)?,
         bulk_bump_max_threads: bulk_bump_max_threads(store)?,
         bump_broadcast: bump_broadcast(store)?,
+        bump_due_hours: bump_due_hours(store)?,
+        bump_due_working_days: bump_due_working_days(store)?,
         blocked_review_required_is_ready: blocked_review_required_is_ready(store)?,
         ticket_key_regex: ticket_key_regex(store)?,
         focused_interval_s: focused_interval_s(store)?,
@@ -448,6 +623,10 @@ pub fn preferences(store: &Store) -> Result<Preferences, CoreError> {
         notify_approved: json_or(store, NOTIFY_APPROVED, true)?,
         notify_changes_requested: json_or(store, NOTIFY_CHANGES_REQUESTED, true)?,
         notify_comment: json_or(store, NOTIFY_COMMENT, false)?,
+        review_sla_hours: review_sla_hours(store)?,
+        review_sla_working_days: review_sla_working_days(store)?,
+        my_prs_wip_limit: my_prs_wip_limit(store)?,
+        bot_logins: bot_logins(store)?,
     })
 }
 
@@ -488,6 +667,11 @@ pub fn save_preferences(store: &Store, prefs: &Preferences) -> Result<Preference
         MIN_BUMP_HOURS,
     )?;
     check(
+        "Hours before a bump is due",
+        prefs.bump_due_hours,
+        DUE_HOURS,
+    )?;
+    check(
         "Threads per bulk bump",
         prefs.bulk_bump_max_threads,
         BULK_THREADS,
@@ -507,6 +691,14 @@ pub fn save_preferences(store: &Store, prefs: &Preferences) -> Result<Preference
         prefs.keep_closed_days,
         KEEP_CLOSED,
     )?;
+    check("Review now after", prefs.review_sla_hours, REVIEW_SLA_RANGE)?;
+    let wip_limit = match prefs.my_prs_wip_limit {
+        Some(0) | None => None,
+        Some(limit) => {
+            check("Open PR limit", limit, WIP_LIMIT_RANGE)?;
+            Some(limit)
+        }
+    };
     let regex = prefs.ticket_key_regex.trim();
     let regex = if regex.is_empty() {
         crate::linking::DEFAULT_TICKET_KEY_REGEX
@@ -515,10 +707,13 @@ pub fn save_preferences(store: &Store, prefs: &Preferences) -> Result<Preference
     };
     crate::linking::validate_ticket_regex(regex)?;
     let jira_base = crate::jira::valid_base_url(&prefs.jira_base_url)?;
+    let bot_logins = normalize_bot_logins(&prefs.bot_logins)?;
     put_json(store, REVIEW_REQUESTER, prefs.review_requester.trim())?;
     put_json(store, MIN_BUMP_INTERVAL, &prefs.min_bump_interval_hours)?;
     put_json(store, BULK_BUMP_MAX_THREADS, &prefs.bulk_bump_max_threads)?;
     put_json(store, BUMP_BROADCAST, &prefs.bump_broadcast)?;
+    put_json(store, BUMP_DUE_HOURS, &prefs.bump_due_hours)?;
+    put_json(store, BUMP_DUE_WORKING_DAYS, &prefs.bump_due_working_days)?;
     put_json(
         store,
         BLOCKED_IS_READY,
@@ -544,6 +739,14 @@ pub fn save_preferences(store: &Store, prefs: &Preferences) -> Result<Preference
         &prefs.notify_changes_requested,
     )?;
     put_json(store, NOTIFY_COMMENT, &prefs.notify_comment)?;
+    put_json(store, REVIEW_SLA_HOURS, &prefs.review_sla_hours)?;
+    put_json(
+        store,
+        REVIEW_SLA_WORKING_DAYS,
+        &prefs.review_sla_working_days,
+    )?;
+    put_json(store, MY_PRS_WIP_LIMIT, &wip_limit)?;
+    put_json(store, BOT_LOGINS, &bot_logins)?;
     preferences(store)
 }
 
@@ -710,6 +913,8 @@ mod tests {
         assert_eq!(prefs.min_bump_interval_hours, 24);
         assert_eq!(prefs.bulk_bump_max_threads, 3);
         assert!(prefs.bump_broadcast);
+        assert_eq!(prefs.bump_due_hours, 48);
+        assert!(prefs.bump_due_working_days);
         assert!(prefs.blocked_review_required_is_ready);
         assert_eq!(
             prefs.ticket_key_regex,
@@ -726,6 +931,9 @@ mod tests {
         assert!(prefs.notify_approved);
         assert!(prefs.notify_changes_requested);
         assert!(!prefs.notify_comment);
+        assert_eq!(prefs.review_sla_hours, 48);
+        assert!(!prefs.review_sla_working_days);
+        assert_eq!(prefs.my_prs_wip_limit, None);
     }
 
     #[test]
@@ -736,6 +944,8 @@ mod tests {
             min_bump_interval_hours: 4,
             bulk_bump_max_threads: 5,
             bump_broadcast: false,
+            bump_due_hours: 72,
+            bump_due_working_days: false,
             blocked_review_required_is_ready: false,
             ticket_key_regex: "   ".into(),
             focused_interval_s: 120,
@@ -749,15 +959,26 @@ mod tests {
             notify_approved: false,
             notify_changes_requested: true,
             notify_comment: true,
+            review_sla_hours: 24,
+            review_sla_working_days: true,
+            my_prs_wip_limit: Some(8),
+            bot_logins: vec![" review-helper ".into(), "review-helper".into(), "".into()],
         };
         let saved = save_preferences(&store, &prefs).unwrap();
         assert_eq!(saved.jira_base_url, "https://acme-labs.atlassian.net");
+        assert_eq!(saved.bot_logins, vec!["review-helper".to_string()]);
         assert_eq!(saved.review_requester, "for Ada Acme");
+        assert_eq!(saved.review_sla_hours, 24);
+        assert!(saved.review_sla_working_days);
+        assert_eq!(saved.my_prs_wip_limit, Some(8));
+        assert_eq!(review_sla_hours(&store).unwrap(), 24);
         assert_eq!(
             saved.ticket_key_regex,
             crate::linking::DEFAULT_TICKET_KEY_REGEX
         );
         assert!(!bump_broadcast(&store).unwrap());
+        assert_eq!(saved.bump_due_hours, 72);
+        assert!(!saved.bump_due_working_days);
         assert_eq!(focused_interval_s(&store).unwrap(), 120);
         assert_eq!(saved, preferences(&store).unwrap());
     }
@@ -775,6 +996,26 @@ mod tests {
         prefs.ticket_key_regex = String::new();
         prefs.jira_base_url = "acme-labs.atlassian.net".into();
         assert!(save_preferences(&store, &prefs).is_err());
+        prefs.jira_base_url.clear();
+        prefs.review_sla_hours = 0;
+        assert!(save_preferences(&store, &prefs).is_err());
+        prefs.review_sla_hours = 48;
+        prefs.my_prs_wip_limit = Some(9_000);
+        assert!(save_preferences(&store, &prefs).is_err());
+        prefs.my_prs_wip_limit = None;
+        prefs.bot_logins = vec!["not a login".into()];
+        assert!(save_preferences(&store, &prefs).is_err());
         assert!(bump_broadcast(&store).unwrap());
+        assert_eq!(review_sla_hours(&store).unwrap(), 48);
+        assert!(bot_logins(&store).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_zero_open_pr_limit_clears_the_cap() {
+        let (_dir, store) = store();
+        let mut prefs = preferences(&store).unwrap();
+        prefs.my_prs_wip_limit = Some(0);
+        let saved = save_preferences(&store, &prefs).unwrap();
+        assert_eq!(saved.my_prs_wip_limit, None);
     }
 }

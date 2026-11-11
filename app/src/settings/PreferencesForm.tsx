@@ -47,6 +47,55 @@ export function PreferencesForm({ api, prefs, section, permission, onRequestPerm
               onChange={(event) => patch({ review_requester: event.target.value })}
             />
           </Field>
+          <Field label="Hours before a bump is due" help="After the last Slack request or bump, if nobody has reviewed since. The Bumps due queue uses this. 1 to 336. Nothing is sent on its own.">
+            <input
+              {...plainText}
+              className={input}
+              type="number"
+              min={1}
+              max={336}
+              aria-label="Hours before a bump is due"
+              value={draft.bump_due_hours}
+              onChange={(event) => patch({ bump_due_hours: Number(event.target.value) })}
+            />
+          </Field>
+          <Check
+            label="Skip weekends"
+            help="Saturday and Sunday (UTC) do not count. With 48 hours, a Friday request is not due on Monday morning. Turn off to count every hour."
+            checked={draft.bump_due_working_days}
+            onChange={(on) => patch({ bump_due_working_days: on })}
+          />
+          <Field
+            label="Review now after (hours)"
+            help="To review shows Review now after a review has waited this long. The same wait drives the Waiting chip and a follow-up when there is no Slack request. 1 to 336. Default 48. The Bumps due queue has its own hours."
+          >
+            <input {...plainText}
+              aria-label="Review now after (hours)"
+              className={input}
+              type="number"
+              min={1}
+              max={336}
+              value={draft.review_sla_hours}
+              onChange={(event) => patch({ review_sla_hours: Number(event.target.value) })}
+            />
+          </Field>
+          <Check
+            label="Count only weekdays"
+            help="Saturday and Sunday do not count toward the review wait."
+            checked={draft.review_sla_working_days}
+            onChange={(on) => patch({ review_sla_working_days: on })}
+          />
+          <Field label="Open PR limit" help="Optional. My PRs shows a hint when you have more open pull requests than this. Leave empty for no limit.">
+            <input {...plainText}
+              aria-label="Open PR limit"
+              className={input}
+              type="number"
+              min={1}
+              max={500}
+              value={draft.my_prs_wip_limit ?? ""}
+              onChange={(event) => patch({ my_prs_wip_limit: event.target.value === "" ? null : Number(event.target.value) })}
+            />
+          </Field>
           <Field label="Minimum hours between bumps" help="A PR bumped more recently is skipped, with a warning in the preview.">
             <input {...plainText}
               className={input}
@@ -84,6 +133,23 @@ export function PreferencesForm({ api, prefs, section, permission, onRequestPerm
               className="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 font-mono text-sm"
               value={draft.ticket_key_regex}
               onChange={(event) => patch({ ticket_key_regex: event.target.value })}
+            />
+          </Field>
+          <Field
+            label="Extra bot logins"
+            help="GitHub Bot accounts and logins ending in [bot] already count as bots. Add other logins here, one per line, when a bot posts as a normal user."
+          >
+            <textarea
+              {...plainText}
+              aria-label="Extra bot logins"
+              rows={3}
+              className="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 font-mono text-sm"
+              placeholder={"review-helper\nci-helper"}
+              value={draft.bot_logins.join("\n")}
+              onChange={(event) => {
+                const lines = event.target.value.split("\n").map((line) => line.trim());
+                patch({ bot_logins: lines });
+              }}
             />
           </Field>
           <Field label="JIRA base URL" help="Your JIRA site, like https://acme-labs.atlassian.net. With it set, a bare key such as ACME-123 on a project links to its ticket. Empty turns bare keys into plain text.">

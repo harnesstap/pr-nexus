@@ -1,5 +1,6 @@
 mod blocking;
 mod bulk;
+mod bumps;
 mod commands;
 mod context;
 mod demo;
@@ -133,6 +134,9 @@ pub fn run() {
             slack::send_review,
             bulk::bulk_preview,
             bulk::send_bulk,
+            bumps::due_bumps,
+            bumps::snooze_bump,
+            bumps::skip_bump,
             project_info::set_project_description,
             project_info::add_jira_link,
             project_info::remove_jira_link,
@@ -140,6 +144,9 @@ pub fn run() {
             project_info::pr_note,
             project_info::set_pr_note,
             project_info::set_pr_starred,
+            project_info::mark_prs_read,
+            project_info::set_prs_snooze,
+            project_info::set_prs_muted,
             stats::review_stats,
             context::pr_slack_context,
             context::pr_slack_mentions,
@@ -196,10 +203,14 @@ pub fn run() {
             commands::save_view_state,
             commands::open_external,
             commands::pr_detail,
+            commands::pr_stack,
             commands::pr_overview,
             commands::set_auto_merge,
             commands::set_pr_draft,
             commands::merge_pr,
+            commands::enqueue_pull_request,
+            commands::dequeue_pull_request,
+            commands::enqueue_pull_requests,
             commands::close_pull_requests,
             commands::pr_branch_status,
             commands::update_pr_branch,

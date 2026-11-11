@@ -73,9 +73,10 @@ A static render of the wizard and the list, with invented data and no GitHub cal
 
 ```bash
 bun run dev
-# http://127.0.0.1:1420/preview.html?screen=wizard
-# http://127.0.0.1:1420/preview.html?screen=slack
-# http://127.0.0.1:1420/preview.html?screen=list
+# The dev server uses port 1477 (not the Tauri default 1420) so it can run next to other Tauri apps.
+# http://127.0.0.1:1477/preview.html?screen=wizard
+# http://127.0.0.1:1477/preview.html?screen=slack
+# http://127.0.0.1:1477/preview.html?screen=list
 ```
 
 ## README screenshot and demo video

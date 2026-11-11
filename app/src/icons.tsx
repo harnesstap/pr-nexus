@@ -333,6 +333,16 @@ export function MergeIcon(props: IconProps) {
   );
 }
 
+export function StackIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M12 3 3 7.5 12 12l9-4.5L12 3z" />
+      <path d="m3 12 9 4.5 9-4.5" />
+      <path d="m3 16.5 9 4.5 9-4.5" />
+    </Svg>
+  );
+}
+
 export function GitBranchIcon(props: IconProps) {
   return (
     <Svg {...props}>

@@ -27,6 +27,9 @@ function row(partial: Partial<ListRow> = {}): ListRow {
     created_at: hoursAgo(2),
     hidden: false,
     starred: false,
+    unread: false,
+    muted: false,
+    snoozed: false,
     project_ids: [],
     readiness: "unknown",
     readiness_notes: [],
@@ -53,7 +56,8 @@ function slack(requestedHoursAgo: number, bumpedHoursAgo: number | null = null):
 }
 
 const mine = (partial: Partial<ListRow>) => nextAction(row(partial), "mine", now).action;
-const reviewing = (partial: Partial<ListRow>) => nextAction(row({ involvement: REVIEW_REQUESTED, ...partial }), "to_review", now).action;
+const reviewing = (partial: Partial<ListRow>, sla?: { hours: number; workingDays: boolean }) =>
+  nextAction(row({ involvement: REVIEW_REQUESTED, ...partial }), "to_review", now, sla).action;
 
 test("author states follow the documented priority", () => {
   expect(mine({ conflicts: true, checks: "failure", review_decision: "changes_requested", is_draft: true })).toBe("conflicts");
@@ -68,7 +72,17 @@ test("author states follow the documented priority", () => {
   expect(mine({})).toBe("waiting_review");
 });
 
-test("a reminder is due after 24h since the last Slack send, or 48h without one", () => {
+test("review now follows review_sla_hours, and weekdays can skip a weekend", () => {
+  const sla = { hours: 12, workingDays: false };
+  expect(reviewing({ created_at: hoursAgo(20) }, sla)).toBe("review_overdue");
+  expect(reviewing({ created_at: hoursAgo(20) })).toBe("review");
+  const monday = new Date("2026-11-09T12:00:00Z");
+  const friday = new Date(monday.getTime() - 72 * 3_600_000).toISOString();
+  expect(nextAction(row({ involvement: REVIEW_REQUESTED, created_at: friday }), "to_review", monday, { hours: 48, workingDays: true }).action).toBe("review");
+  expect(nextAction(row({ involvement: REVIEW_REQUESTED, created_at: friday }), "to_review", monday, { hours: 48, workingDays: false }).action).toBe("review_overdue");
+});
+
+test("a reminder is due after 24h since the last Slack send, or the review SLA without one", () => {
   expect(mine({ slack: slack(23) })).toBe("waiting_review");
   expect(mine({ slack: slack(25) })).toBe("nudge");
   expect(mine({ slack: slack(100, 5) })).toBe("waiting_review");

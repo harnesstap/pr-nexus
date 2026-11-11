@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { PageDto, PageRequest } from "./list/paging";
+import type { StackPlace } from "./list/stack";
 
 export type StepId = "choose_vcs" | "choose_chat" | "connect_vcs" | "choose_vcs_scope" | "connect_chat" | "chat_mapping" | "done";
 
@@ -184,6 +185,18 @@ export interface Preferences {
   notify_approved: boolean;
   notify_changes_requested: boolean;
   notify_comment: boolean;
+  /** Hours after the last request or bump, with no review, before a bump is due. */
+  bump_due_hours: number;
+  /** Saturday and Sunday (UTC) do not count toward `bump_due_hours`. */
+  bump_due_working_days: boolean;
+  /** Hours before Review now. Separate from `bump_due_hours`. */
+  review_sla_hours: number;
+  /** When true, only weekday hours count toward `review_sla_hours`. */
+  review_sla_working_days: boolean;
+  /** Open pull requests in My PRs before a soft hint. Null means no cap. */
+  my_prs_wip_limit: number | null;
+  /** Extra GitHub logins treated as bots, one per entry. */
+  bot_logins: string[];
 }
 
 /** One editable Slack review-request template (§7.6). */
@@ -407,6 +420,8 @@ export interface BulkRequest {
   channel_moves?: ChannelMove[];
   /** Cards left out, by the channel they were routed to. */
   skipped_channels?: ChannelKey[];
+  /** Appended to each message that includes the pull request. Blank notes are ignored. */
+  notes?: { pr_id: number; text: string }[];
 }
 
 export interface GroupChannelChoice {
@@ -494,6 +509,17 @@ export interface BulkOutcome {
   permalink: string | null;
 }
 
+/** A pull request whose scheduled bump is due. The channel comes from the bulk preview. */
+export interface DueBump {
+  pr_id: number;
+  number: number;
+  title: string;
+  repo: string;
+  asked_at: string;
+  quiet_hours: number;
+  bump_count: number;
+}
+
 export interface BulkResult {
   batch_id: string;
   results: BulkOutcome[];
@@ -522,6 +548,10 @@ export interface ListRow {
   repo: string;
   author_login: string;
   head_ref: string;
+  /** Base branch. Omitted only by older fixtures; the list always sends it. */
+  base_ref?: string;
+  /** Set when this pull request is in a stack of two or more. */
+  stack?: StackPlace | null;
   is_draft: boolean;
   state: string;
   checks: string;
@@ -534,11 +564,21 @@ export interface ListRow {
   hidden: boolean;
   /** Starred by the user; pinned above the rest within the sort. */
   starred: boolean;
+  /** New commits, comments, reviews, or CI since this detail was last opened. */
+  unread: boolean;
+  /** The unread dot is hidden and the row is left out of the unread count. */
+  muted: boolean;
+  /** Left out of the default list until the snooze ends. */
+  snoozed: boolean;
   project_ids: number[];
   readiness: "ready" | "blocked" | "unknown";
   readiness_notes: string[];
   /** GitHub reports merge conflicts. */
   conflicts: boolean;
+  /** GitHub's merge state, lower case. Absent on older list payloads. */
+  merge_state?: string;
+  /** Merge queue facts from the last status read. Absent until that read. */
+  merge_queue?: MergeQueueInfo | null;
   /** At least one reviewer or team is requested on GitHub. */
   reviewers_requested: boolean;
   /** Who still has to review: users first, then teams, each by login. */
@@ -560,6 +600,11 @@ export interface ListRow {
     root_ts: string;
     source: string;
   } | null;
+  /**
+   * Bot comments and reviews from the last time the detail was loaded.
+   * Absent or 0 until then: the list sync does not fetch comment text.
+   */
+  bot_comments?: number;
 }
 
 /** One pending review request on a list row. */
@@ -697,6 +742,33 @@ export interface BranchUpdate {
   branch: BranchStatus;
 }
 
+/** One pull request in a stack, bottom to top. */
+export interface StackMemberDto {
+  id: number;
+  number: number;
+  title: string;
+  url: string;
+  repo: string;
+  base_ref: string;
+  head_ref: string;
+  state: string;
+  is_draft: boolean;
+  checks: string;
+  review_decision: string | null;
+  mergeable: "mergeable" | "conflicting" | "unknown";
+  position: number;
+  depth: number;
+  blocking: boolean;
+}
+
+/** The stack containing one pull request. Null when it is not stacked. */
+export interface PrStack {
+  root_id: number;
+  root_number: number;
+  blocking_id: number;
+  members: StackMemberDto[];
+}
+
 /** The detail panel's at-a-glance facts (§7.2), cached per PR. */
 export interface PrOverview {
   state: "open" | "closed" | "merged";
@@ -722,8 +794,10 @@ export interface PrOverview {
   /** Null for a deleted account. */
   author: Person | null;
   assignees: Person[];
-  /** Authors of PR and review-thread comments, deduped; bots included. */
+  /** Authors of PR and review-thread comments, deduped. Bots are omitted. */
   commenters: Person[];
+  /** Bot comments and reviews. Absent on overviews stored before this field. */
+  bot_reviews?: BotReviews;
   viewer: {
     login: string;
     permission: "admin" | "maintain" | "write" | "triage" | "read" | null;
@@ -735,7 +809,46 @@ export interface PrOverview {
   };
   merge_settings: { auto_merge_allowed: boolean; squash: boolean; merge: boolean; rebase: boolean };
   auto_merge: { method: MergeMethod; enabled_by: string | null; enabled_at: string | null } | null;
+  /** Absent on overviews cached before the queue was read. */
+  merge_queue?: MergeQueueInfo | null;
   fetched_at: string;
+}
+
+export interface BotReviewNote {
+  login: string;
+  kind: "issue" | "thread" | "review";
+  snippet: string;
+  url: string;
+  unresolved: boolean;
+  at: string;
+}
+
+export interface BotReviews {
+  count: number;
+  unresolved: number;
+  latest_snippet: string | null;
+  notes: BotReviewNote[];
+}
+
+/** Where a pull request sits in its base branch's merge queue. */
+export interface MergeQueueInfo {
+  required: boolean;
+  phase: "queued" | "merging" | "failed" | "removed" | null;
+  position: number | null;
+  eta_seconds: number | null;
+  reason: string | null;
+}
+
+/** What a bulk add to the merge queue did to one pull request. */
+export type QueueOutcome = "added" | "skipped" | "failed";
+
+export interface QueueReport {
+  id: number;
+  repo: string;
+  number: number;
+  title: string;
+  outcome: QueueOutcome;
+  message: string | null;
 }
 
 /** What happened to one pull request in a close. */
@@ -991,6 +1104,12 @@ export interface Api {
   sendReview(prId: number, target: ReviewTarget, teams: string[], note?: string): Promise<SlackIndicator>;
   bulkPreview(request: BulkRequest): Promise<BulkPreview>;
   sendBulk(request: BulkRequest, fingerprints: string[]): Promise<BulkResult>;
+  /** Pull requests whose bump is due. Does not post. */
+  dueBumps?(): Promise<DueBump[]>;
+  /** Hide one due bump for 24 hours. Does not post. */
+  snoozeBump?(prId: number): Promise<DueBump[]>;
+  /** Hide one due bump until a newer request or bump. Does not post. */
+  skipBump?(prId: number): Promise<DueBump[]>;
   importMapping(csv: string, workspace: string): Promise<{ rows: number }>;
   /** Native open dialog filtered to .csv (with All files); null when cancelled. */
   pickMappingFile(): Promise<MappingFile | null>;
@@ -1039,6 +1158,12 @@ export interface Api {
   setPrNote(prId: number, note: string): Promise<PrNoteDto>;
   /** Idempotent; resolves to the new state. */
   setPrStarred(prId: number, starred: boolean): Promise<boolean>;
+  /** Records current activity as seen for these pull requests. */
+  markPrsRead(ids: number[]): Promise<void>;
+  /** `day`, `week`, `activity`, or `off`. */
+  setPrsSnooze(ids: number[], choice: "day" | "week" | "activity" | "off"): Promise<void>;
+  /** Hides unread until unmuted. */
+  setPrsMuted(ids: number[], muted: boolean): Promise<void>;
   listProjectRules(projectId: number): Promise<ProjectRuleDto[]>;
   saveProjectRule(rule: ProjectRuleDto): Promise<ProjectRuleDto>;
   deleteProjectRule(id: number): Promise<void>;
@@ -1056,12 +1181,23 @@ export interface Api {
   prDetail(id: number): Promise<PrDetail>;
   /** The detail panel's cards. `refresh: false` reads only the cache (null when empty). */
   prOverview(id: number, refresh: boolean): Promise<PrOverview | null>;
+  /** The stack this pull request belongs to, from stored refs. Null when it is not stacked. */
+  prStack?(id: number): Promise<PrStack | null>;
   /** Turns auto-merge on with `method`, or off with null; returns the fresh overview. */
   setAutoMerge(id: number, method: MergeMethod | null): Promise<PrOverview>;
   /** Converts to a draft (`true`) or marks ready for review (`false`); returns the fresh overview. */
   setPrDraft(id: number, draft: boolean): Promise<PrOverview>;
   /** Merges now with `method`; irreversible, so the UI confirms first. Returns the fresh overview. */
   mergePr(id: number, method: MergeMethod): Promise<PrOverview>;
+  /** Adds one pull request to the merge queue. The UI confirms first. */
+  enqueuePullRequest(id: number): Promise<PrOverview>;
+  /** Removes one pull request from the merge queue. The UI confirms first. */
+  dequeuePullRequest(id: number): Promise<PrOverview>;
+  /**
+   * Adds each pull request whose base branch requires a merge queue.
+   * Ineligible ones are skipped. The UI confirms first.
+   */
+  enqueuePullRequests(ids: number[]): Promise<QueueReport[]>;
   /**
    * Closes these pull requests. A non-empty comment is posted on each open
    * one first. The branch stays. One failure does not stop the others.
@@ -1157,6 +1293,9 @@ export const tauriApi: Api = {
   sendReview: (prId, target, teams, note) => invoke("send_review", { prId, target, teams, note: note?.trim() ? note : null }),
   bulkPreview: (request) => invoke("bulk_preview", { request }),
   sendBulk: (request, fingerprints) => invoke("send_bulk", { request, fingerprints }),
+  dueBumps: () => invoke("due_bumps"),
+  snoozeBump: (prId) => invoke("snooze_bump", { prId }),
+  skipBump: (prId) => invoke("skip_bump", { prId }),
   importMapping: (csv, workspace) => invoke("import_mapping", { csv, workspace }),
   pickMappingFile: async () => {
     const path = await open({
@@ -1197,6 +1336,9 @@ export const tauriApi: Api = {
   prNote: (prId) => invoke("pr_note", { prId }),
   setPrNote: (prId, note) => invoke("set_pr_note", { prId, note }),
   setPrStarred: (prId, starred) => invoke("set_pr_starred", { prId, starred }),
+  markPrsRead: (ids) => invoke("mark_prs_read", { ids }),
+  setPrsSnooze: (ids, choice) => invoke("set_prs_snooze", { ids, choice }),
+  setPrsMuted: (ids, muted) => invoke("set_prs_muted", { ids, muted }),
   listProjectRules: (projectId) => invoke("list_project_rules", { projectId }),
   saveProjectRule: (rule) => invoke("save_project_rule", { rule }),
   deleteProjectRule: (id) => invoke("delete_project_rule", { id }),
@@ -1211,9 +1353,13 @@ export const tauriApi: Api = {
   openExternal: (url) => invoke("open_external", { url }),
   prDetail: (id) => invoke("pr_detail", { id }),
   prOverview: (id, refresh) => invoke("pr_overview", { id, refresh }),
+  prStack: (id) => invoke("pr_stack", { id }),
   setAutoMerge: (id, method) => invoke("set_auto_merge", { id, method }),
   setPrDraft: (id, draft) => invoke("set_pr_draft", { id, draft }),
   mergePr: (id, method) => invoke("merge_pr", { id, method }),
+  enqueuePullRequest: (id) => invoke("enqueue_pull_request", { id }),
+  dequeuePullRequest: (id) => invoke("dequeue_pull_request", { id }),
+  enqueuePullRequests: (ids) => invoke("enqueue_pull_requests", { ids }),
   closePullRequests: (ids, comment) => invoke("close_pull_requests", { ids, comment }),
   prBranchStatus: (id, refresh) => invoke("pr_branch_status", { id, refresh }),
   updatePrBranch: (id, method) => invoke("update_pr_branch", { id, method }),

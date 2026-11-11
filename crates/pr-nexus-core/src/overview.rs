@@ -7,6 +7,7 @@
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
+use crate::bots::{self, BotReviews, CommentNote};
 use crate::domain::{PrId, PrState, PullRequest};
 use crate::error::{CoreError, ProviderError};
 use crate::providers::{PrStatus, VcsProvider};
@@ -167,12 +168,47 @@ pub struct PrOverview {
     pub author: Option<Person>,
     pub assignees: Vec<Person>,
     /// Authors of PR and review-thread comments, deduped, bots included.
+    /// [`for_viewer`] drops the bots before the panel draws this list.
     pub commenters: Vec<Person>,
+    /// Comments and reviews fetched with this overview, bots and people.
+    /// The panel does not draw this list; [`for_viewer`] turns it into
+    /// [`Self::bot_reviews`] using the extra bot logins.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub feedback: Vec<CommentNote>,
+    /// Filled by [`for_viewer`]. Empty in the cache, which keeps [`Self::feedback`].
+    #[serde(default, skip_serializing_if = "BotReviews::is_empty")]
+    pub bot_reviews: BotReviews,
     pub viewer: ViewerAccess,
     pub merge_settings: MergeSettings,
     pub auto_merge: Option<AutoMergeState>,
+    /// Merge queue for this pull request's base branch.
+    /// `None` on overviews cached before the queue was read.
+    #[serde(default)]
+    pub merge_queue: Option<crate::merge_queue::MergeQueueSnapshot>,
     /// RFC 3339; when the provider answered.
     pub fetched_at: String,
+}
+
+/// Human comment counts, bot reviews, and commenters with bots removed.
+///
+/// `extra` is the Settings list of additional bot logins. The stored
+/// overview keeps GitHub's totals and [`PrOverview::feedback`]; this copy
+/// is what the panel shows and is not written back.
+pub fn for_viewer(mut overview: PrOverview, extra: &[String]) -> PrOverview {
+    let split = bots::split(
+        overview.issue_comments,
+        overview.review_comments,
+        &overview.feedback,
+        extra,
+    );
+    overview.issue_comments = split.human_issue;
+    overview.review_comments = split.human_review;
+    overview.bot_reviews = split.bots;
+    overview.feedback.clear();
+    overview
+        .commenters
+        .retain(|person| !bots::is_bot(&person.login, person.kind == PersonKind::Bot, extra));
+    overview
 }
 
 /// The cached overview for `pr`, if one was stored and still parses.
@@ -192,6 +228,9 @@ pub fn refresh(
     let json = serde_json::to_string(&overview)
         .map_err(|err| CoreError::Store(format!("encode overview: {err}")))?;
     store.upsert_pr_overview(pr.id, json, Utc::now())?;
+    if let Some(queue) = &overview.merge_queue {
+        store.set_merge_queue(pr.id, queue)?;
+    }
     Ok(overview)
 }
 

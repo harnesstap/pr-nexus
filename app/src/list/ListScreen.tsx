@@ -2,9 +2,10 @@ import { createPortal } from "react-dom";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Api, Bootstrap, ListRow, ProjectDto, RemoteReviewFilter, ReplacedLinkDto } from "../api";
 import { CloseDialog, type CloseTarget } from "../detail/CloseDialog";
+import { MergeQueueDialog } from "../detail/MergeQueueDialog";
 import { errorMessage } from "../api";
+import { ClockIcon, CloseIcon, CopyIcon, FolderIcon, HomeIcon, LogoIcon, PlusIcon, RefreshIcon, SlackLogo } from "../icons";
 import { parseOpenRequest } from "./openRequest";
-import { ClockIcon, CloseIcon, FolderIcon, HomeIcon, LogoIcon, PlusIcon, RefreshIcon } from "../icons";
 import { Tooltip } from "../Tooltip";
 import { OrgOption } from "../orgs";
 import {
@@ -24,9 +25,13 @@ import {
   sentToast,
   syncLabel,
   type SavedView,
+  type SnoozeChoice,
   type Toast,
 } from "./model";
+import { copyText } from "./markdown";
 import { PrList, type ListActions } from "./PrList";
+import { DEFAULT_REVIEW_SLA, type ReviewSla } from "./sla";
+import { loadStandupRows, standupRecap } from "./standup";
 import { sidebarProjects } from "./projects";
 import { GlobalCommands } from "./GlobalCommands";
 import type { PageRequest } from "./paging";
@@ -57,6 +62,7 @@ import { UpdateIndicator } from "./UpdateIndicator";
 import { AccountMenu } from "./AccountMenu";
 import { showMappingHint } from "./hints";
 import { plainText } from "../textInput";
+import { BumpQueue } from "./BumpQueue";
 import { WhatsNew } from "../changelog/WhatsNew";
 
 interface Props {
@@ -69,13 +75,19 @@ interface Props {
   onSwitchProfile?: (id: string) => void;
   /** Account menu → Add a profile. */
   onAddProfile?: () => void;
+  /** First view, for the preview harness. */
+  startView?: string;
+  /** Opens the My PRs toolbar menu on first paint (preview). */
+  openStandupMenu?: boolean;
 }
 
-export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, onAddProfile }: Props) {
+export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, onAddProfile, startView = "mine", openStandupMenu = false }: Props) {
   /** Bumped whenever stored rows may have changed; the list re-reads in place. */
   const [version, setVersion] = useState(0);
   const [projects, setProjects] = useState<ProjectDto[]>([]);
-  const [viewKey, setViewKey] = useState("mine");
+  const [viewKey, setViewKey] = useState(startView);
+  const [dueCount, setDueCount] = useState(0);
+  const [dueTick, setDueTick] = useState(0);
   const [views, setViews] = useState<Record<string, SavedView>>({});
   const [loaded, setLoaded] = useState<string | null>(null);
   const [sync, setSync] = useState(boot.sync);
@@ -90,6 +102,8 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
   }, []);
   const [detail, setDetail] = useState(false);
   const [now, setNow] = useState(() => new Date());
+  const [sla, setSla] = useState<ReviewSla>(DEFAULT_REVIEW_SLA);
+  const [wipLimit, setWipLimit] = useState<number | null>(null);
   const [orgs, setOrgs] = useState(boot.tracked_orgs);
   const [personal, setPersonal] = useState(boot.include_personal);
   const [error, setError] = useState<string | null>(null);
@@ -114,6 +128,33 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
   const [bulkIds, setBulkIds] = useState<number[] | null>(null);
   const listActions = useRef<ListActions | null>(null);
   const [notice, setNotice] = useState<Toast | null>(null);
+
+  useEffect(() => {
+    if (viewKey === "settings") {
+      return;
+    }
+    let live = true;
+    void api.loadPreferences().then((prefs) => {
+      if (!live) {
+        return;
+      }
+      setSla({ hours: prefs.review_sla_hours, workingDays: prefs.review_sla_working_days });
+      setWipLimit(prefs.my_prs_wip_limit);
+    }).catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [api, viewKey]);
+
+  const copyStandup = useCallback(async () => {
+    try {
+      const rows = await loadStandupRows((request) => api.listPage(request), now);
+      await copyText(standupRecap(rows, now));
+      setNotice({ text: "Copied stand-up recap" });
+    } catch (error) {
+      setNotice({ text: errorMessage(error) });
+    }
+  }, [api, now, setNotice]);
   /** The list column; with a selection, toasts sit just above its bar, clear of the detail panel. */
   const [listColumn, setListColumn] = useState<HTMLDivElement | null>(null);
   /** The bulk run's summary, shown as a toast once its dialog closes. */
@@ -412,6 +453,31 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
   }, [api, attempt]);
 
   useEffect(() => {
+    if (!api.dueBumps) {
+      return;
+    }
+    let cancel = false;
+    void api.dueBumps().then(
+      (items) => {
+        if (!cancel) {
+          setDueCount(items.length);
+        }
+      },
+      () => {
+        if (!cancel) {
+          setDueCount(0);
+        }
+      },
+    );
+    return () => {
+      cancel = true;
+    };
+  }, [api, dueTick, version]);
+
+  useEffect(() => {
+    if (viewKey === "bumps_due") {
+      return;
+    }
     let cancel = false;
     void api.loadViewState(viewKey).then((json) => {
       if (cancel) {
@@ -426,7 +492,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
   }, [api, viewKey]);
 
   useEffect(() => {
-    if (loaded !== viewKey) {
+    if (viewKey === "bumps_due" || loaded !== viewKey) {
       return;
     }
     const timer = window.setTimeout(() => {
@@ -467,6 +533,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
   // sync that still says open does not put them back.
   const [mergedPatches, setMergedPatches] = useState<Record<number, number>>({});
   const [closeTargets, setCloseTargets] = useState<CloseTarget[] | null>(null);
+  const [queueRows, setQueueRows] = useState<ListRow[] | null>(null);
   const removedIds = useMemo(() => {
     const ids = new Set<number>();
     for (const [id, until] of Object.entries(mergedPatches)) if (version <= until) ids.add(Number(id));
@@ -497,6 +564,57 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
 
   function prMerged(id: number) {
     forgetOpenPrs([id]);
+  }
+
+  function openDetail(row: ListRow) {
+    setDetailRow(row.unread ? { ...row, unread: false } : row);
+    if (row.unread) {
+      void markRead([row.id], null, row.id);
+    }
+  }
+
+  async function markRead(ids: number[], notice: string | null, rollbackId?: number) {
+    if (ids.length === 0) {
+      return;
+    }
+    const marked = new Set(ids);
+    setDetailRow((current) => (current && marked.has(current.id) ? { ...current, unread: false } : current));
+    try {
+      await api.markPrsRead(ids);
+      if (notice) {
+        setNotice({ text: notice });
+      }
+      setVersion((value) => value + 1);
+    } catch (err) {
+      if (rollbackId !== undefined) {
+        setDetailRow((current) => (current && current.id === rollbackId ? { ...current, unread: true } : current));
+      }
+      setError(errorMessage(err));
+    }
+  }
+
+  async function snoozeRows(ids: number[], choice: SnoozeChoice) {
+    try {
+      await api.setPrsSnooze(ids, choice);
+      const marked = new Set(ids);
+      setDetailRow((current) => (current && marked.has(current.id) ? { ...current, snoozed: choice !== "off" } : current));
+      setNotice({ text: snoozeNotice(choice) });
+      setVersion((value) => value + 1);
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  }
+
+  async function muteRows(ids: number[], muted: boolean) {
+    try {
+      await api.setPrsMuted(ids, muted);
+      const marked = new Set(ids);
+      setDetailRow((current) => (current && marked.has(current.id) ? { ...current, muted, unread: muted ? false : current.unread } : current));
+      setNotice({ text: muted ? "Muted" : "Unmuted" });
+      setVersion((value) => value + 1);
+    } catch (err) {
+      setError(errorMessage(err));
+    }
   }
 
   /** Stars or unstars a PR, then reloads so it moves to (or out of) the pinned top. */
@@ -656,11 +774,28 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
           PR Nexus
         </p>
         <nav aria-label="Views" className="flex flex-col gap-0.5 px-2 text-sm">
-          <NavButton current={viewKey} id="mine" icon={<HomeIcon />} onSelect={setViewKey}>
-            My PRs
-          </NavButton>
+          <div className="flex items-center gap-0.5">
+            <div className="min-w-0 flex-1">
+              <NavButton current={viewKey} id="mine" icon={<HomeIcon />} onSelect={setViewKey}>
+                My PRs
+              </NavButton>
+            </div>
+            <Tooltip label="Copy stand-up recap" detail="Markdown grouped by status, since the last working day" align="end">
+              <button
+                type="button"
+                aria-label="Copy stand-up recap"
+                className="rounded p-1 text-slate-500 hover:bg-slate-800 hover:text-slate-200"
+                onClick={() => void copyStandup()}
+              >
+                <CopyIcon size={14} />
+              </button>
+            </Tooltip>
+          </div>
           <NavButton current={viewKey} id="to_review" icon={<ClockIcon />} onSelect={setViewKey}>
             To review
+          </NavButton>
+          <NavButton current={viewKey} id="bumps_due" icon={<SlackLogo variant="mono" size={16} />} badge={dueCount} onSelect={setViewKey}>
+            Bumps due
           </NavButton>
         </nav>
         <section aria-labelledby="projects-heading" className="mt-4 flex min-h-0 flex-1 flex-col px-2 text-sm">
@@ -842,6 +977,8 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
               }
             />
           </section>
+        ) : viewKey === "bumps_due" ? (
+          <BumpQueue api={api} onOpen={(url) => void api.openExternal(url)} onNotice={setNotice} onChanged={() => setDueTick((value) => value + 1)} />
         ) : needsOrgs ? (
           <section className="max-w-xl px-6 py-8">{orgPicker()}</section>
         ) : listState.phase === "loading" ? (
@@ -916,12 +1053,21 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
                 onCreateProjectWithPrs={createProjectWithPrs}
                 onSelectionChange={setSelection}
                 detailId={detailRow?.id ?? null}
-                onDetails={setDetailRow}
+                onDetails={openDetail}
+                onMarkRead={(ids) => void markRead(ids, "Marked as read")}
+                onMarkAllRead={(ids) => void markRead(ids, "Marked all as read")}
+                onSnooze={(ids, choice) => void snoozeRows(ids, choice)}
+                onMute={(ids, muted) => void muteRows(ids, muted)}
                 onRequestReview={setReviewRow}
                 onToggleStar={(row) => void toggleStar(row)}
                 onBulkReview={setBulkIds}
                 onClosePullRequests={setCloseTargets}
+                onEnqueuePullRequests={setQueueRows}
                 onNotice={setNotice}
+                sla={sla}
+                wipLimit={wipLimit}
+                onCopyStandup={() => void copyStandup()}
+                standupMenuInitiallyOpen={openStandupMenu}
                 draftPatches={shownDraftPatches}
                 removedIds={removedIds}
                 actionsRef={listActions}
@@ -939,9 +1085,32 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
                 onNotice={(text) => setNotice({ text })}
                 onDraftChange={changeDraft}
                 onMerged={() => prMerged(detailRow.id)}
+                onQueueChange={() => void reload()}
                 onClosed={forgetOpenPrs}
                 slack={{ mentions: boot.slack_mentions, workspaces: boot.slack_workspaces }}
                 onToggleStar={() => void toggleStar(detailRow)}
+                onOpenPr={(id) => {
+                  void api.rowsById([id]).then((found) => {
+                    const next = found[0];
+                    if (next) {
+                      openDetail(next);
+                    }
+                  });
+                }}
+                onSnooze={(choice) => void snoozeRows([detailRow.id], choice)}
+                onMute={(muted) => void muteRows([detailRow.id], muted)}
+              />
+            )}
+            {queueRows && queueRows.length > 0 && (
+              <MergeQueueDialog
+                api={api}
+                rows={queueRows}
+                onDismiss={() => setQueueRows(null)}
+                onDone={() => {
+                  setQueueRows(null);
+                  void reload();
+                }}
+                onNotice={(text) => setNotice({ text })}
               />
             )}
             {closeTargets && closeTargets.length > 0 && (
@@ -1041,7 +1210,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
           actions={listActions}
           listShown={viewKey !== "settings"}
           onView={setViewKey}
-          onDetails={setDetailRow}
+          onDetails={openDetail}
           onSync={(full) => void refresh(full)}
           syncing={syncing}
         />
@@ -1049,6 +1218,23 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
       </main>
     </div>
   );
+}
+
+function snoozeNotice(choice: SnoozeChoice): string {
+  switch (choice) {
+    case "day":
+      return "Snoozed for 1 day";
+    case "week":
+      return "Snoozed for 1 week";
+    case "activity":
+      return "Snoozed until the next update";
+    case "off":
+      return "Unsnoozed";
+    default: {
+      const unexpected: never = choice;
+      return unexpected;
+    }
+  }
 }
 
 function NavButton({
@@ -1059,6 +1245,7 @@ function NavButton({
   onDropPrs,
   projectId,
   flash = false,
+  badge = 0,
   children,
 }: {
   current: string;
@@ -1071,6 +1258,8 @@ function NavButton({
   projectId?: number;
   /** Briefly highlighted after PRs were added to the project. */
   flash?: boolean;
+  /** A count shown at the end of the row. Zero stays hidden. */
+  badge?: number;
   children: string;
 }) {
   const [over, setOver] = useState(false);
@@ -1108,7 +1297,8 @@ function NavButton({
       }
     >
       <span className="flex w-4 shrink-0 justify-center text-slate-400">{icon}</span>
-      <span className="truncate">{children}</span>
+      <span className="min-w-0 flex-1 truncate">{children}</span>
+      {badge > 0 && <span className="rounded bg-slate-800 px-1.5 text-xs tabular-nums text-slate-200">{badge}</span>}
     </button>
   );
 }

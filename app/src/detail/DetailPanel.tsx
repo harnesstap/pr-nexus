@@ -6,9 +6,11 @@ import { AlertIcon, CheckIcon, DeclinedIcon, GitHubIcon, MoreIcon } from "../ico
 import { isTypingTarget } from "../list/keys";
 import { ago } from "../list/model";
 import { SlackContextPanel } from "../list/SlackContextPanel";
+import { stackMergeNote } from "../list/stack";
 import { StarButton } from "../list/StarButton";
 import { Tooltip } from "../Tooltip";
 import { AutoMerge } from "./AutoMerge";
+import { BotReviews } from "./BotReviews";
 import { CloseDialog } from "./CloseDialog";
 import { BranchAction, BranchCard, BranchError, RebaseConfirm, useBranch } from "./BranchCard";
 import { Expander } from "./Expander";
@@ -17,6 +19,8 @@ import { draftView, type DraftView } from "./draft";
 import { peopleGroups, PeopleRow, requiredSeats } from "./People";
 import { SlackLine } from "./SlackLine";
 import { StatCards, VerdictIcon } from "./StatCards";
+import { applyQueueVerdict } from "./mergeQueue";
+import { StackSection } from "./StackSection";
 import { behindLine, CONFLICTS_BLOCKER, DRAFT_BLOCKER, mergeVerdict, TONE_TEXT } from "./status";
 
 interface Props {
@@ -36,12 +40,20 @@ interface Props {
   onDraftChange?: (id: number, draft: boolean | null | "saved") => void;
   /** GitHub confirmed a merge made here; the caller drops the PR and closes the panel. */
   onMerged?: () => void;
+  /** The pull request joined or left the merge queue; the caller refreshes the list. */
+  onQueueChange?: () => void;
   /** GitHub confirmed a close, or the pull request was already closed or merged. */
   onClosed?: (ids: number[]) => void;
   /** Adds the full Slack threads and mention search (§7.10) as an expander. */
   slack?: { mentions: MentionsScope; workspaces?: SlackWorkspace[] };
   /** Stars or unstars this PR; the header shows the star when set. */
   onToggleStar?: () => void;
+  /** Opens another pull request in this panel, for example a stack neighbour. */
+  onOpenPr?: (id: number) => void;
+  /** Snooze choices from the header menu. Absent keeps the menu to Close. */
+  onSnooze?: (choice: "day" | "week" | "activity" | "off") => void;
+  /** Mute or unmute from the header menu. */
+  onMute?: (muted: boolean) => void;
 }
 
 /** Panel width as a share of the window, remembered across launches. */
@@ -68,7 +80,7 @@ function storedWidth(): number {
  * The PR detail slide-over (§7.2): docked on the right while the list stays usable, so a
  * click or ↑/↓ in the list switches the PR. Esc or ✕ closes it.
  */
-export function DetailPanel({ api, row, version, onClose, onOpen, onRequestReview, onNotice, onDraftChange, onMerged, onClosed, slack, onToggleStar }: Props) {
+export function DetailPanel({ api, row, version, onClose, onOpen, onRequestReview, onNotice, onDraftChange, onMerged, onQueueChange, onClosed, slack, onToggleStar, onOpenPr, onSnooze, onMute }: Props) {
   const [overview, setOverview] = useState<PrOverview | null>(null);
   const [overviewError, setOverviewError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -197,7 +209,7 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
     : row.state === "open" && row.is_draft
       ? "draft"
       : row.state;
-  const verdict = overview ? mergeVerdict(overview, branch.view.behindBy) : null;
+  const verdict = overview ? applyQueueVerdict(overview, mergeVerdict(overview, branch.view.behindBy)) : null;
   /** The fix that sits on a blocker's row: Mark ready on the draft line, Update branch or Resolve on the branch line. */
   const blockerAction = (text: string, only: boolean): ReactNode => {
     if (overview?.state !== "open") {
@@ -266,6 +278,10 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
             <HeaderMenu
               canClose={overview?.viewer.can_close !== false}
               onClosePr={() => setConfirmClose(true)}
+              snoozed={row.snoozed}
+              muted={row.muted}
+              onSnooze={onSnooze}
+              onMute={onMute}
             />
           )}
           <CloseButton label="Close details" onClick={onClose} />
@@ -282,6 +298,7 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
         {overview && (
           <>
             <StatCards overview={overview} onOpen={onOpen} branch={<BranchCard branch={branch} onOpen={onOpen} />} />
+            <BotReviews reviews={overview.bot_reviews} onOpen={onOpen} />
             <BranchError branch={branch} />
             <RebaseConfirm branch={branch} headRef={overview.head_ref} />
             {verdict && (
@@ -310,7 +327,16 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
                 />
                 {overview.state === "open" && (
                   <div data-testid="merge-controls" className="flex flex-wrap items-center gap-2 border-t border-slate-800/70 pt-2">
-                    <AutoMerge api={api} prId={row.id} overview={overview} onChange={setOverview} onNotice={onNotice} onMerged={onMerged} />
+                    <AutoMerge
+                      api={api}
+                      prId={row.id}
+                      overview={overview}
+                      onChange={setOverview}
+                      onNotice={onNotice}
+                      onMerged={onMerged}
+                      onQueueChange={onQueueChange}
+                      hint={stackMergeNote(overview.base_ref, row.stack)}
+                    />
                     {!draft.draft && <DraftAction draft={draft} busy={flipping} onToggle={() => void toggleDraft()} />}
                   </div>
                 )}
@@ -323,6 +349,7 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
                 Showing the copy from {ago(overview.fetched_at, new Date())}; refreshing failed: {overviewError}
               </p>
             )}
+            <StackSection api={api} prId={row.id} onOpen={(id) => onOpenPr?.(id)} />
             <PeopleRow
               groups={peopleGroups(overview, detail ? requiredSeats(overview.reviewers, detail.mandatory_teams, detail.approved_teams) : [])}
               missing={overview.required_approvals === null ? 0 : Math.max(0, overview.required_approvals - overview.approvals)}
@@ -456,7 +483,21 @@ function DraftAction({ draft, busy, onToggle }: { draft: DraftView; busy: boolea
   );
 }
 
-function HeaderMenu({ canClose, onClosePr }: { canClose: boolean; onClosePr: () => void }) {
+function HeaderMenu({
+  canClose,
+  onClosePr,
+  snoozed,
+  muted,
+  onSnooze,
+  onMute,
+}: {
+  canClose: boolean;
+  onClosePr: () => void;
+  snoozed: boolean;
+  muted: boolean;
+  onSnooze?: (choice: "day" | "week" | "activity" | "off") => void;
+  onMute?: (muted: boolean) => void;
+}) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -481,6 +522,20 @@ function HeaderMenu({ canClose, onClosePr }: { canClose: boolean; onClosePr: () 
     setOpen(false);
     ref.current?.querySelector<HTMLElement>("[aria-haspopup]")?.focus();
   }
+  const pick = (label: string, action: () => void) => (
+    <button
+      key={label}
+      type="button"
+      role="menuitem"
+      className="flex w-full px-3 py-1.5 text-left text-slate-200 hover:bg-slate-800 focus:bg-slate-800 focus:outline-none"
+      onClick={() => {
+        setOpen(false);
+        action();
+      }}
+    >
+      {label}
+    </button>
+  );
   const item = (
     <button
       type="button"
@@ -495,9 +550,10 @@ function HeaderMenu({ canClose, onClosePr }: { canClose: boolean; onClosePr: () 
       Close PR
     </button>
   );
+  const attention = onSnooze || onMute;
   return (
     <div ref={ref} className="relative" onKeyDown={onMenuKey}>
-      <Tooltip label="More actions" detail="Close this pull request" align="end">
+      <Tooltip label="More actions" detail={attention ? "Snooze, mute, or close this pull request" : "Close this pull request"} align="end">
         <button
           type="button"
           aria-label="More actions"
@@ -513,8 +569,14 @@ function HeaderMenu({ canClose, onClosePr }: { canClose: boolean; onClosePr: () 
         <div
           role="menu"
           aria-label="More actions"
-          className="absolute right-0 top-full z-30 mt-1 min-w-40 rounded-md border border-slate-700 bg-slate-900 py-1 text-sm shadow-xl"
+          className="absolute right-0 top-full z-30 mt-1 min-w-44 whitespace-nowrap rounded-md border border-slate-700 bg-slate-900 py-1 text-sm shadow-xl"
         >
+          {onSnooze && pick("Snooze for 1 day", () => onSnooze("day"))}
+          {onSnooze && pick("Snooze for 1 week", () => onSnooze("week"))}
+          {onSnooze && pick("Snooze until update", () => onSnooze("activity"))}
+          {onSnooze && snoozed && pick("Unsnooze", () => onSnooze("off"))}
+          {onMute && pick(muted ? "Unmute" : "Mute", () => onMute(!muted))}
+          {attention && <div role="separator" className="my-1 h-px bg-slate-800" />}
           {canClose ? (
             item
           ) : (

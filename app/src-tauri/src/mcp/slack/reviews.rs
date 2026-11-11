@@ -190,6 +190,7 @@ fn request_reviews(state: &AppState, arguments: JsonObject) -> Result<Value, App
         skipped_groups: Vec::new(),
         channel_moves: Vec::new(),
         skipped_channels: Vec::new(),
+        notes: Vec::new(),
     };
     let mut preview = bulk::preview(state, &request)?;
     let mut skipped = skips(&preview);
