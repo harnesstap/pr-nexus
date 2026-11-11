@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import type { ListRow, ProjectDto } from "../api";
 import type { StackPlace } from "./stack";
-import { AlertIcon, ChevronDownIcon, ChevronRightIcon, ClockIcon, CloseIcon, CommentIcon, DraftIcon, FunnelIcon, MoreIcon, SlackLogo, StackIcon } from "../icons";
+import { AlertIcon, ChevronDownIcon, ChevronRightIcon, ClockIcon, CommentIcon, DraftIcon, FunnelIcon, MoreIcon, SlackLogo, StackIcon } from "../icons";
 import { SearchField } from "./SearchField";
 import { Tooltip } from "../Tooltip";
 import { ReviewerAvatars } from "./ReviewerAvatars";
@@ -53,7 +53,7 @@ import { setDragBadge } from "./dragBadge";
 import { pageIds, selectionCountText, summaryText, type Elsewhere, type PageDto, type PageEntry, type PageRequest, type PageSection } from "./paging";
 import { usePagedList, type PageParams } from "./usePagedList";
 import { plainText } from "../textInput";
-import { githubQueryOf, searchFieldValue, splitSearch } from "./searchText";
+import { githubQueryOf, searchFieldValue, sortLocksOrder, splitSearch } from "./searchText";
 import { queueChip } from "../detail/mergeQueue";
 import { commentsText, compactSlack, rowPills, staleCue, viewEmptyState, type RowPill, type StaleCue } from "./rowCues";
 
@@ -629,7 +629,7 @@ export function PrList({
 
   const header = selectionCountText(ids.length, page?.summary.finished ?? 0, activeIds.length, hidden);
   const openLimitHint = page && viewKey === "mine" ? wipHint(page.summary.open, wipLimit) : null;
-  const queryOrders = githubQueryOf(view.filters) !== "";
+  const queryOrders = sortLocksOrder(searchFieldValue(view.filters));
 
   const titleProject = currentProject !== null ? projects.find((project) => project.id === currentProject) : undefined;
   const sectionProject = (id: number | null) => (id === null ? undefined : projects.find((project) => project.id === id));
@@ -697,19 +697,6 @@ export function PrList({
             onChange={(repos) => onViewChange({ ...view, filters: { ...view.filters, repos } })}
           />
           <SearchField value={field} onChange={setSearch} searching={searching || githubSearching} inputRef={searchRef} />
-          {filtersActive(view.filters) && (
-            <Tooltip label="Clear filters" detail="Turn off every filter, quick filter chips and Starred included">
-            <button
-              type="button"
-              aria-label="Clear filters"
-              className="flex h-8 shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-2 text-xs text-violet-300 hover:bg-slate-800 hover:text-violet-200"
-              onClick={() => onViewChange(resetFilters(view))}
-            >
-              <CloseIcon />
-              <span className="hidden @7xl:inline">Clear filters</span>
-            </button>
-            </Tooltip>
-          )}
           <FilterMenu view={view} orgs={page?.orgs ?? []} menu={menu} setMenu={setMenu} onViewChange={onViewChange} fromQuery={queryOrders} />
           {viewKey === "mine" && (
             <div ref={standupMenuRef} className="relative shrink-0">
@@ -1664,7 +1651,7 @@ function FilterMenu({
             onClick={() => setMenu(menu === "ordering" ? "root" : "ordering")}
           />
           {menu === "ordering" && fromQuery && (
-            <p className="px-2 py-1 text-xs text-slate-400">The GitHub query sets this order. Clear the search to choose another.</p>
+            <p className="px-2 py-1 text-xs text-slate-400">sort: in the search sets this order. Remove it to choose another.</p>
           )}
           {menu === "ordering" && !fromQuery && (
             <div>

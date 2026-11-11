@@ -420,6 +420,24 @@ fn raw_tokens(input: &str) -> Result<Vec<String>, QueryError> {
     Ok(out)
 }
 
+/// True when a non-negated `sort:` qualifier sets the result order.
+///
+/// Other qualifiers still search GitHub. The list then uses the chosen sort.
+pub fn sets_order(raw: &str) -> bool {
+    let Ok(tokens) = raw_tokens(raw) else {
+        return false;
+    };
+    tokens.iter().any(|token| is_sort_token(token))
+}
+
+/// A non-negated `sort:` qualifier. `-sort:` does not set the order.
+fn is_sort_token(token: &str) -> bool {
+    if !is_qualifier_token(token) || token.starts_with('-') {
+        return false;
+    }
+    colon_outside_quotes(token).is_some_and(|at| at > 0 && &token[..at] == "sort")
+}
+
 /// `key:value`, with an optional leading `-`. `https://…` is not a qualifier.
 fn is_qualifier_token(token: &str) -> bool {
     let body = match token.strip_prefix('-') {
@@ -668,6 +686,10 @@ mod tests {
         let bare = partition("draft:true draft is:draft").unwrap();
         assert_eq!(bare.github, "draft:true is:draft");
         assert_eq!(bare.text, "draft");
+        assert!(!sets_order("author:@me is:draft created:>@today-1w"));
+        assert!(sets_order("author:@me sort:created-asc passkeys"));
+        assert!(sets_order("sort:\"created-asc\""));
+        assert!(!sets_order("-sort:updated-desc"));
     }
 
     #[test]

@@ -11,6 +11,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
+use pr_nexus_core::github_query;
 use pr_nexus_core::sla::{ReviewSla, review_wait_exceeded};
 use pr_nexus_core::stack::{self, StackPlace, StackRef, StackState};
 use serde::{Deserialize, Serialize};
@@ -95,7 +96,8 @@ pub struct PageRequest {
     pub day_start: DateTime<Utc>,
     pub week_start: DateTime<Utc>,
     /// When set, these ids are the view: Mine, To review, and project links
-    /// do not decide membership. Order is this order, with starred rows first.
+    /// do not decide membership. A `sort:` qualifier keeps this order, with
+    /// starred rows first. Any other query sorts these rows with `ordering`.
     #[serde(default)]
     pub github_ids: Option<Vec<i64>>,
     /// Show merged and closed rows in `github_ids` (and rows marked hidden).
@@ -301,7 +303,10 @@ pub fn page(
         live_projects: live.len(),
     };
 
-    if let Some(ids) = &request.github_ids {
+    let follow_query =
+        request.github_ids.is_some() && github_query::sets_order(&request.filters.github);
+    if follow_query {
+        let ids = request.github_ids.as_deref().unwrap_or(&[]);
         let pos: std::collections::HashMap<i64, usize> = ids
             .iter()
             .enumerate()
@@ -1438,14 +1443,23 @@ mod tests {
         queried.github_ids = Some(vec![3, 1, 2, 4]);
         queried.github_any_state = true;
         queried.filters.repos = vec!["acme/widgets".into()];
+        queried.ordering = "number".into();
+        queried.direction = "desc".into();
         queried.filters.github = "is:pr author:octocat".into();
         let ids: Vec<i64> = row_ids(&page(&items, &[], &queried, None))
             .into_iter()
             .flatten()
             .collect();
-        // Starred stays first. The repository filter drops acme-labs.
-        // Merged stays because the query is not open-only.
-        assert_eq!(ids, vec![4, 1, 2]);
+        // No `sort:` qualifier, so Number descending applies. Starred stays first.
+        // The repository filter drops acme-labs. Merged stays because the query is not open-only.
+        assert_eq!(ids, vec![4, 2, 1]);
+        queried.filters.github = "is:pr author:octocat sort:updated-desc".into();
+        let from_query: Vec<i64> = row_ids(&page(&items, &[], &queried, None))
+            .into_iter()
+            .flatten()
+            .collect();
+        assert_eq!(from_query, vec![4, 1, 2]);
+        queried.filters.github = "is:pr author:octocat".into();
 
         queried.github_any_state = false;
         let open_ids: Vec<i64> = row_ids(&page(&items, &[], &queried, None))

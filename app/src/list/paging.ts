@@ -19,6 +19,7 @@ import {
   type Ordering,
   type QuickFilter,
 } from "./model";
+import { sortLocksOrder } from "./searchText";
 
 /** Rows per `list_page` call. Bigger pages mean fewer round trips while scrolling. */
 export const PAGE_SIZE = 50;
@@ -43,8 +44,9 @@ export interface PageRequest {
   day_start: string;
   week_start: string;
   /**
-   * When set, these ids are the view, in this order (starred rows still pin
-   * first). Null keeps Mine, To review, and project membership.
+   * When set, these ids are the view. A `sort:` qualifier keeps this order,
+   * with starred rows first. Any other query sorts these rows with `ordering`.
+   * Null keeps Mine, To review, and project membership.
    */
   github_ids?: number[] | null;
   /** Show merged and closed rows in `github_ids`. Hidden rows come back too. */
@@ -218,14 +220,15 @@ export function pageFromRows(rows: readonly SearchRow[], projects: readonly Proj
     live_projects: live.length,
   };
 
-  // Starred rows are pinned above the rest. A GitHub query then follows the
-  // search order; otherwise each part uses the view's ordering (as `listing::page`).
+  // Starred rows are pinned above the rest. `sort:` keeps GitHub's order.
+  // Any other query sorts the returned rows with the view's ordering.
+  const followQuery = githubIds !== null && sortLocksOrder(filters.github);
   const ordered = [...shown].sort((left, right) => {
     const starred = Number(right.starred) - Number(left.starred);
     if (starred !== 0) {
       return starred;
     }
-    if (githubIds) {
+    if (followQuery && githubIds) {
       return githubIds.indexOf(left.id) - githubIds.indexOf(right.id);
     }
     return compare(left, right, request.ordering, request.direction, {

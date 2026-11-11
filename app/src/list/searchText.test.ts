@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { githubQueryOf, splitSearch, suggestionsFor } from "./searchText";
+import { githubQueryOf, sortLocksOrder, splitSearch, suggestionsFor } from "./searchText";
 
 test("qualifiers go to GitHub and the other words stay local", () => {
   const parts = splitSearch('author:@me passkeys -label:"bug fix" created:>@today-1w "two words" repo:acme/widgets sort:updated-desc');
@@ -16,6 +16,13 @@ test("a pasted link and a plain word stay local", () => {
   expect(parts.text).toBe("https://github.com/acme/widgets/pull/1 fix(api): #123");
   // An unfinished quoted qualifier is still a qualifier, so the server can reject it.
   expect(splitSearch('label:"bug').github).toBe('label:"bug');
+});
+
+test("only an explicit sort: qualifier locks the order", () => {
+  expect(sortLocksOrder("author:me is:draft passkeys")).toBe(false);
+  expect(sortLocksOrder("author:me sort:created-asc")).toBe(true);
+  expect(sortLocksOrder('sort:"created-asc"')).toBe(true);
+  expect(sortLocksOrder("-sort:updated-desc")).toBe(false);
 });
 
 test("free text alone is not a GitHub query", () => {

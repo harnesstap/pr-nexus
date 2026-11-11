@@ -172,7 +172,7 @@ test("a GitHub query counts every row Select all checks, and Sort says the query
   fireEvent.click(screen.getByRole("button", { name: "Filter menu" }));
   expect(screen.getByRole("button", { name: /Sort/ })).toHaveTextContent("From query");
   fireEvent.click(screen.getByRole("button", { name: /^Sort/ }));
-  expect(screen.getByText("The GitHub query sets this order. Clear the search to choose another.")).toBeInTheDocument();
+  expect(screen.getByText("sort: in the search sets this order. Remove it to choose another.")).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Needs attention" })).toBeNull();
 
   fireEvent.click(within(toolbar).getByRole("button", { name: "Clear search" }));
@@ -951,11 +951,12 @@ test("quick filters show counts, filter one at a time and clear on a second clic
   expect(screen.getByRole("checkbox", { name: "Select Draft work" })).toBeInTheDocument();
   expect(screen.getByRole("checkbox", { name: "Select Ship it" })).toBeInTheDocument();
 
-  // The toolbar's single Clear filters also turns chips off; there is no chip-only Clear.
+  // Reset in the filter menu turns chips off; there is no chip-only Clear.
   fireEvent.click(within(group).getByRole("button", { name: "Draft (1)" }));
   await settle();
   expect(within(group).queryByRole("button", { name: /Clear/ })).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
+  fireEvent.click(screen.getByRole("button", { name: "Filter menu" }));
+  fireEvent.click(screen.getByRole("button", { name: "Reset" }));
   await settle();
   expect(within(group).getByRole("button", { name: "Draft (1)" })).toHaveAttribute("aria-pressed", "false");
   expect(screen.queryByRole("button", { name: "Clear filters" })).toBeNull();
@@ -1242,9 +1243,22 @@ test("a qualifier and free text both apply, and only the qualifier is a GitHub q
   const last = seen.at(-1);
   expect(last?.query).toBe("passkeys");
   expect(last?.filters.github).toBe("author:ada");
-  expect(screen.getByRole("button", { name: "Clear filters" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Clear filters" })).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Filter menu" }));
-  expect(screen.getByRole("button", { name: /Sort/ })).toHaveTextContent("From query");
+  expect(screen.getByRole("button", { name: /Sort/ })).toHaveTextContent("Needs attention");
+  fireEvent.click(screen.getByRole("button", { name: /^Sort/ }));
+  expect(screen.getByRole("button", { name: "✓ Needs attention" })).toBeInTheDocument();
+  expect(screen.queryByText(/sets this order/)).not.toBeInTheDocument();
+});
+
+test("Reset filters in the empty state clears a menu filter", async () => {
+  const initialView: SavedView = { ...defaultView(), filters: { ...defaultView().filters, ci: ["failing"] } };
+  await show(<Harness rows={rows} initialView={initialView} />);
+  expect(screen.getByText(/match your filters/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: /Reset filters/ }));
+  await settle();
+  expect(screen.getByText("Add passkeys")).toBeInTheDocument();
+  expect(screen.queryByText(/match your filters/)).not.toBeInTheDocument();
 });
 
 test("the search field suggests qualifiers and inserts the chosen one", async () => {

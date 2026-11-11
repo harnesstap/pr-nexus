@@ -69,6 +69,20 @@ export function githubQueryOf(filters: { search: string; github: string }): stri
   return splitSearch(searchFieldValue(filters)).github.trim();
 }
 
+/** A non-negated `sort:` qualifier. Other qualifiers leave the menu's Sort in charge. */
+export function sortLocksOrder(raw: string): boolean {
+  for (const token of scanTokens(raw)) {
+    if (!isQualifier(token.text) || token.text.startsWith("-")) {
+      continue;
+    }
+    const colon = colonOutsideQuotes(token.text);
+    if (colon !== null && token.text.slice(0, colon) === "sort") {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function splitSearch(raw: string): SplitSearch {
   const tokens = scanTokens(raw);
   const github: string[] = [];

@@ -391,27 +391,35 @@ async function githubQueryShots(browser, dir) {
   await shoot("results", "github-query-narrow.png", 720);
 }
 
-/** The one search field, with the filter menu open on Sort, at normal and narrow width. */
+/** The one search field, with the filter menu open on Sort. */
 async function filterBarShots(browser, dir) {
   mkdirSync(dir, { recursive: true });
-  const shoot = async (name, widthPx) => {
+  const shoot = async (name, widthPx, query, locked) => {
     const page = await browser.newPage({ viewport: { width: widthPx, height: 900 }, deviceScaleFactor: 2, colorScheme: "dark" });
     page.on("pageerror", (err) => console.error("page error:", err.message));
     await page.goto(url);
     const input = page.getByRole("textbox", { name: "Search" });
     await input.waitFor();
-    await input.fill("author:me is:draft passkeys");
-    await page.waitForFunction(() => {
+    await input.fill(query);
+    await page.waitForFunction((value) => {
       const field = globalThis.document.querySelector('[aria-label="Search"]');
-      if (!(field instanceof globalThis.HTMLInputElement) || !field.value.includes("passkeys")) {
+      if (!(field instanceof globalThis.HTMLInputElement) || field.value !== value) {
         return false;
       }
       const label = field.closest("label");
       return label !== null && !label.textContent.includes("Searching");
-    });
+    }, query);
     await page.getByRole("button", { name: "Filter menu" }).click();
     await page.getByRole("button", { name: /^Sort/ }).click();
-    await page.getByText("The GitHub query sets this order. Clear the search to choose another.").waitFor();
+    if (locked) {
+      await page.getByText("sort: in the search sets this order. Remove it to choose another.").waitFor();
+    } else {
+      await page.getByRole("button", { name: "✓ Needs attention" }).waitFor();
+      const lockedCopy = await page.getByText(/sets this order/).count();
+      if (lockedCopy !== 0) {
+        throw new Error("Sort is locked without a sort: qualifier");
+      }
+    }
     if (widthPx <= 720) {
       const overflow = await page.evaluate(() => globalThis.document.documentElement.scrollWidth - globalThis.document.documentElement.clientWidth);
       console.log(`page overflow ${overflow}px at ${widthPx}px`);
@@ -426,8 +434,9 @@ async function filterBarShots(browser, dir) {
     console.log(`wrote ${name}`);
     await page.close();
   };
-  await shoot("filter-bar-normal.png", 1440);
-  await shoot("filter-bar-narrow.png", 720);
+  await shoot("filter-bar-normal.png", 1440, "author:me is:draft passkeys", false);
+  await shoot("filter-bar-narrow.png", 720, "author:me is:draft passkeys", false);
+  await shoot("filter-bar-sort.png", 1440, "author:me sort:created-asc", true);
 }
 
 let browser;
