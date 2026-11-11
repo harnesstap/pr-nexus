@@ -14,6 +14,7 @@ use chrono::{DateTime, Utc};
 use pr_nexus_core::github_query;
 use pr_nexus_core::sla::{ReviewSla, review_wait_exceeded};
 use pr_nexus_core::stack::{self, StackPlace, StackRef, StackState};
+use pr_nexus_core::view_rule;
 use serde::{Deserialize, Serialize};
 
 use crate::commands::{ListRow, ProjectDto};
@@ -113,6 +114,12 @@ pub struct PageRequest {
     /// Minutes east of UTC, for weekday hours. The command sets the machine zone.
     #[serde(default)]
     pub tz_offset_minutes: i32,
+    /// The sidebar view's query. Empty keeps Mine, To review, and project membership.
+    #[serde(default)]
+    pub view_rule: String,
+    /// Pull requests whose bump is due. `bump:due` reads this and is not sent to GitHub.
+    #[serde(default)]
+    pub due_ids: Vec<i64>,
 }
 
 fn default_review_sla_hours() -> i64 {
@@ -250,14 +257,25 @@ pub fn page(
         .github_ids
         .as_ref()
         .map(|ids| ids.iter().copied().collect());
+    let due: HashSet<i64> = request.due_ids.iter().copied().collect();
+    let rule = view_rule::analyze(&request.view_rule);
+    let toolbar_github = !filters.github.trim().is_empty();
+    let any_state = request.github_any_state || (!toolbar_github && rule.shows_finished);
 
     let viewed: Vec<&Item> = items
         .iter()
-        .filter(|item| match &github {
-            Some(ids) => ids.contains(&item.row.id),
-            None => in_view(&item.row, &request.view_key, project_view),
+        .filter(|item| {
+            in_membership(
+                &item.row,
+                request,
+                project_view,
+                &github,
+                &due,
+                &rule,
+                toolbar_github,
+            )
         })
-        .filter(|item| scope_row(&item.row, &live_ids, filters, request.github_any_state))
+        .filter(|item| scope_row(&item.row, &live_ids, filters, any_state))
         .collect();
     let scoped: Vec<&Item> = viewed
         .iter()
@@ -303,8 +321,12 @@ pub fn page(
         live_projects: live.len(),
     };
 
-    let follow_query =
-        request.github_ids.is_some() && github_query::sets_order(&request.filters.github);
+    let order_query = if toolbar_github {
+        request.filters.github.as_str()
+    } else {
+        rule.github.as_str()
+    };
+    let follow_query = request.github_ids.is_some() && github_query::sets_order(order_query);
     if follow_query {
         let ids = request.github_ids.as_deref().unwrap_or(&[]);
         let pos: std::collections::HashMap<i64, usize> = ids
@@ -340,8 +362,11 @@ pub fn page(
         HashSet::new()
     } else if let Some(id) = project_view {
         HashSet::from([id])
-    } else if request.view_key == "to_review" {
-        // To review lists only PRs asking for you; empty projects there are noise.
+    } else if request.view_key == "to_review"
+        || request.view_key == "bumps_due"
+        || request.view_key.starts_with("custom:")
+    {
+        // To review, Bumps due, and custom views list only matching PRs; empty projects are noise.
         HashSet::new()
     } else {
         live_ids.clone()
@@ -537,6 +562,43 @@ fn resume(stream: &[(&str, Option<&Item>)], cursor: Option<&str>) -> usize {
 
 pub fn project_id_of(view_key: &str) -> Option<i64> {
     view_key.strip_prefix("project:")?.parse().ok()
+}
+
+fn in_membership(
+    row: &ListRow,
+    request: &PageRequest,
+    project: Option<i64>,
+    github: &Option<HashSet<i64>>,
+    due: &HashSet<i64>,
+    rule: &view_rule::Analyzed,
+    toolbar_github: bool,
+) -> bool {
+    // A toolbar qualifier replaces membership once its ids arrive. Before that,
+    // the list stays the view (a page built without `github_ids` still filters
+    // free text only).
+    if toolbar_github && github.is_some() {
+        return github.as_ref().is_some_and(|ids| ids.contains(&row.id));
+    }
+    if rule.empty {
+        return match github {
+            Some(ids) => ids.contains(&row.id),
+            None => in_view(row, &request.view_key, project),
+        };
+    }
+    if rule.invalid {
+        return false;
+    }
+    if rule.fully_local {
+        return view_rule::matches_local(
+            row.involvement,
+            &row.state,
+            row.is_draft,
+            due.contains(&row.id),
+            &request.view_rule,
+        );
+    }
+    github.as_ref().is_some_and(|ids| ids.contains(&row.id))
+        && view_rule::matches_bump_only(due.contains(&row.id), &request.view_rule)
 }
 
 fn in_view(row: &ListRow, view_key: &str, project: Option<i64>) -> bool {
@@ -1370,7 +1432,63 @@ mod tests {
             review_sla_hours: 48,
             review_sla_working_days: false,
             tz_offset_minutes: 0,
+            view_rule: String::new(),
+            due_ids: Vec::new(),
         }
+    }
+
+    #[test]
+    fn default_view_rules_match_the_old_lists() {
+        let mut mine = item(1, &[], 1);
+        mine.row.involvement = AUTHOR;
+        let mut review = item(2, &[], 2);
+        review.row.involvement = REVIEW_REQUESTED;
+        review.row.state = "closed".into();
+        let mut both = item(3, &[], 3);
+        both.row.involvement = AUTHOR | REVIEW_REQUESTED;
+        let mut closed_author = item(4, &[], 4);
+        closed_author.row.involvement = AUTHOR;
+        closed_author.row.state = "merged".into();
+        let items = vec![mine, review, both, closed_author];
+
+        let mut legacy = request("project");
+        legacy.view_key = "mine".into();
+        let mut ruled = legacy.clone();
+        ruled.view_rule = pr_nexus_core::view_rule::MINE_QUERY.to_owned();
+        assert_eq!(
+            row_ids(&page(&items, &[], &legacy, None)),
+            row_ids(&page(&items, &[], &ruled, None))
+        );
+
+        legacy.view_key = "to_review".into();
+        ruled.view_key = "to_review".into();
+        ruled.view_rule = pr_nexus_core::view_rule::REVIEW_QUERY.to_owned();
+        assert_eq!(
+            row_ids(&page(&items, &[], &legacy, None)),
+            row_ids(&page(&items, &[], &ruled, None))
+        );
+
+        let mut archived = ruled.clone();
+        archived.view_key = "mine".into();
+        archived.view_rule = pr_nexus_core::view_rule::MINE_QUERY.to_owned();
+        archived.filters.archived = true;
+        legacy.view_key = "mine".into();
+        legacy.view_rule.clear();
+        legacy.filters.archived = true;
+        assert_eq!(
+            row_ids(&page(&items, &[], &legacy, None)),
+            row_ids(&page(&items, &[], &archived, None))
+        );
+
+        let mut due = request("project");
+        due.view_key = "bumps_due".into();
+        due.view_rule = pr_nexus_core::view_rule::BUMP_QUERY.to_owned();
+        due.due_ids = vec![1, 2];
+        let ids: Vec<i64> = row_ids(&page(&items, &[], &due, None))
+            .into_iter()
+            .flatten()
+            .collect();
+        assert_eq!(ids, vec![1]);
     }
 
     #[test]

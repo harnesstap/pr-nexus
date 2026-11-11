@@ -7,6 +7,7 @@
 //! always sends `is:pr`, so a search never returns issues. Everything else
 //! (`archived:`, `state:`, `author:`, `review-requested:`, `repo:`, `org:`,
 //! `label:`, `draft:`, `involves:`, negation, quotes) is passed through.
+//! `bump:` is not: it is a PR Nexus qualifier and is left in [`SearchParts::local`].
 //!
 //! The list search box also holds free text. [`partition`] splits that off
 //! so only qualifier tokens reach [`prepare`]. The app mirrors the same split
@@ -87,9 +88,20 @@ struct Piece {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchParts {
     /// `key:value` tokens, in order, as typed. This is what [`prepare`] runs.
+    /// `bump:` is not included; it never leaves the machine.
     pub github: String,
     /// Words that are not qualifiers. They stay on the machine that typed them.
     pub text: String,
+    /// Qualifiers decided locally. Today that is only `bump:`.
+    pub local: String,
+}
+
+/// One token from [`scan`], with quotes removed and the key lowercased.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Scanned {
+    pub negated: bool,
+    pub key: Option<String>,
+    pub value: String,
 }
 
 /// Splits a search field into GitHub qualifiers and free text.
@@ -101,8 +113,11 @@ pub struct SearchParts {
 pub fn partition(raw: &str) -> Result<SearchParts, QueryError> {
     let mut github = Vec::new();
     let mut text = Vec::new();
+    let mut local = Vec::new();
     for token in raw_tokens(raw)? {
-        if is_qualifier_token(&token) {
+        if is_local_only_token(&token) {
+            local.push(token);
+        } else if is_qualifier_token(&token) {
             github.push(token);
         } else {
             text.push(token);
@@ -111,7 +126,29 @@ pub fn partition(raw: &str) -> Result<SearchParts, QueryError> {
     Ok(SearchParts {
         github: github.join(" "),
         text: text.join(" "),
+        local: local.join(" "),
     })
+}
+
+/// Tokens in order. An unfinished quote is [`QueryError::UnfinishedQuote`].
+pub fn scan(raw: &str) -> Result<Vec<Scanned>, QueryError> {
+    Ok(tokenize(raw)?
+        .into_iter()
+        .map(|piece| Scanned {
+            negated: piece.negated,
+            key: piece.key,
+            value: piece.value,
+        })
+        .collect())
+}
+
+/// `bump:` is a PR Nexus qualifier. It is never part of a GitHub search.
+fn is_local_only_token(token: &str) -> bool {
+    if !is_qualifier_token(token) {
+        return false;
+    }
+    let body = token.strip_prefix('-').unwrap_or(token);
+    colon_outside_quotes(body).is_some_and(|at| body[..at].eq_ignore_ascii_case("bump"))
 }
 
 /// Resolves dates, `@me`, `sort:`, and `is:pr`. `me` is that account's login;
@@ -124,6 +161,9 @@ pub fn prepare(raw: &str, me: &str, clock: &QueryClock) -> Result<PreparedQuery,
     let mut kept = Vec::new();
     let mut saw_pr = false;
     for mut piece in pieces {
+        if piece.key.as_deref() == Some("bump") {
+            continue;
+        }
         if piece.key.as_deref() == Some("sort") && !piece.negated {
             order = Some(parse_sort(&piece.value)?);
             continue;
@@ -686,6 +726,11 @@ mod tests {
         let bare = partition("draft:true draft is:draft").unwrap();
         assert_eq!(bare.github, "draft:true is:draft");
         assert_eq!(bare.text, "draft");
+        let bump = partition("is:open author:@me bump:due passkeys").unwrap();
+        assert_eq!(bump.github, "is:open author:@me");
+        assert_eq!(bump.local, "bump:due");
+        assert_eq!(bump.text, "passkeys");
+        assert!(!prepared("is:open author:@me bump:due").q.contains("bump:"));
         assert!(!sets_order("author:@me is:draft created:>@today-1w"));
         assert!(sets_order("author:@me sort:created-asc passkeys"));
         assert!(sets_order("sort:\"created-asc\""));

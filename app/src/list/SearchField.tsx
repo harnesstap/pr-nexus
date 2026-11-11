@@ -8,15 +8,19 @@ import { plainText } from "../textInput";
 interface Props {
   value: string;
   onChange: (value: string) => void;
-  searching: boolean;
+  searching?: boolean;
   inputRef: RefObject<HTMLInputElement | null>;
+  /** `toolbar` stretches in the list header. `dialog` fills the view dialog. */
+  layout?: "toolbar" | "dialog";
+  /** Accessible name. The toolbar field is Search; the view dialog is Query. */
+  label?: string;
 }
 
 /**
  * The one list search box. Qualifiers and free text share it; completion is
  * a short list while a qualifier is being typed.
  */
-export function SearchField({ value, onChange, searching, inputRef }: Props) {
+export function SearchField({ value, onChange, searching = false, inputRef, layout = "toolbar", label = "Search" }: Props) {
   const listId = useId();
   const hintId = useId();
   const [focused, setFocused] = useState(false);
@@ -58,13 +62,14 @@ export function SearchField({ value, onChange, searching, inputRef }: Props) {
     setPendingCaret(null);
   }, [pendingCaret, inputRef]);
 
+  const toolbar = layout === "toolbar";
   return (
-    <div className="relative min-w-0 flex-[2]">
+    <div className={toolbar ? "relative min-w-0 flex-[2]" : "relative w-full"}>
       <label className="flex h-8 w-full min-w-0 items-center gap-1.5 rounded-md border border-slate-700 bg-slate-900 px-2 text-sm focus-within:border-violet-400">
         <Tooltip
           label="Search or filter"
-          shortcut={hint("search")}
-          detail="Qualifiers such as author:, is:, and sort: search GitHub. Other words search titles, projects, repos, and numbers."
+          shortcut={toolbar ? hint("search") : undefined}
+          detail="Qualifiers such as author:, is:, and sort: search GitHub. bump:due stays on this machine. Other words search titles, projects, repos, and numbers."
           align="start"
         >
           <span className="inline-flex shrink-0 text-slate-500">
@@ -72,18 +77,18 @@ export function SearchField({ value, onChange, searching, inputRef }: Props) {
           </span>
         </Tooltip>
         <span id={hintId} className="sr-only">
-          Qualifiers such as author:me, is:draft, and sort:updated-desc search GitHub. Other words search this list.
+          Qualifiers such as author:me, is:draft, and sort:updated-desc search GitHub. bump:due is decided on this machine and is not sent to GitHub. Other words search this list.
         </span>
         <input
           {...plainText}
           ref={inputRef}
-          aria-label="Search"
+          aria-label={label}
           aria-autocomplete="list"
           aria-expanded={suggestions.length > 0}
           aria-controls={suggestions.length > 0 ? listId : undefined}
           aria-activedescendant={suggestions.length > 0 ? `${listId}-opt-${current}` : undefined}
           aria-describedby={hintId}
-          className="min-w-0 flex-1 bg-transparent outline-none placeholder:text-transparent @3xl:placeholder:text-slate-500"
+          className={`min-w-0 flex-1 bg-transparent outline-none placeholder:text-slate-500 ${toolbar ? "placeholder:text-transparent @3xl:placeholder:text-slate-500" : ""}`}
           placeholder="Search or filter, e.g. author:me is:draft"
           value={value}
           onFocus={() => setFocused(true)}

@@ -48,9 +48,20 @@ pub fn page_for(
             items.extend(crate::commands::items_for_ids(state, &missing)?);
         }
     }
-    let found = search_ids(state, &projects, &request.query)?;
+    let rule_text = pr_nexus_core::view_rule::analyze(&request.view_rule).text;
+    let combined = match (request.query.trim(), rule_text.trim()) {
+        ("", "") => String::new(),
+        (query, "") => query.to_owned(),
+        ("", text) => text.to_owned(),
+        (query, text) => format!("{query} {text}"),
+    };
+    let found = search_ids(state, &projects, &combined)?;
     let sla = settings::review_sla(&state.store)?;
     let mut request = request.clone();
+    request.due_ids = crate::services::bumps::list_due(state, Utc::now())?
+        .into_iter()
+        .map(|item| item.pr_id)
+        .collect();
     request.review_sla_hours = sla.hours;
     request.review_sla_working_days = sla.working_days;
     request.tz_offset_minutes = local_offset_east_minutes();

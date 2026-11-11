@@ -20,6 +20,7 @@ import {
   type QuickFilter,
 } from "./model";
 import { sortLocksOrder } from "./searchText";
+import { analyzeViewRule, matchesBumpOnly, matchesLocalRule } from "./viewRule";
 
 /** Rows per `list_page` call. Bigger pages mean fewer round trips while scrolling. */
 export const PAGE_SIZE = 50;
@@ -57,6 +58,10 @@ export interface PageRequest {
   review_sla_working_days?: boolean;
   /** Minutes east of UTC, so weekday hours match the machine zone. */
   tz_offset_minutes?: number;
+  /** The sidebar view's query. Empty keeps Mine, To review, and project membership. */
+  view_rule?: string;
+  /** Pull requests whose bump is due. `bump:due` reads this and is not sent to GitHub. */
+  due_ids?: number[];
 }
 
 /** A section header (`row` null) or a row inside `section`. */
@@ -201,11 +206,14 @@ export function pageFromRows(rows: readonly SearchRow[], projects: readonly Proj
   const filters = request.filters;
   const now = new Date(request.now);
   const githubIds = request.github_ids ?? null;
-  const anyState = request.github_any_state === true;
-  const nav = githubIds ? rows.filter((row) => githubIds.includes(row.id)) : rowsForView(rows, request.view_key);
+  const rule = analyzeViewRule(request.view_rule ?? "");
+  const toolbarGithub = request.filters.github.trim() !== "";
+  const anyState = request.github_any_state === true || (!toolbarGithub && rule.showsFinished);
+  const due = new Set(request.due_ids ?? []);
+  const nav = rows.filter((row) => inMembership(row, request, githubIds, due, rule, toolbarGithub));
   const viewed = nav.filter((row) => scopeRow(row, projects, filters, anyState));
   const scoped = viewed.filter((row) => inAttention(row, filters));
-  const terms = normalizeSearch(request.query).split(/\s+/).filter((term) => term.length > 0);
+  const terms = normalizeSearch(`${request.query} ${rule.text}`).split(/\s+/).filter((term) => term.length > 0);
   const matched = scoped.filter((row) => passesMenu(row, filters, now) && matchesTerms(row, projects, terms));
   const quick = Object.fromEntries(QUICK_FILTERS.map((key) => [key, matched.filter((row) => quickMatches(row, key)).length])) as Record<QuickFilter, number>;
   const shown = filters.quick ? matched.filter((row) => quickMatches(row, filters.quick as QuickFilter)) : matched;
@@ -222,7 +230,7 @@ export function pageFromRows(rows: readonly SearchRow[], projects: readonly Proj
 
   // Starred rows are pinned above the rest. `sort:` keeps GitHub's order.
   // Any other query sorts the returned rows with the view's ordering.
-  const followQuery = githubIds !== null && sortLocksOrder(filters.github);
+  const followQuery = githubIds !== null && sortLocksOrder(toolbarGithub ? filters.github : rule.github);
   const ordered = [...shown].sort((left, right) => {
     const starred = Number(right.starred) - Number(left.starred);
     if (starred !== 0) {
@@ -412,8 +420,36 @@ function keptEmpty(live: readonly ProjectDto[], viewKey: string, filters: Filter
   if (current !== null) {
     return new Set([current]);
   }
-  // To review lists only PRs asking for you; empty projects there are noise.
-  return viewKey === "to_review" ? new Set() : new Set(live.map((project) => project.id));
+  // To review, Bumps due, and custom views list only matching PRs; empty projects are noise.
+  if (viewKey === "to_review" || viewKey === "bumps_due" || viewKey.startsWith("custom:")) {
+    return new Set();
+  }
+  return new Set(live.map((project) => project.id));
+}
+
+function inMembership(
+  row: SearchRow,
+  request: PageRequest,
+  githubIds: number[] | null,
+  due: ReadonlySet<number>,
+  rule: ReturnType<typeof analyzeViewRule>,
+  toolbarGithub: boolean,
+): boolean {
+  // A toolbar qualifier replaces membership once its ids arrive. Before that,
+  // the list stays the view.
+  if (toolbarGithub && githubIds) {
+    return githubIds.includes(row.id);
+  }
+  if (rule.empty) {
+    return githubIds ? githubIds.includes(row.id) : rowsForView([row], request.view_key).length === 1;
+  }
+  if (rule.invalid) {
+    return false;
+  }
+  if (rule.fullyLocal) {
+    return matchesLocalRule(row, due.has(row.id), request.view_rule ?? "");
+  }
+  return (githubIds?.includes(row.id) ?? false) && matchesBumpOnly(due.has(row.id), request.view_rule ?? "");
 }
 
 interface Group {

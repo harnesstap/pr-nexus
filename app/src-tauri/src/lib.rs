@@ -201,6 +201,8 @@ pub fn run() {
             commands::restore_pr,
             commands::load_view_state,
             commands::save_view_state,
+            commands::list_sidebar_views,
+            commands::save_sidebar_views,
             commands::open_external,
             commands::pr_detail,
             commands::pr_stack,

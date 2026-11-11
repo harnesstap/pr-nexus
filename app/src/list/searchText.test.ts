@@ -37,6 +37,9 @@ test("suggestions follow the qualifier being typed", () => {
   expect(suggestionsFor("-is").map((item) => item.insert)).toEqual(["-is:"]);
   expect(suggestionsFor("is:d").map((item) => item.label)).toEqual(["is:draft"]);
   expect(suggestionsFor("is:draft")).toEqual([]);
+  expect(suggestionsFor("bump").map((item) => item.label)).toEqual(["bump:"]);
+  expect(suggestionsFor("bump:").map((item) => item.label)).toEqual(["bump:due"]);
+  expect(suggestionsFor("bump:")[0]?.hint).toBe("");
   expect(suggestionsFor("passkeys")).toEqual([]);
   expect(suggestionsFor("")).toEqual([]);
 });
