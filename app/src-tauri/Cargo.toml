@@ -36,7 +36,7 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["f
 # Local MCP server (Streamable HTTP on 127.0.0.1), see src/mcp.
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 rand = "0.10"
-base64 = "0.22"
+base64 = "0.23"
 hmac = "0.13"
 regex = "1.13"
 sha2 = "0.11"
