@@ -425,6 +425,33 @@ test("To review filters with a GitHub qualifier search GitHub, debounced, with t
   expect(loadMoreReviews).not.toHaveBeenCalled();
 });
 
+test("free text stays on this machine and a qualifier searches GitHub", async () => {
+  const fake = api([]);
+  const searchGithubQuery = vi.fn(() => Promise.resolve({ ok: true, message: "", ids: [], total: 0, openOnly: true }));
+  render(<ListScreen api={{ ...fake, searchGithubQuery }} boot={boot} onBoot={() => {}} />);
+  const input = await screen.findByRole("textbox", { name: "Search" });
+  fireEvent.change(input, { target: { value: "passkeys" } });
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  expect(searchGithubQuery).not.toHaveBeenCalled();
+  fireEvent.change(input, { target: { value: "author:me passkeys" } });
+  await waitFor(() => expect(searchGithubQuery).toHaveBeenCalled(), { timeout: 3_000 });
+  expect(searchGithubQuery).toHaveBeenCalledWith("author:me", [], expect.any(Number), 100);
+});
+
+test("To review still searches GitHub for free text and does not replace the list", async () => {
+  const fake = api([]);
+  const searchReviews = vi.fn(() => Promise.resolve(boot.sync));
+  const searchGithubQuery = vi.fn(() => Promise.resolve({ ok: true, message: "", ids: [], total: 0, openOnly: true }));
+  const activateReviews = vi.fn(() => Promise.resolve(boot.sync));
+  render(<ListScreen api={{ ...fake, searchReviews, searchGithubQuery, activateReviews }} boot={boot} onBoot={() => {}} />);
+  fireEvent.click(await screen.findByRole("button", { name: /To review/ }));
+  await waitFor(() => expect(activateReviews).toHaveBeenCalled());
+  const input = await screen.findByRole("textbox", { name: "Search" });
+  fireEvent.change(input, { target: { value: "passkeys" } });
+  await waitFor(() => expect(searchReviews).toHaveBeenCalledWith("passkeys"));
+  expect(searchGithubQuery).not.toHaveBeenCalled();
+});
+
 test("My PRs never searches GitHub with its filters", async () => {
   const fake = api([]);
   const saved = JSON.stringify({ filters: { ci: ["failing"] } });

@@ -349,12 +349,25 @@ test("a GitHub query lists its ids in order, keeps merged rows, and still applie
     row({ id: 3, title: "Other repo", repo: "acme-labs/widgets", owner: "acme-labs", involvement: 0 }),
     row({ id: 4, title: "Starred widget", repo: "acme/widgets", starred: true, involvement: 0 }),
   ];
-  const view = { ...defaultView(), filters: { ...defaultView().filters, repos: ["acme/widgets"], github: "is:pr author:octocat" } };
+  const view = {
+    ...defaultView(),
+    ordering: "number" as const,
+    direction: "desc" as const,
+    filters: { ...defaultView().filters, repos: ["acme/widgets"], github: "is:pr author:octocat" },
+  };
   const page = pageFromRows(rows, [], request("to_review", view, "", { github_ids: [3, 1, 2, 4], github_any_state: true }));
-  expect(page.sections.flatMap((section) => section.ids)).toEqual([4, 1, 2]);
+  expect(page.sections.flatMap((section) => section.ids)).toEqual([4, 2, 1]);
+  const fromQuery = {
+    ...view,
+    filters: { ...view.filters, github: "is:pr author:octocat sort:updated-desc" },
+  };
+  const ordered = pageFromRows(rows, [], request("to_review", fromQuery, "", { github_ids: [3, 1, 2, 4], github_any_state: true }));
+  expect(ordered.sections.flatMap((section) => section.ids)).toEqual([4, 1, 2]);
   const openOnly = pageFromRows(rows, [], request("to_review", view, "", { github_ids: [3, 1, 2, 4], github_any_state: false }));
   expect(openOnly.sections.flatMap((section) => section.ids)).toEqual([4, 1]);
   expect(pageFromRows(rows, [], request("to_review", defaultView())).sections.flatMap((section) => section.ids)).toEqual([]);
+  const narrowed = pageFromRows(rows, [], request("to_review", view, "starred", { github_ids: [3, 1, 2, 4], github_any_state: true }));
+  expect(narrowed.sections.flatMap((section) => section.ids)).toEqual([4]);
 });
 
 test("stack grouping keeps members in merge order and marks each row", () => {

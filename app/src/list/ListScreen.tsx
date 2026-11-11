@@ -30,6 +30,7 @@ import {
 } from "./model";
 import { copyText } from "./markdown";
 import { PrList, type ListActions } from "./PrList";
+import { githubQueryOf, searchFieldValue } from "./searchText";
 import { DEFAULT_REVIEW_SLA, type ReviewSla } from "./sla";
 import { loadStandupRows, standupRecap } from "./standup";
 import { sidebarProjects } from "./projects";
@@ -160,7 +161,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
   /** The bulk run's summary, shown as a toast once its dialog closes. */
   const [bulkSummary, setBulkSummary] = useState<string | null>(null);
   const view = views[viewKey] ?? defaultView();
-  const githubText = view.filters.github.trim();
+  const githubText = githubQueryOf(view.filters);
   const githubKey = `${viewKey}\0${githubText}\0${view.filters.repos.join("\n")}`;
   const [githubLimit, setGithubLimit] = useState(GITHUB_QUERY_PAGE);
   const [githubLimitKey, setGithubLimitKey] = useState(githubKey);
@@ -211,6 +212,8 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
   // Review requests sync lazily (§6): the first visit to To review starts
   // them in the background; the list stays usable and fills in as they land.
   const reviewsAsked = useRef(false);
+  /** Search text to keep when "Show in …" switches views, applied once that view loads. */
+  const carriedSearch = useRef<{ viewKey: string; search: string; github: string } | null>(null);
   useEffect(() => {
     if (viewKey !== "to_review" || reviewsAsked.current || !api.activateReviews) {
       return;
@@ -483,7 +486,15 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
       if (cancel) {
         return;
       }
-      setViews((current) => ({ ...current, [viewKey]: parseViewState(json) }));
+      let parsed = parseViewState(json);
+      const carried = carriedSearch.current;
+      if (carried && carried.viewKey === viewKey) {
+        carriedSearch.current = null;
+        parsed = { ...parsed, filters: { ...parsed.filters, search: carried.search, github: carried.github } };
+      } else if (carried) {
+        carriedSearch.current = null;
+      }
+      setViews((current) => ({ ...current, [viewKey]: parsed }));
       setLoaded(viewKey);
     });
     return () => {
@@ -508,6 +519,17 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
     for (const [id, patch] of Object.entries(draftPatches)) if (version <= patch.until) live[Number(id)] = patch.draft;
     return live;
   }, [draftPatches, version]);
+
+  function showViewKeepingSearch(next: string) {
+    const search = searchFieldValue(view.filters);
+    const github = githubQueryOf(view.filters);
+    carriedSearch.current = { viewKey: next, search, github };
+    setViews((current) => {
+      const destination = current[next] ?? defaultView();
+      return { ...current, [next]: { ...destination, filters: { ...destination.filters, search, github } } };
+    });
+    setViewKey(next);
+  }
 
   function changeDraft(id: number, draft: boolean | null | "saved") {
     if (draft === "saved") {
@@ -1031,7 +1053,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
                 view={view}
                 now={now}
                 onViewChange={(next) => setViews((current) => ({ ...current, [viewKey]: next }))}
-                onShowView={setViewKey}
+                onShowView={showViewKeepingSearch}
                 onOpenSettings={() => {
                   setSettingsTab("accounts");
                   setViewKey("settings");

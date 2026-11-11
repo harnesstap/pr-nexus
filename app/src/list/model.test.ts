@@ -83,15 +83,37 @@ test("saved view state round-trips", () => {
     "acme-labs/widgets",
   ]);
   const withQuery = parseViewState(JSON.stringify({ filters: { github: "  is:pr author:octocat  " } }));
+  expect(withQuery.filters.search).toBe("is:pr author:octocat");
   expect(withQuery.filters.github).toBe("is:pr author:octocat");
   expect(filtersActive(withQuery.filters)).toBe(true);
   expect(parseViewState(JSON.stringify({ filters: { github: 4 } })).filters.github).toBe("");
+  expect(parseViewState(JSON.stringify({ filters: { github: 4 } })).filters.search).toBe("");
   expect(listHidesClosed(null)).toBe(true);
   expect(listHidesClosed(true)).toBe(true);
   expect(listHidesClosed(false)).toBe(false);
   expect(parseViewState(null).filters.github).toBe("");
+  expect(parseViewState(null).filters.search).toBe("");
   const long = `is:pr ${"a".repeat(1100)}`;
-  expect(parseViewState(JSON.stringify({ filters: { github: long } })).filters.github.length).toBe(1024);
+  const capped = parseViewState(JSON.stringify({ filters: { github: long } }));
+  expect(capped.filters.search.length).toBe(1024);
+  expect(capped.filters.github).toBe("is:pr");
+});
+
+test("a saved view merges the old GitHub query and local search into one field", () => {
+  const legacyLocal = parseViewState(JSON.stringify({ filters: { github: "author:me", query: "passkeys" } }));
+  expect(legacyLocal.filters.search).toBe("author:me passkeys");
+  expect(legacyLocal.filters.github).toBe("author:me");
+  const legacySearch = parseViewState(JSON.stringify({ query: "floor", filters: { github: "is:open" } }));
+  expect(legacySearch.filters.search).toBe("is:open floor");
+  expect(legacySearch.filters.github).toBe("is:open");
+  const separate = parseViewState(JSON.stringify({ filters: { github: "author:me", search: "passkeys" } }));
+  expect(separate.filters.search).toBe("author:me passkeys");
+  expect(separate.filters.github).toBe("author:me");
+  const already = parseViewState(JSON.stringify({ filters: { search: "author:me passkeys", github: "author:me" } }));
+  expect(already.filters.search).toBe("author:me passkeys");
+  expect(already.filters.github).toBe("author:me");
+  expect(filtersActive(parseViewState(JSON.stringify({ filters: { search: "passkeys" } })).filters)).toBe(false);
+  expect(filtersActive(already.filters)).toBe(true);
 });
 
 test("demo mode shows a neutral sync label instead of an error", () => {

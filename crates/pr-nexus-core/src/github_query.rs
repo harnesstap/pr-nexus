@@ -8,6 +8,10 @@
 //! (`archived:`, `state:`, `author:`, `review-requested:`, `repo:`, `org:`,
 //! `label:`, `draft:`, `involves:`, negation, quotes) is passed through.
 //!
+//! The list search box also holds free text. [`partition`] splits that off
+//! so only qualifier tokens reach [`prepare`]. The app mirrors the same split
+//! and filters the free text locally.
+//!
 //! The repository picker is ANDed by adding `repo:` terms. GitHub ORs several
 //! `repo:` qualifiers, so when the query already names repositories only the
 //! overlap is searched.
@@ -77,6 +81,37 @@ struct Piece {
     key: Option<String>,
     value: String,
     quoted: bool,
+}
+
+/// Qualifier tokens and the free text that was typed beside them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchParts {
+    /// `key:value` tokens, in order, as typed. This is what [`prepare`] runs.
+    pub github: String,
+    /// Words that are not qualifiers. They stay on the machine that typed them.
+    pub text: String,
+}
+
+/// Splits a search field into GitHub qualifiers and free text.
+///
+/// A qualifier is `key:value` (optional leading `-`, quotes allowed) whose key
+/// starts with a letter and then letters, digits, `-`, or `_`. A pasted
+/// `https://…` link is free text. An unfinished quote is
+/// [`QueryError::UnfinishedQuote`], as in [`prepare`].
+pub fn partition(raw: &str) -> Result<SearchParts, QueryError> {
+    let mut github = Vec::new();
+    let mut text = Vec::new();
+    for token in raw_tokens(raw)? {
+        if is_qualifier_token(&token) {
+            github.push(token);
+        } else {
+            text.push(token);
+        }
+    }
+    Ok(SearchParts {
+        github: github.join(" "),
+        text: text.join(" "),
+    })
 }
 
 /// Resolves dates, `@me`, `sort:`, and `is:pr`. `me` is that account's login;
@@ -368,6 +403,60 @@ fn sub_months(date: NaiveDate, months: u32) -> NaiveDate {
     })
 }
 
+fn raw_tokens(input: &str) -> Result<Vec<String>, QueryError> {
+    let mut out = Vec::new();
+    let mut rest = input;
+    loop {
+        rest = rest.trim_start();
+        if rest.is_empty() {
+            break;
+        }
+        let (token, next) = take_token(rest)?;
+        rest = next;
+        if !token.is_empty() {
+            out.push(token);
+        }
+    }
+    Ok(out)
+}
+
+/// True when a non-negated `sort:` qualifier sets the result order.
+///
+/// Other qualifiers still search GitHub. The list then uses the chosen sort.
+pub fn sets_order(raw: &str) -> bool {
+    let Ok(tokens) = raw_tokens(raw) else {
+        return false;
+    };
+    tokens.iter().any(|token| is_sort_token(token))
+}
+
+/// A non-negated `sort:` qualifier. `-sort:` does not set the order.
+fn is_sort_token(token: &str) -> bool {
+    if !is_qualifier_token(token) || token.starts_with('-') {
+        return false;
+    }
+    colon_outside_quotes(token).is_some_and(|at| at > 0 && &token[..at] == "sort")
+}
+
+/// `key:value`, with an optional leading `-`. `https://…` is not a qualifier.
+fn is_qualifier_token(token: &str) -> bool {
+    let body = match token.strip_prefix('-') {
+        Some(stripped)
+            if !stripped.is_empty() && !stripped.starts_with(|ch: char| ch.is_whitespace()) =>
+        {
+            stripped
+        }
+        _ => token,
+    };
+    let Some(at) = colon_outside_quotes(body) else {
+        return false;
+    };
+    if at == 0 || !is_key(&body[..at]) {
+        return false;
+    }
+    !body[at + 1..].starts_with("//")
+}
+
 fn tokenize(input: &str) -> Result<Vec<Piece>, QueryError> {
     let mut out = Vec::new();
     let mut rest = input;
@@ -581,6 +670,40 @@ mod tests {
 
     fn prepared(raw: &str) -> PreparedQuery {
         prepare(raw, "octocat", &clock()).unwrap()
+    }
+
+    #[test]
+    fn partition_sends_qualifiers_to_github_and_keeps_free_text() {
+        let parts = partition(
+            r#"author:@me passkeys -label:"bug fix" created:>@today-1w "two words" repo:acme/widgets sort:updated-desc"#,
+        )
+        .unwrap();
+        assert_eq!(
+            parts.github,
+            r#"author:@me -label:"bug fix" created:>@today-1w repo:acme/widgets sort:updated-desc"#
+        );
+        assert_eq!(parts.text, r#"passkeys "two words""#);
+        let bare = partition("draft:true draft is:draft").unwrap();
+        assert_eq!(bare.github, "draft:true is:draft");
+        assert_eq!(bare.text, "draft");
+        assert!(!sets_order("author:@me is:draft created:>@today-1w"));
+        assert!(sets_order("author:@me sort:created-asc passkeys"));
+        assert!(sets_order("sort:\"created-asc\""));
+        assert!(!sets_order("-sort:updated-desc"));
+    }
+
+    #[test]
+    fn partition_leaves_urls_and_plain_words_as_free_text() {
+        let parts = partition("https://github.com/acme/widgets/pull/1 fix(api): #123").unwrap();
+        assert_eq!(parts.github, "");
+        assert_eq!(
+            parts.text,
+            "https://github.com/acme/widgets/pull/1 fix(api): #123"
+        );
+        assert_eq!(
+            partition("label:\"bug").unwrap_err(),
+            QueryError::UnfinishedQuote
+        );
     }
 
     #[test]

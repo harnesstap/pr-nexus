@@ -88,6 +88,11 @@ const githubQueryDir = githubQueryFlag === -1 ? null : process.argv[githubQueryF
 if (githubQueryFlag !== -1 && !githubQueryDir) {
   throw new Error("--github-query needs an output directory");
 }
+const filterBarFlag = process.argv.indexOf("--filter-bar");
+const filterBarDir = filterBarFlag === -1 ? null : process.argv[filterBarFlag + 1];
+if (filterBarFlag !== -1 && !filterBarDir) {
+  throw new Error("--filter-bar needs an output directory");
+}
 const updateFlag = process.argv.indexOf("--update");
 const updateDir = updateFlag === -1 ? null : process.argv[updateFlag + 1];
 if (updateFlag !== -1 && !updateDir) {
@@ -356,7 +361,7 @@ async function githubQueryShots(browser, dir) {
     await page.goto(url);
     const query = scene === "error" ? "author:no-such-user repo:acme/missing" : "is:pr author:octocat sort:updated-desc";
     await page.waitForFunction((value) => {
-      const input = globalThis.document.querySelector('[aria-label="GitHub query"]');
+      const input = globalThis.document.querySelector('[aria-label="Search"]');
       return input instanceof globalThis.HTMLInputElement && input.value === value;
     }, query);
     if (scene === "error") {
@@ -369,7 +374,7 @@ async function githubQueryShots(browser, dir) {
         await page.getByText("2 PRs", { exact: true }).waitFor();
       }
     }
-    await page.getByRole("combobox", { name: "Sort by, from the GitHub query" }).waitFor();
+    await page.getByRole("textbox", { name: "Search" }).waitFor();
     if (widthPx <= 720) {
       const overflow = await page.evaluate(() => globalThis.document.documentElement.scrollWidth - globalThis.document.documentElement.clientWidth);
       console.log(`page overflow ${overflow}px at ${widthPx}px`);
@@ -386,6 +391,54 @@ async function githubQueryShots(browser, dir) {
   await shoot("results", "github-query-narrow.png", 720);
 }
 
+/** The one search field, with the filter menu open on Sort. */
+async function filterBarShots(browser, dir) {
+  mkdirSync(dir, { recursive: true });
+  const shoot = async (name, widthPx, query, locked) => {
+    const page = await browser.newPage({ viewport: { width: widthPx, height: 900 }, deviceScaleFactor: 2, colorScheme: "dark" });
+    page.on("pageerror", (err) => console.error("page error:", err.message));
+    await page.goto(url);
+    const input = page.getByRole("textbox", { name: "Search" });
+    await input.waitFor();
+    await input.fill(query);
+    await page.waitForFunction((value) => {
+      const field = globalThis.document.querySelector('[aria-label="Search"]');
+      if (!(field instanceof globalThis.HTMLInputElement) || field.value !== value) {
+        return false;
+      }
+      const label = field.closest("label");
+      return label !== null && !label.textContent.includes("Searching");
+    }, query);
+    await page.getByRole("button", { name: "Filter menu" }).click();
+    await page.getByRole("button", { name: /^Sort/ }).click();
+    if (locked) {
+      await page.getByText("sort: in the search sets this order. Remove it to choose another.").waitFor();
+    } else {
+      await page.getByRole("button", { name: "✓ Needs attention" }).waitFor();
+      const lockedCopy = await page.getByText(/sets this order/).count();
+      if (lockedCopy !== 0) {
+        throw new Error("Sort is locked without a sort: qualifier");
+      }
+    }
+    if (widthPx <= 720) {
+      const overflow = await page.evaluate(() => globalThis.document.documentElement.scrollWidth - globalThis.document.documentElement.clientWidth);
+      console.log(`page overflow ${overflow}px at ${widthPx}px`);
+      if (overflow > 0) {
+        throw new Error(`page overflows by ${overflow}px at ${widthPx}px`);
+      }
+    }
+    const menu = page.getByRole("menu");
+    const box = await menu.boundingBox();
+    const height = Math.min(900, Math.ceil((box?.y ?? 0) + (box?.height ?? 280) + 24));
+    await page.screenshot({ path: resolve(dir, name), clip: { x: 0, y: 0, width: widthPx, height } });
+    console.log(`wrote ${name}`);
+    await page.close();
+  };
+  await shoot("filter-bar-normal.png", 1440, "author:me is:draft passkeys", false);
+  await shoot("filter-bar-narrow.png", 720, "author:me is:draft passkeys", false);
+  await shoot("filter-bar-sort.png", 1440, "author:me sort:created-asc", true);
+}
+
 let browser;
 try {
   browser = await chromium.launch(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: "chrome" });
@@ -397,6 +450,12 @@ try {
   }
   if (githubQueryDir) {
     await githubQueryShots(browser, resolve(githubQueryDir));
+    await browser.close();
+    await vite.close();
+    process.exit(0);
+  }
+  if (filterBarDir) {
+    await filterBarShots(browser, resolve(filterBarDir));
     await browser.close();
     await vite.close();
     process.exit(0);

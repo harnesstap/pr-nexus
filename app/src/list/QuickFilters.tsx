@@ -128,7 +128,7 @@ export function fitChips(keys: readonly ChipKey[], widths: readonly number[], av
  * time (clicking the active one again clears it), plus Starred, Unread and Snoozed, which stack with them. Counts
  * cover the current search and menu filters, so a chip says what clicking leaves; a chip with
  * nothing to show is muted. Chips that do not fit the row's width fold into **More (N)**, with
- * active chips kept visible first. The toolbar's **Clear filters** turns them off.
+ * active chips kept visible first. Reset in the filter menu turns them off.
  */
 export function QuickFilters({ active, counts, onChange, starred, starredCount, onStarredChange, unread, unreadCount, onUnreadChange, snoozed, snoozedCount, onSnoozedChange }: Props) {
   const isOn = (key: ChipKey) => stackOn(key, { starred, unread, snoozed, active });
