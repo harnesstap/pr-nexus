@@ -7,7 +7,7 @@ import { McpActivity } from "./McpActivity";
 import { SlackProposals } from "./SlackProposals";
 import { plainText } from "../textInput";
 import { McpClientConfig } from "./McpClientConfig";
-import { parsePort } from "./tabs";
+import { parseExtraHost, parsePort } from "./tabs";
 
 interface Props {
   api: Pick<Api, "mcpSettings" | "saveMcpSettings" | "mcpToken" | "regenerateMcpToken" | "mcpClientStates" | "mcpAddToClient" | "mcpOpenClientConfig" | "mcpActivity" | "clearMcpActivity" | "reviewStats" | "openExternal" | "slackWorkspaces" | "slackConnect" | "mcpSlackProposals" | "decideMcpSlackProposal">;
@@ -159,6 +159,11 @@ export function AgentsSettings({ api }: Props) {
             {portError}
           </p>
         )}
+        <ExtraAllowedHosts
+          hosts={settings.extra_allowed_hosts}
+          disabled={busy}
+          onChange={(extra_allowed_hosts) => save({ extra_allowed_hosts })}
+        />
       </section>
 
       <section aria-labelledby="agents-capabilities">
@@ -445,6 +450,80 @@ function SlackWorkspacePicker({ workspaces, selected, disabled, reauthing, notGr
         })}
       </ul>
     </fieldset>
+  );
+}
+
+/** Hostnames the local server accepts besides 127.0.0.1, localhost and [::1]. */
+function ExtraAllowedHosts({ hosts, disabled, onChange }: { hosts: string[]; disabled: boolean; onChange: (next: string[]) => void }) {
+  const [draft, setDraft] = useState("");
+  const [invalid, setInvalid] = useState<string | null>(null);
+  function add() {
+    const parsed = parseExtraHost(draft);
+    if ("error" in parsed) {
+      setInvalid(parsed.error);
+      return;
+    }
+    setInvalid(null);
+    setDraft("");
+    if (!hosts.some((host) => host.toLowerCase() === parsed.host.toLowerCase())) {
+      onChange([...hosts, parsed.host]);
+    }
+  }
+  return (
+    <div className="mt-3 max-w-xl">
+      <label htmlFor="agents-extra-host" className="text-slate-400">
+        Extra allowed hosts
+      </label>
+      <p id="agents-extra-hosts-hint" className="mt-1 text-xs text-slate-400">
+        For clients in Docker, add host.docker.internal. Docker Desktop on macOS and Windows reaches this server on 127.0.0.1 under that name.
+      </p>
+      <ul aria-label="Extra allowed hosts" className="mt-2 space-y-1">
+        {hosts.map((host) => (
+          <li key={host} className="flex items-center gap-2">
+            <span className="font-mono text-xs">{host}</span>
+            <button
+              type="button"
+              disabled={disabled}
+              aria-label={`Remove ${host}`}
+              className="rounded px-1.5 text-xs hover:bg-slate-800"
+              onClick={() => onChange(hosts.filter((item) => item !== host))}
+            >
+              Remove
+            </button>
+          </li>
+        ))}
+      </ul>
+      <form
+        className="mt-2 flex items-center gap-2"
+        onSubmit={(event) => {
+          event.preventDefault();
+          add();
+        }}
+      >
+        <input
+          id="agents-extra-host"
+          aria-invalid={invalid ? true : undefined}
+          aria-describedby={invalid ? "agents-extra-host-error" : "agents-extra-hosts-hint"}
+          placeholder="host.docker.internal"
+          value={draft}
+          disabled={disabled}
+          {...plainText}
+          onChange={(event) => {
+            setDraft(event.target.value);
+            setInvalid(null);
+          }}
+          className="w-72 rounded border border-slate-700 bg-slate-900 px-2 py-1 font-mono text-xs"
+        />
+        <button type="submit" disabled={disabled || draft.trim() === ""} className={button}>
+          Add host
+        </button>
+      </form>
+      {invalid && (
+        <p id="agents-extra-host-error" role="alert" className="mt-1 text-xs text-rose-300">
+          {invalid}
+        </p>
+      )}
+    </div>
   );
 }
 

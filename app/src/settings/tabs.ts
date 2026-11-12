@@ -55,6 +55,81 @@ export function matchesMapping(
   );
 }
 
+const EXTRA_HOST_ERROR = "Use a hostname, or a hostname and port such as host.docker.internal:49708.";
+
+/**
+ * One Extra allowed hosts entry: a hostname or IPv4 address, optionally
+ * with a port. Wildcards, schemes and paths are refused. The returned
+ * host is the canonical form the server stores.
+ */
+export function parseExtraHost(text: string): { host: string } | { error: string } {
+  const raw = text.trim();
+  if (raw.length === 0 || raw.length > 300 || /[*\\/?#@\s]/.test(raw) || raw.includes("://")) {
+    return { error: EXTRA_HOST_ERROR };
+  }
+  const colon = raw.lastIndexOf(":");
+  let name = raw;
+  let portText: string | undefined;
+  if (colon !== -1) {
+    name = raw.slice(0, colon);
+    portText = raw.slice(colon + 1);
+    if (name.length === 0 || name.includes(":")) {
+      return { error: EXTRA_HOST_ERROR };
+    }
+  }
+  const host = canonicalHost(name);
+  if (!host) {
+    return { error: EXTRA_HOST_ERROR };
+  }
+  if (portText === undefined) {
+    return { host };
+  }
+  if (!/^[1-9][0-9]{0,4}$/.test(portText)) {
+    return { error: EXTRA_HOST_ERROR };
+  }
+  const port = Number(portText);
+  if (port > 65535) {
+    return { error: EXTRA_HOST_ERROR };
+  }
+  return { host: `${host}:${port}` };
+}
+
+function canonicalHost(name: string): string | null {
+  const parts = name.split(".");
+  if (parts.length === 4 && parts.every((part) => /^[0-9]+$/.test(part))) {
+    return canonicalIpv4(parts);
+  }
+  const lower = name.toLowerCase();
+  return isDnsName(lower) ? lower : null;
+}
+
+function canonicalIpv4(parts: string[]): string | null {
+  const octets: number[] = [];
+  for (const part of parts) {
+    if (!/^[0-9]{1,3}$/.test(part) || (part.length > 1 && part.startsWith("0"))) {
+      return null;
+    }
+    const octet = Number(part);
+    if (octet > 255) {
+      return null;
+    }
+    octets.push(octet);
+  }
+  return octets.join(".");
+}
+
+function isDnsName(host: string): boolean {
+  if (host.length === 0 || host.length > 253) {
+    return false;
+  }
+  return host.split(".").every((label) => {
+    if (label.length === 0 || label.length > 63 || label.startsWith("-") || label.endsWith("-")) {
+      return false;
+    }
+    return /^[a-z0-9-]+$/.test(label);
+  });
+}
+
 /** A port typed in Settings → Agents: empty is "any free port". */
 export function parsePort(text: string): { port: number | null } | { error: string } {
   const value = text.trim();

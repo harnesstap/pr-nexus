@@ -341,6 +341,140 @@ async fn foreign_origins_and_hosts_are_rejected() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn an_extra_host_is_allowed_on_the_same_port_and_the_token_stays_required() {
+    let h = harness().await;
+    let port: u16 = h
+        .url
+        .trim_start_matches("http://127.0.0.1:")
+        .trim_end_matches("/mcp")
+        .parse()
+        .unwrap();
+    let blocked = h
+        .post(&initialize())
+        .bearer_auth(&h.token)
+        .header("host", format!("host.docker.internal:{port}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(blocked.status(), 403);
+    assert!(blocked.text().await.unwrap().contains("Host not allowed"));
+
+    let view = h
+        .control
+        .update(McpSettings {
+            enabled: true,
+            extra_allowed_hosts: vec![
+                " Host.Docker.Internal ".into(),
+                "*".into(),
+                "http://host.docker.internal".into(),
+                format!("only.acme-labs.example:{port}"),
+            ],
+            ..McpSettings::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(view.status.url.as_deref(), Some(h.url.as_str()));
+    assert_eq!(
+        view.settings.extra_allowed_hosts,
+        vec![
+            "host.docker.internal".to_owned(),
+            format!("only.acme-labs.example:{port}"),
+        ]
+    );
+
+    // A fresh client: the previous connection belonged to the process we just rebound.
+    let http = reqwest::Client::new();
+    let allowed = http
+        .post(&h.url)
+        .header("accept", "application/json, text/event-stream")
+        .header("host", format!("Host.Docker.Internal:{port}"))
+        .bearer_auth(&h.token)
+        .json(&initialize())
+        .send()
+        .await
+        .unwrap();
+    let allowed_status = allowed.status();
+    let allowed_body = allowed.text().await.unwrap();
+    assert_eq!(allowed_status, 200, "{allowed_body}");
+
+    let specific = http
+        .post(&h.url)
+        .header("accept", "application/json, text/event-stream")
+        .header("host", format!("only.acme-labs.example:{port}"))
+        .header("origin", format!("http://only.acme-labs.example:{port}"))
+        .bearer_auth(&h.token)
+        .json(&initialize())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(specific.status(), 200);
+
+    let other = if port == 1 { 2 } else { port - 1 };
+    let wrong_port = http
+        .post(&h.url)
+        .header("accept", "application/json, text/event-stream")
+        .header("host", format!("only.acme-labs.example:{other}"))
+        .bearer_auth(&h.token)
+        .json(&initialize())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(wrong_port.status(), 403);
+
+    let v6 = http
+        .post(&h.url)
+        .header("accept", "application/json, text/event-stream")
+        .header("host", format!("[::1]:{port}"))
+        .bearer_auth(&h.token)
+        .json(&initialize())
+        .send()
+        .await
+        .unwrap();
+    let v6_status = v6.status();
+    let v6_body = v6.text().await.unwrap();
+    assert_eq!(v6_status, 200, "{v6_body}");
+
+    let foreign = http
+        .post(&h.url)
+        .header("accept", "application/json, text/event-stream")
+        .header("host", "rebind.acme-labs.example")
+        .bearer_auth(&h.token)
+        .json(&initialize())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(foreign.status(), 403);
+
+    let bad_origin = http
+        .post(&h.url)
+        .header("accept", "application/json, text/event-stream")
+        .header("origin", "https://host.docker.internal")
+        .bearer_auth(&h.token)
+        .json(&initialize())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad_origin.status(), 403);
+    assert!(
+        bad_origin
+            .text()
+            .await
+            .unwrap()
+            .contains("Origin not allowed")
+    );
+
+    let no_token = http
+        .post(&h.url)
+        .header("accept", "application/json, text/event-stream")
+        .header("host", format!("host.docker.internal:{port}"))
+        .json(&initialize())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(no_token.status(), 401);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_regenerated_token_replaces_the_old_one_live() {
     let h = harness().await;
     h.control.regenerate().await.unwrap();

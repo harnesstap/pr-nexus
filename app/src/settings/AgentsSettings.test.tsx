@@ -4,7 +4,7 @@ import { AgentsSettings } from "./AgentsSettings";
 import type { SlackProposal } from "../api";
 import { FAKE_MCP_TOKEN, FAKE_SLACK_WORKSPACES, fakeMcp, sampleActivity, sampleSlackActivity } from "./fakes";
 import { mcpClientSnippet } from "./mcpClients";
-import { parsePort } from "./tabs";
+import { parseExtraHost, parsePort } from "./tabs";
 
 const writeText = vi.fn(() => Promise.resolve());
 
@@ -27,7 +27,7 @@ test("is off by default and starts the server when enabled", async () => {
 
   fireEvent.click(master);
   expect(await screen.findByText("● Running on port 43117")).toBeInTheDocument();
-  expect(save).toHaveBeenCalledWith({ enabled: true, reads: true, local_writes: false, slack_sends: false, slack_reads: false, slack_private_search: false, slack_workspaces: [], slack_auto_send_channels: [], slack_send_mode: "allowlist", slack_elicit: true, port: null });
+  expect(save).toHaveBeenCalledWith({ enabled: true, reads: true, local_writes: false, slack_sends: false, slack_reads: false, slack_private_search: false, slack_workspaces: [], slack_auto_send_channels: [], slack_send_mode: "allowlist", slack_elicit: true, port: null, extra_allowed_hosts: [] });
   expect(screen.getByText("http://127.0.0.1:43117/mcp")).toBeInTheDocument();
   expect(screen.getByLabelText("Token, masked")).toHaveTextContent("pnx_••••••••••••7f3e");
   expect(document.body.textContent).not.toContain(FAKE_MCP_TOKEN);
@@ -168,7 +168,7 @@ test("a bad port is refused before saving; a server error is shown", async () =>
   expect(save).not.toHaveBeenCalled();
 
   save.mockResolvedValueOnce({
-    settings: { enabled: true, reads: true, local_writes: false, slack_sends: false, slack_reads: false, slack_private_search: false, slack_workspaces: [], slack_auto_send_channels: [], slack_send_mode: "allowlist", slack_elicit: true, port: 40100 },
+    settings: { enabled: true, reads: true, local_writes: false, slack_sends: false, slack_reads: false, slack_private_search: false, slack_workspaces: [], slack_auto_send_channels: [], slack_send_mode: "allowlist", slack_elicit: true, port: 40100, extra_allowed_hosts: [] },
     status: { state: "error", url: null, port: 40100, error: "Port 40100 is already in use on 127.0.0.1." },
     token_masked: "pnx_••••••••••••7f3e",
   });
@@ -184,6 +184,51 @@ test("ports parse to null, a number or an error", () => {
   expect(parsePort("1023")).toHaveProperty("error");
   expect(parsePort("70000")).toHaveProperty("error");
   expect(parsePort("12a")).toHaveProperty("error");
+});
+
+test("extra hosts parse to a hostname, a host and port, or an error", () => {
+  expect(parseExtraHost(" Host.Docker.Internal ")).toEqual({ host: "host.docker.internal" });
+  expect(parseExtraHost("host.docker.internal:49708")).toEqual({ host: "host.docker.internal:49708" });
+  expect(parseExtraHost("172.17.0.1")).toEqual({ host: "172.17.0.1" });
+  expect(parseExtraHost("*")).toHaveProperty("error");
+  expect(parseExtraHost("http://host.docker.internal")).toHaveProperty("error");
+  expect(parseExtraHost("host.docker.internal/mcp")).toHaveProperty("error");
+  expect(parseExtraHost("*.docker.internal")).toHaveProperty("error");
+  expect(parseExtraHost("host.docker.internal:0")).toHaveProperty("error");
+  expect(parseExtraHost("host.docker.internal:65536")).toHaveProperty("error");
+  expect(parseExtraHost("172.17.0.01")).toHaveProperty("error");
+});
+
+test("extra allowed hosts can be added and removed, and a bad entry is refused", async () => {
+  const api = fakeMcp({ enabled: true });
+  const save = vi.spyOn(api, "saveMcpSettings");
+  render(<AgentsSettings api={api} />);
+  expect(await screen.findByText(/For clients in Docker, add host.docker.internal/)).toBeInTheDocument();
+  expect(screen.getByText(/Docker Desktop on macOS and Windows/)).toBeInTheDocument();
+  const input = screen.getByRole("textbox", { name: "Extra allowed hosts" });
+
+  fireEvent.change(input, { target: { value: "http://host.docker.internal" } });
+  fireEvent.click(screen.getByRole("button", { name: "Add host" }));
+  expect(screen.getByRole("alert")).toHaveTextContent("host.docker.internal:49708");
+  expect(save).not.toHaveBeenCalled();
+
+  fireEvent.change(input, { target: { value: "*" } });
+  fireEvent.click(screen.getByRole("button", { name: "Add host" }));
+  expect(save).not.toHaveBeenCalled();
+
+  fireEvent.change(input, { target: { value: " Host.Docker.Internal " } });
+  fireEvent.click(screen.getByRole("button", { name: "Add host" }));
+  await vi.waitFor(() => {
+    expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ extra_allowed_hosts: ["host.docker.internal"] }));
+    expect(screen.getByRole("list", { name: "Extra allowed hosts" })).toHaveTextContent("host.docker.internal");
+  });
+
+  fireEvent.change(input, { target: { value: "HOST.DOCKER.INTERNAL" } });
+  fireEvent.click(screen.getByRole("button", { name: "Add host" }));
+  expect(save).toHaveBeenCalledTimes(1);
+
+  fireEvent.click(screen.getByRole("button", { name: "Remove host.docker.internal" }));
+  await vi.waitFor(() => expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ extra_allowed_hosts: [] })));
 });
 
 test("Slack private search needs Slack reads and saves on its own", async () => {
