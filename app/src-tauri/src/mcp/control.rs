@@ -135,8 +135,11 @@ impl McpControl {
         Ok(self.view())
     }
 
-    /// Starts, stops or moves the server to match the settings. Failures
-    /// land in [`McpControl::status`] rather than an error.
+    /// Starts, stops or moves the server to match the settings. A new port
+    /// rebinds. A new extra-host list rebinds on the same port, so an
+    /// automatic port does not move and the rmcp allowlist stays in step
+    /// with the request check. Failures land in [`McpControl::status`]
+    /// rather than an error.
     pub async fn apply(&self) {
         let settings = self.settings();
         let mut running = self.running.lock().await;
@@ -145,10 +148,18 @@ impl McpControl {
                 .port
                 .is_some_and(|port| port != current.addr.port())
         };
+        let hosts_differ =
+            |current: &Running| current.extra_allowed_hosts != settings.extra_allowed_hosts;
+        // When only the host list changed, bind the port already in use so
+        // the endpoint URL stays put.
+        let mut same_port = None;
         if let Some(current) = running.take() {
-            if settings.enabled && !wanted_port_differs(&current) {
+            if settings.enabled && !wanted_port_differs(&current) && !hosts_differ(&current) {
                 *running = Some(current);
                 return;
+            }
+            if settings.enabled && !wanted_port_differs(&current) {
+                same_port = Some(current.addr.port());
             }
             current.stop().await;
         }
@@ -156,8 +167,9 @@ impl McpControl {
             self.set_status(McpStatus::default());
             return;
         }
+        let port = settings.port.or(same_port);
         let started = match self.token().await {
-            Ok(_) => server::start(Arc::clone(&self.shared), settings.port).await,
+            Ok(_) => server::start(Arc::clone(&self.shared), port).await,
             Err(err) => Err(err),
         };
         match started {

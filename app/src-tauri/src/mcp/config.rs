@@ -4,6 +4,7 @@ use pr_nexus_core::settings;
 use pr_nexus_core::store::Store;
 use serde::{Deserialize, Serialize};
 
+use super::hosts;
 use crate::error::AppError;
 use crate::profiles::StoreSlot;
 use pr_nexus_core::profiles::SEND_POLICY_KEY;
@@ -85,6 +86,10 @@ pub struct McpSettings {
     pub slack_elicit: bool,
     /// Fixed port on 127.0.0.1; `None` picks a free one at each start.
     pub port: Option<u16>,
+    /// Hostnames (or an IPv4 address), optionally `host:port`, whose Host
+    /// and Origin headers are allowed besides `127.0.0.1`, `localhost`,
+    /// and `[::1]`. Empty by default. `*` is not accepted.
+    pub extra_allowed_hosts: Vec<String>,
 }
 
 impl Default for McpSettings {
@@ -101,6 +106,7 @@ impl Default for McpSettings {
             slack_send_mode: SlackSendMode::default(),
             slack_elicit: true,
             port: None,
+            extra_allowed_hosts: Vec::new(),
         }
     }
 }
@@ -138,6 +144,7 @@ impl McpSettings {
         if self.port == Some(0) {
             self.port = None;
         }
+        self.extra_allowed_hosts = hosts::normalize(&self.extra_allowed_hosts);
         self
     }
 }
@@ -251,5 +258,25 @@ mod tests {
         assert_eq!(json["slack_send_mode"], "approve_all");
         let back: McpSettings = serde_json::from_value(json).unwrap();
         assert_eq!(back, value);
+    }
+
+    #[test]
+    fn extra_allowed_hosts_default_empty_and_drop_invalid_entries() {
+        let saved: McpSettings = serde_json::from_str(r#"{"enabled":true}"#).unwrap();
+        assert!(saved.normalized().extra_allowed_hosts.is_empty());
+        let noisy = McpSettings {
+            extra_allowed_hosts: vec![
+                " Host.Docker.Internal ".into(),
+                "*".into(),
+                "http://host.docker.internal".into(),
+                "host.docker.internal/mcp".into(),
+            ],
+            ..McpSettings::default()
+        }
+        .normalized();
+        assert_eq!(
+            noisy.extra_allowed_hosts,
+            vec!["host.docker.internal".to_owned()]
+        );
     }
 }

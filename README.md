@@ -71,7 +71,7 @@ Keep work and side projects apart with profiles. Each profile has its own GitHub
 
 ## Using with AI assistants
 
-The MCP server is off by default. To turn it on, open **Settings → Agents**. The server listens only on `127.0.0.1`, and clients need a token to connect. The same screen shows the config to paste into your client (Cursor, VS Code, Claude Code, …). You choose what agents can do:
+The MCP server is off by default. To turn it on, open **Settings → Agents**. The server listens only on `127.0.0.1`, and clients need a token to connect. `127.0.0.1`, `localhost`, and `[::1]` are accepted. A client that uses another name, such as `host.docker.internal` from Docker Desktop on macOS or Windows, needs that name under **Extra allowed hosts** on the same screen. A name with a port, such as `host.docker.internal:49708`, matches only that port. The token is still required. The same screen shows the config to paste into your client (Cursor, VS Code, Claude Code, …). You choose what agents can do:
 
 - read PRs and projects;
 - write local data (notes, stars, projects);

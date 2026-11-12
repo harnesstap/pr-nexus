@@ -196,6 +196,7 @@ export function fakeMcp(
     slack_send_mode: "allowlist",
     slack_elicit: true,
     port: null,
+    extra_allowed_hosts: [],
     ...initial,
   };
   let token: string | null = settings.enabled ? FAKE_MCP_TOKEN : null;

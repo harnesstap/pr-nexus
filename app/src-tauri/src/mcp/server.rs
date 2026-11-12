@@ -24,6 +24,7 @@ use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
 use super::audit::{AuditEvent, AuditSink, Outcome, summarize};
+use super::hosts::{self, HostPattern};
 use super::tools::{ToolSpec, registry};
 use super::{Capability, McpSettings, token};
 use crate::error::AppError;
@@ -317,6 +318,8 @@ fn prompt_error(err: AppError) -> ErrorData {
 /// A started server. Dropping it does not stop it; call [`Running::stop`].
 pub struct Running {
     pub addr: SocketAddr,
+    /// Normalized extra hosts this process was started with.
+    pub extra_allowed_hosts: Vec<String>,
     cancel: CancellationToken,
     task: tokio::task::JoinHandle<()>,
 }
@@ -348,9 +351,15 @@ pub async fn start(shared: Arc<Shared>, port: Option<u16>) -> Result<Running, Ap
         .local_addr()
         .map_err(|err| AppError::new("internal", err.to_string()))?;
     let cancel = CancellationToken::new();
+    // rmcp copies this list for the life of the process. Control rebinds
+    // on the same port when the saved list changes, so the two checks stay
+    // the same. Loopback is always included; an empty extra list does not
+    // turn the check off.
+    let extra_allowed_hosts = shared.settings().extra_allowed_hosts.clone();
+    let extra = hosts::compile(&extra_allowed_hosts);
     let config = StreamableHttpServerConfig::default()
         .with_cancellation_token(cancel.child_token())
-        .with_allowed_hosts(allowed_hosts(addr.port()));
+        .with_allowed_hosts(hosts::rmcp_allowlist(addr.port(), &extra));
     let handler = NexusMcp::new(Arc::clone(&shared));
     let service = StreamableHttpService::new(
         move || Ok(handler.clone()),
@@ -360,6 +369,7 @@ pub async fn start(shared: Arc<Shared>, port: Option<u16>) -> Result<Running, Ap
     let guard = Guard {
         shared,
         port: addr.port(),
+        extra,
     };
     let router = Router::new()
         .nest_service(PATH, service)
@@ -374,22 +384,25 @@ pub async fn start(shared: Arc<Shared>, port: Option<u16>) -> Result<Running, Ap
         }
     });
     tracing::info!(%addr, "mcp server listening");
-    Ok(Running { addr, cancel, task })
-}
-
-fn allowed_hosts(port: u16) -> Vec<String> {
-    vec![format!("127.0.0.1:{port}"), format!("localhost:{port}")]
+    Ok(Running {
+        addr,
+        extra_allowed_hosts,
+        cancel,
+        task,
+    })
 }
 
 #[derive(Clone)]
 struct Guard {
     shared: Arc<Shared>,
     port: u16,
+    extra: Vec<HostPattern>,
 }
 
-/// Rejects, in order: a Host that is not this loopback address (DNS
-/// rebinding), an Origin from anywhere but this server (browser pages),
-/// and a missing or wrong bearer token.
+/// Rejects, in order: a Host outside loopback and the saved extra hosts
+/// (DNS rebinding), an Origin that is not the `http` origin of one of
+/// those hosts, and a missing or wrong bearer token. The token is
+/// required for every host.
 async fn check(State(guard): State<Guard>, request: Request, next: Next) -> Response {
     match refusal(request.headers(), &guard) {
         None => next.run(request).await,
@@ -403,18 +416,12 @@ fn refusal(headers: &HeaderMap, guard: &Guard) -> Option<Response> {
             .get(name)
             .map(|value| value.to_str().unwrap_or("\u{0}"))
     };
-    let hosts = allowed_hosts(guard.port);
-    if !text(header::HOST).is_some_and(|host| {
-        hosts
-            .iter()
-            .any(|allowed| allowed.eq_ignore_ascii_case(host))
-    }) {
+    let host = text(header::HOST).unwrap_or("");
+    if !hosts::host_allowed(host, guard.port, &guard.extra) {
         return Some(refuse(StatusCode::FORBIDDEN, "Host not allowed"));
     }
     if let Some(origin) = text(header::ORIGIN)
-        && !hosts
-            .iter()
-            .any(|allowed| origin.eq_ignore_ascii_case(&format!("http://{allowed}")))
+        && !hosts::origin_allowed(origin, guard.port, &guard.extra)
     {
         return Some(refuse(StatusCode::FORBIDDEN, "Origin not allowed"));
     }

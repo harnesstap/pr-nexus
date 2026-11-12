@@ -36,7 +36,7 @@ impl StoreSlot {
     }
 
     /// The default profile's store, which also holds app-wide settings
-    /// (the MCP server's switch, port and capabilities).
+    /// (the MCP server's switch, port, extra hosts and capabilities).
     pub fn home(&self) -> &'static Store {
         self.home
     }

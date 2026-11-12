@@ -2,7 +2,8 @@
 //! data through the service layer.
 //!
 //! - [`server`]: Streamable HTTP on `127.0.0.1`, bearer token, Host and
-//!   Origin checks against DNS rebinding.
+//!   Origin checks against DNS rebinding. Loopback is always allowed;
+//!   [`hosts`] is the extra names from Settings.
 //! - [`tools`]: the tool registry. Each tool names the [`Capability`] it
 //!   needs; the Settings toggles gate capabilities, not tools.
 //! - [`writes`]: the Local writes tools (projects, links, notes, stars).
@@ -16,6 +17,7 @@ pub mod audit;
 pub mod clients;
 pub mod config;
 pub mod control;
+mod hosts;
 pub mod profiles;
 pub mod prompts;
 pub mod server;

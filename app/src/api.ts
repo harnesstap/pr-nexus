@@ -926,6 +926,8 @@ export interface McpSettings {
   slack_elicit: boolean;
   /** null: any free port, picked at each start. */
   port: number | null;
+  /** Hostnames, optionally with a port, allowed besides 127.0.0.1, localhost and [::1]. */
+  extra_allowed_hosts: string[];
 }
 
 export type SlackSendMode = "approve_all" | "automatic" | "allowlist";
