@@ -161,7 +161,7 @@ function ViewRow({
     <div
       role="group"
       aria-label={badge > 0 ? `${view.name}, ${badge} due` : view.name}
-      className="flex items-center gap-0.5"
+      className="group flex items-center gap-0.5"
       onContextMenu={(event) => {
         event.preventDefault();
         onMenu(event.clientX, event.clientY, null);
@@ -194,7 +194,9 @@ function ViewRow({
         aria-label="View menu"
         aria-haspopup="menu"
         aria-expanded={menuOpen}
-        className="rounded p-1 text-slate-500 hover:bg-slate-800 hover:text-slate-200"
+        className={`rounded p-1 text-slate-500 hover:bg-slate-800 hover:text-slate-200 ${
+          menuOpen ? "opacity-100" : "opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+        }`}
         onClick={(event) => {
           const rect = event.currentTarget.getBoundingClientRect();
           onMenu(rect.right, rect.bottom, event.currentTarget);

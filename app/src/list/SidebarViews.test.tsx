@@ -78,6 +78,31 @@ test("a default view resets and cannot be deleted", () => {
   expect(screen.queryByRole("button", { name: "Authored" })).not.toBeInTheDocument();
 });
 
+test("the view menu stays in the row and shows on hover, focus, or while open", () => {
+  render(<Harness />);
+  const selected = screen.getByRole("button", { name: (value) => value === "My PRs" });
+  expect(selected).toHaveAttribute("aria-current", "page");
+  const quiet = menuButton(selected);
+  expect(quiet).toHaveClass("opacity-0");
+  expect(quiet).toHaveClass("group-hover:opacity-100");
+  expect(quiet).toHaveClass("focus-visible:opacity-100");
+  expect(quiet).not.toHaveClass("opacity-100");
+
+  fireEvent.click(quiet);
+  expect(menuButton(selected)).toHaveClass("opacity-100");
+  expect(menuButton(selected)).not.toHaveClass("opacity-0");
+  fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+  expect(menuButton(selected)).toHaveClass("opacity-0");
+});
+
+function menuButton(row: HTMLElement): HTMLButtonElement {
+  const menu = row.parentElement?.querySelector('button[aria-label="View menu"]');
+  if (!(menu instanceof HTMLButtonElement)) {
+    throw new Error("no menu");
+  }
+  return menu;
+}
+
 test("right-click and the keyboard open the same menu", () => {
   render(<Harness />);
   fireEvent.contextMenu(screen.getByRole("button", { name: "Bumps due" }));

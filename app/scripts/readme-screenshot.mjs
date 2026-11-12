@@ -24,8 +24,8 @@
 // the icon for a newer release, and its popover for a release and a dev build.
 // `--merge-queue <dir>` saves the merge queue preview (merge-queue-*.png):
 // the list, the add confirmation, the bulk dialog, and a narrow list.
-// `--views <dir>` saves custom views (views-*.png): the sidebar with two
-// views, the … menu on a custom view and on a default view, and Edit filters.
+// `--views <dir>` saves custom views (views-*.png): the sidebar at rest,
+// one row hovered, and the … menu open.
 // `--close-pr <dir>` saves Close PR (close-*.png): the detail menu, the
 // confirmation with a comment, the bulk confirmation, and the narrow bar menu.
 // Uses an installed Chrome; set CHROME_PATH to pick another Chromium binary.
@@ -681,33 +681,20 @@ async function viewShots(browser, dir) {
   await create("Needs me", "is:open review-requested:@me");
   await create("Drafts", "is:open is:draft");
   await page.getByRole("button", { name: "My PRs", exact: true }).click();
-  const sidebar = await page.getByRole("navigation", { name: "Views" }).boundingBox();
-  await page.screenshot({
-    path: resolve(dir, "views-sidebar.png"),
-    clip: { x: 0, y: 0, width: Math.ceil((sidebar?.width ?? 240) + 16), height: 720 },
-  });
+  await page.mouse.move(900, 80);
+  const clip = { x: 0, y: 0, width: 280, height: 520 };
+  await page.screenshot({ path: resolve(dir, "views-sidebar.png"), clip });
   console.log("wrote views-sidebar.png");
 
-  async function openActions(name) {
-    const row = page.getByRole("button", { name, exact: true });
-    await row.locator("xpath=..").getByRole("button", { name: "View menu" }).click();
-    await page.getByRole("menu").waitFor();
-  }
+  await page.getByRole("button", { name: "Needs me", exact: true }).hover();
+  await page.screenshot({ path: resolve(dir, "views-sidebar-hover.png"), clip });
+  console.log("wrote views-sidebar-hover.png");
 
-  await openActions("Drafts");
-  await page.screenshot({ path: resolve(dir, "views-menu-custom.png"), clip: { x: 0, y: 0, width: 460, height: 720 } });
-  console.log("wrote views-menu-custom.png");
-  await page.keyboard.press("Escape");
-  await page.getByRole("menu").waitFor({ state: "detached" });
-
-  await openActions("My PRs");
-  await page.getByRole("menuitem", { name: "Reset to default" }).waitFor();
-  await page.screenshot({ path: resolve(dir, "views-menu-default.png"), clip: { x: 0, y: 0, width: 460, height: 520 } });
-  console.log("wrote views-menu-default.png");
-  await page.getByRole("menuitem", { name: "Edit filters" }).click();
-  await page.getByRole("dialog", { name: "Edit filters" }).waitFor();
-  await page.getByRole("textbox", { name: "Query" }).waitFor();
-  await shot(page, resolve(dir, "views-dialog.png"));
+  const drafts = page.getByRole("button", { name: "Drafts", exact: true });
+  await drafts.locator("xpath=..").getByRole("button", { name: "View menu" }).click();
+  await page.getByRole("menu").waitFor();
+  await page.screenshot({ path: resolve(dir, "views-menu.png"), clip: { x: 0, y: 0, width: 480, height: 560 } });
+  console.log("wrote views-menu.png");
   await page.close();
 }
 
