@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { PageDto, PageRequest } from "./list/paging";
+import type { SidebarView } from "./list/viewCatalog";
 import type { StackPlace } from "./list/stack";
 
 export type StepId = "choose_vcs" | "choose_chat" | "connect_vcs" | "choose_vcs_scope" | "connect_chat" | "chat_mapping" | "done";
@@ -1177,6 +1178,10 @@ export interface Api {
   restorePr(projectId: number, prId: number): Promise<void>;
   loadViewState(viewKey: string): Promise<string | null>;
   saveViewState(viewKey: string, stateJson: string): Promise<void>;
+  /** Saved sidebar views. Missing means the three defaults, kept in memory. */
+  listSidebarViews?(): Promise<SidebarView[]>;
+  /** Stores the catalog and returns it repaired (built-ins restored, names unique). */
+  saveSidebarViews?(views: SidebarView[]): Promise<SidebarView[]>;
   openExternal(url: string): Promise<void>;
   prDetail(id: number): Promise<PrDetail>;
   /** The detail panel's cards. `refresh: false` reads only the cache (null when empty). */
@@ -1350,6 +1355,8 @@ export const tauriApi: Api = {
   restorePr: (projectId, prId) => invoke("restore_pr", { projectId, prId }),
   loadViewState: (viewKey) => invoke("load_view_state", { viewKey }),
   saveViewState: (viewKey, stateJson) => invoke("save_view_state", { viewKey, stateJson }),
+  listSidebarViews: () => invoke("list_sidebar_views"),
+  saveSidebarViews: (views) => invoke("save_sidebar_views", { views }),
   openExternal: (url) => invoke("open_external", { url }),
   prDetail: (id) => invoke("pr_detail", { id }),
   prOverview: (id, refresh) => invoke("pr_overview", { id, refresh }),

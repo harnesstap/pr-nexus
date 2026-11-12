@@ -4,7 +4,7 @@ import type { Api, Bootstrap, ListRow, ProjectDto, RemoteReviewFilter, ReplacedL
 import { CloseDialog, type CloseTarget } from "../detail/CloseDialog";
 import { MergeQueueDialog } from "../detail/MergeQueueDialog";
 import { errorMessage } from "../api";
-import { ClockIcon, CloseIcon, CopyIcon, FolderIcon, HomeIcon, LogoIcon, PlusIcon, RefreshIcon, SlackLogo } from "../icons";
+import { CloseIcon, FolderIcon, LogoIcon, PlusIcon, RefreshIcon } from "../icons";
 import { parseOpenRequest } from "./openRequest";
 import { Tooltip } from "../Tooltip";
 import { OrgOption } from "../orgs";
@@ -31,6 +31,9 @@ import {
 import { copyText } from "./markdown";
 import { PrList, type ListActions } from "./PrList";
 import { githubQueryOf, searchFieldValue } from "./searchText";
+import { SidebarViews } from "./SidebarViews";
+import { defaultCatalog, normalizeCatalog, type SidebarView } from "./viewCatalog";
+import { analyzeViewRule, isBumpQueueQuery } from "./viewRule";
 import { DEFAULT_REVIEW_SLA, type ReviewSla } from "./sla";
 import { loadStandupRows, standupRecap } from "./standup";
 import { sidebarProjects } from "./projects";
@@ -87,7 +90,10 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
   const [version, setVersion] = useState(0);
   const [projects, setProjects] = useState<ProjectDto[]>([]);
   const [viewKey, setViewKey] = useState(startView);
+  const [catalog, setCatalog] = useState<SidebarView[]>(defaultCatalog);
+  const skipCatalogSave = useRef(Boolean(api.listSidebarViews));
   const [dueCount, setDueCount] = useState(0);
+  const [dueIds, setDueIds] = useState<number[]>([]);
   const [dueTick, setDueTick] = useState(0);
   const [views, setViews] = useState<Record<string, SavedView>>({});
   const [loaded, setLoaded] = useState<string | null>(null);
@@ -161,7 +167,15 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
   /** The bulk run's summary, shown as a toast once its dialog closes. */
   const [bulkSummary, setBulkSummary] = useState<string | null>(null);
   const view = views[viewKey] ?? defaultView();
-  const githubText = githubQueryOf(view.filters);
+  const sidebarView = catalog.find((item) => item.key === viewKey) ?? null;
+  const sidebarQuery = sidebarView?.query ?? "";
+  const ruleInfo = analyzeViewRule(sidebarQuery);
+  const toolbarGithub = githubQueryOf(view.filters);
+  // A toolbar qualifier replaces membership, as it did before view rules.
+  // A view rule reaches GitHub only for qualifiers the synced rows cannot decide.
+  const ruleGithub = toolbarGithub === "" && !ruleInfo.fullyLocal && !ruleInfo.invalid ? ruleInfo.github : "";
+  const githubText = toolbarGithub !== "" ? toolbarGithub : ruleGithub;
+  const viewTitles = Object.fromEntries(catalog.map((item) => [item.key, item.name]));
   const githubKey = `${viewKey}\0${githubText}\0${view.filters.repos.join("\n")}`;
   const [githubLimit, setGithubLimit] = useState(GITHUB_QUERY_PAGE);
   const [githubLimitKey, setGithubLimitKey] = useState(githubKey);
@@ -463,12 +477,15 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
     void api.dueBumps().then(
       (items) => {
         if (!cancel) {
-          setDueCount(items.length);
+          const list = Array.isArray(items) ? items : [];
+          setDueCount(list.length);
+          setDueIds(list.map((item) => item.pr_id));
         }
       },
       () => {
         if (!cancel) {
           setDueCount(0);
+          setDueIds([]);
         }
       },
     );
@@ -478,9 +495,52 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
   }, [api, dueTick, version]);
 
   useEffect(() => {
-    if (viewKey === "bumps_due") {
+    if (!api.listSidebarViews) {
       return;
     }
+    let cancel = false;
+    void api.listSidebarViews().then(
+      (saved) => {
+        if (!cancel && Array.isArray(saved)) {
+          skipCatalogSave.current = true;
+          setCatalog(normalizeCatalog(saved));
+        }
+      },
+      () => undefined,
+    );
+    return () => {
+      cancel = true;
+    };
+  }, [api]);
+
+  const catalogJson = JSON.stringify(catalog);
+  useEffect(() => {
+    if (!api.saveSidebarViews) {
+      return;
+    }
+    if (skipCatalogSave.current) {
+      skipCatalogSave.current = false;
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void api.saveSidebarViews?.(catalog).then(
+        (saved) => {
+          if (!Array.isArray(saved)) {
+            return;
+          }
+          const next = normalizeCatalog(saved);
+          if (JSON.stringify(next) !== catalogJson) {
+            skipCatalogSave.current = true;
+            setCatalog(next);
+          }
+        },
+        () => undefined,
+      );
+    }, 200);
+    return () => window.clearTimeout(timer);
+  }, [api, catalog, catalogJson]);
+
+  useEffect(() => {
     let cancel = false;
     void api.loadViewState(viewKey).then((json) => {
       if (cancel) {
@@ -503,7 +563,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
   }, [api, viewKey]);
 
   useEffect(() => {
-    if (viewKey === "bumps_due" || loaded !== viewKey) {
+    if (loaded !== viewKey) {
       return;
     }
     const timer = window.setTimeout(() => {
@@ -566,7 +626,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
     if (ids.length === 0) {
       return;
     }
-    if (githubText !== "" && !listHidesClosed(githubOpenOnly)) {
+    if ((githubText !== "" && !listHidesClosed(githubOpenOnly)) || ruleInfo.showsFinished) {
       void reload();
       return;
     }
@@ -795,31 +855,27 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
           <LogoIcon size={20} className="text-violet-400" />
           PR Nexus
         </p>
-        <nav aria-label="Views" className="flex flex-col gap-0.5 px-2 text-sm">
-          <div className="flex items-center gap-0.5">
-            <div className="min-w-0 flex-1">
-              <NavButton current={viewKey} id="mine" icon={<HomeIcon />} onSelect={setViewKey}>
-                My PRs
-              </NavButton>
-            </div>
-            <Tooltip label="Copy stand-up recap" detail="Markdown grouped by status, since the last working day" align="end">
-              <button
-                type="button"
-                aria-label="Copy stand-up recap"
-                className="rounded p-1 text-slate-500 hover:bg-slate-800 hover:text-slate-200"
-                onClick={() => void copyStandup()}
-              >
-                <CopyIcon size={14} />
-              </button>
-            </Tooltip>
-          </div>
-          <NavButton current={viewKey} id="to_review" icon={<ClockIcon />} onSelect={setViewKey}>
-            To review
-          </NavButton>
-          <NavButton current={viewKey} id="bumps_due" icon={<SlackLogo variant="mono" size={16} />} badge={dueCount} onSelect={setViewKey}>
-            Bumps due
-          </NavButton>
-        </nav>
+        <SidebarViews
+          views={catalog}
+          current={viewKey}
+          dueCount={dueCount}
+          onSelect={setViewKey}
+          onChange={setCatalog}
+          onDuplicateState={(from, to) => {
+            const live = views[from];
+            if (live && loaded === from) {
+              const json = JSON.stringify(live);
+              setViews((current) => ({ ...current, [to]: live }));
+              void api.saveViewState(to, json);
+              return;
+            }
+            void api.loadViewState(from).then((json) => {
+              if (json) {
+                void api.saveViewState(to, json);
+              }
+            });
+          }}
+        />
         <section aria-labelledby="projects-heading" className="mt-4 flex min-h-0 flex-1 flex-col px-2 text-sm">
           <div className="flex items-center justify-between px-2 pb-1">
             <h2 id="projects-heading" className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-slate-500">
@@ -999,7 +1055,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
               }
             />
           </section>
-        ) : viewKey === "bumps_due" ? (
+        ) : viewKey === "bumps_due" && isBumpQueueQuery(sidebarQuery) ? (
           <BumpQueue api={api} onOpen={(url) => void api.openExternal(url)} onNotice={setNotice} onChanged={() => setDueTick((value) => value + 1)} />
         ) : needsOrgs ? (
           <section className="max-w-xl px-6 py-8">{orgPicker()}</section>
@@ -1050,6 +1106,9 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
                 }
                 projects={projects}
                 viewKey={viewKey}
+                viewRule={sidebarQuery}
+                dueIds={dueIds}
+                viewTitles={viewTitles}
                 view={view}
                 now={now}
                 onViewChange={(next) => setViews((current) => ({ ...current, [viewKey]: next }))}

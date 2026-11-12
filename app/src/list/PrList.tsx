@@ -78,6 +78,12 @@ interface Props {
   onRemoteSearch?: (terms: string) => void;
   projects: ProjectDto[];
   viewKey: string;
+  /** The sidebar view's saved query. Empty for project views. */
+  viewRule?: string;
+  /** Pull requests whose bump is due. `bump:due` reads these. */
+  dueIds?: number[];
+  /** Saved names for sidebar views, so a rename shows in the title. */
+  viewTitles?: Readonly<Record<string, string>>;
   view: SavedView;
   onViewChange: (view: SavedView) => void;
   /** Switch the nav view, keeping the search; for "matches in To review". */
@@ -201,6 +207,9 @@ export function PrList({
   onRemoteSearch,
   projects,
   viewKey,
+  viewRule = "",
+  dueIds,
+  viewTitles,
   view,
   onViewChange,
   onShowView,
@@ -298,8 +307,10 @@ export function PrList({
       github_any_state: githubAnyState,
       review_sla_hours: sla.hours,
       review_sla_working_days: sla.workingDays,
+      view_rule: viewRule,
+      due_ids: dueIds,
     }),
-    [viewKey, view.grouping, view.ordering, view.direction, view.filters, debounced, collapsedKeys, githubIds, githubAnyState, sla.hours, sla.workingDays],
+    [viewKey, view.grouping, view.ordering, view.direction, view.filters, debounced, collapsedKeys, githubIds, githubAnyState, sla.hours, sla.workingDays, viewRule, dueIds],
   );
   const list = usePagedList(loadPage, params, version, now);
   // To review also asks GitHub for matches past the loaded window.
@@ -640,7 +651,7 @@ export function PrList({
         <div className="min-w-0">
           {currentProject !== null && editing?.id === currentProject && editing.where === "title" ? (
             <RenameField
-              label={`Rename ${viewTitle(viewKey, projects)}`}
+              label={`Rename ${viewTitle(viewKey, projects, viewTitles)}`}
               editing={editing}
               className="text-lg font-semibold"
               onChange={setEditing}
@@ -654,11 +665,11 @@ export function PrList({
                 className="text-lg font-semibold"
                 onDoubleClick={() => {
                   if (currentProject !== null && projects.some((project) => project.id === currentProject)) {
-                    setEditing({ id: currentProject, where: "title", name: viewTitle(viewKey, projects), error: null });
+                    setEditing({ id: currentProject, where: "title", name: viewTitle(viewKey, projects, viewTitles), error: null });
                   }
                 }}
               >
-                {viewTitle(viewKey, projects)}
+                {viewTitle(viewKey, projects, viewTitles)}
               </h1>
             </Tooltip>
           )}
@@ -975,7 +986,7 @@ export function PrList({
         )}
         {page && !list.pending && showSections && sections.length === 0 && !githubSearching && githubError === "" && (
           <EmptyList
-            title={viewTitle(viewKey, projects)}
+            title={viewTitle(viewKey, projects, viewTitles)}
             inView={inView}
             query={localQuery}
             filtered={filtersActive(view.filters)}
@@ -983,7 +994,7 @@ export function PrList({
             snoozedOnly={view.filters.snoozed}
             snoozedCount={page.snoozed_count}
             elsewhere={page.elsewhere}
-            viewTitle={(key) => viewTitle(key, projects)}
+            viewTitle={(key) => viewTitle(key, projects, viewTitles)}
             onClearSearch={() => setSearch("")}
             onResetFilters={() => onViewChange(resetFilters(view))}
             onShowView={onShowView}
@@ -1886,12 +1897,19 @@ function shownSections(entries: readonly PageEntry[], all: readonly PageSection[
   return shown;
 }
 
-function viewTitle(viewKey: string, projects: readonly ProjectDto[]): string {
+function viewTitle(viewKey: string, projects: readonly ProjectDto[], titles?: Readonly<Record<string, string>>): string {
+  const named = titles?.[viewKey];
+  if (named) {
+    return named;
+  }
   if (viewKey === "mine") {
     return "My PRs";
   }
   if (viewKey === "to_review") {
     return "To review";
+  }
+  if (viewKey === "bumps_due") {
+    return "Bumps due";
   }
   if (viewKey.startsWith("project:")) {
     const id = Number(viewKey.slice("project:".length));

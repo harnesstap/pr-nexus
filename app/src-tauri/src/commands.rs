@@ -1785,6 +1785,31 @@ pub async fn save_view_state(
     .await
 }
 
+#[tauri::command]
+pub async fn list_sidebar_views(
+    app: State<'_, std::sync::Arc<AppState>>,
+) -> Result<Vec<pr_nexus_core::view_rule::SidebarView>, AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        Ok(pr_nexus_core::view_rule::load_views(&state.store)?)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn save_sidebar_views(
+    app: State<'_, std::sync::Arc<AppState>>,
+    views: Vec<pr_nexus_core::view_rule::SidebarView>,
+) -> Result<Vec<pr_nexus_core::view_rule::SidebarView>, AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        Ok(pr_nexus_core::view_rule::save_views(&state.store, views)?)
+    })
+    .await
+}
+
 pub(crate) fn indicator(
     request: pr_nexus_core::domain::ReviewRequest,
     workspaces: &[pr_nexus_core::review::route::Workspace],
@@ -2015,6 +2040,8 @@ mod tests {
             review_sla_hours: 48,
             review_sla_working_days: false,
             tz_offset_minutes: 0,
+            view_rule: String::new(),
+            due_ids: Vec::new(),
         }
     }
 

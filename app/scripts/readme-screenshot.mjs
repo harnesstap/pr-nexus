@@ -24,6 +24,8 @@
 // the icon for a newer release, and its popover for a release and a dev build.
 // `--merge-queue <dir>` saves the merge queue preview (merge-queue-*.png):
 // the list, the add confirmation, the bulk dialog, and a narrow list.
+// `--views <dir>` saves custom views (views-*.png): the sidebar at rest,
+// one row hovered, and the … menu open.
 // `--close-pr <dir>` saves Close PR (close-*.png): the detail menu, the
 // confirmation with a comment, the bulk confirmation, and the narrow bar menu.
 // Uses an installed Chrome; set CHROME_PATH to pick another Chromium binary.
@@ -102,6 +104,11 @@ const mergeQueueFlag = process.argv.indexOf("--merge-queue");
 const mergeQueueDir = mergeQueueFlag === -1 ? null : process.argv[mergeQueueFlag + 1];
 if (mergeQueueFlag !== -1 && !mergeQueueDir) {
   throw new Error("--merge-queue needs an output directory");
+}
+const viewsFlag = process.argv.indexOf("--views");
+const viewsDir = viewsFlag === -1 ? null : process.argv[viewsFlag + 1];
+if (viewsFlag !== -1 && !viewsDir) {
+  throw new Error("--views needs an output directory");
 }
 const closePrFlag = process.argv.indexOf("--close-pr");
 const closePrDir = closePrFlag === -1 ? null : process.argv[closePrFlag + 1];
@@ -442,6 +449,12 @@ async function filterBarShots(browser, dir) {
 let browser;
 try {
   browser = await chromium.launch(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: "chrome" });
+  if (viewsDir) {
+    await viewShots(browser, resolve(viewsDir));
+    await browser.close();
+    await vite.close();
+    process.exit(0);
+  }
   if (mergeQueueDir) {
     await mergeQueueShots(browser, resolve(mergeQueueDir));
     await browser.close();
@@ -646,6 +659,42 @@ async function mergeQueueShots(browser, dir) {
   await page.setViewportSize({ width: 480, height: 900 });
   await page.waitForTimeout(300);
   await shot(page, resolve(dir, "merge-queue-narrow.png"));
+  await page.close();
+}
+
+async function viewShots(browser, dir) {
+  mkdirSync(dir, { recursive: true });
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2, colorScheme: "dark" });
+  page.on("pageerror", (err) => console.error("page error:", err.message));
+  await page.goto(url);
+  await page.getByRole("navigation", { name: "Views" }).waitFor();
+
+  async function create(name, query) {
+    await page.getByRole("button", { name: "New view" }).click();
+    await page.getByRole("textbox", { name: "Name" }).fill(name);
+    await page.getByRole("textbox", { name: "Query" }).fill(query);
+    await page.getByRole("button", { name: "Create view" }).click();
+    await page.getByRole("dialog").waitFor({ state: "detached" });
+    await page.getByRole("button", { name, exact: true }).waitFor();
+  }
+
+  await create("Needs me", "is:open review-requested:@me");
+  await create("Drafts", "is:open is:draft");
+  await page.getByRole("button", { name: "My PRs", exact: true }).click();
+  await page.mouse.move(900, 80);
+  const clip = { x: 0, y: 0, width: 280, height: 520 };
+  await page.screenshot({ path: resolve(dir, "views-sidebar.png"), clip });
+  console.log("wrote views-sidebar.png");
+
+  await page.getByRole("button", { name: "Needs me", exact: true }).hover();
+  await page.screenshot({ path: resolve(dir, "views-sidebar-hover.png"), clip });
+  console.log("wrote views-sidebar-hover.png");
+
+  const drafts = page.getByRole("button", { name: "Drafts", exact: true });
+  await drafts.locator("xpath=..").getByRole("button", { name: "View menu" }).click();
+  await page.getByRole("menu").waitFor();
+  await page.screenshot({ path: resolve(dir, "views-menu.png"), clip: { x: 0, y: 0, width: 480, height: 560 } });
+  console.log("wrote views-menu.png");
   await page.close();
 }
 

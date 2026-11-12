@@ -1,0 +1,3 @@
+kind: Added
+body: Custom sidebar views save a name and a query. Default views use explicit rules, including bump:due, which stays on this machine.
+time: 2026-11-11T22:11:00Z

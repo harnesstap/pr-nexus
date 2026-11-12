@@ -10,7 +10,7 @@ All your open GitHub pull requests in one desktop app, grouped by project. Ask t
 
 ## What it does
 
-- **One list for your PRs.** It shows the PRs you opened and the ones waiting for your review, across the GitHub orgs you pick. It refreshes in the background.
+- **One list for your PRs.** It shows the PRs you opened and the ones waiting for your review, across the GitHub orgs you pick, and you can save your own views. It refreshes in the background.
 - **Grouped by project.** You put PRs into projects by hand or with rules (repo, label, branch, title, ticket key), and can link projects to Jira.
 - **Spot stuck PRs.** Quick filters and row cues show failing checks, conflicts, drafts, requested changes and reviews that have waited too long.
 - **Review requests on Slack.** PR Nexus finds the owning teams from CODEOWNERS, maps each team to its Slack channel, and previews the message before it sends it. Later you can bump the same thread. It also works in bulk across several PRs.

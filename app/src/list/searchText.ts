@@ -50,6 +50,7 @@ const QUALIFIERS: readonly { key: string; hint: string; values?: readonly string
   { key: "comments", hint: "a number" },
   { key: "milestone", hint: "milestone" },
   { key: "no", hint: "label, assignee, or milestone", values: ["label", "assignee", "milestone"] },
+  { key: "bump", hint: "due — kept on this machine, not sent to GitHub", values: ["due"] },
 ];
 
 export interface Suggestion {
