@@ -2067,12 +2067,7 @@ fn reqwest_client() -> Result<reqwest::blocking::Client, AppError> {
 #[tauri::command]
 pub async fn open_external(app: tauri::AppHandle, url: String) -> Result<(), AppError> {
     blocking::run(move || {
-        let slack_https = url.starts_with("https://") && url.contains(".slack.com/");
-        let allowed = url.starts_with("https://github.com/")
-            || url.starts_with("https://api.slack.com/")
-            || slack_https
-            || url.starts_with("slack://");
-        if !allowed {
+        if !external_url_allowed(&url) {
             return Err(AppError::new("validation", "That link cannot be opened"));
         }
         app.opener()
@@ -2080,6 +2075,20 @@ pub async fn open_external(app: tauri::AppHandle, url: String) -> Result<(), App
             .map_err(|err| AppError::new("network", err.to_string()))
     })
     .await
+}
+
+/// GitHub, Slack web (`*.slack.com`, by parsed host) and the Slack app scheme.
+fn external_url_allowed(url: &str) -> bool {
+    if url.starts_with("https://github.com/") || url.starts_with("slack://") {
+        return true;
+    }
+    let Ok(parsed) = tauri::Url::parse(url) else {
+        return false;
+    };
+    parsed.scheme() == "https"
+        && parsed
+            .host_str()
+            .is_some_and(|host| host == "slack.com" || host.ends_with(".slack.com"))
 }
 
 #[cfg(test)]
@@ -2402,5 +2411,38 @@ mod tests {
         eprintln!(
             "list_page 500 cold {cold_ms:.2} ms, cached {warm_ms:.2} ms; bot counts parse {parse_ms:.2} ms, stored {stored_ms:.2} ms"
         );
+    }
+
+    #[test]
+    fn external_url_allowed_checks_the_slack_host() {
+        assert!(external_url_allowed("https://github.com/o/r/pull/1"));
+        assert!(external_url_allowed(
+            "https://github.com/acme/widgets/pull/42#discussion_r1"
+        ));
+        assert!(external_url_allowed(
+            "https://github.com/acme/pr-nexus/releases"
+        ));
+        assert!(external_url_allowed("https://api.slack.com/apps"));
+        assert!(external_url_allowed(
+            "https://team.slack.com/archives/C1/p1"
+        ));
+        // Review dialog, detail panel, and Slack context open these permalinks.
+        assert!(external_url_allowed(
+            "https://acme.slack.com/archives/C0123456789/p1700000500000200?thread_ts=1700000000.000100&cid=C0123456789"
+        ));
+        assert!(external_url_allowed(
+            "https://acme-labs.enterprise.slack.com/archives/C0123456789/p1700000000000100"
+        ));
+        assert!(external_url_allowed("slack://channel?team=T1&id=C1"));
+        assert!(!external_url_allowed("https://evil.example/a.slack.com/x"));
+        assert!(!external_url_allowed(
+            "https://evil.example/a.slack.com/archives/C0123456789/p1?thread_ts=1"
+        ));
+        assert!(!external_url_allowed("https://evilslack.com/x"));
+        assert!(!external_url_allowed(
+            "https://team.slack.com.evil.example/x"
+        ));
+        assert!(!external_url_allowed("http://team.slack.com/x"));
+        assert!(!external_url_allowed("javascript:alert(1)"));
     }
 }
