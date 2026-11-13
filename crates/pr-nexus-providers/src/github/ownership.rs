@@ -265,7 +265,7 @@ pub(crate) fn team_members(
     org: &str,
     slug: &str,
 ) -> Result<TeamMembers, ProviderError> {
-    let path = format!("/orgs/{org}/teams/{slug}/members");
+    let path = format!("/orgs/{}/teams/{}/members", segment(org), segment(slug));
     let mut logins = Vec::new();
     for page in 1..=MEMBER_PAGES {
         let body = match client.rest_ok(&path, &[("per_page", "100"), ("page", &page.to_string())])

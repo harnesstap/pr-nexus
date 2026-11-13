@@ -1933,12 +1933,7 @@ fn reqwest_client() -> Result<reqwest::blocking::Client, AppError> {
 #[tauri::command]
 pub async fn open_external(app: tauri::AppHandle, url: String) -> Result<(), AppError> {
     blocking::run(move || {
-        let slack_https = url.starts_with("https://") && url.contains(".slack.com/");
-        let allowed = url.starts_with("https://github.com/")
-            || url.starts_with("https://api.slack.com/")
-            || slack_https
-            || url.starts_with("slack://");
-        if !allowed {
+        if !external_url_allowed(&url) {
             return Err(AppError::new("validation", "That link cannot be opened"));
         }
         app.opener()
@@ -1946,6 +1941,20 @@ pub async fn open_external(app: tauri::AppHandle, url: String) -> Result<(), App
             .map_err(|err| AppError::new("network", err.to_string()))
     })
     .await
+}
+
+/// GitHub, Slack web (`*.slack.com`, by parsed host) and the Slack app scheme.
+fn external_url_allowed(url: &str) -> bool {
+    if url.starts_with("https://github.com/") || url.starts_with("slack://") {
+        return true;
+    }
+    let Ok(parsed) = tauri::Url::parse(url) else {
+        return false;
+    };
+    parsed.scheme() == "https"
+        && parsed
+            .host_str()
+            .is_some_and(|host| host == "slack.com" || host.ends_with(".slack.com"))
 }
 
 #[cfg(test)]
@@ -2147,5 +2156,22 @@ mod tests {
             let row = state.store.get_pull_request(pr.id).unwrap().unwrap();
             assert_eq!(row.is_draft, draft);
         }
+    }
+
+    #[test]
+    fn external_url_allowed_checks_the_slack_host() {
+        assert!(external_url_allowed("https://github.com/o/r/pull/1"));
+        assert!(external_url_allowed("https://api.slack.com/apps"));
+        assert!(external_url_allowed(
+            "https://team.slack.com/archives/C1/p1"
+        ));
+        assert!(external_url_allowed("slack://channel?team=T1&id=C1"));
+        assert!(!external_url_allowed("https://evil.example/a.slack.com/x"));
+        assert!(!external_url_allowed("https://evilslack.com/x"));
+        assert!(!external_url_allowed(
+            "https://team.slack.com.evil.example/x"
+        ));
+        assert!(!external_url_allowed("http://team.slack.com/x"));
+        assert!(!external_url_allowed("javascript:alert(1)"));
     }
 }
