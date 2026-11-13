@@ -523,6 +523,10 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
   }, [api, dueTick, version]);
 
   useEffect(() => {
+    // Projects load first. Counting every view before that just delays the list.
+    if (listState.phase !== "ready") {
+      return;
+    }
     let cancel = false;
     void loadViewCounts(catalog, dueCount, dueIds, remotes, (request) => api.listPage(request), new Date()).then(
       (next) => {
@@ -539,7 +543,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
     return () => {
       cancel = true;
     };
-  }, [api, catalog, dueCount, dueIds, remotes, version]);
+  }, [api, catalog, dueCount, dueIds, listState.phase, remotes, version]);
 
   useEffect(() => {
     if (!api.listSidebarViews) {
