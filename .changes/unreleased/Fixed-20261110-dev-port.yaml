@@ -1,3 +1,0 @@
-kind: Fixed
-body: The development server now uses port 1477 instead of the Tauri default 1420, so `bun run tauri dev` no longer fails when another Tauri app's dev server is running.
-time: 2026-11-10T08:15:00.000000Z

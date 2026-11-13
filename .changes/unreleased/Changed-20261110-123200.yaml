@@ -1,3 +1,0 @@
-kind: Changed
-body: "The pull request list has one search field. GitHub qualifiers such as author: and is:draft search GitHub, and other words filter the list on this machine. Sort in the filter menu still orders those results; only a sort: qualifier uses GitHub's order. Reset stays in the filter menu."
-time: 2026-11-10T12:32:00Z

@@ -1,3 +1,0 @@
-kind: Added
-body: Settings → Agents can allow extra hostnames for the local MCP server, so a client in Docker can connect as host.docker.internal. Loopback stays allowed, and the token is still required.
-time: 2026-11-12T15:10:00Z

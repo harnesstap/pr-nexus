@@ -1,2 +1,0 @@
-kind: Added
-body: When a pull request's base branch requires a merge queue, Squash and merge becomes Add to merge queue, the row and detail show the queue, and the selection menu can add several at once.
