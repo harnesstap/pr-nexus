@@ -8,7 +8,7 @@ import { MINE_QUERY } from "./viewRule";
 function Harness({ initial = defaultCatalog() }: { initial?: SidebarView[] }) {
   const [views, setViews] = useState(initial);
   const [current, setCurrent] = useState("mine");
-  return <SidebarViews views={views} current={current} dueCount={2} onSelect={setCurrent} onChange={setViews} />;
+  return <SidebarViews views={views} current={current} counts={{ bumps_due: 2 }} onSelect={setCurrent} onChange={setViews} />;
 }
 
 function openMenu(name: string) {
@@ -93,6 +93,43 @@ test("the view menu stays in the row and shows on hover, focus, or while open", 
   expect(menuButton(selected)).not.toHaveClass("opacity-0");
   fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
   expect(menuButton(selected)).toHaveClass("opacity-0");
+});
+
+test("counts sit in the menu slot, stay blank at zero, and cap at 99+", () => {
+  render(
+    <SidebarViews
+      views={defaultCatalog()}
+      current="mine"
+      counts={{ mine: 4, to_review: 0, bumps_due: 120 }}
+      onSelect={() => undefined}
+      onChange={() => undefined}
+    />,
+  );
+  const mine = screen.getByRole("group", { name: "My PRs, 4" });
+  const mineCount = within(mine).getByText("4");
+  const menu = within(mine).getByRole("button", { name: "View menu" });
+  expect(mineCount.parentElement).toBe(menu.parentElement);
+  expect(mineCount.parentElement).toHaveClass("absolute");
+  expect(mineCount).toHaveClass("text-slate-400");
+  expect(mineCount).toHaveClass("pointer-events-none");
+  expect(mineCount).toHaveClass("group-hover:invisible");
+  expect(mineCount).not.toHaveClass("invisible");
+  expect(menu).toHaveClass("opacity-0");
+  expect(menu).toHaveClass("pointer-events-none");
+  expect(menu).toHaveClass("group-hover:opacity-100");
+  expect(menu).toHaveClass("group-hover:pointer-events-auto");
+
+  fireEvent.click(menu);
+  expect(within(mine).getByText("4")).toHaveClass("invisible");
+  const openMenu = within(mine).getByRole("button", { name: "View menu" });
+  expect(openMenu).toHaveClass("opacity-100");
+  expect(openMenu).toHaveClass("pointer-events-auto");
+
+  expect(screen.getByRole("group", { name: "To review" }).querySelector(".tabular-nums")).toBeNull();
+  const bumps = within(screen.getByRole("group", { name: "Bumps due, 120 due" })).getByText("99+");
+  expect(bumps).toHaveClass("bg-slate-700");
+  expect(bumps).toHaveClass("text-slate-200");
+  expect(screen.getByRole("button", { name: "My PRs" })).toHaveAccessibleDescription("4");
 });
 
 function menuButton(row: HTMLElement): HTMLButtonElement {

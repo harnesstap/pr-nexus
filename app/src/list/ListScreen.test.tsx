@@ -127,6 +127,16 @@ function api(projects: ProjectDto[], rows: SearchRow[] = []): Api {
   };
 }
 
+test("sidebar view rows show how many pull requests match and projects do not", async () => {
+  const review = pr(9, "Please review");
+  review.involvement = 2;
+  render(<ListScreen api={api([], [pr(7, "Add passkeys"), pr(8, "Fix tax rounding"), review])} boot={boot} onBoot={() => undefined} />);
+  expect(await screen.findByRole("group", { name: "My PRs, 2" })).toBeInTheDocument();
+  expect(screen.getByRole("group", { name: "To review, 1" })).toBeInTheDocument();
+  expect(screen.getByRole("group", { name: "Bumps due" })).toBeInTheDocument();
+  expect(screen.getByRole("region", { name: "Projects" }).querySelector(".tabular-nums")).toBeNull();
+});
+
 test("an empty Projects section offers to create one, and Settings lives in the footer account menu", async () => {
   const fake = api([]);
   render(<ListScreen api={fake} boot={boot} onBoot={() => undefined} />);
