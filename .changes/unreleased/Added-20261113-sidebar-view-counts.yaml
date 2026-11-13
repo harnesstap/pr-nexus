@@ -1,0 +1,3 @@
+kind: Added
+body: Sidebar views show how many pull requests match, counted from the local cache. The view menu takes the badge's place while it is open.
+time: 2026-11-13T02:40:00Z

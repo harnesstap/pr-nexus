@@ -34,6 +34,7 @@ import { githubQueryOf, searchFieldValue } from "./searchText";
 import { SidebarViews } from "./SidebarViews";
 import { defaultCatalog, normalizeCatalog, type SidebarView } from "./viewCatalog";
 import { analyzeViewRule, isBumpQueueQuery } from "./viewRule";
+import { loadViewCounts, type RemoteFetch } from "./viewCount";
 import { DEFAULT_REVIEW_SLA, type ReviewSla } from "./sla";
 import { loadStandupRows, standupRecap } from "./standup";
 import { sidebarProjects } from "./projects";
@@ -94,6 +95,8 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
   const skipCatalogSave = useRef(Boolean(api.listSidebarViews));
   const [dueCount, setDueCount] = useState(0);
   const [dueIds, setDueIds] = useState<number[]>([]);
+  const [counts, setCounts] = useState<Record<string, number | null>>({});
+  const [remotes, setRemotes] = useState<Record<string, RemoteFetch>>({});
   const [dueTick, setDueTick] = useState(0);
   const [views, setViews] = useState<Record<string, SavedView>>({});
   const [loaded, setLoaded] = useState<string | null>(null);
@@ -299,11 +302,18 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
     const timer = window.setTimeout(() => filterReviews(false), REMOTE_FILTER_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
   }, [viewKey, remoteKey, filterReviews, githubText]);
+  const searchMeta = useRef({ viewKey: "", query: "", forView: false });
+  searchMeta.current = {
+    viewKey,
+    query: sidebarQuery.trim(),
+    forView: toolbarGithub === "" && githubText !== "" && !ruleInfo.fullyLocal && !ruleInfo.invalid,
+  };
   useEffect(() => {
     const search = api.searchGithubQuery;
     if (githubText === "" || !search) {
       return;
     }
+    const searched = searchMeta.current;
     let cancel = false;
     const timer = window.setTimeout(() => {
       const offsetMinutes = -new Date().getTimezoneOffset();
@@ -320,6 +330,18 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
             openOnly: result.ok ? result.openOnly : true,
             error: result.ok ? "" : result.message,
           });
+          if (searched.forView) {
+            setRemotes((current) => ({
+              ...current,
+              [searched.viewKey]: {
+                query: searched.query,
+                ids: result.ok ? result.ids : [],
+                total: result.ok ? result.total : 0,
+                ok: result.ok,
+                openOnly: result.ok ? result.openOnly : true,
+              },
+            }));
+          }
           if (result.ok) {
             setVersion((value) => value + 1);
           }
@@ -336,6 +358,12 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
             openOnly: true,
             error: errorMessage(err),
           });
+          if (searched.forView) {
+            setRemotes((current) => ({
+              ...current,
+              [searched.viewKey]: { query: searched.query, ids: [], total: 0, ok: false, openOnly: true },
+            }));
+          }
         },
       );
     }, GITHUB_QUERY_DEBOUNCE_MS);
@@ -493,6 +521,29 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
       cancel = true;
     };
   }, [api, dueTick, version]);
+
+  useEffect(() => {
+    // Projects load first. Counting every view before that just delays the list.
+    if (listState.phase !== "ready") {
+      return;
+    }
+    let cancel = false;
+    void loadViewCounts(catalog, dueCount, dueIds, remotes, (request) => api.listPage(request), new Date()).then(
+      (next) => {
+        if (!cancel) {
+          setCounts(next);
+        }
+      },
+      () => {
+        if (!cancel) {
+          setCounts({});
+        }
+      },
+    );
+    return () => {
+      cancel = true;
+    };
+  }, [api, catalog, dueCount, dueIds, listState.phase, remotes, version]);
 
   useEffect(() => {
     if (!api.listSidebarViews) {
@@ -858,7 +909,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
         <SidebarViews
           views={catalog}
           current={viewKey}
-          dueCount={dueCount}
+          counts={counts}
           onSelect={setViewKey}
           onChange={setCatalog}
           onDuplicateState={(from, to) => {

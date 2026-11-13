@@ -4,6 +4,7 @@ import { ClockIcon, HomeIcon, MoreIcon, PlusIcon, SlackLogo } from "../icons";
 import { plainText } from "../textInput";
 import { Tooltip } from "../Tooltip";
 import { SearchField } from "./SearchField";
+import { formatViewCount } from "./viewCount";
 import {
   builtinKey,
   defaultCatalog,
@@ -18,7 +19,8 @@ import {
 interface Props {
   views: readonly SidebarView[];
   current: string;
-  dueCount: number;
+  /** Match counts by view key. `null` is unknown and stays blank; zero stays blank too. */
+  counts: Readonly<Record<string, number | null>>;
   onSelect: (key: string) => void;
   onChange: (views: SidebarView[]) => void;
   /** Copies the source view's saved Sort, Group, and Filter onto the new key. */
@@ -42,7 +44,7 @@ interface MenuState {
  * Default and custom sidebar views. The … menu and a right-click share one
  * menu. Built-in views reset instead of deleting.
  */
-export function SidebarViews({ views, current, dueCount, onSelect, onChange, onDuplicateState }: Props) {
+export function SidebarViews({ views, current, counts, onSelect, onChange, onDuplicateState }: Props) {
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const anchors = useRef(new Map<string, HTMLButtonElement>());
@@ -68,7 +70,7 @@ export function SidebarViews({ views, current, dueCount, onSelect, onChange, onD
           key={view.key}
           view={view}
           selected={current === view.key}
-          badge={view.key === "bumps_due" ? dueCount : 0}
+          count={counts[view.key] ?? null}
           menuOpen={menu?.key === view.key}
           onSelect={() => onSelect(view.key)}
           onMenu={(x, y, anchor) => openMenu(view.key, x, y, anchor)}
@@ -142,7 +144,7 @@ export function SidebarViews({ views, current, dueCount, onSelect, onChange, onD
 function ViewRow({
   view,
   selected,
-  badge,
+  count,
   menuOpen,
   onSelect,
   onMenu,
@@ -150,18 +152,26 @@ function ViewRow({
 }: {
   view: SidebarView;
   selected: boolean;
-  badge: number;
+  count: number | null;
   menuOpen: boolean;
   onSelect: () => void;
   onMenu: (x: number, y: number, anchor: HTMLElement | null) => void;
   register: (node: HTMLButtonElement | null) => void;
 }) {
+  const badgeId = useId();
   const tone = selected ? "bg-slate-800 text-white" : "text-slate-300 hover:bg-slate-900";
+  const label = rowLabel(view.name, count, view.key === "bumps_due");
+  const text = count == null ? null : formatViewCount(count);
+  // Bumps due is the one actionable count, so it keeps the stronger pill.
+  const pill =
+    view.key === "bumps_due"
+      ? "rounded-full bg-slate-700 px-1.5 text-xs tabular-nums text-slate-200"
+      : "rounded-full bg-slate-700 px-1.5 text-xs tabular-nums text-slate-400";
   return (
     <div
       role="group"
-      aria-label={badge > 0 ? `${view.name}, ${badge} due` : view.name}
-      className="group flex items-center gap-0.5"
+      aria-label={label}
+      className="group relative flex items-center"
       onContextMenu={(event) => {
         event.preventDefault();
         onMenu(event.clientX, event.clientY, null);
@@ -170,7 +180,8 @@ function ViewRow({
       <button
         type="button"
         aria-current={selected ? "page" : undefined}
-        className={`flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left ${tone}`}
+        aria-describedby={text ? badgeId : undefined}
+        className={`flex min-w-0 flex-1 items-center gap-2 rounded-md py-1.5 pl-2 pr-11 text-left ${tone}`}
         onClick={onSelect}
         onKeyDown={(event) => {
           if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
@@ -182,37 +193,51 @@ function ViewRow({
       >
         <ViewIcon view={view} />
         <span className="min-w-0 flex-1 truncate">{view.name}</span>
-        {badge > 0 && (
-          <span aria-hidden="true" className="rounded-full bg-slate-700 px-1.5 text-xs tabular-nums text-slate-200">
-            {badge}
+      </button>
+      <div className="group/slot pointer-events-none absolute right-1 top-1/2 grid h-6 w-9 -translate-y-1/2 place-items-center">
+        {text && (
+          <span
+            id={badgeId}
+            className={`${pill} pointer-events-none col-start-1 row-start-1 ${menuOpen ? "invisible" : "group-hover:invisible group-focus-within/slot:invisible"}`}
+          >
+            {text}
           </span>
         )}
-      </button>
-      <button
-        ref={register}
-        type="button"
-        aria-label="View menu"
-        aria-haspopup="menu"
-        aria-expanded={menuOpen}
-        className={`rounded p-1 text-slate-500 hover:bg-slate-800 hover:text-slate-200 ${
-          menuOpen ? "opacity-100" : "opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
-        }`}
-        onClick={(event) => {
-          const rect = event.currentTarget.getBoundingClientRect();
-          onMenu(rect.right, rect.bottom, event.currentTarget);
-        }}
-        onKeyDown={(event) => {
-          if (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
-            event.preventDefault();
+        <button
+          ref={register}
+          type="button"
+          aria-label="View menu"
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
+          className={`absolute inset-0 grid place-items-center rounded text-slate-500 hover:bg-slate-800 hover:text-slate-200 ${
+            menuOpen
+              ? "pointer-events-auto opacity-100"
+              : "pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100"
+          }`}
+          onClick={(event) => {
             const rect = event.currentTarget.getBoundingClientRect();
             onMenu(rect.right, rect.bottom, event.currentTarget);
-          }
-        }}
-      >
-        <MoreIcon size={14} />
-      </button>
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+              event.preventDefault();
+              const rect = event.currentTarget.getBoundingClientRect();
+              onMenu(rect.right, rect.bottom, event.currentTarget);
+            }
+          }}
+        >
+          <MoreIcon size={14} />
+        </button>
+      </div>
     </div>
   );
+}
+
+function rowLabel(name: string, count: number | null, bump: boolean): string {
+  if (count == null || count <= 0) {
+    return name;
+  }
+  return bump ? `${name}, ${count} due` : `${name}, ${count}`;
 }
 
 function ViewIcon({ view }: { view: SidebarView }) {
