@@ -104,6 +104,14 @@ export function formatViewCount(count: number): string | null {
   return String(count);
 }
 
+/** Accessible name for a sidebar row. Zero and unknown stay the bare name. */
+export function sidebarCountLabel(name: string, count: number | null, due = false): string {
+  if (count == null || count <= 0) {
+    return name;
+  }
+  return due ? `${name}, ${count} due` : `${name}, ${count}`;
+}
+
 /**
  * One count per view key. `null` is unknown (or a failed read) and is not
  * the same as zero. The queue view returns `dueCount` and does not list.
