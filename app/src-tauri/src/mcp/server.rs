@@ -4,13 +4,14 @@
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::{Arc, RwLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use axum::Router;
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
+use axum::serve::Listener;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ErrorData, GetPromptRequestParams,
     GetPromptResponse, Implementation, ListPromptsResult, ListToolsResult, PaginatedRequestParams,
@@ -320,6 +321,9 @@ pub struct Running {
     pub addr: SocketAddr,
     /// Normalized extra hosts this process was started with.
     pub extra_allowed_hosts: Vec<String>,
+    /// Held for the life of the server, including across an extra-host
+    /// swap, so the port is never released for someone else to bind.
+    listener: Arc<tokio::net::TcpListener>,
     cancel: CancellationToken,
     task: tokio::task::JoinHandle<()>,
 }
@@ -332,6 +336,14 @@ impl Running {
     pub async fn stop(self) {
         self.cancel.cancel();
         let _ = self.task.await;
+    }
+
+    /// Replace the service on the same socket. The previous task drains
+    /// before the new one accepts, and the socket stays bound the whole time.
+    pub async fn restart(self, shared: Arc<Shared>) -> Self {
+        self.cancel.cancel();
+        let _ = self.task.await;
+        serve(self.listener, shared, self.addr)
     }
 }
 
@@ -350,11 +362,14 @@ pub async fn start(shared: Arc<Shared>, port: Option<u16>) -> Result<Running, Ap
     let addr = listener
         .local_addr()
         .map_err(|err| AppError::new("internal", err.to_string()))?;
+    Ok(serve(Arc::new(listener), shared, addr))
+}
+
+/// rmcp copies the host list for the life of one service. A new service on
+/// the same socket picks up a new list. Loopback is always included; an
+/// empty extra list does not turn the check off.
+fn serve(listener: Arc<tokio::net::TcpListener>, shared: Arc<Shared>, addr: SocketAddr) -> Running {
     let cancel = CancellationToken::new();
-    // rmcp copies this list for the life of the process. Control rebinds
-    // on the same port when the saved list changes, so the two checks stay
-    // the same. Loopback is always included; an empty extra list does not
-    // turn the check off.
     let extra_allowed_hosts = shared.settings().extra_allowed_hosts.clone();
     let extra = hosts::compile(&extra_allowed_hosts);
     let config = StreamableHttpServerConfig::default()
@@ -375,8 +390,9 @@ pub async fn start(shared: Arc<Shared>, port: Option<u16>) -> Result<Running, Ap
         .nest_service(PATH, service)
         .layer(middleware::from_fn_with_state(guard, check));
     let shutdown = cancel.clone();
+    let accepting = Arc::clone(&listener);
     let task = tokio::spawn(async move {
-        let served = axum::serve(listener, router)
+        let served = axum::serve(SharedListener(accepting), router)
             .with_graceful_shutdown(async move { shutdown.cancelled_owned().await })
             .await;
         if let Err(err) = served {
@@ -384,12 +400,45 @@ pub async fn start(shared: Arc<Shared>, port: Option<u16>) -> Result<Running, Ap
         }
     });
     tracing::info!(%addr, "mcp server listening");
-    Ok(Running {
+    Running {
         addr,
         extra_allowed_hosts,
+        listener,
         cancel,
         task,
-    })
+    }
+}
+
+/// Accepts on a shared socket. axum's serve takes ownership of the listener
+/// and drops it on shutdown; the [`Running`] clone keeps the port bound.
+struct SharedListener(Arc<tokio::net::TcpListener>);
+
+impl Listener for SharedListener {
+    type Io = tokio::net::TcpStream;
+    type Addr = SocketAddr;
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        loop {
+            match self.0.accept().await {
+                Ok(connection) => return connection,
+                Err(err) => {
+                    if !matches!(
+                        err.kind(),
+                        std::io::ErrorKind::ConnectionRefused
+                            | std::io::ErrorKind::ConnectionAborted
+                            | std::io::ErrorKind::ConnectionReset
+                    ) {
+                        tracing::error!(error = %err, "accept error");
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                    }
+                }
+            }
+        }
+    }
+
+    fn local_addr(&self) -> std::io::Result<Self::Addr> {
+        self.0.local_addr()
+    }
 }
 
 #[derive(Clone)]

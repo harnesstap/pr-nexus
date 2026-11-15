@@ -56,19 +56,43 @@ pub async fn connect(
     open_browser: impl FnOnce(&str) -> Result<(), String>,
     cancel: &CancelHandle,
 ) -> Result<Connected, SlackAuthError> {
-    install_tls_provider();
     let client_id = config.client_id.trim();
     if client_id.is_empty() {
         return Err(SlackAuthError::MissingClientId);
     }
     let target = loopback::parse_redirect(&config.redirect_uri)?;
-    let listener = Loopback::bind(target.clone()).await?;
+    let listener = Loopback::bind(target).await?;
+    connect_with_listener(config, vault, listener, open_browser, cancel).await
+}
+
+/// Sign in on a listener that is already bound to `127.0.0.1`. Its redirect
+/// URI must be the configured one, so the browser is never sent elsewhere.
+pub async fn connect_with_listener(
+    config: &ConnectConfig,
+    vault: Arc<Vault>,
+    listener: Loopback,
+    open_browser: impl FnOnce(&str) -> Result<(), String>,
+    cancel: &CancelHandle,
+) -> Result<Connected, SlackAuthError> {
+    install_tls_provider();
+    let client_id = config.client_id.trim();
+    if client_id.is_empty() {
+        return Err(SlackAuthError::MissingClientId);
+    }
+    if listener.redirect_uri() != config.redirect_uri.trim() {
+        return Err(SlackAuthError::InvalidRedirect(format!(
+            "listener is bound to {}, settings say {}",
+            listener.redirect_uri(),
+            config.redirect_uri.trim()
+        )));
+    }
+    let redirect_uri = listener.redirect_uri().to_owned();
 
     let mut manager = new_manager(&config.mcp_url).await?;
     let pending = PendingStore::default();
     manager.set_credential_store(pending.clone());
 
-    let mut request = AuthorizationRequest::new(target.uri.clone())
+    let mut request = AuthorizationRequest::new(redirect_uri)
         .with_preregistered_client(client_id)
         .with_scopes(config.scopes.iter().cloned());
     if let Some(secret) = config.client_secret.as_deref().filter(|s| !s.is_empty()) {
@@ -398,6 +422,30 @@ mod tests {
             .unwrap()
             .block_on(token_state("http://127.0.0.1:9", vault, "slack:T0:U0"));
         assert_eq!(state, TokenState::Missing);
+    }
+
+    #[tokio::test]
+    async fn a_listener_must_match_the_configured_redirect() {
+        let listener = Loopback::bind_ephemeral("127.0.0.1", "/cb").await.unwrap();
+        let config = ConnectConfig {
+            mcp_url: "http://127.0.0.1:9/mcp".into(),
+            web_api_base: "http://127.0.0.1:9/api".into(),
+            client_id: "1111111111.2222222222".into(),
+            client_secret: None,
+            redirect_uri: "http://127.0.0.1:9/cb".into(),
+            scopes: vec!["chat:write".into()],
+            timeout: Duration::from_secs(1),
+        };
+        let err = connect_with_listener(
+            &config,
+            Arc::new(Vault::memory("test")),
+            listener,
+            |_| Ok(()),
+            &CancelHandle::new(),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, SlackAuthError::InvalidRedirect(_)), "{err}");
     }
 
     #[test]

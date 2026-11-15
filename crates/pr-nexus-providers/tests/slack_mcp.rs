@@ -9,8 +9,10 @@ use std::time::Duration;
 
 use pr_nexus_core::domain::AccountId;
 use pr_nexus_core::providers::{ChatProvider, ChatUser, OutgoingMessage};
+use pr_nexus_providers::slack_mcp::loopback::Loopback;
 use pr_nexus_providers::slack_mcp::{
-    CancelHandle, ConnectConfig, SessionConfig, SlackMcpChatProvider, USER_SCOPES, connect,
+    CancelHandle, ConnectConfig, SessionConfig, SlackMcpChatProvider, USER_SCOPES,
+    connect_with_listener,
 };
 use pr_nexus_providers::vault::Vault;
 use serde_json::{Value, json};
@@ -88,14 +90,6 @@ fn approve(auth_url: &str, seen: Arc<Mutex<Option<url::Url>>>) -> Result<(), Str
     Ok(())
 }
 
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn connect_runs_pkce_with_secret_and_stores_the_grant() {
     let server = oauth_server().await;
@@ -119,22 +113,25 @@ async fn connect_runs_pkce_with_secret_and_stores_the_grant() {
         .mount(&server)
         .await;
 
-    let port = free_port();
+    let listener = Loopback::bind_ephemeral("127.0.0.1", "/custom/callback")
+        .await
+        .unwrap();
     let config = ConnectConfig {
         mcp_url: format!("{}/mcp", server.uri()),
         web_api_base: format!("{}/api", server.uri()),
         client_id: CLIENT_ID.into(),
         client_secret: Some("shh".into()),
-        redirect_uri: format!("http://127.0.0.1:{port}/custom/callback"),
+        redirect_uri: listener.redirect_uri().to_owned(),
         scopes: USER_SCOPES.iter().map(|s| (*s).to_owned()).collect(),
         timeout: Duration::from_secs(20),
     };
     let vault = Arc::new(Vault::memory("test"));
     let seen = Arc::new(Mutex::new(None));
     let seen_in = seen.clone();
-    let connected = connect(
+    let connected = connect_with_listener(
         &config,
         vault.clone(),
+        listener,
         move |url| approve(url, seen_in),
         &CancelHandle::new(),
     )
@@ -201,20 +198,22 @@ async fn connect_without_secret_sends_client_id_and_verifier_only() {
         .mount(&server)
         .await;
 
+    let listener = Loopback::bind_ephemeral("localhost", "/cb").await.unwrap();
     let config = ConnectConfig {
         mcp_url: format!("{}/mcp", server.uri()),
         web_api_base: format!("{}/api", server.uri()),
         client_id: CLIENT_ID.into(),
         client_secret: None,
-        redirect_uri: format!("http://localhost:{}/cb", free_port()),
+        redirect_uri: listener.redirect_uri().to_owned(),
         scopes: vec!["chat:write".into()],
         timeout: Duration::from_secs(20),
     };
     let vault = Arc::new(Vault::memory("test"));
     let seen = Arc::new(Mutex::new(None));
-    let connected = connect(
+    let connected = connect_with_listener(
         &config,
         vault,
+        listener,
         move |url| approve(url, seen),
         &CancelHandle::new(),
     )
@@ -235,19 +234,21 @@ async fn slack_errors_on_exchange_are_readable() {
         )
         .mount(&server)
         .await;
+    let listener = Loopback::bind_ephemeral("127.0.0.1", "/cb").await.unwrap();
     let config = ConnectConfig {
         mcp_url: format!("{}/mcp", server.uri()),
         web_api_base: format!("{}/api", server.uri()),
         client_id: CLIENT_ID.into(),
         client_secret: None,
-        redirect_uri: format!("http://127.0.0.1:{}/cb", free_port()),
+        redirect_uri: listener.redirect_uri().to_owned(),
         scopes: vec!["chat:write".into()],
         timeout: Duration::from_secs(20),
     };
     let seen = Arc::new(Mutex::new(None));
-    let err = connect(
+    let err = connect_with_listener(
         &config,
         Arc::new(Vault::memory("t")),
+        listener,
         move |url| approve(url, seen),
         &CancelHandle::new(),
     )

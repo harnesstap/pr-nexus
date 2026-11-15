@@ -136,10 +136,10 @@ impl McpControl {
     }
 
     /// Starts, stops or moves the server to match the settings. A new port
-    /// rebinds. A new extra-host list rebinds on the same port, so an
-    /// automatic port does not move and the rmcp allowlist stays in step
-    /// with the request check. Failures land in [`McpControl::status`]
-    /// rather than an error.
+    /// rebinds. A new extra-host list replaces the service on the same
+    /// listening socket, so the port cannot be taken in between and the
+    /// rmcp allowlist stays in step with the request check. Failures land
+    /// in [`McpControl::status`] rather than an error.
     pub async fn apply(&self) {
         let settings = self.settings();
         let mut running = self.running.lock().await;
@@ -150,28 +150,46 @@ impl McpControl {
         };
         let hosts_differ =
             |current: &Running| current.extra_allowed_hosts != settings.extra_allowed_hosts;
-        // When only the host list changed, bind the port already in use so
-        // the endpoint URL stays put.
-        let mut same_port = None;
-        if let Some(current) = running.take() {
+        let started = if let Some(current) = running.take() {
             if settings.enabled && !wanted_port_differs(&current) && !hosts_differ(&current) {
                 *running = Some(current);
                 return;
             }
             if settings.enabled && !wanted_port_differs(&current) {
-                same_port = Some(current.addr.port());
+                match self.token().await {
+                    Ok(_) => Ok(current.restart(Arc::clone(&self.shared)).await),
+                    Err(err) => {
+                        current.stop().await;
+                        Err(err)
+                    }
+                }
+            } else {
+                current.stop().await;
+                if !settings.enabled {
+                    self.set_status(McpStatus::default());
+                    return;
+                }
+                self.start_fresh(settings.port).await
             }
-            current.stop().await;
-        }
-        if !settings.enabled {
+        } else if !settings.enabled {
             self.set_status(McpStatus::default());
             return;
-        }
-        let port = settings.port.or(same_port);
-        let started = match self.token().await {
-            Ok(_) => server::start(Arc::clone(&self.shared), port).await,
-            Err(err) => Err(err),
+        } else {
+            self.start_fresh(settings.port).await
         };
+        *running = self.adopt(settings.port, started);
+    }
+
+    async fn start_fresh(&self, port: Option<u16>) -> Result<Running, AppError> {
+        self.token().await?;
+        server::start(Arc::clone(&self.shared), port).await
+    }
+
+    fn adopt(
+        &self,
+        configured_port: Option<u16>,
+        started: Result<Running, AppError>,
+    ) -> Option<Running> {
         match started {
             Ok(server) => {
                 self.set_status(McpStatus {
@@ -180,16 +198,17 @@ impl McpControl {
                     port: Some(server.addr.port()),
                     error: None,
                 });
-                *running = Some(server);
+                Some(server)
             }
             Err(err) => {
                 tracing::warn!(error = %err.message, "mcp server did not start");
                 self.set_status(McpStatus {
                     state: ServerState::Error,
                     url: None,
-                    port: settings.port,
+                    port: configured_port,
                     error: Some(err.message),
                 });
+                None
             }
         }
     }
