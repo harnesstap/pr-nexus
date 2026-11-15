@@ -65,6 +65,19 @@ export function FolderIcon(props: IconProps) {
   );
 }
 
+export function ListIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M9 6h12" />
+      <path d="M9 12h12" />
+      <path d="M9 18h12" />
+      <path d="M3 6h.01" />
+      <path d="M3 12h.01" />
+      <path d="M3 18h.01" />
+    </Svg>
+  );
+}
+
 export function GearIcon(props: IconProps) {
   return (
     <Svg {...props}>

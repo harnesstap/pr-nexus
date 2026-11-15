@@ -1,10 +1,11 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { createPortal } from "react-dom";
-import { ClockIcon, HomeIcon, MoreIcon, PlusIcon, SlackLogo } from "../icons";
+import { ClockIcon, HomeIcon, ListIcon, PlusIcon, SlackLogo } from "../icons";
 import { plainText } from "../textInput";
 import { Tooltip } from "../Tooltip";
+import { CountSlot, opensRowMenu } from "./CountBadge";
 import { SearchField } from "./SearchField";
-import { formatViewCount } from "./viewCount";
+import { formatViewCount, sidebarCountLabel } from "./viewCount";
 import {
   builtinKey,
   defaultCatalog,
@@ -64,39 +65,46 @@ export function SidebarViews({ views, current, counts, onSelect, onChange, onDup
   const active = views.find((view) => view.key === menu?.key) ?? null;
 
   return (
-    <nav aria-label="Views" className="flex flex-col gap-0.5 px-2 text-sm">
-      {views.map((view) => (
-        <ViewRow
-          key={view.key}
-          view={view}
-          selected={current === view.key}
-          count={counts[view.key] ?? null}
-          menuOpen={menu?.key === view.key}
-          onSelect={() => onSelect(view.key)}
-          onMenu={(x, y, anchor) => openMenu(view.key, x, y, anchor)}
-          register={(node) => {
-            if (node) {
-              anchors.current.set(view.key, node);
-            } else {
-              anchors.current.delete(view.key);
-            }
-          }}
-        />
-      ))}
-      <Tooltip label="New view" detail="Save a name and a query" align="end">
-        <button
-          type="button"
-          aria-label="New view"
-          className="mt-0.5 flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-slate-400 hover:bg-slate-900 hover:text-slate-200"
-          onClick={() => {
-            setMenu(null);
-            setDialog({ kind: "create" });
-          }}
-        >
-          <PlusIcon />
-          New view
-        </button>
-      </Tooltip>
+    <section aria-labelledby="views-heading" className="flex flex-col px-2 text-sm">
+      <div className="flex items-center justify-between px-2 pb-1">
+        <h2 id="views-heading" className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-slate-500">
+          <ListIcon size={14} />
+          Views
+        </h2>
+        <Tooltip label="New view" detail="Save a name and a query" align="end">
+          <button
+            type="button"
+            aria-label="New view"
+            className="rounded p-0.5 text-slate-500 hover:bg-slate-800 hover:text-slate-200"
+            onClick={() => {
+              setMenu(null);
+              setDialog({ kind: "create" });
+            }}
+          >
+            <PlusIcon />
+          </button>
+        </Tooltip>
+      </div>
+      <nav aria-label="Views" className="flex flex-col gap-0.5">
+        {views.map((view) => (
+          <ViewRow
+            key={view.key}
+            view={view}
+            selected={current === view.key}
+            count={counts[view.key] ?? null}
+            menuOpen={menu?.key === view.key}
+            onSelect={() => onSelect(view.key)}
+            onMenu={(x, y, anchor) => openMenu(view.key, x, y, anchor)}
+            register={(node) => {
+              if (node) {
+                anchors.current.set(view.key, node);
+              } else {
+                anchors.current.delete(view.key);
+              }
+            }}
+          />
+        ))}
+      </nav>
       {menu && active && (
         <ViewMenu
           view={active}
@@ -137,7 +145,7 @@ export function SidebarViews({ views, current, counts, onSelect, onChange, onDup
           }}
         />
       )}
-    </nav>
+    </section>
   );
 }
 
@@ -160,13 +168,8 @@ function ViewRow({
 }) {
   const badgeId = useId();
   const tone = selected ? "bg-slate-800 text-white" : "text-slate-300 hover:bg-slate-900";
-  const label = rowLabel(view.name, count, view.key === "bumps_due");
-  const text = count == null ? null : formatViewCount(count);
-  // Bumps due is the one actionable count, so it keeps the stronger pill.
-  const pill =
-    view.key === "bumps_due"
-      ? "rounded-full bg-slate-700 px-1.5 text-xs tabular-nums text-slate-200"
-      : "rounded-full bg-slate-700 px-1.5 text-xs tabular-nums text-slate-400";
+  const label = sidebarCountLabel(view.name, count, view.key === "bumps_due");
+  const described = count != null && formatViewCount(count) != null;
   return (
     <div
       role="group"
@@ -180,11 +183,11 @@ function ViewRow({
       <button
         type="button"
         aria-current={selected ? "page" : undefined}
-        aria-describedby={text ? badgeId : undefined}
+        aria-describedby={described ? badgeId : undefined}
         className={`flex min-w-0 flex-1 items-center gap-2 rounded-md py-1.5 pl-2 pr-11 text-left ${tone}`}
         onClick={onSelect}
         onKeyDown={(event) => {
-          if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+          if (opensRowMenu(event)) {
             event.preventDefault();
             const rect = event.currentTarget.getBoundingClientRect();
             onMenu(rect.right, rect.bottom, event.currentTarget);
@@ -194,50 +197,17 @@ function ViewRow({
         <ViewIcon view={view} />
         <span className="min-w-0 flex-1 truncate">{view.name}</span>
       </button>
-      <div className="group/slot pointer-events-none absolute right-1 top-1/2 grid h-6 w-9 -translate-y-1/2 place-items-center">
-        {text && (
-          <span
-            id={badgeId}
-            className={`${pill} pointer-events-none col-start-1 row-start-1 ${menuOpen ? "invisible" : "group-hover:invisible group-focus-within/slot:invisible"}`}
-          >
-            {text}
-          </span>
-        )}
-        <button
-          ref={register}
-          type="button"
-          aria-label="View menu"
-          aria-haspopup="menu"
-          aria-expanded={menuOpen}
-          className={`absolute inset-0 grid place-items-center rounded text-slate-500 hover:bg-slate-800 hover:text-slate-200 ${
-            menuOpen
-              ? "pointer-events-auto opacity-100"
-              : "pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100"
-          }`}
-          onClick={(event) => {
-            const rect = event.currentTarget.getBoundingClientRect();
-            onMenu(rect.right, rect.bottom, event.currentTarget);
-          }}
-          onKeyDown={(event) => {
-            if (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
-              event.preventDefault();
-              const rect = event.currentTarget.getBoundingClientRect();
-              onMenu(rect.right, rect.bottom, event.currentTarget);
-            }
-          }}
-        >
-          <MoreIcon size={14} />
-        </button>
-      </div>
+      <CountSlot
+        count={count}
+        badgeId={badgeId}
+        accent={view.key === "bumps_due"}
+        menuOpen={menuOpen}
+        menuLabel="View menu"
+        register={register}
+        onMenu={onMenu}
+      />
     </div>
   );
-}
-
-function rowLabel(name: string, count: number | null, bump: boolean): string {
-  if (count == null || count <= 0) {
-    return name;
-  }
-  return bump ? `${name}, ${count} due` : `${name}, ${count}`;
 }
 
 function ViewIcon({ view }: { view: SidebarView }) {

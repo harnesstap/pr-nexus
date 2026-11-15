@@ -20,9 +20,16 @@ function openMenu(name: string) {
   fireEvent.click(menu);
 }
 
-test("a new view is created from the dialog and selected", () => {
+test("a new view is created from the header button and selected", () => {
   render(<Harness />);
-  fireEvent.click(screen.getByRole("button", { name: "New view" }));
+  const heading = screen.getByRole("heading", { name: "Views" });
+  expect(heading).toHaveClass("uppercase", "tracking-wide", "text-slate-500");
+  expect(heading.querySelector("svg")).toHaveAttribute("width", "14");
+  const create = screen.getByRole("button", { name: "New view" });
+  expect(create.textContent?.trim()).toBe("");
+  expect(create.tagName).toBe("BUTTON");
+  expect(within(screen.getByRole("navigation", { name: "Views" })).queryByRole("button", { name: "New view" })).toBeNull();
+  fireEvent.click(create);
   fireEvent.change(screen.getByRole("textbox", { name: "Name" }), { target: { value: "Needs me" } });
   fireEvent.change(screen.getByRole("textbox", { name: "Query" }), { target: { value: "is:open review-requested:@me" } });
   fireEvent.click(screen.getByRole("button", { name: "Create view" }));

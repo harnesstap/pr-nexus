@@ -127,14 +127,64 @@ function api(projects: ProjectDto[], rows: SearchRow[] = []): Api {
   };
 }
 
-test("sidebar view rows show how many pull requests match and projects do not", async () => {
+test("sidebar rows show how many pull requests match a view or belong to a project", async () => {
+  const authored = pr(7, "Add passkeys");
+  authored.project_ids = [1];
+  const shared = pr(8, "Fix tax rounding");
+  shared.project_ids = [1, 2];
   const review = pr(9, "Please review");
   review.involvement = 2;
-  render(<ListScreen api={api([], [pr(7, "Add passkeys"), pr(8, "Fix tax rounding"), review])} boot={boot} onBoot={() => undefined} />);
+  review.project_ids = [2];
+  const merged = pr(10, "Ship the widget");
+  merged.state = "merged";
+  merged.project_ids = [2];
+  const projects = [
+    { id: 1, name: "Auth", color: "#7c5cbf", archived: false, description: "", sort_order: 2, jira_links: [] },
+    { id: 2, name: "Billing reconciliation and exports", color: "#3f6f8f", archived: false, description: "", sort_order: 0, jira_links: [] },
+    { id: 3, name: "Empty launch", color: "#2f855a", archived: false, description: "", sort_order: 1, jira_links: [] },
+  ];
+  render(<ListScreen api={api(projects, [authored, shared, review, merged])} boot={boot} onBoot={() => undefined} />);
   expect(await screen.findByRole("group", { name: "My PRs, 2" })).toBeInTheDocument();
   expect(screen.getByRole("group", { name: "To review, 1" })).toBeInTheDocument();
   expect(screen.getByRole("group", { name: "Bumps due" })).toBeInTheDocument();
-  expect(screen.getByRole("region", { name: "Projects" }).querySelector(".tabular-nums")).toBeNull();
+
+  const viewsHeading = screen.getByRole("heading", { name: "Views" });
+  const projectsHeading = screen.getByRole("heading", { name: "Projects" });
+  expect(viewsHeading.className).toBe(projectsHeading.className);
+  expect(screen.getByRole("button", { name: "New view" }).className).toBe(screen.getByRole("button", { name: "New project" }).className);
+  expect(within(screen.getByRole("navigation", { name: "Views" })).queryByRole("button", { name: "New view" })).toBeNull();
+
+  const auth = await screen.findByRole("group", { name: "Auth, 2" });
+  expect(within(auth).getByText("2")).toHaveClass("text-slate-400", "tabular-nums");
+  const billing = screen.getByRole("group", { name: "Billing reconciliation and exports, 2" });
+  const name = within(billing).getByText("Billing reconciliation and exports");
+  expect(name).toHaveClass("truncate");
+  expect(name.closest("button")).toHaveClass("pr-11");
+  expect(screen.getByRole("group", { name: "Empty launch" }).querySelector(".tabular-nums")).toBeNull();
+
+  const badge = within(billing).getByText("2");
+  const menu = within(billing).getByRole("button", { name: "Project menu" });
+  expect(badge.parentElement).toBe(menu.parentElement);
+  expect(badge.parentElement).toHaveClass("absolute");
+  expect(badge).toHaveClass("group-hover:invisible", "pointer-events-none");
+  expect(badge).not.toHaveClass("invisible");
+  expect(menu).toHaveClass("opacity-0", "pointer-events-none", "group-hover:opacity-100", "group-hover:pointer-events-auto");
+  expect(screen.getByRole("button", { name: "My PRs" })).toHaveAttribute("aria-current", "page");
+
+  fireEvent.click(menu);
+  expect(within(billing).getByText("2")).toHaveClass("invisible");
+  expect(within(billing).getByRole("button", { name: "Project menu" })).toHaveClass("opacity-100", "pointer-events-auto");
+  expect(screen.getByRole("button", { name: "My PRs" })).toHaveAttribute("aria-current", "page");
+  expect(screen.getByRole("menuitem", { name: "Edit auto-link rules" })).toBeInTheDocument();
+  expect(screen.getByRole("menuitem", { name: "Archive project" })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("menuitem", { name: "Delete project" }));
+  const confirm = screen.getByRole("dialog", { name: "Delete Billing reconciliation and exports? This cannot be undone." });
+  expect(confirm).toHaveTextContent("Delete Billing reconciliation and exports? This cannot be undone.");
+  fireEvent.click(within(confirm).getByRole("button", { name: "Cancel" }));
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+  fireEvent.contextMenu(within(auth).getByRole("button", { name: "Auth" }));
+  expect(screen.getByRole("menu", { name: "Actions for Auth" })).toBeInTheDocument();
 });
 
 test("an empty Projects section offers to create one, and Settings lives in the footer account menu", async () => {

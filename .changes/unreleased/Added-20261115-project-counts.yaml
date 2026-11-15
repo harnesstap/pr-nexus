@@ -1,0 +1,3 @@
+kind: Added
+body: Sidebar project rows show how many pull requests they contain, with the same badge as views. A Views header replaces the New view row.
+time: 2026-11-15T02:45:00Z

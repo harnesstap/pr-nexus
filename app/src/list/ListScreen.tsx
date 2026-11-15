@@ -9,11 +9,9 @@ import { parseOpenRequest } from "./openRequest";
 import { Tooltip } from "../Tooltip";
 import { OrgOption } from "../orgs";
 import {
-  DRAG_MIME,
   TOAST_MS,
   bulkToast,
   defaultView,
-  parseDragIds,
   parseViewState,
   listHidesClosed,
   moreReviews,
@@ -31,9 +29,11 @@ import {
 import { copyText } from "./markdown";
 import { PrList, type ListActions } from "./PrList";
 import { githubQueryOf, searchFieldValue } from "./searchText";
+import { DeleteProjectDialog, ProjectMenu, ProjectRow } from "./SidebarProjects";
 import { SidebarViews } from "./SidebarViews";
 import { defaultCatalog, normalizeCatalog, type SidebarView } from "./viewCatalog";
 import { analyzeViewRule, isBumpQueueQuery } from "./viewRule";
+import { loadProjectCounts } from "./projectCount";
 import { loadViewCounts, type RemoteFetch } from "./viewCount";
 import { DEFAULT_REVIEW_SLA, type ReviewSla } from "./sla";
 import { loadStandupRows, standupRecap } from "./standup";
@@ -96,6 +96,9 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
   const [dueCount, setDueCount] = useState(0);
   const [dueIds, setDueIds] = useState<number[]>([]);
   const [counts, setCounts] = useState<Record<string, number | null>>({});
+  const [projectCounts, setProjectCounts] = useState<Record<number, number | null>>({});
+  const [projectMenu, setProjectMenu] = useState<{ id: number; x: number; y: number; anchor: HTMLElement | null } | null>(null);
+  const [deleteProjectId, setDeleteProjectId] = useState<number | null>(null);
   const [remotes, setRemotes] = useState<Record<string, RemoteFetch>>({});
   const [dueTick, setDueTick] = useState(0);
   const [views, setViews] = useState<Record<string, SavedView>>({});
@@ -546,6 +549,22 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
   }, [api, catalog, dueCount, dueIds, listState.phase, remotes, version]);
 
   useEffect(() => {
+    if (listState.phase !== "ready") {
+      return;
+    }
+    const ids = projects.filter((project) => !project.archived).map((project) => project.id);
+    let cancel = false;
+    void loadProjectCounts(ids, (request) => api.listPage(request), new Date()).then((next) => {
+      if (!cancel) {
+        setProjectCounts(next);
+      }
+    });
+    return () => {
+      cancel = true;
+    };
+  }, [api, listState.phase, projects, version]);
+
+  useEffect(() => {
     if (!api.listSidebarViews) {
       return;
     }
@@ -806,6 +825,27 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
     }
   }
 
+  function archiveProject(id: number) {
+    const project = projects.find((item) => item.id === id);
+    void api.archiveProject(id, !(project?.archived ?? false)).then(reload);
+  }
+
+  function removeProject(id: number) {
+    void api.deleteProject(id).then(reload);
+  }
+
+  function openProjectMenu(id: number, x: number, y: number, anchor: HTMLElement | null) {
+    setProjectMenu({ id, x, y, anchor });
+  }
+
+  function closeProjectMenu(restore: boolean) {
+    const anchor = projectMenu?.anchor ?? null;
+    setProjectMenu(null);
+    if (restore) {
+      anchor?.focus();
+    }
+  }
+
   async function linkPrs(projectId: number, prIds: number[]) {
     setError(null);
     const name = projects.find((project) => project.id === projectId)?.name ?? "project";
@@ -847,6 +887,8 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
 
   const activeProjects = sidebarProjects(projects);
   const dialogProject = projects.find((project) => project.id === editingProject) ?? null;
+  const menuProject = projects.find((project) => project.id === projectMenu?.id) ?? null;
+  const deletingProject = projects.find((project) => project.id === deleteProjectId) ?? null;
   const syncTone =
     sync.phase === "error"
       ? "bg-rose-400"
@@ -944,22 +986,45 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
               </button>
             </Tooltip>
           </div>
-          <div className="flex min-h-0 flex-col gap-0.5 overflow-auto">
+          <div className="flex min-h-0 min-w-0 flex-col gap-0.5 overflow-auto">
             {activeProjects.map((project) => (
-              <NavButton
+              <ProjectRow
                 key={project.id}
-                current={viewKey}
-                id={`project:${project.id}`}
-                icon={<span aria-hidden="true" className="ml-1 mr-0.5 h-2 w-2 rounded-sm" style={{ background: project.color }} />}
-                onSelect={setViewKey}
-                onDropPrs={(ids) => void linkPrs(project.id, ids)}
-                projectId={project.id}
+                name={project.name}
+                color={project.color}
+                selected={viewKey === `project:${project.id}`}
+                count={projectCounts[project.id] ?? null}
+                menuOpen={projectMenu?.id === project.id}
                 flash={flash === project.id}
-              >
-                {project.name}
-              </NavButton>
+                projectId={project.id}
+                onSelect={() => setViewKey(`project:${project.id}`)}
+                onMenu={(x, y, anchor) => openProjectMenu(project.id, x, y, anchor)}
+                onDropPrs={(ids) => void linkPrs(project.id, ids)}
+              />
             ))}
           </div>
+          {projectMenu && menuProject && (
+            <ProjectMenu
+              name={menuProject.name}
+              x={projectMenu.x}
+              y={projectMenu.y}
+              onClose={closeProjectMenu}
+              onEdit={() => setEditingProject(menuProject.id)}
+              onArchive={() => archiveProject(menuProject.id)}
+              onDelete={() => setDeleteProjectId(menuProject.id)}
+            />
+          )}
+          {deletingProject && (
+            <DeleteProjectDialog
+              name={deletingProject.name}
+              onCancel={() => setDeleteProjectId(null)}
+              onConfirm={() => {
+                const id = deletingProject.id;
+                setDeleteProjectId(null);
+                removeProject(id);
+              }}
+            />
+          )}
           {draft ? (
             <form
               className="mt-1 px-1"
@@ -1173,13 +1238,8 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
                   await api.renameProject(id, name);
                   await reload();
                 }}
-                onArchive={(id) => {
-                  const project = projects.find((item) => item.id === id);
-                  void api.archiveProject(id, !(project?.archived ?? false)).then(reload);
-                }}
-                onDelete={(id) => {
-                  void api.deleteProject(id).then(reload);
-                }}
+                onArchive={archiveProject}
+                onDelete={removeProject}
                 onEditProject={setEditingProject}
                 onLinkPrs={(projectId, ids) => void linkPrs(projectId, ids)}
                 onCreateProjectWithPrs={createProjectWithPrs}
@@ -1367,72 +1427,6 @@ function snoozeNotice(choice: SnoozeChoice): string {
       return unexpected;
     }
   }
-}
-
-function NavButton({
-  current,
-  id,
-  icon,
-  onSelect,
-  onDropPrs,
-  projectId,
-  flash = false,
-  badge = 0,
-  children,
-}: {
-  current: string;
-  id: string;
-  icon: ReactNode;
-  onSelect: (id: string) => void;
-  /** Makes the entry a drop target for dragged PR rows (manual project links). */
-  onDropPrs?: (ids: number[]) => void;
-  /** Lets "Add to project" scroll to this entry. */
-  projectId?: number;
-  /** Briefly highlighted after PRs were added to the project. */
-  flash?: boolean;
-  /** A count shown at the end of the row. Zero stays hidden. */
-  badge?: number;
-  children: string;
-}) {
-  const [over, setOver] = useState(false);
-  const selected = current === id;
-  const tone =
-    over || flash ? "bg-violet-500/20 text-white ring-1 ring-violet-400" : selected ? "bg-slate-800 text-white" : "text-slate-300 hover:bg-slate-900";
-  return (
-    <button
-      type="button"
-      aria-current={selected ? "page" : undefined}
-      data-project-id={projectId}
-      className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left ${tone}`}
-      onClick={() => onSelect(id)}
-      onDragOver={
-        onDropPrs &&
-        ((event) => {
-          if (event.dataTransfer.types.includes(DRAG_MIME)) {
-            event.preventDefault();
-            event.dataTransfer.dropEffect = "link";
-            setOver(true);
-          }
-        })
-      }
-      onDragLeave={onDropPrs && (() => setOver(false))}
-      onDrop={
-        onDropPrs &&
-        ((event) => {
-          setOver(false);
-          const ids = parseDragIds(event.dataTransfer.getData(DRAG_MIME));
-          if (ids.length > 0) {
-            event.preventDefault();
-            onDropPrs(ids);
-          }
-        })
-      }
-    >
-      <span className="flex w-4 shrink-0 justify-center text-slate-400">{icon}</span>
-      <span className="min-w-0 flex-1 truncate">{children}</span>
-      {badge > 0 && <span className="rounded bg-slate-800 px-1.5 text-xs tabular-nums text-slate-200">{badge}</span>}
-    </button>
-  );
 }
 
 function prCount(count: number): string {
