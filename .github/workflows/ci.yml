@@ -323,6 +323,22 @@ jobs:
             | bash -s -- "$ACTIONLINT_VERSION" "$RUNNER_TEMP"
           "$RUNNER_TEMP/actionlint" -color
 
+      # Tag release installs Changie with this action and version: latest.
+      # With no args the action installs the binary and leaves it on PATH.
+      # The next step parses every unreleased fragment, then runs
+      # `changie batch auto --dry-run` so a bad fragment fails here.
+      # --dry-run prints the batch and leaves the fragments in place.
+      - name: Install Changie
+        uses: miniscruff/changie-action@v3
+        with:
+          version: latest
+
+      - name: Validate unreleased Changie fragments
+        run: |
+          set -euo pipefail
+          bash scripts/check-changie-fragments.sh --self-test
+          bash scripts/check-changie-fragments.sh
+
       - name: Require a Changie fragment
         if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'no-changelog')
         env:
