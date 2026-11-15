@@ -12,7 +12,7 @@ Use Changie. Add one fragment per pull request:
 changie new
 ```
 
-Fragments live in `.changes/unreleased/`. Never edit `CHANGELOG.md` by hand. Skip the fragment only when the pull request has the `no-changelog` label.
+Fragments live in `.changes/unreleased/`. Each one is YAML with `kind`, `body`, and `time`, and `kind` is one of the kinds in `.changie.yaml`. Quote `body` when it contains `: `. Never edit `CHANGELOG.md` by hand. Skip the fragment only when the pull request has the `no-changelog` label.
 
 ## Layout
 

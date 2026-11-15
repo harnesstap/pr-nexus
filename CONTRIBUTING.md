@@ -122,6 +122,16 @@ changie new
 
 Kinds: Breaking (major), Features and Added (minor), Changed, Fixes, Fixed, Docs, and Dependencies (patch). A pull request without a fragment under `.changes/unreleased/` fails CI unless it has the `no-changelog` label.
 
+Each fragment is YAML with `kind`, `body`, and `time`. `kind` is one of the kinds in `.changie.yaml` (the `key` when a kind has one, otherwise the `label`). Quote `body` when the text contains `: ` (a colon followed by a space). That colon makes the file invalid YAML, and Tag release stops in `changie batch`.
+
+```yaml
+kind: Fixed
+body: "acme: quote a colon followed by a space"
+time: 2026-11-15T00:00:00Z
+```
+
+The `guards` job checks every `.changes/unreleased/*.yaml` file and fails with that file's path. It then runs `changie batch auto --dry-run` with the same Changie action as Tag release (`miniscruff/changie-action@v3`, `version: latest`). `--dry-run` prints the batch and leaves the fragments in place. `scripts/check-changie-fragments.sh` is the same check; it needs Ruby, which GitHub-hosted runners already have, and `changie` on `PATH` for the dry-run.
+
 ## CI
 
 `.github/workflows/ci.yml` runs on pull requests, pushes to `main` and `v*` tags, the merge queue (`merge_group`), a nightly schedule, and manual dispatch.
@@ -138,7 +148,7 @@ Jobs behind `validate`:
 | `web` | `bun run lint`, `typecheck`, and `test` |
 | `desktop` | Tags and dispatch only: macOS tests and `.app` (uploaded for 7 days), Windows build |
 | `deny` | `cargo deny check` |
-| `guards` | actionlint, and a Changie fragment on pull requests |
+| `guards` | actionlint; on pull requests, a Changie fragment unless the PR has `no-changelog`; every `.changes/unreleased/*.yaml` file parses and has `kind`, `body`, and `time`, then `changie batch auto --dry-run` with Tag release's Changie |
 
 Linux and Windows are built in CI (Windows on tags and dispatch). They are not attached to GitHub releases.
 
