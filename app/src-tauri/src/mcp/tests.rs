@@ -374,6 +374,10 @@ async fn an_extra_host_is_allowed_on_the_same_port_and_the_token_stays_required(
         .await
         .unwrap();
     assert_eq!(view.status.url.as_deref(), Some(h.url.as_str()));
+    assert!(
+        std::net::TcpListener::bind(("127.0.0.1", port)).is_err(),
+        "the extra-host restart released {port}"
+    );
     assert_eq!(
         view.settings.extra_allowed_hosts,
         vec![

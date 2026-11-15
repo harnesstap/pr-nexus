@@ -98,6 +98,40 @@ impl Loopback {
         Ok(Self { listener, target })
     }
 
+    /// Bind `127.0.0.1:0` and keep that socket. The redirect URI uses the
+    /// port the kernel assigned, so nothing else can take it first.
+    /// `uri_host` is only the name in the URI (`127.0.0.1` or `localhost`);
+    /// the socket is always loopback.
+    pub async fn bind_ephemeral(uri_host: &str, path: &str) -> Result<Self, SlackAuthError> {
+        if !matches!(uri_host, "127.0.0.1" | "localhost") {
+            return Err(SlackAuthError::InvalidRedirect(format!(
+                "http://{uri_host}{path}: the host must be 127.0.0.1 or localhost"
+            )));
+        }
+        if !path.starts_with('/') || path.contains(['?', '#', '@', ' ', '\\']) {
+            return Err(SlackAuthError::InvalidRedirect(format!(
+                "{path}: the path must be a single absolute path"
+            )));
+        }
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .map_err(|err| SlackAuthError::Listener(err.to_string()))?;
+        let port = listener
+            .local_addr()
+            .map_err(|err| SlackAuthError::Listener(err.to_string()))?
+            .port();
+        let target = parse_redirect(&format!("http://{uri_host}:{port}{path}"))?;
+        Ok(Self { listener, target })
+    }
+
+    pub fn redirect_uri(&self) -> &str {
+        &self.target.uri
+    }
+
+    pub fn port(&self) -> u16 {
+        self.target.port
+    }
+
     /// Wait for the redirect carrying `expected_state`.
     pub async fn wait(
         self,
@@ -263,19 +297,27 @@ mod tests {
         out
     }
 
-    fn free_port() -> u16 {
-        std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port()
+    #[tokio::test]
+    async fn ephemeral_bind_stays_on_loopback() {
+        let err = match Loopback::bind_ephemeral("evil.example", "/cb").await {
+            Err(err) => err,
+            Ok(_) => panic!("a non-loopback host was bound"),
+        };
+        assert!(matches!(err, SlackAuthError::InvalidRedirect(_)), "{err}");
+        let err = match Loopback::bind_ephemeral("127.0.0.1", "cb").await {
+            Err(err) => err,
+            Ok(_) => panic!("a relative path was bound"),
+        };
+        assert!(matches!(err, SlackAuthError::InvalidRedirect(_)), "{err}");
+        let bound = Loopback::bind_ephemeral("localhost", "/cb").await.unwrap();
+        assert!(bound.redirect_uri().starts_with("http://localhost:"));
+        assert_ne!(bound.port(), 0);
     }
 
     #[tokio::test]
     async fn ignores_strays_and_returns_the_matching_callback() {
-        let port = free_port();
-        let target = parse_redirect(&format!("http://127.0.0.1:{port}/cb")).unwrap();
-        let loopback = Loopback::bind(target).await.unwrap();
+        let loopback = Loopback::bind_ephemeral("127.0.0.1", "/cb").await.unwrap();
+        let port = loopback.port();
         let cancel = CancelHandle::new();
         let waiter =
             tokio::spawn(async move { loopback.wait("s1", Duration::from_secs(5), &cancel).await });
@@ -296,10 +338,12 @@ mod tests {
 
     #[tokio::test]
     async fn busy_port_denied_timeout_and_cancel() {
-        let port = free_port();
-        let target = parse_redirect(&format!("http://127.0.0.1:{port}/cb")).unwrap();
-        let first = Loopback::bind(target.clone()).await.unwrap();
-        let err = Loopback::bind(target.clone()).await.err().unwrap();
+        let first = Loopback::bind_ephemeral("127.0.0.1", "/cb").await.unwrap();
+        let port = first.port();
+        let err = Loopback::bind(parse_redirect(first.redirect_uri()).unwrap())
+            .await
+            .err()
+            .unwrap();
         assert_eq!(err, SlackAuthError::PortInUse(port));
         assert!(err.to_string().contains(&format!("Port {port} is in use")));
 
@@ -312,14 +356,16 @@ mod tests {
             Err(SlackAuthError::Denied("access_denied".into()))
         );
 
-        let timed = Loopback::bind(target.clone()).await.unwrap();
+        // A fresh socket. Rebinding the port `first` just released races
+        // with every other test that asks the kernel for a free port.
+        let timed = Loopback::bind_ephemeral("127.0.0.1", "/cb").await.unwrap();
         let cancel = CancelHandle::new();
         assert_eq!(
             timed.wait("s", Duration::from_millis(50), &cancel).await,
             Err(SlackAuthError::Timeout)
         );
 
-        let cancelled = Loopback::bind(target).await.unwrap();
+        let cancelled = Loopback::bind_ephemeral("127.0.0.1", "/cb").await.unwrap();
         let cancel = CancelHandle::new();
         cancel.cancel();
         assert_eq!(
