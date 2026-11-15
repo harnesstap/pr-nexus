@@ -62,7 +62,8 @@ const secondary =
  * The floating bar under the list (§8.2). It is centered in the list column
  * and never wider than it, so it stays clear of the detail panel; as the
  * column narrows, Add to project and Copy as Markdown move into the More
- * menu, then the count and the Slack button shorten. More is always there:
+ * menu, then the count and the Slack button shorten. If the shortened bar
+ * still does not fit, it wraps onto a second line. More is always there:
  * it holds mark read, snooze, mute, Close, and Add to merge queue when a
  * selected pull request's base branch requires one. Add and Copy join it
  * when the column is narrow. Clear and the Slack button always stay visible.
@@ -150,18 +151,15 @@ export function SelectionBar({
     <div
       ref={hostRef}
       data-testid="selection-bar-host"
-      className="pointer-events-none absolute inset-x-0 bottom-4 flex justify-center px-4"
+      className="pointer-events-none absolute inset-x-0 bottom-4 z-20 flex justify-center px-4"
     >
       <div
         role="region"
         aria-label="Selection actions"
         data-layout={layout}
-        className={`pointer-events-auto flex max-w-full items-center rounded-lg border border-slate-700 bg-slate-900 text-sm shadow-lg ${layout === "compact" ? "gap-2 px-3 py-2" : "gap-4 px-5 py-2.5"}`}
+        className={`pointer-events-auto flex max-w-full flex-wrap items-center rounded-lg border border-slate-700 bg-slate-900 text-sm shadow-lg ${layout === "compact" ? "gap-2 px-3 py-2" : "gap-4 px-5 py-2.5"}`}
       >
-        <span
-          aria-live="polite"
-          className="min-w-0 truncate whitespace-nowrap text-slate-300"
-        >
+        <span aria-live="polite" className="shrink-0 whitespace-nowrap text-slate-300">
           {countText}
         </span>
         <span aria-hidden="true" className="h-6 w-px shrink-0 bg-slate-700" />

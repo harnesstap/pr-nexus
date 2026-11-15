@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { CloseIcon } from "../icons";
 import { plainText } from "../textInput";
 
@@ -22,6 +22,8 @@ export function RepoPicker({
 }) {
   const [open, setOpen] = useState(false);
   const [find, setFind] = useState("");
+  /** Grow left when the list column has no room to the right of the button. */
+  const [flip, setFlip] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   const findRef = useRef<HTMLInputElement>(null);
   const listId = useId();
@@ -32,6 +34,19 @@ export function RepoPicker({
   const wide = chosen === 0 ? "Repository" : chosen === 1 ? selected[0] : `${chosen} repositories`;
   const query = find.trim().toLowerCase();
   const shown = options.filter((option) => option.name.toLowerCase().includes(query));
+
+  useLayoutEffect(() => {
+    if (!open || !root.current) {
+      return;
+    }
+    const button = root.current.getBoundingClientRect();
+    const bounds = root.current.closest("[role='toolbar']")?.getBoundingClientRect();
+    const left = bounds?.left ?? 0;
+    const right = bounds?.right ?? window.innerWidth;
+    const width = Math.min(288, right - left);
+    const roomRight = right - button.left;
+    setFlip(roomRight < width && button.right - left >= width);
+  }, [open]);
 
   useEffect(() => {
     if (!open) {
@@ -68,7 +83,7 @@ export function RepoPicker({
   }
 
   return (
-    <div ref={root} className="relative shrink-0">
+    <div ref={root} className="relative max-w-full shrink-0">
       <div className={`flex h-8 items-center rounded-md border text-xs ${chosen > 0 ? "border-violet-400 bg-violet-500/10 text-violet-100" : "border-slate-700 bg-slate-900 text-slate-300"}`}>
         <button
           type="button"
@@ -97,7 +112,7 @@ export function RepoPicker({
         )}
       </div>
       {open && (
-        <div id={listId} role="dialog" aria-label="Repositories" className="absolute left-0 z-30 mt-1 w-72 rounded border border-slate-700 bg-slate-900 p-2 text-sm shadow-xl">
+        <div id={listId} role="dialog" aria-label="Repositories" className={`absolute z-30 mt-1 w-72 max-w-[100cqw] rounded border border-slate-700 bg-slate-900 p-2 text-sm shadow-xl ${flip ? "right-0" : "left-0"}`}>
           <input
             {...plainText}
             ref={findRef}

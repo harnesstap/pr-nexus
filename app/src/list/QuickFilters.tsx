@@ -124,11 +124,11 @@ export function fitChips(keys: readonly ChipKey[], widths: readonly number[], av
 }
 
 /**
- * Quick status filters (§8.2) as compact chips inside the toolbar row: one quick filter at a
+ * Quick status filters (§8.2) as compact chips in the toolbar: one quick filter at a
  * time (clicking the active one again clears it), plus Starred, Unread and Snoozed, which stack with them. Counts
  * cover the current search and menu filters, so a chip says what clicking leaves; a chip with
- * nothing to show is muted. Chips that do not fit the row's width fold into **More (N)**, with
- * active chips kept visible first. Reset in the filter menu turns them off.
+ * nothing to show is muted. Chips that do not fit the width this group was given fold into **More (N)**, with
+ * active chips kept visible first. The toolbar itself may wrap onto another line. Reset in the filter menu turns them off.
  */
 export function QuickFilters({ active, counts, onChange, starred, starredCount, onStarredChange, unread, unreadCount, onUnreadChange, snoozed, snoozedCount, onSnoozedChange }: Props) {
   const isOn = (key: ChipKey) => stackOn(key, { starred, unread, snoozed, active });
@@ -179,7 +179,7 @@ export function QuickFilters({ active, counts, onChange, starred, starredCount, 
 
   const folded = KEYS.filter((key) => !shown.has(key));
   return (
-    <div ref={box} role="group" aria-label="Quick filters" className="relative flex h-8 min-w-20 flex-1 flex-nowrap items-center gap-1 overflow-visible">
+    <div ref={box} role="group" aria-label="Quick filters" className="relative flex h-8 min-w-24 max-w-full grow basis-24 flex-nowrap items-center gap-1">
       {/* A zero-size clip so the measuring row cannot widen the toolbar's scroll width. */}
       <div className="pointer-events-none absolute left-0 top-0 h-0 w-0 overflow-hidden" inert>
         <div ref={ruler} aria-hidden="true" className="invisible flex w-max gap-1">

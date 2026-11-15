@@ -64,8 +64,8 @@ export function SearchField({ value, onChange, searching = false, inputRef, layo
 
   const toolbar = layout === "toolbar";
   return (
-    <div className={toolbar ? "relative min-w-0 flex-[2]" : "relative w-full"}>
-      <label className="flex h-8 w-full min-w-0 items-center gap-1.5 rounded-md border border-slate-700 bg-slate-900 px-2 text-sm focus-within:border-violet-400">
+    <div className={toolbar ? "relative min-w-32 flex-1" : "relative w-full"}>
+      <label className="flex h-8 w-full min-w-0 items-center gap-1.5 overflow-hidden rounded-md border border-slate-700 bg-slate-900 px-2 text-sm focus-within:border-violet-400">
         <Tooltip
           label="Search or filter"
           shortcut={toolbar ? hint("search") : undefined}
