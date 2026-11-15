@@ -128,6 +128,7 @@ test("the Add to project popover anchors to More when folded", () => {
 test("a very narrow column shortens the count and the Slack button but keeps it and Clear", () => {
   const { region, onRequest, onClear } = bar(400, { hidden: 2 });
   expect(region.getAttribute("data-layout")).toBe("compact");
+  expect(region.className).toContain("flex-wrap");
   expect(region.textContent).toContain("5 (+2 hidden)");
   const slack = within(region).getByRole("button", {
     name: "Request / bump on Slack",

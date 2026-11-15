@@ -1001,7 +1001,7 @@ test("with the panel open, rows go compact: wrapped title, status dot and Slack 
   expect(document.querySelector("[data-testid='reviewer-avatars']")).toBeNull();
 });
 
-test("every list command sits on the one toolbar row, the header keeps only the title", async () => {
+test("list commands stay in the toolbar, and the header keeps only the title", async () => {
   const { container } = await show(<Harness rows={rows} />);
   const toolbar = screen.getByRole("toolbar", { name: "List toolbar" });
   const inToolbar = within(toolbar);
@@ -1013,11 +1013,25 @@ test("every list command sits on the one toolbar row, the header keeps only the 
   expect(inToolbar.getByRole("group", { name: "Quick filters" }).className).toContain("flex-nowrap");
   expect(inToolbar.getByRole("button", { name: "Repository" })).toBeInTheDocument();
   expect(inToolbar.getByRole("button", { name: "Filter menu" })).toBeInTheDocument();
-  expect(toolbar.className).toContain("flex-nowrap");
+  expect(toolbar.className).toContain("flex-wrap");
+  expect(toolbar.className).not.toContain("flex-nowrap");
   const header = container.querySelector("header") as HTMLElement;
   expect(within(header).getByRole("heading", { name: "My PRs" })).toBeInTheDocument();
   expect(within(header).queryByRole("textbox")).toBeNull();
   expect(within(header).queryByRole("button")).toBeNull();
+});
+
+test("the search field keeps a minimum width and stays with the filter button", async () => {
+  await show(<Harness rows={rows} />);
+  const toolbar = screen.getByRole("toolbar", { name: "List toolbar" });
+  const search = within(toolbar).getByRole("textbox", { name: "Search" });
+  const frame = search.closest("label")?.parentElement;
+  expect(frame?.className).toContain("min-w-32");
+  const cluster = frame?.parentElement;
+  expect(cluster?.className).toContain("min-w-52");
+  expect(cluster?.className).toContain("flex-1");
+  expect(within(cluster as HTMLElement).getByRole("button", { name: "Filter menu" })).toBeInTheDocument();
+  expect(within(cluster as HTMLElement).getByRole("button", { name: "More" })).toBeInTheDocument();
 });
 
 

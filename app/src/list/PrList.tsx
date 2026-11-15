@@ -681,11 +681,12 @@ export function PrList({
           </p>
         </div>
       </header>
-      {/* One toolbar row for every list command, quick filter chips included: controls share one height and never
-          wrap. Narrow widths (container queries) shrink the search, drop text labels, then the plain PR count; chips
-          that still do not fit fold into More (N). */}
-      <div className="@container border-y border-slate-800 px-4 py-2 text-sm text-slate-300">
-        <div role="toolbar" aria-label="List toolbar" className="flex h-8 min-w-0 flex-nowrap items-center gap-2">
+      {/* Controls share one row while they fit. On a narrow list (detail panel open, or the
+          window at its minimum) the row wraps instead of overlapping: the search keeps 8rem,
+          then moves with the filter button and More. Chips fold into More only inside the
+          width they were given. */}
+      <div className="@container border-y border-slate-800 px-4 py-1.5 text-sm text-slate-300">
+        <div role="toolbar" aria-label="List toolbar" className="flex w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5">
           <TriCheckbox label="Select all" state={global} onToggle={() => setSelected(toggleGlobal(ids, selected))} />
           <span className={`shrink-0 whitespace-nowrap ${checkState(ids, selected) === "none" && hidden === 0 ? "hidden @4xl:inline" : ""}`}>{header}</span>
           <QuickFilters
@@ -707,39 +708,42 @@ export function PrList({
             selected={view.filters.repos}
             onChange={(repos) => onViewChange({ ...view, filters: { ...view.filters, repos } })}
           />
-          <SearchField value={field} onChange={setSearch} searching={searching || githubSearching} inputRef={searchRef} />
-          <FilterMenu view={view} orgs={page?.orgs ?? []} menu={menu} setMenu={setMenu} onViewChange={onViewChange} fromQuery={queryOrders} />
-          {viewKey === "mine" && (
-            <div ref={standupMenuRef} className="relative shrink-0">
-              <Tooltip label="More" detail="Copy a stand-up recap of your pull requests" align="end">
-                <button
-                  type="button"
-                  aria-label="More"
-                  aria-haspopup="menu"
-                  aria-expanded={standupMenu}
-                  className="flex h-8 w-8 items-center justify-center rounded-md text-slate-400 hover:bg-slate-800 hover:text-slate-200"
-                  onClick={() => setStandupMenu((open) => !open)}
-                >
-                  <MoreIcon />
-                </button>
-              </Tooltip>
-              {standupMenu && (
-                <div role="menu" aria-label="More" className="absolute right-0 top-8 z-30 w-max min-w-48 rounded-md border border-slate-700 bg-slate-900 py-1 text-sm shadow-xl">
+          {/* Search, the filter button and More travel together so a wrap cannot leave the funnel on top of the field. */}
+          <div className="flex min-w-52 flex-1 basis-52 items-center gap-2">
+            <SearchField value={field} onChange={setSearch} searching={searching || githubSearching} inputRef={searchRef} />
+            <FilterMenu view={view} orgs={page?.orgs ?? []} menu={menu} setMenu={setMenu} onViewChange={onViewChange} fromQuery={queryOrders} />
+            {viewKey === "mine" && (
+              <div ref={standupMenuRef} className="relative shrink-0">
+                <Tooltip label="More" detail="Copy a stand-up recap of your pull requests" align="end">
                   <button
                     type="button"
-                    role="menuitem"
-                    className="block w-full px-3 py-1.5 text-left text-slate-200 hover:bg-slate-800"
-                    onClick={() => {
-                      setStandupMenu(false);
-                      onCopyStandup?.();
-                    }}
+                    aria-label="More"
+                    aria-haspopup="menu"
+                    aria-expanded={standupMenu}
+                    className="flex h-8 w-8 items-center justify-center rounded-md text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+                    onClick={() => setStandupMenu((open) => !open)}
                   >
-                    Copy stand-up recap
+                    <MoreIcon />
                   </button>
-                </div>
-              )}
-            </div>
-          )}
+                </Tooltip>
+                {standupMenu && (
+                  <div role="menu" aria-label="More" className="absolute right-0 top-8 z-30 w-max min-w-48 max-w-[100cqw] rounded-md border border-slate-700 bg-slate-900 py-1 text-sm shadow-xl">
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="block w-full px-3 py-1.5 text-left text-slate-200 hover:bg-slate-800"
+                      onClick={() => {
+                        setStandupMenu(false);
+                        onCopyStandup?.();
+                      }}
+                    >
+                      Copy stand-up recap
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </div>
         {githubError !== "" && (
           <p role="status" data-github-query-error className="mt-1 truncate text-xs text-slate-400">
@@ -749,7 +753,7 @@ export function PrList({
       </div>
       <div
         ref={listRef}
-        className={`@container min-h-0 flex-1 overflow-auto px-3 pt-2 ${selected.size > 0 ? "pb-32" : "pb-20"}`}
+        className={`@container min-h-0 min-w-0 flex-1 overflow-auto px-3 pt-2 ${selected.size > 0 ? "pb-32" : "pb-20"}`}
         aria-label="Pull requests"
         aria-busy={list.pending || loadingMore}
         role="region"
@@ -1647,7 +1651,7 @@ function FilterMenu({
         </button>
       </Tooltip>
       {menu && (
-        <div role="menu" className="absolute right-0 z-20 mt-1 w-64 rounded border border-slate-700 bg-slate-900 p-2 text-sm">
+        <div role="menu" className="absolute right-0 z-20 mt-1 w-64 max-w-[100cqw] rounded border border-slate-700 bg-slate-900 p-2 text-sm">
           <MenuRow label="Grouping" value={labelOf(GROUPINGS, view.grouping)} onClick={() => setMenu(menu === "grouping" ? "root" : "grouping")} />
           {menu === "grouping" && (
             <ChoiceList
