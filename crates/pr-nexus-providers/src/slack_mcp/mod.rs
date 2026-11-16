@@ -7,9 +7,11 @@
 //! - [`loopback`] and [`http`]: the redirect listener and Slack's OAuth error
 //!   shape.
 //!
-//! The only direct Web API call is `auth.test`: right after sign-in, to learn
-//! the workspace name and domain (§7.11 step 4), and at startup, to check a
-//! saved grant. Nothing else bypasses MCP.
+//! The only direct Web API calls are `auth.test` and `team.info`. `auth.test`
+//! runs right after sign-in and again when a saved grant is rechecked.
+//! `team.info` only pairs that team's name with its domain, so one workspace's
+//! host is not stored on another. A `missing_scope` answer is ignored.
+//! Nothing is posted, and nothing else bypasses MCP.
 
 pub mod http;
 pub mod loopback;
@@ -20,13 +22,13 @@ pub mod schema;
 pub use loopback::CancelHandle;
 pub use mcp::{RmcpSession, SessionConfig, SlackMcpChatProvider, ToolCaller};
 pub use oauth::{
-    ConnectConfig, Connected, TokenState, connect, connect_with_listener, enterprise_id,
-    token_state,
+    ConnectConfig, Connected, GrantProbe, TokenState, WorkspaceIdentity, connect,
+    connect_with_listener, enterprise_id, probe_grant, token_state,
 };
 
 /// `slack.mcp.url` default.
 pub const SLACK_MCP_URL: &str = "https://mcp.slack.com/mcp";
-/// Base of the one Web API call (`auth.test`).
+/// Base of the Web API calls (`auth.test`, `team.info`).
 pub const SLACK_WEB_API: &str = "https://slack.com/api";
 
 /// User scopes requested at sign-in (§7.11).

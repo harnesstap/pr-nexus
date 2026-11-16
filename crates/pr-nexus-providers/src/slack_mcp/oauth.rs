@@ -173,59 +173,79 @@ struct AuthTest {
     enterprise_id: Option<String>,
 }
 
-/// Team and user from the token response, completed by `auth.test`.
+/// Team and user from the token response, completed by `auth.test` and `team.info`.
 ///
-/// `auth.test` is the documented exception to "MCP only": the token response
-/// has IDs but no names, and no MCP tool returns the workspace domain.
+/// These two calls are the documented exception to "MCP only": the token
+/// response has IDs but no domain, and no MCP tool returns the workspace
+/// domain. `team.info` supplies the name and domain as one pair for this team.
+/// An `auth.test` name, host, or user from a different team is ignored, so
+/// one workspace cannot be stored with another's domain.
 async fn identify(
     web_api_base: &str,
     token: &OAuthTokenResponse,
 ) -> Result<Connected, SlackAuthError> {
     let extra = &token.extra_fields().0;
-    let pick = |path: &[&str]| {
-        let mut value: Option<&Value> = extra.get(path[0]);
-        for key in &path[1..] {
-            value = value.and_then(|inner| inner.get(*key));
+    let token_team_id = extra_str(extra, &["team", "id"]);
+    let token_team_name = extra_str(extra, &["team", "name"]);
+    let token_user_id = extra_str(extra, &["authed_user", "id"]);
+    let found = match read_identity(
+        web_api_base,
+        token.access_token().secret(),
+        token_team_id.as_deref(),
+        token_team_name.as_deref(),
+        token_user_id.as_deref(),
+        None,
+    )
+    .await
+    {
+        Ok(found) => found,
+        Err(err)
+            if filled(token_team_id.as_deref()).is_some()
+                && filled(token_user_id.as_deref()).is_some() =>
+        {
+            let identity = pair_identity(
+                token_team_id.as_deref(),
+                token_team_name.as_deref(),
+                None,
+                &AuthFacts::default(),
+                None,
+            )
+            .ok_or(SlackAuthError::Identity(err))?;
+            Identified {
+                identity,
+                user_id: token_user_id.unwrap_or_default(),
+            }
         }
-        value.and_then(Value::as_str).map(str::to_owned)
+        Err(err) => return Err(SlackAuthError::Identity(err)),
     };
-    let mut team_id = pick(&["team", "id"]);
-    let mut team_name = pick(&["team", "name"]);
-    let mut user_id = pick(&["authed_user", "id"]);
-    let mut domain = None;
-    let mut user_name = None;
+    Ok(connected_from(found))
+}
 
-    match auth_test(web_api_base, token.access_token().secret()).await {
-        Ok(test) => {
-            team_id = team_id.or(test.team_id);
-            user_id = user_id.or(test.user_id);
-            team_name = test.team.or(team_name);
-            user_name = test.user;
-            domain = test.url.as_deref().and_then(domain_from_url);
-        }
-        Err(err) if team_id.is_none() || user_id.is_none() => {
-            return Err(SlackAuthError::Identity(err));
-        }
-        Err(_) => {}
-    }
-    let team_id = team_id.ok_or_else(|| SlackAuthError::Identity("no team ID".into()))?;
-    let user_id = user_id.ok_or_else(|| SlackAuthError::Identity("no user ID".into()))?;
-    Ok(Connected {
-        team_name: team_name.unwrap_or_else(|| team_id.clone()),
-        domain: domain.unwrap_or_else(|| team_id.to_ascii_lowercase()),
-        user_name: user_name.unwrap_or_else(|| user_id.clone()),
+fn connected_from(found: Identified) -> Connected {
+    let user_name = if found.identity.user_name.is_empty() {
+        found.user_id.clone()
+    } else {
+        found.identity.user_name.clone()
+    };
+    Connected {
+        team_name: found.identity.team_name,
+        domain: found.identity.domain,
+        user_name,
         keychain_key: String::new(),
-        team_id,
-        user_id,
-    })
+        team_id: found.identity.team_id,
+        user_id: found.user_id,
+    }
+}
+
+fn web_client() -> Result<reqwest013::Client, String> {
+    reqwest013::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|err| err.to_string())
 }
 
 async fn auth_test(base: &str, token: &str) -> Result<AuthTest, String> {
-    let client = reqwest013::Client::builder()
-        .timeout(Duration::from_secs(20))
-        .build()
-        .map_err(|err| err.to_string())?;
-    let response = client
+    let response = web_client()?
         .post(format!("{}/auth.test", base.trim_end_matches('/')))
         .bearer_auth(token)
         .send()
@@ -236,6 +256,292 @@ async fn auth_test(base: &str, token: &str) -> Result<AuthTest, String> {
         return Err(format!("auth.test: {}", body.error.unwrap_or_default()));
     }
     Ok(body)
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct AuthFacts {
+    team_id: Option<String>,
+    team_name: Option<String>,
+    domain: Option<String>,
+    user_name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TeamFacts {
+    team_id: String,
+    team_name: String,
+    domain: String,
+}
+
+/// Name, domain, and handle that belong to one team id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceIdentity {
+    pub team_id: String,
+    pub team_name: String,
+    pub domain: String,
+    /// Slack handle from `auth.test`. Empty when that answer was for another team.
+    pub user_name: String,
+}
+
+/// One recheck of a saved grant. `error` is set only when Slack could not be reached,
+/// and it never contains a token.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GrantProbe {
+    pub state: TokenState,
+    pub error: String,
+    pub identity: Option<WorkspaceIdentity>,
+}
+
+struct Identified {
+    identity: WorkspaceIdentity,
+    user_id: String,
+}
+
+#[derive(Deserialize)]
+struct TeamInfoBody {
+    ok: bool,
+    error: Option<String>,
+    team: Option<TeamInfoTeam>,
+}
+
+#[derive(Deserialize)]
+struct TeamInfoTeam {
+    id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    domain: String,
+}
+
+fn filled(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|text| !text.is_empty())
+}
+
+fn extra_str(extra: &std::collections::HashMap<String, Value>, path: &[&str]) -> Option<String> {
+    let mut value = extra.get(path.first().copied()?);
+    for key in &path[1..] {
+        value = value.and_then(|inner| inner.get(*key));
+    }
+    value.and_then(Value::as_str).map(str::to_owned)
+}
+
+fn facts_from_test(test: &AuthTest) -> AuthFacts {
+    AuthFacts {
+        team_id: test
+            .team_id
+            .as_deref()
+            .and_then(|id| filled(Some(id)))
+            .map(str::to_owned),
+        team_name: test
+            .team
+            .as_deref()
+            .and_then(|name| filled(Some(name)))
+            .map(str::to_owned),
+        domain: test.url.as_deref().and_then(domain_from_url),
+        user_name: test
+            .user
+            .as_deref()
+            .and_then(|name| filled(Some(name)))
+            .map(str::to_owned),
+    }
+}
+
+/// `acme.slack.com` or `acme` → `acme`. A host with an extra dot is rejected.
+fn workspace_domain(raw: &str) -> Option<String> {
+    let raw = raw.trim().trim_end_matches('/').to_ascii_lowercase();
+    let raw = raw
+        .strip_prefix("https://")
+        .or_else(|| raw.strip_prefix("http://"))
+        .unwrap_or(&raw);
+    let raw = raw.strip_suffix(".slack.com").unwrap_or(raw);
+    let raw = raw.split('/').next().unwrap_or(raw);
+    (!raw.is_empty() && !raw.contains('.') && !raw.contains(' ')).then(|| raw.to_owned())
+}
+
+/// Pair a name with the domain of the same team.
+///
+/// `expected_team_id` is the row being refreshed. `auth.test` fields are used
+/// only when that answer names this team (or names no team). `team.info` wins
+/// for both the name and the domain when its id matches, so a host from
+/// another workspace is not stored here.
+fn pair_identity(
+    token_team_id: Option<&str>,
+    token_team_name: Option<&str>,
+    expected_team_id: Option<&str>,
+    auth: &AuthFacts,
+    team: Option<&TeamFacts>,
+) -> Option<WorkspaceIdentity> {
+    let team_id = filled(expected_team_id)
+        .or(filled(token_team_id))
+        .or(filled(auth.team_id.as_deref()))
+        .or(team.and_then(|info| filled(Some(info.team_id.as_str()))))?;
+    let auth_matches = match filled(auth.team_id.as_deref()) {
+        Some(id) => id == team_id,
+        None => true,
+    };
+    let auth_name = auth_matches
+        .then(|| filled(auth.team_name.as_deref()))
+        .flatten();
+    let auth_domain = auth_matches
+        .then(|| filled(auth.domain.as_deref()))
+        .flatten();
+    let auth_user = auth_matches
+        .then(|| filled(auth.user_name.as_deref()))
+        .flatten();
+    let info =
+        team.filter(|info| info.team_id == team_id && filled(Some(info.domain.as_str())).is_some());
+    let (team_name, domain) = if let Some(info) = info {
+        let name = filled(Some(info.team_name.as_str()))
+            .or(auth_name)
+            .or(filled(token_team_name))
+            .unwrap_or(team_id);
+        (name.to_owned(), info.domain.trim().to_owned())
+    } else {
+        let name = auth_name.or(filled(token_team_name)).unwrap_or(team_id);
+        let domain = auth_domain
+            .map(str::to_owned)
+            .unwrap_or_else(|| team_id.to_ascii_lowercase());
+        (name.to_owned(), domain)
+    };
+    Some(WorkspaceIdentity {
+        team_id: team_id.to_owned(),
+        team_name,
+        domain,
+        user_name: auth_user.unwrap_or("").to_owned(),
+    })
+}
+
+async fn team_info(base: &str, token: &str) -> Result<TeamFacts, String> {
+    let response = web_client()?
+        .post(format!("{}/team.info", base.trim_end_matches('/')))
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(|err| err.to_string())?;
+    let body: TeamInfoBody = response.json().await.map_err(|err| err.to_string())?;
+    if !body.ok {
+        return Err(format!("team.info: {}", body.error.unwrap_or_default()));
+    }
+    let team = body.team.ok_or_else(|| "team.info: no team".to_owned())?;
+    let domain = workspace_domain(&team.domain).ok_or_else(|| "team.info: no domain".to_owned())?;
+    let team_id = team.id.trim();
+    if team_id.is_empty() {
+        return Err("team.info: no team id".into());
+    }
+    Ok(TeamFacts {
+        team_id: team_id.to_owned(),
+        team_name: team.name.trim().to_owned(),
+        domain,
+    })
+}
+
+async fn read_identity(
+    web_api_base: &str,
+    access_token: &str,
+    token_team_id: Option<&str>,
+    token_team_name: Option<&str>,
+    token_user_id: Option<&str>,
+    expected_team_id: Option<&str>,
+) -> Result<Identified, String> {
+    let test = auth_test(web_api_base, access_token).await?;
+    let auth = facts_from_test(&test);
+    let team = team_info(web_api_base, access_token).await.ok();
+    let identity = pair_identity(
+        token_team_id,
+        token_team_name,
+        expected_team_id,
+        &auth,
+        team.as_ref(),
+    )
+    .ok_or_else(|| "no team ID".to_owned())?;
+    let auth_user_id = match filled(test.team_id.as_deref()) {
+        Some(id) if id != identity.team_id => None,
+        _ => filled(test.user_id.as_deref()),
+    };
+    let user_id = filled(token_user_id)
+        .or(auth_user_id)
+        .ok_or_else(|| "no user ID".to_owned())?
+        .to_owned();
+    Ok(Identified { identity, user_id })
+}
+
+/// Recheck a saved grant, ignoring any previous result. The identity is set
+/// only when `auth.test` accepts the token.
+pub async fn probe_grant(
+    web_api_base: &str,
+    vault: Arc<Vault>,
+    key: &str,
+    expected_team_id: Option<&str>,
+) -> GrantProbe {
+    install_tls_provider();
+    let store = KeychainCredentialStore::new(vault, key.to_owned());
+    let token = match store.load().await {
+        Ok(Some(credentials)) => credentials.token_response,
+        Ok(None) => {
+            return GrantProbe {
+                state: TokenState::Missing,
+                error: String::new(),
+                identity: None,
+            };
+        }
+        Err(err) => {
+            return GrantProbe {
+                state: TokenState::Unknown,
+                error: redact_check_error(&err.to_string()),
+                identity: None,
+            };
+        }
+    };
+    let Some(token) = token else {
+        return GrantProbe {
+            state: TokenState::Missing,
+            error: String::new(),
+            identity: None,
+        };
+    };
+    let extra = &token.extra_fields().0;
+    let refreshable = token.refresh_token().is_some();
+    match read_identity(
+        web_api_base,
+        token.access_token().secret(),
+        extra_str(extra, &["team", "id"]).as_deref(),
+        extra_str(extra, &["team", "name"]).as_deref(),
+        extra_str(extra, &["authed_user", "id"]).as_deref(),
+        expected_team_id,
+    )
+    .await
+    {
+        Ok(found) => GrantProbe {
+            state: TokenState::Valid,
+            error: String::new(),
+            identity: Some(found.identity),
+        },
+        Err(err) => {
+            let state = classify_auth_test_error(&err, refreshable);
+            GrantProbe {
+                error: if state == TokenState::Unknown {
+                    redact_check_error(&err)
+                } else {
+                    String::new()
+                },
+                state,
+                identity: None,
+            }
+        }
+    }
+}
+
+/// Drop anything that might be a token. Callers show this string in the UI.
+fn redact_check_error(err: &str) -> String {
+    let lower = err.to_ascii_lowercase();
+    if lower.contains("xox") || lower.contains("bearer ") {
+        return "Could not check the Slack sign-in.".into();
+    }
+    let trimmed = err.trim();
+    if trimmed.is_empty() {
+        return "Could not reach Slack.".into();
+    }
+    trimmed.chars().take(200).collect()
 }
 
 /// Whether a saved workspace grant still works (§7.11, checked at startup).
@@ -446,6 +752,77 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, SlackAuthError::InvalidRedirect(_)), "{err}");
+    }
+
+    #[test]
+    fn a_foreign_auth_test_does_not_rename_this_workspace() {
+        let auth = AuthFacts {
+            team_id: Some("T0LABS0001".into()),
+            team_name: Some("Acme Labs".into()),
+            domain: Some("acme-labs".into()),
+            user_name: Some("ada".into()),
+        };
+        let identity = pair_identity(
+            Some("T0ACME0001"),
+            Some("Acme"),
+            Some("T0ACME0001"),
+            &auth,
+            None,
+        )
+        .expect("team id");
+        assert_eq!(identity.team_id, "T0ACME0001");
+        assert_eq!(identity.team_name, "Acme");
+        assert_eq!(identity.domain, "t0acme0001");
+        assert!(identity.user_name.is_empty());
+    }
+
+    #[test]
+    fn team_info_pairs_name_and_domain_over_a_swapped_url() {
+        let auth = AuthFacts {
+            team_id: Some("T0ACME0001".into()),
+            team_name: Some("Acme".into()),
+            domain: Some("acme-labs".into()),
+            user_name: Some("ada".into()),
+        };
+        let team = TeamFacts {
+            team_id: "T0ACME0001".into(),
+            team_name: "Acme".into(),
+            domain: "acme".into(),
+        };
+        let identity = pair_identity(
+            Some("T0ACME0001"),
+            Some("Acme"),
+            Some("T0ACME0001"),
+            &auth,
+            Some(&team),
+        )
+        .expect("team id");
+        assert_eq!(identity.team_name, "Acme");
+        assert_eq!(identity.domain, "acme");
+        assert_eq!(identity.user_name, "ada");
+    }
+
+    #[test]
+    fn matching_auth_test_is_used_when_team_info_is_missing() {
+        let auth = AuthFacts {
+            team_id: Some("T0ACME".into()),
+            team_name: Some("Acme Inc".into()),
+            domain: Some("acme".into()),
+            user_name: Some("jdoe".into()),
+        };
+        let identity = pair_identity(Some("T0ACME"), None, None, &auth, None).expect("team id");
+        assert_eq!(identity.team_name, "Acme Inc");
+        assert_eq!(identity.domain, "acme");
+        assert_eq!(identity.user_name, "jdoe");
+    }
+
+    #[test]
+    fn check_errors_never_keep_a_token() {
+        assert_eq!(
+            redact_check_error("auth.test failed for Bearer xoxp-acme"),
+            "Could not check the Slack sign-in."
+        );
+        assert!(!redact_check_error("connection refused").contains("xox"));
     }
 
     #[test]

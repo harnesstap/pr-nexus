@@ -22,6 +22,15 @@ use tauri::Manager;
 
 use crate::error::AppError;
 
+/// One `auth.test` of a saved Slack grant, and when it happened.
+#[derive(Debug, Clone)]
+pub struct SlackTokenCheck {
+    pub state: TokenState,
+    pub checked_at: DateTime<Utc>,
+    /// Shown when `state` is [`TokenState::Unknown`]. Never a token.
+    pub error: String,
+}
+
 pub struct SyncStatus {
     pub phase: String,
     pub message: String,
@@ -153,8 +162,8 @@ pub struct AppState {
     pub owners: Mutex<HashMap<i64, OwnersEntry>>,
     /// The Slack sign-in in progress, if any.
     pub slack_cancel: Mutex<Option<CancelHandle>>,
-    /// Startup `auth.test` result per Slack account (§7.11).
-    pub slack_tokens: Mutex<HashMap<i64, TokenState>>,
+    /// Latest Slack grant check per account (§7.11). A refresh replaces it.
+    pub slack_tokens: Mutex<HashMap<i64, SlackTokenCheck>>,
     /// Upstream sessions behind the Slack tools of the local MCP server.
     pub slack_proxy: crate::mcp::slack::SlackProxy,
     pub sync: Mutex<SyncStatus>,

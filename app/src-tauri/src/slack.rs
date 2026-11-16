@@ -30,7 +30,7 @@ use crate::blocking;
 use crate::commands::SlackIndicator;
 use crate::error::AppError;
 use crate::services::review;
-use crate::state::AppState;
+use crate::state::{AppState, SlackTokenCheck};
 
 type Shared<'a> = State<'a, Arc<AppState>>;
 
@@ -55,6 +55,15 @@ pub struct SlackWorkspace {
     /// adds them. Empty when the grant does not list its scopes.
     #[serde(default)]
     pub scopes_missing: Vec<String>,
+    /// `connected`, `expired`, `missing`, `failed`, or `unchecked`.
+    #[serde(default)]
+    pub check: String,
+    /// When this grant was last checked. Absent until then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checked_at: Option<String>,
+    /// Set when `check` is `failed`. Never a token.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub check_error: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -171,6 +180,7 @@ pub fn workspace_dto(state: &AppState, account: &Account) -> SlackWorkspace {
     let enabled = workspaces.get(priority).is_none_or(|ws| ws.enabled);
     let connected = account.keychain_key.is_some();
     let usable = connected && token_usable(state, account, false);
+    let (check, checked_at, check_error) = check_fields(state, account);
     SlackWorkspace {
         team_id,
         enabled,
@@ -188,7 +198,31 @@ pub fn workspace_dto(state: &AppState, account: &Account) -> SlackWorkspace {
         } else {
             Vec::new()
         },
+        check,
+        checked_at,
+        check_error,
     }
+}
+
+fn check_fields(state: &AppState, account: &Account) -> (String, Option<String>, String) {
+    let cached = lock(&state.slack_tokens).get(&account.id.0).cloned();
+    if state.demo {
+        let at = cached
+            .as_ref()
+            .map(|item| item.checked_at)
+            .unwrap_or_else(Utc::now);
+        return ("connected".into(), Some(at.to_rfc3339()), String::new());
+    }
+    let Some(item) = cached else {
+        return ("unchecked".into(), None, String::new());
+    };
+    let kind = match item.state {
+        TokenState::Valid => "connected",
+        TokenState::Rejected => "expired",
+        TokenState::Missing => "missing",
+        TokenState::Unknown => "failed",
+    };
+    (kind.into(), Some(item.checked_at.to_rfc3339()), item.error)
 }
 
 /// The scopes the saved grant lists, without waiting on a keychain prompt.
@@ -213,7 +247,9 @@ fn token_usable(state: &AppState, account: &Account, wait: bool) -> bool {
         return false;
     };
     let rejected = matches!(
-        lock(&state.slack_tokens).get(&account.id.0),
+        lock(&state.slack_tokens)
+            .get(&account.id.0)
+            .map(|item| item.state),
         Some(TokenState::Missing | TokenState::Rejected)
     );
     let saved = if wait {
@@ -225,31 +261,141 @@ fn token_usable(state: &AppState, account: &Account, wait: bool) -> bool {
 }
 
 /// Check every saved grant not checked yet with `auth.test` (startup and
-/// the first workspace list).
+/// the first workspace list). A later refresh ignores this cache.
 pub async fn validate_tokens(state: &AppState) {
     if state.demo {
         return;
     }
-    let Ok(accounts) = workspace_accounts(&state.store) else {
-        return;
-    };
-    for account in accounts {
-        let Some(key) = account.keychain_key.clone() else {
-            continue;
-        };
-        if lock(&state.slack_tokens).contains_key(&account.id.0) {
-            continue;
-        }
-        let checked =
-            slack_mcp::token_state(slack_mcp::SLACK_WEB_API, state.vault.clone(), &key).await;
-        lock(&state.slack_tokens).insert(account.id.0, checked);
-    }
+    let _ = refresh_grants(state, slack_mcp::SLACK_WEB_API, None, false).await;
 }
 
 /// Remember that Slack rejected an account's token, so Settings offers Reconnect.
 pub(crate) fn mark_rejected(state: &AppState, account: i64) {
     lock(&state.chats).remove(&account);
-    lock(&state.slack_tokens).insert(account, TokenState::Rejected);
+    record_check(state, account, TokenState::Rejected, "");
+}
+
+fn record_check(state: &AppState, account: i64, token_state: TokenState, error: &str) {
+    lock(&state.slack_tokens).insert(
+        account,
+        SlackTokenCheck {
+            state: token_state,
+            checked_at: Utc::now(),
+            error: error.to_owned(),
+        },
+    );
+}
+
+/// Re-run `auth.test` for every saved grant, or one account. The session
+/// cache is ignored. Token state, team name, domain, and handle are updated
+/// from Slack's answer. A failed check is a row status, not a command error.
+#[tauri::command]
+pub async fn slack_refresh_workspaces(
+    app: Shared<'_>,
+    account_id: Option<i64>,
+) -> Result<Vec<SlackWorkspace>, AppError> {
+    let state = app.inner().clone();
+    refresh_grants(&state, slack_mcp::SLACK_WEB_API, account_id, true).await
+}
+
+async fn refresh_grants(
+    state: &AppState,
+    base: &str,
+    account_id: Option<i64>,
+    force: bool,
+) -> Result<Vec<SlackWorkspace>, AppError> {
+    let accounts = workspace_accounts(&state.store)?;
+    if let Some(id) = account_id
+        && !accounts.iter().any(|account| account.id.0 == id)
+    {
+        return Err(AppError::new("not_found", "Slack workspace not found"));
+    }
+    if state.demo {
+        for account in &accounts {
+            if account_id.is_some_and(|id| id != account.id.0) {
+                continue;
+            }
+            if account.keychain_key.is_some() {
+                record_check(state, account.id.0, TokenState::Valid, "");
+            }
+        }
+        return workspace_list(state);
+    }
+    for account in &accounts {
+        if account_id.is_some_and(|id| id != account.id.0) {
+            continue;
+        }
+        let Some(key) = account.keychain_key.clone() else {
+            continue;
+        };
+        if !force && lock(&state.slack_tokens).contains_key(&account.id.0) {
+            continue;
+        }
+        let probe =
+            slack_mcp::probe_grant(base, state.vault.clone(), &key, account.slack_team_id()).await;
+        if probe.state == TokenState::Valid
+            && let Some(identity) = probe.identity.as_ref()
+        {
+            apply_identity(state, account, identity)?;
+        }
+        record_check(state, account.id.0, probe.state, &probe.error);
+    }
+    workspace_list(state)
+}
+
+/// Write the name, domain, and handle onto this account id. A domain that is
+/// only the lowercased team id does not replace a real stored domain, and a
+/// name or host for a different team is not applied.
+fn apply_identity(
+    state: &AppState,
+    account: &Account,
+    identity: &slack_mcp::WorkspaceIdentity,
+) -> Result<(), CoreError> {
+    let Some(row_team) = account.slack_team_id() else {
+        return Ok(());
+    };
+    if identity.team_id != row_team {
+        return Ok(());
+    }
+    let domain = kept_domain(
+        account.slack_workspace.as_deref(),
+        &identity.domain,
+        row_team,
+    );
+    let name = if identity.team_name == identity.team_id
+        && !account.display_name.is_empty()
+        && account.display_name != identity.team_id
+    {
+        account.display_name.clone()
+    } else {
+        identity.team_name.clone()
+    };
+    let login = if identity.user_name.is_empty() {
+        account.login.clone()
+    } else {
+        identity.user_name.clone()
+    };
+    if name == account.display_name
+        && account.slack_workspace.as_deref() == Some(domain.as_str())
+        && login == account.login
+    {
+        return Ok(());
+    }
+    state
+        .store
+        .update_slack_profile(account.id, name, domain, login)
+}
+
+fn kept_domain(stored: Option<&str>, next: &str, team_id: &str) -> String {
+    let fallback = team_id.to_ascii_lowercase();
+    if next.eq_ignore_ascii_case(&fallback)
+        && let Some(stored) = stored
+            .map(str::trim)
+            .filter(|domain| !domain.is_empty() && !domain.eq_ignore_ascii_case(&fallback))
+    {
+        return stored.to_owned();
+    }
+    next.to_owned()
 }
 
 #[tauri::command]
@@ -371,7 +517,7 @@ pub async fn slack_connect(
         created_at: Utc::now(),
     })?;
     lock(&state.chats).remove(&account.id.0);
-    lock(&state.slack_tokens).insert(account.id.0, TokenState::Valid);
+    record_check(&state, account.id.0, TokenState::Valid, "");
     Ok(workspace_dto(&state, &account))
 }
 
@@ -1610,5 +1756,277 @@ mod tests {
             pr_nexus_core::review::permalink::parse(posted.permalink.as_deref().unwrap()).unwrap();
         assert_eq!(link.ts, posted.ts);
         assert_eq!(link.workspace, "acme");
+    }
+
+    fn grant(token: &str) -> String {
+        serde_json::json!({
+            "client_id": "111.222",
+            "token_response": {
+                "access_token": token,
+                "token_type": "user",
+                "refresh_token": "xoxe-1-refresh",
+            }
+        })
+        .to_string()
+    }
+
+    fn slack_account(name: &str, domain: &str, team: &str, user: &str) -> Account {
+        Account {
+            id: AccountId(0),
+            kind: AccountKind::Slack,
+            display_name: name.into(),
+            host: format!("{domain}.slack.com"),
+            external_id: format!("{team}:{user}"),
+            slack_workspace: Some(domain.into()),
+            login: "ada".into(),
+            auth_mode: AuthMode::SlackMcpOauth,
+            keychain_key: Some(slack_mcp::token_key(team, user)),
+            created_at: Utc::now(),
+        }
+    }
+
+    fn bearer(headers: &axum::http::HeaderMap) -> String {
+        headers
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.strip_prefix("Bearer "))
+            .unwrap_or("")
+            .to_owned()
+    }
+
+    #[derive(Clone)]
+    struct ApiHits(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+    async fn fake_auth_test(
+        axum::extract::State(hits): axum::extract::State<ApiHits>,
+        headers: axum::http::HeaderMap,
+    ) -> impl axum::response::IntoResponse {
+        hits.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let body = match bearer(&headers).as_str() {
+            // This team's id, with the other workspace's host.
+            "xoxp-acme" => serde_json::json!({
+                "ok": true,
+                "url": "https://acme-labs.slack.com/",
+                "team": "Acme",
+                "user": "ada",
+                "team_id": "T0ACME0001",
+                "user_id": "U0ADA",
+            }),
+            "xoxp-labs" => serde_json::json!({
+                "ok": true,
+                "url": "https://acme.slack.com/",
+                "team": "Acme Labs",
+                "user": "ada",
+                "team_id": "T0LABS0001",
+                "user_id": "U0ADA",
+            }),
+            _ => serde_json::json!({"ok": false, "error": "invalid_auth"}),
+        };
+        (
+            axum::http::StatusCode::OK,
+            [(axum::http::header::CONTENT_TYPE, "application/json")],
+            body.to_string(),
+        )
+    }
+
+    async fn fake_team_info(headers: axum::http::HeaderMap) -> impl axum::response::IntoResponse {
+        let body = match bearer(&headers).as_str() {
+            "xoxp-acme" => serde_json::json!({
+                "ok": true,
+                "team": {"id": "T0ACME0001", "name": "Acme", "domain": "acme"},
+            }),
+            "xoxp-labs" => serde_json::json!({
+                "ok": true,
+                "team": {"id": "T0LABS0001", "name": "Acme Labs", "domain": "acme-labs"},
+            }),
+            _ => serde_json::json!({"ok": false, "error": "invalid_auth"}),
+        };
+        (
+            axum::http::StatusCode::OK,
+            [(axum::http::header::CONTENT_TYPE, "application/json")],
+            body.to_string(),
+        )
+    }
+
+    async fn slack_api() -> (String, ApiHits) {
+        let hits = ApiHits(std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)));
+        let router = axum::Router::new()
+            .route("/auth.test", axum::routing::post(fake_auth_test))
+            .route("/team.info", axum::routing::post(fake_team_info))
+            .with_state(hits.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        (format!("http://127.0.0.1:{port}"), hits)
+    }
+
+    #[tokio::test]
+    async fn refresh_bypasses_a_stale_cache_and_keeps_each_domain_on_its_team() {
+        let (base, hits) = slack_api().await;
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::for_tests(&dir.path().join("test.db"), false);
+        let acme = state
+            .store
+            .upsert_account(slack_account("Acme", "acme-labs", "T0ACME0001", "U0ADA"))
+            .unwrap();
+        let labs = state
+            .store
+            .upsert_account(slack_account("Acme Labs", "acme", "T0LABS0001", "U0ADA"))
+            .unwrap();
+        let dead = state
+            .store
+            .upsert_account(slack_account(
+                "Acme Archive",
+                "archive",
+                "T0DEAD0001",
+                "U0ADA",
+            ))
+            .unwrap();
+        let missing = state
+            .store
+            .upsert_account(slack_account(
+                "Acme Missing",
+                "missing",
+                "T0MISS0001",
+                "U0ADA",
+            ))
+            .unwrap();
+        state
+            .vault
+            .set(acme.keychain_key.as_deref().unwrap(), &grant("xoxp-acme"))
+            .unwrap();
+        state
+            .vault
+            .set(labs.keychain_key.as_deref().unwrap(), &grant("xoxp-labs"))
+            .unwrap();
+        state
+            .vault
+            .set(dead.keychain_key.as_deref().unwrap(), &grant("xoxp-dead"))
+            .unwrap();
+        let stale = Utc::now() - chrono::Duration::hours(1);
+        for id in [acme.id.0, labs.id.0, dead.id.0, missing.id.0] {
+            lock(&state.slack_tokens).insert(
+                id,
+                SlackTokenCheck {
+                    state: TokenState::Valid,
+                    checked_at: stale,
+                    error: String::new(),
+                },
+            );
+        }
+
+        let skipped = refresh_grants(&state, &base, None, false).await.unwrap();
+        assert_eq!(hits.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(
+            skipped.iter().find(|ws| ws.id == acme.id.0).unwrap().domain,
+            "acme-labs"
+        );
+
+        let one = refresh_grants(&state, &base, Some(acme.id.0), true)
+            .await
+            .unwrap();
+        assert_eq!(hits.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let fixed = one.iter().find(|ws| ws.id == acme.id.0).unwrap();
+        assert_eq!(fixed.team_name, "Acme");
+        assert_eq!(fixed.domain, "acme");
+        assert_eq!(fixed.user_name, "ada");
+        assert_eq!(fixed.check, "connected");
+        let untouched = one.iter().find(|ws| ws.id == labs.id.0).unwrap();
+        assert_eq!(untouched.team_name, "Acme Labs");
+        assert_eq!(untouched.domain, "acme");
+        let stored = state.store.list_accounts().unwrap();
+        assert!(
+            stored.iter().any(|account| {
+                account.id == acme.id && account.external_id == "T0ACME0001:U0ADA"
+            })
+        );
+        assert!(stored.iter().any(|account| {
+            account.id == labs.id
+                && account.external_id == "T0LABS0001:U0ADA"
+                && account.display_name == "Acme Labs"
+                && account.slack_workspace.as_deref() == Some("acme")
+        }));
+
+        let all = refresh_grants(&state, &base, None, true).await.unwrap();
+        assert_eq!(hits.0.load(std::sync::atomic::Ordering::SeqCst), 4);
+        let labs_row = all.iter().find(|ws| ws.id == labs.id.0).unwrap();
+        assert_eq!(labs_row.team_name, "Acme Labs");
+        assert_eq!(labs_row.domain, "acme-labs");
+        assert_eq!(labs_row.check, "connected");
+        let dead_row = all.iter().find(|ws| ws.id == dead.id.0).unwrap();
+        assert_eq!(dead_row.team_name, "Acme Archive");
+        assert_eq!(dead_row.domain, "archive");
+        assert_eq!(dead_row.check, "expired");
+        assert!(dead_row.needs_sign_in);
+        assert!(!dead_row.signed_in);
+        assert_eq!(
+            lock(&state.slack_tokens).get(&dead.id.0).unwrap().state,
+            TokenState::Rejected
+        );
+        let missing_row = all.iter().find(|ws| ws.id == missing.id.0).unwrap();
+        assert_eq!(missing_row.check, "missing");
+        assert!(missing_row.needs_sign_in);
+        assert!(
+            lock(&state.slack_tokens)
+                .get(&acme.id.0)
+                .unwrap()
+                .checked_at
+                > stale
+        );
+        let err = refresh_grants(&state, &base, Some(999), true)
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind, "not_found");
+    }
+
+    #[tokio::test]
+    async fn refresh_records_a_network_failure_without_the_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::for_tests(&dir.path().join("test.db"), false);
+        let account = state
+            .store
+            .upsert_account(slack_account("Acme", "acme", "T0ACME0001", "U0ADA"))
+            .unwrap();
+        state
+            .vault
+            .set(
+                account.keychain_key.as_deref().unwrap(),
+                &grant("xoxp-acme"),
+            )
+            .unwrap();
+        let list = refresh_grants(&state, "http://127.0.0.1:1", Some(account.id.0), true)
+            .await
+            .unwrap();
+        let row = list.iter().find(|ws| ws.id == account.id.0).unwrap();
+        assert_eq!(row.check, "failed");
+        assert_eq!(row.team_name, "Acme");
+        assert_eq!(row.domain, "acme");
+        assert!(row.signed_in);
+        assert!(!row.check_error.is_empty());
+        assert!(!row.check_error.to_ascii_lowercase().contains("xox"));
+        assert!(!row.check_error.to_ascii_lowercase().contains("bearer"));
+        assert_eq!(
+            lock(&state.slack_tokens).get(&account.id.0).unwrap().state,
+            TokenState::Unknown
+        );
+    }
+
+    #[tokio::test]
+    async fn demo_refresh_does_not_call_slack() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::for_tests(&dir.path().join("test.db"), true);
+        let account = state
+            .store
+            .upsert_account(slack_account("Acme", "acme", "T0ACME0001", "U0ADA"))
+            .unwrap();
+        let list = refresh_grants(&state, "http://127.0.0.1:1", None, true)
+            .await
+            .unwrap();
+        let row = list.iter().find(|ws| ws.id == account.id.0).unwrap();
+        assert_eq!(row.check, "connected");
+        assert!(row.signed_in);
+        assert!(row.checked_at.is_some());
     }
 }
