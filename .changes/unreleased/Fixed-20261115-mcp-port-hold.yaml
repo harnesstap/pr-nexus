@@ -1,3 +1,0 @@
-kind: Fixed
-body: The local MCP server keeps its listening socket when the extra-host list changes, and Slack sign-in tests keep the loopback socket they bind, so a parallel test cannot take the port.
-time: 2026-11-15T05:11:52Z

@@ -1,3 +1,0 @@
-kind: Fixed
-body: The guards job rejects an unreleased Changie fragment that is not valid YAML or is missing kind, body, or time, before Tag release batches it.
-time: 2026-11-15T05:30:00Z
