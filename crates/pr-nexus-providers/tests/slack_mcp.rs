@@ -170,6 +170,72 @@ async fn connect_runs_pkce_with_secret_and_stores_the_grant() {
     assert_eq!(stored["token_response"]["refresh_token"], "xoxe-1-refresh");
 }
 
+/// `auth.test` can name this team and still return another workspace's host.
+/// `team.info` is the pair that is stored.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn auth_test_url_from_another_workspace_does_not_replace_this_domain() {
+    let server = oauth_server().await;
+    Mock::given(method("POST"))
+        .and(path("/api/oauth.v2.user.access"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "access_token": "xoxp-acme",
+            "token_type": "user",
+            "scope": "chat:write",
+            "refresh_token": "xoxe-1-refresh",
+            "team": {"id": "T0ACME0001", "name": "Acme"},
+            "authed_user": {"id": "U0ADA"},
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/auth.test"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "url": "https://acme-labs.slack.com/",
+            "team": "Acme",
+            "user": "ada",
+            "team_id": "T0ACME0001",
+            "user_id": "U0ADA",
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/team.info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "team": {"id": "T0ACME0001", "name": "Acme", "domain": "acme"},
+        })))
+        .mount(&server)
+        .await;
+
+    let listener = Loopback::bind_ephemeral("127.0.0.1", "/cb").await.unwrap();
+    let config = ConnectConfig {
+        mcp_url: format!("{}/mcp", server.uri()),
+        web_api_base: format!("{}/api", server.uri()),
+        client_id: CLIENT_ID.into(),
+        client_secret: None,
+        redirect_uri: listener.redirect_uri().to_owned(),
+        scopes: vec!["chat:write".into()],
+        timeout: Duration::from_secs(20),
+    };
+    let seen = Arc::new(Mutex::new(None));
+    let connected = connect_with_listener(
+        &config,
+        Arc::new(Vault::memory("test")),
+        listener,
+        move |url| approve(url, seen),
+        &CancelHandle::new(),
+    )
+    .await
+    .expect("connect");
+    assert_eq!(connected.team_id, "T0ACME0001");
+    assert_eq!(connected.team_name, "Acme");
+    assert_eq!(connected.domain, "acme");
+    assert_ne!(connected.domain, "acme-labs");
+    assert_eq!(connected.user_name, "ada");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn connect_without_secret_sends_client_id_and_verifier_only() {
     let server = oauth_server().await;

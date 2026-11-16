@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Api, SlackWorkspace } from "../api";
 import { errorMessage } from "../api";
+import { ago } from "../list/model";
 import { plainText } from "../textInput";
 import { Switch } from "../Switch";
 import { Tooltip } from "../Tooltip";
@@ -11,6 +12,121 @@ export const DEFAULT_REDIRECT = "http://127.0.0.1:47821/mcp/oauth/callback";
 export const SIGN_IN_TIMEOUT_SECONDS = 600;
 /** After this many seconds the status switches to "Still waiting". */
 const STILL_WAITING_AFTER_SECONDS = 30;
+/** Opening Slack settings rechecks grants older than this. */
+export const WORKSPACE_CHECK_FRESH_MS = 5 * 60 * 1000;
+
+interface GrantView {
+  label: string;
+  hint: string;
+  reconnect: boolean;
+  tone: "ok" | "warn" | "bad" | "muted";
+  dataState: "connected" | "needs-sign-in" | "check-failed" | "disabled";
+}
+
+/** True when any saved workspace has not been checked in the last 5 minutes. */
+export function workspaceCheckIsStale(workspaces: readonly SlackWorkspace[], now = Date.now()): boolean {
+  return workspaces.some((workspace) => {
+    if (!workspace.checked_at) {
+      return true;
+    }
+    const at = Date.parse(workspace.checked_at);
+    return Number.isNaN(at) || now - at > WORKSPACE_CHECK_FRESH_MS;
+  });
+}
+
+function checkedHint(workspace: SlackWorkspace, now: Date): string {
+  if (!workspace.checked_at || Number.isNaN(Date.parse(workspace.checked_at))) {
+    return "";
+  }
+  return `checked ${ago(workspace.checked_at, now)}`;
+}
+
+function legacyStatus(workspace: SlackWorkspace, checked: string): GrantView {
+  if (workspace.needs_sign_in) {
+    return { label: "needs sign-in", hint: "", reconnect: true, tone: "warn", dataState: "needs-sign-in" };
+  }
+  if (!workspace.signed_in) {
+    return { label: "signed out", hint: "", reconnect: true, tone: "muted", dataState: "needs-sign-in" };
+  }
+  return { label: "Connected", hint: checked, reconnect: false, tone: "ok", dataState: "connected" };
+}
+
+function grantStatus(workspace: SlackWorkspace, checked: string): GrantView {
+  switch (workspace.check) {
+    case "connected":
+      return { label: "Connected", hint: checked, reconnect: false, tone: "ok", dataState: "connected" };
+    case "expired":
+      return {
+        label: "Token expired",
+        hint: "Slack rejected the token. Reconnect to sign in again.",
+        reconnect: true,
+        tone: "warn",
+        dataState: "needs-sign-in",
+      };
+    case "missing":
+      return {
+        label: "Missing grant",
+        hint: "No saved sign-in for this workspace.",
+        reconnect: true,
+        tone: "warn",
+        dataState: "needs-sign-in",
+      };
+    case "failed":
+      return {
+        label: "Check failed",
+        hint: workspace.check_error?.trim() || "Could not reach Slack.",
+        reconnect: false,
+        tone: "bad",
+        dataState: "check-failed",
+      };
+    case "unchecked":
+    case undefined:
+      return legacyStatus(workspace, checked);
+    default: {
+      const unexpected: never = workspace.check;
+      return unexpected;
+    }
+  }
+}
+
+function rowView(workspace: SlackWorkspace, now: Date): GrantView {
+  const grant = grantStatus(workspace, checkedHint(workspace, now));
+  if (!workspace.enabled && !grant.reconnect) {
+    return { ...grant, label: "Disabled", hint: "", tone: "muted", dataState: "disabled" };
+  }
+  if (!workspace.enabled) {
+    return { ...grant, dataState: "disabled" };
+  }
+  return grant;
+}
+
+function toneClass(tone: GrantView["tone"]): string {
+  switch (tone) {
+    case "ok":
+      return "text-emerald-300";
+    case "warn":
+      return "text-amber-300";
+    case "bad":
+      return "text-rose-300";
+    case "muted":
+      return "text-slate-400";
+    default: {
+      const unexpected: never = tone;
+      return unexpected;
+    }
+  }
+}
+
+function StatusMark({ view }: { view: GrantView }) {
+  const text = <span className={toneClass(view.tone)}>{view.label}</span>;
+  return (
+    <>
+      {" "}
+      <span className="text-slate-400">·</span>{" "}
+      {view.hint ? <Tooltip label={view.hint}>{text}</Tooltip> : text}
+    </>
+  );
+}
 
 function formatLeft(seconds: number): string {
   const clamped = Math.max(0, seconds);
@@ -52,7 +168,39 @@ export function SlackPanel({ api, fields, onFieldsChange, secretSaved, workspace
   const [elapsed, setElapsed] = useState(0);
   const [dragging, setDragging] = useState<number | null>(null);
   const [over, setOver] = useState<number | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const changeRef = useRef(onWorkspacesChange);
+  const refreshingRef = useRef(false);
+  const autoRefresh = useRef(false);
+  useEffect(() => {
+    changeRef.current = onWorkspacesChange;
+  }, [onWorkspacesChange]);
   const set = (patch: Partial<SlackFields>) => onFieldsChange({ ...fields, ...patch });
+
+  const refreshWorkspaces = useCallback(async () => {
+    if (!api.slackRefreshWorkspaces || refreshingRef.current) {
+      return;
+    }
+    refreshingRef.current = true;
+    setRefreshing(true);
+    setError(null);
+    try {
+      changeRef.current(await api.slackRefreshWorkspaces());
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      refreshingRef.current = false;
+      setRefreshing(false);
+    }
+  }, [api]);
+
+  useEffect(() => {
+    if (autoRefresh.current || !api.slackRefreshWorkspaces || !workspaceCheckIsStale(workspaces)) {
+      return;
+    }
+    autoRefresh.current = true;
+    void refreshWorkspaces();
+  }, [api, refreshWorkspaces, workspaces]);
 
   useEffect(() => {
     if (!connecting) {
@@ -193,8 +341,27 @@ export function SlackPanel({ api, fields, onFieldsChange, secretSaved, workspace
   );
   return (
     <div className="space-y-4">
-      <div>
-        <h3 className="text-sm font-medium">Connected workspaces</h3>
+      <div data-testid="slack-workspaces">
+        <div className="flex items-center justify-between gap-2">
+          <h3 className="text-sm font-medium">Connected workspaces</h3>
+          {api.slackRefreshWorkspaces && workspaces.length > 0 && (
+            <button
+              type="button"
+              className="inline-flex items-center gap-1.5 rounded border border-slate-600 px-2 py-0.5 text-xs text-slate-200 hover:bg-slate-800 disabled:opacity-40"
+              disabled={refreshing || connecting}
+              aria-busy={refreshing}
+              onClick={() => void refreshWorkspaces()}
+            >
+              {refreshing && (
+                <span
+                  aria-hidden="true"
+                  className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-slate-600 border-t-slate-300"
+                />
+              )}
+              Refresh
+            </button>
+          )}
+        </div>
         {several && (
           <p className="mt-0.5 text-xs text-slate-400">
             Sends try workspace 1 first, then the next enabled one when Slack says the channel or person is not there.
@@ -207,12 +374,12 @@ export function SlackPanel({ api, fields, onFieldsChange, secretSaved, workspace
           <ul className="mt-2 space-y-2" aria-label="Connected workspaces">
             {ordered.map((workspace, index) => {
               const name = workspace.team_name || workspace.domain;
-              const stale = workspace.needs_sign_in || !workspace.signed_in;
+              const view = rowView(workspace, new Date());
               return (
                 <li
                   key={workspace.id}
                   aria-label={workspace.team_name}
-                  data-state={!workspace.enabled ? "disabled" : stale ? "needs-sign-in" : "connected"}
+                  data-state={view.dataState}
                   draggable={several}
                   onDragStart={(event) => {
                     setDragging(index);
@@ -238,7 +405,7 @@ export function SlackPanel({ api, fields, onFieldsChange, secretSaved, workspace
                     setOver(null);
                   }}
                   className={`flex items-center gap-3 rounded border px-3 py-2 text-sm ${
-                    over === index && dragging !== index ? "border-violet-400" : stale && workspace.enabled ? "border-amber-500/50 bg-amber-500/5" : "border-slate-700"
+                    over === index && dragging !== index ? "border-violet-400" : view.reconnect && workspace.enabled ? "border-amber-500/50 bg-amber-500/5" : "border-slate-700"
                   } ${dragging === index ? "opacity-50" : ""}`}
                 >
                   {several && (
@@ -262,16 +429,16 @@ export function SlackPanel({ api, fields, onFieldsChange, secretSaved, workspace
                     <Switch label={`Use ${workspace.team_name}`} checked={workspace.enabled} onChange={(on) => void setEnabled(workspace, on)} />
                   </Tooltip>
                   <span className={`min-w-0 flex-1 ${workspace.enabled ? "" : "opacity-60"}`}>
-                    <span className="font-medium">{name}</span>{" "}
+                    <span className="font-medium">{name}</span>
                     <span className="text-slate-400">
+                      {" "}
                       · {workspace.domain}.slack.com · @{workspace.user_name}
-                      {workspace.signed_in || workspace.needs_sign_in ? "" : " · signed out"}
                     </span>
-                    {workspace.needs_sign_in && <span className="text-amber-300"> · needs sign-in</span>}
-                    {!workspace.enabled && <span className="text-slate-400"> · disabled, never used</span>}
+                    <StatusMark view={view} />
+                    {!workspace.enabled && <span className="text-slate-400"> · never used</span>}
                   </span>
                   <span className="flex shrink-0 items-center gap-3">
-                    {stale && (
+                    {view.reconnect && (
                       <button
                         type="button"
                         className="rounded bg-amber-400 px-2.5 py-1 text-xs font-semibold text-slate-950 hover:bg-amber-300 disabled:opacity-40"

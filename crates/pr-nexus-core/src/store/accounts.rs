@@ -34,6 +34,32 @@ impl Store {
         self.write(move |conn| upsert_account(conn, &account))
     }
 
+    /// Update one Slack row's display fields. Matches the account id, never
+    /// the host or domain, and does not change `external_id`.
+    pub fn update_slack_profile(
+        &self,
+        id: AccountId,
+        display_name: String,
+        domain: String,
+        login: String,
+    ) -> Result<(), CoreError> {
+        self.write(move |conn| {
+            let host = format!("{domain}.slack.com");
+            let changed = conn
+                .execute(
+                    "UPDATE accounts
+                     SET display_name = ?1, host = ?2, slack_workspace = ?3, login = ?4
+                     WHERE id = ?5 AND kind = 'slack'",
+                    params![display_name, host, domain, login, id.0],
+                )
+                .map_err(db)?;
+            if changed == 0 {
+                return Err(CoreError::Store("slack account not updated".into()));
+            }
+            Ok(())
+        })
+    }
+
     pub fn delete_account(&self, id: AccountId) -> Result<(), CoreError> {
         self.write(move |conn| {
             conn.execute("DELETE FROM accounts WHERE id = ?1", [id.0])

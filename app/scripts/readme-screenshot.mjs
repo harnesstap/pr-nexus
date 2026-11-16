@@ -115,6 +115,11 @@ const closePrDir = closePrFlag === -1 ? null : process.argv[closePrFlag + 1];
 if (closePrFlag !== -1 && !closePrDir) {
   throw new Error("--close-pr needs an output directory");
 }
+const slackSettingsFlag = process.argv.indexOf("--slack-settings");
+const slackSettingsDir = slackSettingsFlag === -1 ? null : process.argv[slackSettingsFlag + 1];
+if (slackSettingsFlag !== -1 && !slackSettingsDir) {
+  throw new Error("--slack-settings needs an output directory");
+}
 /** A row's own button, not its star (both carry the title). */
 const rowButton = (title) => new RegExp(`^(?!Star |Unstar |Open ).*${title}`);
 const port = Number(process.env.SCREENSHOT_PORT ?? 1430);
@@ -455,6 +460,12 @@ try {
     await vite.close();
     process.exit(0);
   }
+  if (slackSettingsDir) {
+    await slackSettingsShots(browser, resolve(slackSettingsDir));
+    await browser.close();
+    await vite.close();
+    process.exit(0);
+  }
   if (mergeQueueDir) {
     await mergeQueueShots(browser, resolve(mergeQueueDir));
     await browser.close();
@@ -660,6 +671,52 @@ async function mergeQueueShots(browser, dir) {
   await page.waitForTimeout(300);
   await shot(page, resolve(dir, "merge-queue-narrow.png"));
   await page.close();
+}
+
+/** Settings → Slack → Connected workspaces: connected, expired, and a refresh in progress. */
+async function slackSettingsShots(browser, dir) {
+  mkdirSync(dir, { recursive: true });
+  for (const scene of ["connected", "expired", "refreshing"]) {
+    const page = await browser.newPage({ viewport: { width: 1100, height: 900 }, deviceScaleFactor: 2, colorScheme: "dark" });
+    page.on("pageerror", (err) => console.error("page error:", err.message));
+    await page.addInitScript((name) => {
+      globalThis.__slackScene = name;
+    }, scene);
+    await page.goto(url);
+    await page.getByRole("button", { name: /account menu/ }).click();
+    await page.getByRole("menuitem", { name: "Settings" }).click();
+    await page.getByRole("heading", { name: "Slack" }).waitFor();
+    const block = page.getByTestId("slack-workspaces");
+    await block.waitFor();
+    if (scene === "refreshing") {
+      await block.getByRole("button", { name: "Refresh" }).waitFor();
+      await block.locator("[aria-busy='true']").waitFor();
+    }
+    if (scene === "expired") {
+      await block.getByRole("button", { name: "Reconnect Acme Labs" }).waitFor();
+      await block.getByText("Token expired").waitFor();
+    }
+    if (scene === "connected") {
+      await block.getByText("Connected").first().waitFor();
+      await expectBusy(block, false);
+    }
+    await block.scrollIntoViewIfNeeded();
+    const name = `slack-workspaces-${scene}.png`;
+    await block.screenshot({ path: resolve(dir, name) });
+    console.log(`wrote ${name}`);
+    await page.close();
+  }
+}
+
+async function expectBusy(block, busy) {
+  const button = block.getByRole("button", { name: "Refresh" });
+  if (busy) {
+    await button.waitFor();
+  }
+  const value = await button.getAttribute("aria-busy");
+  if ((value === "true") !== busy) {
+    throw new Error(`Refresh aria-busy is ${value}, expected ${busy}`);
+  }
 }
 
 async function viewShots(browser, dir) {

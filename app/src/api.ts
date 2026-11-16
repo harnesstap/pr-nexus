@@ -339,6 +339,15 @@ export interface SlackWorkspace {
   scopes_missing?: string[];
   /** 0 is tried first. */
   priority: number;
+  /**
+   * Last grant check. Absent on older payloads: the row falls back to
+   * `signed_in` and `needs_sign_in`.
+   */
+  check?: "connected" | "expired" | "missing" | "failed" | "unchecked";
+  /** ISO time of that check. */
+  checked_at?: string | null;
+  /** Set when `check` is `failed`. Never a token. */
+  check_error?: string;
 }
 
 export interface ReviewTarget {
@@ -1096,6 +1105,11 @@ export interface Api {
   slackSetWorkspaceEnabled(teamId: string, enabled: boolean): Promise<SlackWorkspace[]>;
   /** Save the routing priority, first to last; returns the list. */
   slackSetWorkspaceOrder(teamIds: string[]): Promise<SlackWorkspace[]>;
+  /**
+   * Re-run the Slack grant check for every workspace, or one account.
+   * Absent in fakes that do not refresh.
+   */
+  slackRefreshWorkspaces?(accountId?: number): Promise<SlackWorkspace[]>;
   reviewTargets(prId: number, teams: string[]): Promise<TargetChoice[]>;
   reviewPreview(prId: number, target: ReviewTarget): Promise<ReviewPreview>;
   /** `#term` channels, `@term` members, a bare term both; scoped to one workspace. */
@@ -1293,6 +1307,7 @@ export const tauriApi: Api = {
   slackRemoveWorkspace: (id) => invoke("slack_remove_workspace", { id }),
   slackSetWorkspaceEnabled: (teamId, enabled) => invoke("slack_set_workspace_enabled", { teamId, enabled }),
   slackSetWorkspaceOrder: (teamIds) => invoke("slack_set_workspace_order", { teamIds }),
+  slackRefreshWorkspaces: (accountId) => invoke("slack_refresh_workspaces", { accountId: accountId ?? null }),
   reviewTargets: (prId, teams) => invoke("review_targets", { prId, teams }),
   reviewPreview: (prId, target) => invoke("review_preview", { prId, target }),
   searchSlackTargets: (query) => invoke("slack_search_targets", { query }),

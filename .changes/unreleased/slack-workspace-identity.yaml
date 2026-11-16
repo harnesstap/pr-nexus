@@ -1,0 +1,3 @@
+kind: Fixed
+body: Refreshing a Slack workspace keeps that workspace's name with its own domain when auth.test returns another workspace's host.
+time: 2026-11-16T03:10:01Z

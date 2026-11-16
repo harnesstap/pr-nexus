@@ -82,6 +82,35 @@ function mockTemplatePreview(kind: string, text: string): string {
 
 const mcp = fakeMcp({ enabled: true, local_writes: true }, sampleActivity(), [], [], { codex: "added", cursor: "outdated" });
 
+type SlackShot = "" | "connected" | "expired" | "refreshing";
+
+function slackScene(): SlackShot {
+  const value = (window as { __slackScene?: string }).__slackScene;
+  if (value === "connected" || value === "expired" || value === "refreshing") {
+    return value;
+  }
+  return "";
+}
+
+/** Placeholder rows for the Slack settings shots. No real workspace is named. */
+function sceneWorkspaces() {
+  const scene = slackScene();
+  const fresh = new Date().toISOString();
+  const stale = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+  const checkedAt = scene === "refreshing" ? stale : fresh;
+  return boot.slack_workspaces.map((workspace) => {
+    const expired = scene === "expired" && workspace.domain === "acme-labs";
+    return {
+      ...workspace,
+      check: expired ? ("expired" as const) : ("connected" as const),
+      checked_at: checkedAt,
+      check_error: "",
+      signed_in: !expired,
+      needs_sign_in: expired,
+    };
+  });
+}
+
 const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   mcp_settings: () => mcp.mcpSettings(),
   save_mcp_settings: (args) => mcp.saveMcpSettings(args.settings as McpSettings),
@@ -96,7 +125,13 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   load_message_templates: () => Object.entries(templateDefaults).map(([kind, text]) => ({ kind, text, default_text: text })),
   preview_message_template: (args) => mockTemplatePreview(String(args.kind), String(args.text)),
   save_message_template: () => null,
-  bootstrap: () => boot,
+  bootstrap: () => {
+    const scene = slackScene();
+    if (!scene) {
+      return boot;
+    }
+    return { ...boot, slack_client_id: "111.222", slack_workspaces: sceneWorkspaces() };
+  },
   sync_status: () => boot.sync,
   list_projects: () => projects,
   list_page: (args) => pageFromRows(rows, projects, args.request as PageRequest),
@@ -122,7 +157,13 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     }
     return { ok: true, message: "", ids: [2, 13], total: 2, openOnly: false };
   },
-  slack_workspaces: () => boot.slack_workspaces,
+  slack_workspaces: () => (slackScene() ? sceneWorkspaces() : boot.slack_workspaces),
+  slack_refresh_workspaces: () => {
+    if (slackScene() === "refreshing") {
+      return new Promise(() => undefined);
+    }
+    return sceneWorkspaces();
+  },
   // `--update` scenes set the answer before the app loads.
   check_update: () => (window as { __update?: unknown }).__update ?? null,
   pr_detail: () => detail,

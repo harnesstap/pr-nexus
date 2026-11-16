@@ -131,6 +131,7 @@ pub fn run() {
             slack::slack_channel_names,
             slack::slack_set_workspace_enabled,
             slack::slack_set_workspace_order,
+            slack::slack_refresh_workspaces,
             slack::send_review,
             bulk::bulk_preview,
             bulk::send_bulk,
