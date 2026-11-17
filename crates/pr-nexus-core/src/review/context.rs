@@ -4,10 +4,12 @@
 //! `review_requests` (active first, then closed) and of its other
 //! `review_messages`. Each thread is read with the chat provider's
 //! `read_thread` and kept in `chat_thread_cache` for
-//! [`THREAD_CACHE_TTL_MINUTES`]. Nothing is browsed, crawled, or posted.
+//! [`THREAD_CACHE_TTL_MINUTES`]. Several roots are read at once, and each
+//! distinct author is looked up once. Nothing is browsed, crawled, or posted.
 
-use std::collections::BTreeSet;
-use std::sync::Arc;
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use serde::Serialize;
@@ -27,6 +29,10 @@ pub const THREAD_CACHE_TTL_MINUTES: i64 = 5;
 pub const THREAD_REPLY_LIMIT: u32 = 50;
 /// Results per Mentions search (§7.10).
 pub const MENTIONS_LIMIT: u32 = 20;
+/// Thread reads in flight at once (§7.10).
+const THREAD_READS: usize = 4;
+/// Distinct author lookups in flight at once.
+const AUTHOR_LOOKUPS: usize = 4;
 
 /// Where a thread came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -206,8 +212,33 @@ fn collect_roots(
     out
 }
 
+/// One root that still needs a Slack read.
+struct FetchJob {
+    skeleton: ContextThread,
+    chat: Arc<dyn ChatProvider>,
+    account: AccountId,
+    channel_id: String,
+    root_ts: String,
+    cached: Option<(ThreadReplies, DateTime<Utc>)>,
+}
+
+enum Prepared {
+    Ready(ContextThread),
+    Fetch(FetchJob),
+}
+
+struct AuthorQuery {
+    account: AccountId,
+    user_id: String,
+    chat: Arc<dyn ChatProvider>,
+}
+
 /// Read every known thread of `pr`, from the cache when it is younger than
 /// [`THREAD_CACHE_TTL_MINUTES`] (and `refresh` is false).
+///
+/// Roots that miss the cache are read [`THREAD_READS`] at a time. Author
+/// names are looked up once per user, [`AUTHOR_LOOKUPS`] at a time. The
+/// returned vec stays in root order.
 pub fn context_threads(
     store: &Store,
     pr: PrId,
@@ -215,20 +246,89 @@ pub fn context_threads(
     now: DateTime<Utc>,
     refresh: bool,
 ) -> Result<Vec<ContextThread>, CoreError> {
-    let mut threads = Vec::new();
-    for root in roots(store, pr)? {
-        threads.push(read_root(store, &root, chat_for, now, refresh)?);
+    let roots = roots(store, pr)?;
+    let mut prepared = Vec::with_capacity(roots.len());
+    for root in &roots {
+        prepared.push(prepare_root(store, root, chat_for, now, refresh)?);
+    }
+
+    let jobs: Vec<(usize, &FetchJob)> = prepared
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| match item {
+            Prepared::Fetch(job) => Some((index, job)),
+            Prepared::Ready(_) => None,
+        })
+        .collect();
+    let read = bounded_map(&jobs, THREAD_READS, |(_, job)| {
+        job.chat
+            .read_thread(&job.channel_id, &job.root_ts, THREAD_REPLY_LIMIT)
+    });
+    let mut replies: Vec<Option<Result<ThreadReplies, ProviderError>>> =
+        (0..prepared.len()).map(|_| None).collect();
+    for ((index, _), result) in jobs.iter().zip(read) {
+        replies[*index] = Some(result);
+    }
+
+    let mut queries = Vec::new();
+    let mut seen = HashSet::new();
+    for (index, result) in replies.iter().enumerate() {
+        let Some(Ok(thread_replies)) = result else {
+            continue;
+        };
+        let Prepared::Fetch(job) = &prepared[index] else {
+            continue;
+        };
+        for message in &thread_replies.messages {
+            if message.author.is_some() {
+                continue;
+            }
+            let Some(user_id) = message.user_id.clone() else {
+                continue;
+            };
+            if seen.insert((job.account, user_id.clone())) {
+                queries.push(AuthorQuery {
+                    account: job.account,
+                    user_id,
+                    chat: job.chat.clone(),
+                });
+            }
+        }
+    }
+    let looked_up = bounded_map(&queries, AUTHOR_LOOKUPS, |query| {
+        (
+            query.account,
+            query.user_id.clone(),
+            query.chat.user_name(&query.user_id).ok(),
+        )
+    });
+    let mut names = HashMap::new();
+    for (account, user_id, name) in looked_up {
+        if let Some(name) = name {
+            names.insert((account, user_id), name);
+        }
+    }
+
+    let mut threads = Vec::with_capacity(prepared.len());
+    for (index, item) in prepared.into_iter().enumerate() {
+        match item {
+            Prepared::Ready(thread) => threads.push(thread),
+            Prepared::Fetch(job) => {
+                let result = replies[index].take().expect("every fetch has a result");
+                threads.push(finish_fetch(store, job, result, &names, now)?);
+            }
+        }
     }
     Ok(threads)
 }
 
-fn read_root(
+fn prepare_root(
     store: &Store,
     root: &Root,
     chat_for: &mut ChatFor<'_>,
     now: DateTime<Utc>,
     refresh: bool,
-) -> Result<ContextThread, CoreError> {
+) -> Result<Prepared, CoreError> {
     let mut thread = ContextThread {
         workspace: root.workspace.clone(),
         channel_id: root.channel_id.clone(),
@@ -260,7 +360,7 @@ fn read_root(
             {
                 fill(&mut thread, &replies, fetched_at, true);
             }
-            return Ok(thread);
+            return Ok(Prepared::Ready(thread));
         }
     };
     let account = chat.account_id();
@@ -270,14 +370,40 @@ fn read_root(
         && now - *fetched_at < Duration::minutes(THREAD_CACHE_TTL_MINUTES)
     {
         fill(&mut thread, replies, *fetched_at, true);
-        return Ok(thread);
+        return Ok(Prepared::Ready(thread));
     }
-    match fetch(chat.as_ref(), &root.channel_id, &root.root_ts) {
-        Ok(replies) => {
+    Ok(Prepared::Fetch(FetchJob {
+        skeleton: thread,
+        chat,
+        account,
+        channel_id: root.channel_id.clone(),
+        root_ts: root.root_ts.clone(),
+        cached,
+    }))
+}
+
+fn finish_fetch(
+    store: &Store,
+    job: FetchJob,
+    result: Result<ThreadReplies, ProviderError>,
+    names: &HashMap<(AccountId, String), String>,
+    now: DateTime<Utc>,
+) -> Result<ContextThread, CoreError> {
+    let mut thread = job.skeleton;
+    match result {
+        Ok(mut replies) => {
+            for message in &mut replies.messages {
+                if message.author.is_none()
+                    && let Some(user_id) = &message.user_id
+                    && let Some(name) = names.get(&(job.account, user_id.clone()))
+                {
+                    message.author = Some(name.clone());
+                }
+            }
             store.upsert_chat_thread(ChatThreadCacheEntry {
-                slack_account_id: account,
-                channel_id: root.channel_id.clone(),
-                thread_root_ts: root.root_ts.clone(),
+                slack_account_id: job.account,
+                channel_id: job.channel_id,
+                thread_root_ts: job.root_ts,
                 messages_json: serde_json::to_string(&replies)
                     .map_err(|err| CoreError::Store(err.to_string()))?,
                 fetched_at: now,
@@ -287,7 +413,7 @@ fn read_root(
         Err(err) => {
             thread.unauthorized = matches!(err, ProviderError::Unauthorized(_));
             thread.error = Some(provider_message(&err));
-            if let Some((replies, fetched_at)) = &cached {
+            if let Some((replies, fetched_at)) = &job.cached {
                 fill(&mut thread, replies, *fetched_at, true);
             }
         }
@@ -346,22 +472,39 @@ pub fn provider_message(err: &ProviderError) -> String {
     }
 }
 
-/// Read one thread and name its authors.
-fn fetch(
-    chat: &dyn ChatProvider,
-    channel_id: &str,
-    root_ts: &str,
-) -> Result<ThreadReplies, ProviderError> {
-    let mut replies = chat.read_thread(channel_id, root_ts, THREAD_REPLY_LIMIT)?;
-    for message in &mut replies.messages {
-        if message.author.is_none()
-            && let Some(user) = &message.user_id
-        {
-            // A failed lookup leaves the ID; the panel still renders.
-            message.author = chat.user_name(user).ok();
-        }
+/// `f` over `items` on at most `limit` scoped threads, results in input
+/// order. One item (or `limit` 1) runs inline.
+fn bounded_map<T: Sync, R: Send>(items: &[T], limit: usize, f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    let workers = limit.max(1).min(items.len());
+    if workers <= 1 {
+        return items.iter().map(f).collect();
     }
-    Ok(replies)
+    let next = AtomicUsize::new(0);
+    let slots: Vec<Mutex<Option<R>>> = items.iter().map(|_| Mutex::new(None)).collect();
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| {
+                loop {
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(item) = items.get(index) else {
+                        break;
+                    };
+                    let result = f(item);
+                    *slots[index]
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(result);
+                }
+            });
+        }
+    });
+    slots
+        .into_iter()
+        .map(|slot| {
+            slot.into_inner()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .expect("every slot is filled")
+        })
+        .collect()
 }
 
 fn fill(

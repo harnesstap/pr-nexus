@@ -4,6 +4,7 @@
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -16,6 +17,8 @@ use pr_nexus_providers::slack_mcp::{
 };
 use pr_nexus_providers::vault::Vault;
 use serde_json::{Value, json};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::task::JoinHandle;
 use wiremock::matchers::{body_string_contains, header, method, path, path_regex};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
@@ -454,4 +457,432 @@ fn session_refreshes_the_grant_and_posts_through_mcp() {
     assert_eq!(saved["token_response"]["access_token"], "xoxp-refreshed");
     drop(slack);
     drop(server);
+}
+
+/// Local MCP server. Successful tool calls wait until `release_at` of them
+/// are in flight, and the first session's calls can fail so the client has
+/// to open the session again.
+struct PaceServer {
+    runtime: Option<tokio::runtime::Runtime>,
+    url: String,
+    stats: Arc<PaceStats>,
+    accept: Option<JoinHandle<()>>,
+}
+
+struct PaceStats {
+    initializes: AtomicUsize,
+    failed_calls: AtomicUsize,
+    inflight: AtomicUsize,
+    peak: AtomicUsize,
+    /// Successful `tools/call`s wait until this many are in flight. `0` answers
+    /// immediately. Once that many have overlapped, later calls do not wait.
+    release_at: AtomicUsize,
+    opened: AtomicBool,
+    timed_out: AtomicBool,
+    fail_first_session: bool,
+    fail_sessions: Mutex<std::collections::HashSet<String>>,
+    log: Mutex<Vec<String>>,
+}
+
+impl Drop for PaceServer {
+    fn drop(&mut self) {
+        if let Some(accept) = self.accept.take() {
+            accept.abort();
+        }
+        if let Some(runtime) = self.runtime.take() {
+            runtime.shutdown_background();
+        }
+    }
+}
+
+fn fresh_grant() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut token = slack_token("xoxp-acme", 86_400);
+    token.as_object_mut().unwrap().remove("ok");
+    json!({
+        "client_id": CLIENT_ID,
+        "token_response": token,
+        "granted_scopes": USER_SCOPES,
+        "token_received_at": now,
+    })
+    .to_string()
+}
+
+fn pace_server(fail_first_session: bool) -> PaceServer {
+    let stats = Arc::new(PaceStats {
+        initializes: AtomicUsize::new(0),
+        failed_calls: AtomicUsize::new(0),
+        inflight: AtomicUsize::new(0),
+        peak: AtomicUsize::new(0),
+        release_at: AtomicUsize::new(0),
+        opened: AtomicBool::new(false),
+        timed_out: AtomicBool::new(false),
+        fail_first_session,
+        fail_sessions: Mutex::new(std::collections::HashSet::new()),
+        log: Mutex::new(Vec::new()),
+    });
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .enable_all()
+        .build()
+        .unwrap();
+    let (url, stats, accept) = runtime.block_on(async {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let origin = base.clone();
+        let stats_task = stats.clone();
+        let accept = tokio::spawn(async move {
+            loop {
+                let Ok((socket, _)) = listener.accept().await else {
+                    break;
+                };
+                let stats = stats_task.clone();
+                let base = origin.clone();
+                tokio::spawn(async move {
+                    let _ = serve_one(socket, stats, base).await;
+                });
+            }
+        });
+        (base, stats, accept)
+    });
+    PaceServer {
+        runtime: Some(runtime),
+        url,
+        stats,
+        accept: Some(accept),
+    }
+}
+
+fn signed_in(server: &PaceServer) -> SlackMcpChatProvider {
+    let vault = Arc::new(Vault::memory("test"));
+    vault.set("slack:T0ACME:U0JDOE", &fresh_grant()).unwrap();
+    SlackMcpChatProvider::connect(
+        SessionConfig {
+            mcp_url: format!("{}/mcp", server.url),
+            client_id: CLIENT_ID.into(),
+            client_secret: Some("shh".into()),
+            redirect_uri: "http://127.0.0.1:47821/mcp/oauth/callback".into(),
+            keychain_key: "slack:T0ACME:U0JDOE".into(),
+        },
+        vault,
+        AccountId(1),
+        ChatUser {
+            id: "U0JDOE".into(),
+            name: "jdoe".into(),
+        },
+    )
+    .unwrap()
+}
+
+async fn serve_one(
+    mut socket: tokio::net::TcpStream,
+    stats: Arc<PaceStats>,
+    base: String,
+) -> std::io::Result<()> {
+    let mut buf = Vec::new();
+    let mut tmp = [0u8; 8192];
+    let header_end = loop {
+        if buf.len() > 65_536 {
+            return Ok(());
+        }
+        let n = socket.read(&mut tmp).await?;
+        if n == 0 {
+            return Ok(());
+        }
+        buf.extend_from_slice(&tmp[..n]);
+        if let Some(pos) = buf.windows(4).position(|window| window == b"\r\n\r\n") {
+            break pos;
+        }
+    };
+    let head = String::from_utf8_lossy(&buf[..header_end]).into_owned();
+    let mut body = buf[header_end + 4..].to_vec();
+    let length = header_value(&head, "content-length")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0);
+    while body.len() < length {
+        let n = socket.read(&mut tmp).await?;
+        if n == 0 {
+            break;
+        }
+        body.extend_from_slice(&tmp[..n]);
+    }
+    body.truncate(length);
+
+    let mut lines = head.split("\r\n");
+    let request_line = lines.next().unwrap_or("");
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next().unwrap_or("");
+    let path = parts.next().unwrap_or("/");
+    let session = header_value(&head, "mcp-session-id").unwrap_or_default();
+
+    let response = if path.contains("oauth-protected-resource") {
+        json_response(
+            200,
+            "OK",
+            "",
+            &json!({
+                "resource": format!("{base}/mcp"),
+                "authorization_servers": [base],
+            })
+            .to_string(),
+        )
+    } else if path.contains(".well-known/") {
+        json_response(
+            200,
+            "OK",
+            "",
+            &json!({
+                "issuer": base,
+                "authorization_endpoint": format!("{base}/oauth/v2_user/authorize"),
+                "token_endpoint": format!("{base}/api/oauth.v2.user.access"),
+                "response_types_supported": ["code"],
+                "code_challenge_methods_supported": ["S256"],
+                "token_endpoint_auth_methods_supported": ["client_secret_post"],
+                "grant_types_supported": ["authorization_code", "refresh_token"],
+            })
+            .to_string(),
+        )
+    } else if method == "GET" {
+        note(&stats, format!("GET {path}"));
+        status_response(405, "Method Not Allowed", "")
+    } else if method == "DELETE" {
+        note(&stats, format!("DELETE {path}"));
+        status_response(200, "OK", "")
+    } else if method == "POST" && path.starts_with("/mcp") {
+        mcp_response(&stats, &session, &body).await
+    } else {
+        note(&stats, format!("{method} {path}"));
+        status_response(404, "Not Found", "")
+    };
+    socket.write_all(&response).await?;
+    let _ = socket.shutdown().await;
+    Ok(())
+}
+
+async fn mcp_response(stats: &PaceStats, session: &str, body: &[u8]) -> Vec<u8> {
+    let value: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+    let id = value.get("id").cloned();
+    let method = value["method"].as_str().unwrap_or("");
+    note(stats, format!("POST /mcp {method} session={session}"));
+    if id.is_none() {
+        return status_response(202, "Accepted", session);
+    }
+    let result = match method {
+        "initialize" => {
+            let n = stats.initializes.fetch_add(1, Ordering::SeqCst) + 1;
+            let issued = format!("s{n}");
+            if stats.fail_first_session && n == 1 {
+                stats.fail_sessions.lock().unwrap().insert(issued.clone());
+            }
+            let version = value["params"]["protocolVersion"]
+                .as_str()
+                .unwrap_or("2025-03-26");
+            return json_response(
+                200,
+                "OK",
+                &issued,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        "protocolVersion": version,
+                        "capabilities": {"tools": {}},
+                        "serverInfo": {"name": "fake-slack", "version": "1"},
+                    }
+                })
+                .to_string(),
+            );
+        }
+        "tools/list" => json!({"tools": [{
+            "name": "slack_send_message",
+            "inputSchema": {"type": "object", "properties": {
+                "channel_id": {"type": "string"},
+                "message": {"type": "string"},
+                "thread_ts": {"type": "string"},
+                "reply_broadcast": {"type": "boolean"},
+                "unfurl_app_links": {"type": "boolean"},
+            }},
+        }, {
+            "name": "slack_read_user_profile",
+            "inputSchema": {"type": "object", "properties": {
+                "user_id": {"type": "string"},
+                "response_format": {"type": "string"},
+            }},
+        }]}),
+        "tools/call" => {
+            let fail = stats.fail_sessions.lock().unwrap().contains(session);
+            if fail {
+                stats.failed_calls.fetch_add(1, Ordering::SeqCst);
+                return status_response(500, "Internal Server Error", session);
+            }
+            hold_for_overlap(stats).await;
+            let user = value["params"]["arguments"]["user_id"]
+                .as_str()
+                .unwrap_or("Ada Acme");
+            json!({
+                "content": [{"type": "text", "text": user}],
+                "isError": false,
+            })
+        }
+        _ => json!({}),
+    };
+    json_response(
+        200,
+        "OK",
+        session,
+        &json!({"jsonrpc": "2.0", "id": id, "result": result}).to_string(),
+    )
+}
+
+/// Stay inside `tools/call` until `release_at` calls overlap, then answer.
+/// A caller that never sees that many sets `timed_out` after 10s so the rest
+/// can finish and the test can report it.
+async fn hold_for_overlap(stats: &PaceStats) {
+    let need = stats.release_at.load(Ordering::SeqCst);
+    let now = stats.inflight.fetch_add(1, Ordering::SeqCst) + 1;
+    stats.peak.fetch_max(now, Ordering::SeqCst);
+    if need > 1 && !stats.opened.load(Ordering::SeqCst) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let current = stats.inflight.load(Ordering::SeqCst);
+            if current >= need || stats.opened.load(Ordering::SeqCst) {
+                stats.opened.store(true, Ordering::SeqCst);
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                stats.opened.store(true, Ordering::SeqCst);
+                stats.timed_out.store(true, Ordering::SeqCst);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+    stats.inflight.fetch_sub(1, Ordering::SeqCst);
+}
+
+fn note(stats: &PaceStats, line: String) {
+    let mut log = stats.log.lock().unwrap();
+    if log.len() < 80 {
+        log.push(line);
+    }
+}
+
+fn header_value(head: &str, name: &str) -> Option<String> {
+    head.split("\r\n").skip(1).find_map(|line| {
+        let (key, value) = line.split_once(':')?;
+        key.trim()
+            .eq_ignore_ascii_case(name)
+            .then(|| value.trim().to_owned())
+    })
+}
+
+fn session_header(session: &str) -> String {
+    if session.is_empty() {
+        String::new()
+    } else {
+        format!("Mcp-Session-Id: {session}\r\n")
+    }
+}
+
+fn status_response(status: u16, reason: &str, session: &str) -> Vec<u8> {
+    let body = reason.as_bytes();
+    let session_line = session_header(session);
+    let head = format!(
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n{session_line}Connection: close\r\n\r\n",
+        body.len()
+    );
+    let mut bytes = head.into_bytes();
+    bytes.extend_from_slice(body);
+    bytes
+}
+
+fn json_response(status: u16, reason: &str, session: &str, body: &str) -> Vec<u8> {
+    let session_line = session_header(session);
+    let head = format!(
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{session_line}Connection: close\r\n\r\n",
+        body.len()
+    );
+    let mut bytes = head.into_bytes();
+    bytes.extend_from_slice(body.as_bytes());
+    bytes
+}
+
+#[test]
+fn concurrent_calls_overlap_on_one_session() {
+    let server = pace_server(false);
+    let slack = signed_in(&server);
+    slack.user_name("U0WARM0001").expect("warmup");
+    server.stats.peak.store(0, Ordering::SeqCst);
+    server.stats.inflight.store(0, Ordering::SeqCst);
+    server.stats.opened.store(false, Ordering::SeqCst);
+    server.stats.timed_out.store(false, Ordering::SeqCst);
+    server.stats.release_at.store(4, Ordering::SeqCst);
+
+    let ids: Vec<String> = (1..=4).map(|n| format!("U0ACME000{n}")).collect();
+    let names = std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+        for id in &ids {
+            handles.push(scope.spawn(|| slack.user_name(id)));
+        }
+        handles
+            .into_iter()
+            .map(|handle| handle.join().expect("thread"))
+            .collect::<Vec<_>>()
+    });
+    let peak = server.stats.peak.load(Ordering::SeqCst);
+    let log = server.stats.log.lock().unwrap().join("\n");
+    for (id, name) in ids.iter().zip(names) {
+        assert_eq!(name.expect("profile"), *id, "{log}");
+    }
+    assert!(
+        !server.stats.timed_out.load(Ordering::SeqCst),
+        "calls never overlapped\n{log}"
+    );
+    assert!(
+        peak >= ids.len(),
+        "peak {peak} calls did not overlap\n{log}"
+    );
+    assert_eq!(
+        server.stats.initializes.load(Ordering::SeqCst),
+        1,
+        "one session\n{log}"
+    );
+}
+
+#[test]
+fn a_dropped_session_is_reopened_once() {
+    let server = pace_server(true);
+    server.stats.release_at.store(2, Ordering::SeqCst);
+    let slack = signed_in(&server);
+    let ids: Vec<String> = (1..=6).map(|n| format!("U0ACME000{n}")).collect();
+    let names = std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+        for id in &ids {
+            handles.push(scope.spawn(|| slack.user_name(id)));
+        }
+        handles
+            .into_iter()
+            .map(|handle| handle.join().expect("thread"))
+            .collect::<Vec<_>>()
+    });
+    let log = server.stats.log.lock().unwrap().join("\n");
+    for (id, name) in ids.iter().zip(&names) {
+        assert_eq!(name.as_deref().ok(), Some(id.as_str()), "{name:?}\n{log}");
+    }
+    let opens = server.stats.initializes.load(Ordering::SeqCst);
+    assert_eq!(opens, 2, "one reopen, not one per call\n{log}");
+    assert!(
+        server.stats.failed_calls.load(Ordering::SeqCst) >= 1,
+        "the first session's call failed\n{log}"
+    );
+    let peak = server.stats.peak.load(Ordering::SeqCst);
+    assert!(
+        !server.stats.timed_out.load(Ordering::SeqCst),
+        "retries never overlapped\n{log}"
+    );
+    assert!(peak >= 2, "retries overlapped, peak {peak}\n{log}");
 }

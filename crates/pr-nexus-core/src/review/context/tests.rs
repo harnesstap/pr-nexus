@@ -1,4 +1,6 @@
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::Instant;
 
 use chrono::Duration;
 
@@ -18,6 +20,66 @@ struct ThreadChat {
     replies: ThreadReplies,
     unauthorized: bool,
     hits: Vec<SearchHit>,
+    /// `read_thread` waits until this many reads are in flight. `0` does not wait.
+    reads_release_at: usize,
+    reads_inflight: AtomicUsize,
+    reads_peak: AtomicUsize,
+    reads_opened: AtomicBool,
+    reads_gate: Mutex<()>,
+    reads_cv: Condvar,
+    /// `user_name` waits until this many lookups are in flight. `0` does not wait.
+    names_release_at: usize,
+    names_inflight: AtomicUsize,
+    names_peak: AtomicUsize,
+    names_opened: AtomicBool,
+    names_gate: Mutex<()>,
+    names_cv: Condvar,
+}
+
+/// Count one in-flight call and, when `release_at` is greater than one, stay
+/// there until that many overlap. A sequential caller hits the timeout.
+/// `opened` stays set so a caller that leaves does not hide the overlap from
+/// one that has not checked yet.
+fn wait_for_overlap(
+    inflight: &AtomicUsize,
+    peak: &AtomicUsize,
+    release_at: usize,
+    opened: &AtomicBool,
+    lock: &Mutex<()>,
+    cv: &Condvar,
+) {
+    let now = inflight.fetch_add(1, Ordering::SeqCst) + 1;
+    peak.fetch_max(now, Ordering::SeqCst);
+    if release_at <= 1 {
+        return;
+    }
+    let mut guard = lock.lock().unwrap();
+    let started = Instant::now();
+    let limit = std::time::Duration::from_secs(5);
+    loop {
+        if inflight.load(Ordering::SeqCst) >= release_at || opened.load(Ordering::SeqCst) {
+            opened.store(true, Ordering::SeqCst);
+            cv.notify_all();
+            return;
+        }
+        let left = limit.saturating_sub(started.elapsed());
+        assert!(
+            !left.is_zero(),
+            "only {} of {release_at} calls overlapped",
+            inflight.load(Ordering::SeqCst)
+        );
+        let (next, status) = cv.wait_timeout(guard, left).unwrap();
+        guard = next;
+        if status.timed_out()
+            && inflight.load(Ordering::SeqCst) < release_at
+            && !opened.load(Ordering::SeqCst)
+        {
+            panic!(
+                "only {} of {release_at} calls overlapped",
+                inflight.load(Ordering::SeqCst)
+            );
+        }
+    }
 }
 
 impl ChatProvider for ThreadChat {
@@ -54,10 +116,28 @@ impl ChatProvider for ThreadChat {
                 "slack_read_thread: invalid_auth".into(),
             ));
         }
+        wait_for_overlap(
+            &self.reads_inflight,
+            &self.reads_peak,
+            self.reads_release_at,
+            &self.reads_opened,
+            &self.reads_gate,
+            &self.reads_cv,
+        );
+        self.reads_inflight.fetch_sub(1, Ordering::SeqCst);
         Ok(self.replies.clone())
     }
     fn user_name(&self, user_id: &str) -> Result<String, ProviderError> {
         self.lookups.lock().unwrap().push(user_id.into());
+        wait_for_overlap(
+            &self.names_inflight,
+            &self.names_peak,
+            self.names_release_at,
+            &self.names_opened,
+            &self.names_gate,
+            &self.names_cv,
+        );
+        self.names_inflight.fetch_sub(1, Ordering::SeqCst);
         Ok(format!("Name of {user_id}"))
     }
     fn search_messages(
@@ -282,6 +362,108 @@ fn active_threads_come_before_closed_ones_with_their_reason() {
             ("D0123456789", ThreadStatus::Active, None),
             ("C0TEAM", ThreadStatus::Closed, Some("Superseded")),
         ]
+    );
+}
+
+/// The active root is listed first. The reads overlap, and the panel keeps
+/// root order.
+#[test]
+fn context_threads_keep_order_while_reads_overlap() {
+    let (_dir, store, pr, account) = with_request();
+    let first = store.list_review_requests(pr.id).unwrap().remove(0);
+    store
+        .close_review_request(first.id, CloseReason::Superseded, at(1))
+        .unwrap();
+    let mut other = target();
+    other.channel_id = "D0123456789".into();
+    other.channel_name = "D0123456789".into();
+    let poster = crate::review::lifecycle::tests::FakeChat {
+        account,
+        ..Default::default()
+    };
+    let planned = plan(&store, &pr, other, None, 24, at(2)).unwrap();
+    send(&store, &poster, &pr, &planned, "[]", at(2)).unwrap();
+
+    let reader = Arc::new(ThreadChat {
+        account,
+        replies: replies(),
+        reads_release_at: 2,
+        ..ThreadChat::default()
+    });
+    let provider: Arc<dyn ChatProvider> = reader.clone();
+    let mut chat_for = |_: &str| Ok(provider.clone());
+    let threads = context_threads(&store, pr.id, &mut chat_for, at(3), false).unwrap();
+    let order: Vec<(&str, ThreadStatus)> = threads
+        .iter()
+        .map(|thread| (thread.channel_id.as_str(), thread.status))
+        .collect();
+    assert_eq!(
+        order,
+        vec![
+            ("D0123456789", ThreadStatus::Active),
+            ("C0TEAM", ThreadStatus::Closed),
+        ]
+    );
+    let peak = reader.reads_peak.load(Ordering::SeqCst);
+    assert!(peak >= 2, "reads overlapped, peak {peak}");
+}
+
+#[test]
+fn author_lookups_are_deduped_and_overlap() {
+    let (_dir, store, pr, account) = with_request();
+    let first = store.list_review_requests(pr.id).unwrap().remove(0);
+    store
+        .close_review_request(first.id, CloseReason::Superseded, at(1))
+        .unwrap();
+    let mut other = target();
+    other.channel_id = "D0123456789".into();
+    other.channel_name = "D0123456789".into();
+    let poster = crate::review::lifecycle::tests::FakeChat {
+        account,
+        ..Default::default()
+    };
+    let planned = plan(&store, &pr, other, None, 24, at(2)).unwrap();
+    send(&store, &poster, &pr, &planned, "[]", at(2)).unwrap();
+
+    let shared = message("1700000050.000200", "U0ACME0002", None, "On it");
+    let thread_replies = ThreadReplies {
+        messages: vec![
+            message(
+                "1700000001.000100",
+                "U0ACME0001",
+                Some("Ada Acme"),
+                "Could someone review?",
+            ),
+            shared.clone(),
+            message("1700000060.000300", "U0ACME0003", None, "Done"),
+        ],
+        has_more: false,
+    };
+    let reader = Arc::new(ThreadChat {
+        account,
+        replies: thread_replies,
+        names_release_at: 2,
+        ..ThreadChat::default()
+    });
+    let provider: Arc<dyn ChatProvider> = reader.clone();
+    let mut chat_for = |_: &str| Ok(provider.clone());
+    let threads = context_threads(&store, pr.id, &mut chat_for, at(3), false).unwrap();
+
+    assert_eq!(threads[0].messages[0].author, "Ada Acme");
+    assert_eq!(threads[0].messages[1].author, "Name of U0ACME0002");
+    assert_eq!(threads[0].messages[2].author, "Name of U0ACME0003");
+    assert_eq!(threads[1].messages[1].author, "Name of U0ACME0002");
+    let mut lookups = reader.lookups.lock().unwrap().clone();
+    lookups.sort();
+    assert_eq!(
+        lookups,
+        vec!["U0ACME0002".to_owned(), "U0ACME0003".to_owned()],
+        "each author is looked up once across both threads"
+    );
+    let peak = reader.names_peak.load(Ordering::SeqCst);
+    assert!(
+        (2..=AUTHOR_LOOKUPS).contains(&peak),
+        "name lookups overlapped, peak {peak}"
     );
 }
 
