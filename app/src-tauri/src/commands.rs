@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use chrono::Utc;
 use pr_nexus_core::attention::{AttentionFlags, PrActivity};
@@ -546,10 +547,15 @@ pub async fn bootstrap(app: State<'_, std::sync::Arc<AppState>>) -> Result<Boots
                         .flatten()
                         .is_some()
             },
-            slack_workspaces: crate::slack::workspace_accounts(&state.store)?
-                .iter()
-                .map(|account| crate::slack::workspace_dto(state, account))
-                .collect(),
+            slack_workspaces: {
+                let accounts = crate::slack::workspace_accounts(&state.store)?;
+                let workspaces =
+                    pr_nexus_core::review::route::workspaces(&state.store).unwrap_or_default();
+                accounts
+                    .iter()
+                    .map(|account| crate::slack::workspace_from(state, account, &workspaces))
+                    .collect()
+            },
             slack_mentions: settings::slack_mentions(&state.store)?.as_str().to_owned(),
             bump_broadcast: settings::bump_broadcast(&state.store)?,
             mapping_count: state.store.mapping_count()?,
@@ -939,7 +945,32 @@ fn present_overview(state: &AppState, overview: PrOverview) -> Result<PrOverview
 }
 
 /// Every synced row of the GitHub account, built with one query per table.
-pub(crate) fn list_items(state: &AppState) -> Result<Vec<listing::Item>, AppError> {
+///
+/// Unchanged polls reuse the previous build. The cache key is the store
+/// revision plus the next time-based snooze expiry, so a snooze that ends
+/// without a write still rebuilds.
+pub(crate) fn list_items(state: &AppState) -> Result<Arc<Vec<listing::Item>>, AppError> {
+    let store_key = std::ptr::from_ref(state.store.get()) as usize;
+    for _ in 0..3 {
+        let revision = state.store.revision();
+        let fresh_until = state.store.next_snooze_expiry(Utc::now())?;
+        if let Some(hit) = state.list_cache.get(store_key, revision, fresh_until) {
+            return Ok(hit);
+        }
+        let items = Arc::new(assemble_items(state)?);
+        let revision_after = state.store.revision();
+        let fresh_after = state.store.next_snooze_expiry(Utc::now())?;
+        if revision_after == revision && fresh_after == fresh_until {
+            state
+                .list_cache
+                .put(store_key, revision, fresh_until, Arc::clone(&items));
+            return Ok(items);
+        }
+    }
+    Ok(Arc::new(assemble_items(state)?))
+}
+
+fn assemble_items(state: &AppState) -> Result<Vec<listing::Item>, AppError> {
     let Some(account) = state::github_account(&state.store)? else {
         return Ok(Vec::new());
     };
@@ -1050,22 +1081,18 @@ pub(crate) fn items_for_ids(
     Ok(out)
 }
 
-/// Bot-comment counts from overviews the detail panel has already fetched.
+/// Bot-comment counts stored with the overview. A missing count is filled
+/// once from the cached JSON.
 fn attach_bot_comments(state: &AppState, items: &mut [listing::Item]) -> Result<(), AppError> {
     if items.is_empty() {
         return Ok(());
     }
-    let cached = state.store.list_pr_overviews()?;
-    if cached.is_empty() {
+    let counts = state.store.bot_comment_counts()?;
+    if counts.is_empty() {
         return Ok(());
     }
-    let extra = settings::bot_logins(&state.store)?;
-    let counts: HashMap<i64, u32> = cached
-        .into_iter()
-        .map(|(id, json)| (id.0, pr_nexus_core::bots::count_in_json(&json, &extra)))
-        .collect();
     for item in items.iter_mut() {
-        if let Some(count) = counts.get(&item.row.id) {
+        if let Some(count) = counts.get(&PrId(item.row.id)) {
             item.row.bot_comments = *count;
         }
     }
@@ -2147,5 +2174,125 @@ mod tests {
             let row = state.store.get_pull_request(pr.id).unwrap().unwrap();
             assert_eq!(row.is_draft, draft);
         }
+    }
+
+    #[test]
+    fn list_items_cache_reuses_a_revision_and_drops_it_after_a_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::for_tests(&dir.path().join("pr-nexus.db"), true);
+        crate::demo::seed_if_empty(&state.store).unwrap();
+        let first = list_items(&state).unwrap();
+        let second = list_items(&state).unwrap();
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "an unchanged store reuses the built rows"
+        );
+        let account = state::github_account(&state.store).unwrap().unwrap();
+        let repos = state.store.list_repositories(account.id).unwrap();
+        let mut pr = state
+            .store
+            .list_pull_requests_for_account(account.id)
+            .unwrap()
+            .remove(0);
+        let repo = repos
+            .iter()
+            .find(|repo| repo.owner == pr.repo.owner && repo.name == pr.repo.name)
+            .unwrap();
+        pr.title = "Renamed latch".into();
+        state.store.upsert_pull_request(repo.id, pr).unwrap();
+        let third = list_items(&state).unwrap();
+        assert!(
+            !Arc::ptr_eq(&first, &third),
+            "a write moves the store revision and rebuilds"
+        );
+        assert!(third.iter().any(|item| item.row.title == "Renamed latch"));
+    }
+
+    #[test]
+    #[allow(clippy::print_stderr)]
+    fn list_page_over_five_hundred_reuses_the_build() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::for_tests(&dir.path().join("pr-nexus.db"), true);
+        crate::demo::seed_if_empty(&state.store).unwrap();
+        let account = state::github_account(&state.store).unwrap().unwrap();
+        let template = state
+            .store
+            .list_pull_requests_for_account(account.id)
+            .unwrap()
+            .remove(0);
+        let repo = state
+            .store
+            .list_repositories(account.id)
+            .unwrap()
+            .into_iter()
+            .find(|repo| repo.owner == template.repo.owner && repo.name == template.repo.name)
+            .unwrap();
+        let overview = |number: u64| {
+            format!(
+                r#"{{"feedback":[{{"login":"dependabot[bot]","actor_bot":true,"kind":"issue","snippet":"bump {number}","url":"https://github.com/acme/widgets/pull/{number}","unresolved":false,"at":"2026-10-01T00:00:00Z"}},{{"login":"ada","actor_bot":false,"kind":"issue","snippet":"lgtm","url":"https://github.com/acme/widgets/pull/{number}#ada","unresolved":false,"at":"2026-10-02T00:00:00Z"}}]}}"#
+            )
+        };
+        for index in 1..=500 {
+            let number = 10_000 + index;
+            let mut pr = template.clone();
+            pr.id = PrId(0);
+            pr.remote.id = format!("PR_bench_{index}");
+            pr.number = number;
+            pr.title = format!("Bench latch {index}");
+            pr.url = format!("https://github.com/acme/widgets/pull/{number}");
+            pr.head_ref = format!("bench-{index}");
+            pr.updated_at = Utc::now();
+            let saved = state.store.upsert_pull_request(repo.id, pr).unwrap();
+            state
+                .store
+                .upsert_pr_overview(saved.id, overview(number), Utc::now())
+                .unwrap();
+        }
+
+        let cold_started = std::time::Instant::now();
+        let cold = projects::page_for(&state, &request("mine", "")).unwrap();
+        let cold_ms = cold_started.elapsed().as_secs_f64() * 1_000.0;
+        let warm_started = std::time::Instant::now();
+        let warm = projects::page_for(&state, &request("mine", "")).unwrap();
+        let warm_ms = warm_started.elapsed().as_secs_f64() * 1_000.0;
+
+        let extra = pr_nexus_core::settings::bot_logins(&state.store).unwrap();
+        let parse_started = std::time::Instant::now();
+        let parsed: u64 = state
+            .store
+            .list_pr_overviews()
+            .unwrap()
+            .iter()
+            .map(|(_, json)| u64::from(pr_nexus_core::bots::count_in_json(json, &extra)))
+            .sum();
+        let parse_ms = parse_started.elapsed().as_secs_f64() * 1_000.0;
+        let stored_started = std::time::Instant::now();
+        let stored: u64 = state
+            .store
+            .bot_comment_counts()
+            .unwrap()
+            .values()
+            .map(|count| u64::from(*count))
+            .sum();
+        let stored_ms = stored_started.elapsed().as_secs_f64() * 1_000.0;
+        assert_eq!(parsed, stored);
+        assert_eq!(parsed, 500);
+
+        let built = list_items(&state).unwrap();
+        let again = list_items(&state).unwrap();
+        assert!(Arc::ptr_eq(&built, &again));
+        assert_eq!(
+            built
+                .iter()
+                .filter(|item| item.row.title.starts_with("Bench latch"))
+                .filter(|item| item.row.bot_comments == 1)
+                .count(),
+            500
+        );
+        assert!(!cold.entries.is_empty());
+        assert_eq!(cold.summary.open, warm.summary.open);
+        eprintln!(
+            "list_page 500 cold {cold_ms:.2} ms, cached {warm_ms:.2} ms; bot counts parse {parse_ms:.2} ms, stored {stored_ms:.2} ms"
+        );
     }
 }

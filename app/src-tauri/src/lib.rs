@@ -7,6 +7,7 @@ mod demo;
 mod error;
 mod explain;
 mod github_query;
+mod item_cache;
 mod listing;
 mod live;
 mod logging;

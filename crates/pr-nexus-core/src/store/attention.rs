@@ -16,7 +16,7 @@ use crate::domain::PrId;
 use crate::error::CoreError;
 
 use super::row::conv;
-use super::time::{format_ts, ts_col};
+use super::time::{format_ts, parse_ts, ts_col};
 use super::{Store, db};
 
 impl Store {
@@ -59,6 +59,31 @@ impl Store {
             flags.insert(row.pr, flags_for);
         }
         Ok(flags)
+    }
+
+    /// The soonest time-based snooze that is still in the future at `now`.
+    ///
+    /// The list cache stays valid until this instant: a snooze that ends
+    /// without a write still leaves the cached rows.
+    pub fn next_snooze_expiry(
+        &self,
+        now: DateTime<Utc>,
+    ) -> Result<Option<DateTime<Utc>>, CoreError> {
+        let now_text = format_ts(now);
+        self.read(move |conn| {
+            let text: Option<String> = conn
+                .query_row(
+                    "SELECT MIN(snooze_until) FROM pr_attention
+                     WHERE snooze_kind = 'until' AND snooze_until > ?1",
+                    [now_text],
+                    |row| row.get(0),
+                )
+                .map_err(db)?;
+            match text {
+                Some(value) => parse_ts(&value).map(Some),
+                None => Ok(None),
+            }
+        })
     }
 
     /// Stores the current activity as last-seen. Snooze and mute stay as they are.

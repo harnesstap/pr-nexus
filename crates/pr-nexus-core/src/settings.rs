@@ -707,6 +707,7 @@ pub fn save_preferences(store: &Store, prefs: &Preferences) -> Result<Preference
     };
     crate::linking::validate_ticket_regex(regex)?;
     let jira_base = crate::jira::valid_base_url(&prefs.jira_base_url)?;
+    let previous_bots = bot_logins(store)?;
     let bot_logins = normalize_bot_logins(&prefs.bot_logins)?;
     put_json(store, REVIEW_REQUESTER, prefs.review_requester.trim())?;
     put_json(store, MIN_BUMP_INTERVAL, &prefs.min_bump_interval_hours)?;
@@ -747,7 +748,29 @@ pub fn save_preferences(store: &Store, prefs: &Preferences) -> Result<Preference
     )?;
     put_json(store, MY_PRS_WIP_LIMIT, &wip_limit)?;
     put_json(store, BOT_LOGINS, &bot_logins)?;
+    if !same_bot_logins(&previous_bots, &bot_logins) {
+        store.clear_bot_comment_counts()?;
+    }
     preferences(store)
+}
+
+/// Extra logins compare case-insensitively. Order and spelling do not
+/// change which comments count as bots.
+fn same_bot_logins(left: &[String], right: &[String]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut left: Vec<String> = left
+        .iter()
+        .map(|login| login.to_ascii_lowercase())
+        .collect();
+    let mut right: Vec<String> = right
+        .iter()
+        .map(|login| login.to_ascii_lowercase())
+        .collect();
+    left.sort();
+    right.sort();
+    left == right
 }
 
 pub fn oauth_client_id(store: &Store) -> Result<String, CoreError> {

@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use rusqlite::{OptionalExtension, params};
 
 use crate::domain::{
@@ -97,22 +99,101 @@ impl Store {
         json: String,
         fetched_at: chrono::DateTime<chrono::Utc>,
     ) -> Result<(), CoreError> {
+        let extra = crate::settings::bot_logins(self).unwrap_or_default();
+        let count = i64::from(crate::bots::count_in_json(&json, &extra));
         self.write(move |conn| {
             conn.execute(
-                "INSERT INTO pr_overview_cache (pr_id, overview_json, fetched_at)
-                 VALUES (?1, ?2, ?3)
+                "INSERT INTO pr_overview_cache (pr_id, overview_json, fetched_at, bot_comment_count)
+                 VALUES (?1, ?2, ?3, ?4)
                  ON CONFLICT(pr_id) DO UPDATE SET
                     overview_json = excluded.overview_json,
-                    fetched_at = excluded.fetched_at",
-                params![pr.0, json, format_ts(fetched_at)],
+                    fetched_at = excluded.fetched_at,
+                    bot_comment_count = excluded.bot_comment_count",
+                params![pr.0, json, format_ts(fetched_at), count],
             )
             .map_err(db)?;
             Ok(())
         })
     }
 
-    /// Every cached overview, as stored. Used to mark list rows that have
-    /// bot comments without parsing rows that were never opened.
+    /// Bot-comment counts for every cached overview.
+    ///
+    /// Rows written before the count column (NULL) are parsed once, with the
+    /// current extra bot logins, and the count is stored.
+    pub fn bot_comment_counts(&self) -> Result<HashMap<PrId, u32>, CoreError> {
+        let rows = self.read(|conn| {
+            let mut stmt = conn
+                .prepare("SELECT pr_id, bot_comment_count FROM pr_overview_cache")
+                .map_err(db)?;
+            let mapped = stmt
+                .query_map([], |row| {
+                    Ok((PrId(row.get(0)?), row.get::<_, Option<i64>>(1)?))
+                })
+                .map_err(db)?;
+            mapped.collect::<Result<Vec<_>, _>>().map_err(db)
+        })?;
+        let mut counts = HashMap::with_capacity(rows.len());
+        let mut missing = false;
+        for (id, count) in rows {
+            match count {
+                Some(value) => {
+                    counts.insert(id, u32::try_from(value).unwrap_or(0));
+                }
+                None => missing = true,
+            }
+        }
+        if !missing {
+            return Ok(counts);
+        }
+        let extra = crate::settings::bot_logins(self).unwrap_or_default();
+        let pending = self.read(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT pr_id, overview_json FROM pr_overview_cache
+                     WHERE bot_comment_count IS NULL",
+                )
+                .map_err(db)?;
+            let mapped = stmt
+                .query_map([], |row| Ok((PrId(row.get(0)?), row.get::<_, String>(1)?)))
+                .map_err(db)?;
+            mapped.collect::<Result<Vec<_>, _>>().map_err(db)
+        })?;
+        let filled: Vec<(PrId, u32)> = pending
+            .iter()
+            .map(|(id, json)| (*id, crate::bots::count_in_json(json, &extra)))
+            .collect();
+        self.write({
+            let filled = filled.clone();
+            move |conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "UPDATE pr_overview_cache SET bot_comment_count = ?1
+                         WHERE pr_id = ?2 AND bot_comment_count IS NULL",
+                    )
+                    .map_err(db)?;
+                for (id, count) in &filled {
+                    stmt.execute(params![i64::from(*count), id.0]).map_err(db)?;
+                }
+                Ok(())
+            }
+        })?;
+        for (id, count) in filled {
+            counts.insert(id, count);
+        }
+        Ok(counts)
+    }
+
+    /// Forgets stored bot-comment counts so the next read parses them again.
+    /// Used when the extra bot-login list changes.
+    pub fn clear_bot_comment_counts(&self) -> Result<(), CoreError> {
+        self.write(|conn| {
+            conn.execute("UPDATE pr_overview_cache SET bot_comment_count = NULL", [])
+                .map_err(db)?;
+            Ok(())
+        })
+    }
+
+    /// Every cached overview, as stored.
     pub fn list_pr_overviews(&self) -> Result<Vec<(PrId, String)>, CoreError> {
         self.read(|conn| {
             let mut stmt = conn

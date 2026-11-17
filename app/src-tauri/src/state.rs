@@ -179,6 +179,8 @@ pub struct AppState {
     pub live: crate::live::LiveShared,
     /// Behind counts for the Branch card, keyed on head and base SHAs.
     pub branch_cache: pr_nexus_core::branch::BranchCache,
+    /// Built list rows for the current store revision.
+    pub list_cache: crate::item_cache::ListItemCache,
     /// `PR_NEXUS_DEMO=1`: seeded local data only, never talk to GitHub.
     pub demo: bool,
     /// Last sync snapshot, so desktop notifications fire only on changes (§8.5).
@@ -231,6 +233,7 @@ impl AppState {
             wake: Arc::new((Mutex::new(false), Condvar::new())),
             live: crate::live::LiveShared::default(),
             branch_cache: pr_nexus_core::branch::BranchCache::default(),
+            list_cache: crate::item_cache::ListItemCache::default(),
             demo,
             notifier: Mutex::new(pr_nexus_core::notify::Watcher::default()),
         })
@@ -284,6 +287,7 @@ impl AppState {
         }
         *self.device.lock().unwrap_or_else(PoisonError::into_inner) = None;
         self.branch_cache.clear();
+        self.list_cache.clear();
         self.reviews_active.store(false, Ordering::Relaxed);
         self.notifier
             .lock()

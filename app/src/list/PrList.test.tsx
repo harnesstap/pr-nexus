@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { afterEach, expect, test, vi } from "vitest";
 import { TOOLTIP_DELAY_MS } from "../Tooltip";
 
@@ -9,7 +9,7 @@ vi.mock("./paging", async (importOriginal) => ({ ...(await importOriginal<typeof
 import type { ListRow, ProjectDto } from "../api";
 import { PAGE_SIZE, pageFromRows, type PageDto, type PageRequest, type SearchRow } from "./paging";
 import { defaultView, type SavedView, type Toast } from "./model";
-import { PrList, SEARCH_DEBOUNCE_MS } from "./PrList";
+import { PrList, SEARCH_DEBOUNCE_MS, prRowRenderCountRef } from "./PrList";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -159,6 +159,74 @@ const rows = [
   row({ id: 2, number: 138, title: "Add passkeys", project_ids: [1] }),
   row({ id: 3, number: 23, title: "Fix tax rounding", project_ids: [] }),
 ];
+
+test("a clock tick updates relative time without re-rendering the row", async () => {
+  const prior = globalThis.ResizeObserver;
+  class SilentObserver {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  globalThis.ResizeObserver = SilentObserver as unknown as typeof ResizeObserver;
+  const rowsRef = {
+    current: [row({ id: 1, number: 42, title: "Latch the cache", updated_at: "2026-10-26T11:59:00Z" })],
+  };
+  const initialView: SavedView = { ...defaultView(), show: { ...defaultView().show, activity: true } };
+  function ClockHarness({ now: at, version }: { now: Date; version: number }) {
+    const [view, setView] = useState(initialView);
+    const loadPage = useCallback(
+      (request: PageRequest) => Promise.resolve(pageFromRows(rowsRef.current, [auth], request)),
+      [],
+    );
+    return (
+      <PrList
+        loadPage={loadPage}
+        version={version}
+        projects={[auth]}
+        viewKey="mine"
+        view={view}
+        onViewChange={setView}
+        onShowView={() => undefined}
+        now={at}
+        onOpen={() => undefined}
+        onRename={() => Promise.resolve()}
+        onArchive={() => undefined}
+        onDelete={() => undefined}
+        onEditProject={() => undefined}
+        onLinkPrs={() => undefined}
+        onCreateProjectWithPrs={() => Promise.resolve()}
+        onDetails={() => undefined}
+        onRequestReview={() => undefined}
+        onBulkReview={() => undefined}
+      />
+    );
+  }
+  try {
+    prRowRenderCountRef.current = 0;
+    const shown = await show(<ClockHarness now={new Date("2026-10-26T12:00:00Z")} version={0} />);
+    expect(screen.getByText("Latch the cache")).toBeInTheDocument();
+    expect(screen.getByText(/updated 1m ago/)).toBeInTheDocument();
+    const rendered = prRowRenderCountRef.current;
+    expect(rendered).toBeGreaterThan(0);
+    shown.rerender(<ClockHarness now={new Date("2026-10-26T12:02:00Z")} version={0} />);
+    await settle();
+    expect(prRowRenderCountRef.current).toBe(rendered);
+    expect(screen.getByText(/updated 3m ago/)).toBeInTheDocument();
+    expect(screen.queryByText(/updated 1m ago/)).not.toBeInTheDocument();
+
+    rowsRef.current = [row({ id: 1, number: 42, title: "Renamed latch", updated_at: "2026-10-26T11:59:00Z" })];
+    shown.rerender(<ClockHarness now={new Date("2026-10-26T12:02:00Z")} version={1} />);
+    await settle();
+    expect(prRowRenderCountRef.current).toBeGreaterThan(rendered);
+    expect(screen.getByText("Renamed latch")).toBeInTheDocument();
+  } finally {
+    if (prior) {
+      globalThis.ResizeObserver = prior;
+    } else {
+      Reflect.deleteProperty(globalThis, "ResizeObserver");
+    }
+  }
+});
 
 test("a GitHub query counts every row Select all checks, and Sort says the query sets the order", async () => {
   const initialView: SavedView = {
