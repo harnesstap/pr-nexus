@@ -23,7 +23,8 @@ pub use loopback::CancelHandle;
 pub use mcp::{RmcpSession, SessionConfig, SlackMcpChatProvider, ToolCaller};
 pub use oauth::{
     ConnectConfig, Connected, GrantProbe, TokenState, WorkspaceIdentity, connect,
-    connect_with_listener, enterprise_id, probe_grant, token_state,
+    connect_with_listener, enterprise_id, export_discovery, probe_grant, seed_discovery,
+    token_state,
 };
 
 /// `slack.mcp.url` default.

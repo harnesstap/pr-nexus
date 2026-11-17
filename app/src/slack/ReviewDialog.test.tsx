@@ -66,12 +66,102 @@ function fake(overrides: Partial<Api> = {}) {
   return { api, calls };
 }
 
+test("Checking channel… shows while the live name loads, then leaves when Send enables", async () => {
+  let release: (choices: TargetChoice[]) => void = () => undefined;
+  const live = new Promise<TargetChoice[]>((resolve) => {
+    release = resolve;
+  });
+  const { api } = fake({
+    reviewTargets: (_id, _teams, cached) => (cached ? Promise.resolve([mapped]) : live),
+  });
+  render(<ReviewDialog api={api} row={row} onClose={() => undefined} onOpen={() => undefined} onSent={() => undefined} />);
+  expect(await screen.findByRole("status")).toHaveTextContent("Checking channel…");
+  expect(screen.getByRole("button", { name: "Send request" })).toBeDisabled();
+  release([mapped]);
+  await waitFor(() => expect(screen.getByRole("button", { name: "Send request" })).toBeEnabled());
+  expect(screen.queryByText("Checking channel…")).not.toBeInTheDocument();
+});
+
+test("Checking channel… goes away when the live lookup fails and Send keeps the cached name", async () => {
+  let fail: (reason: unknown) => void = () => undefined;
+  const live = new Promise<TargetChoice[]>((_, reject) => {
+    fail = reject;
+  });
+  const { api } = fake({
+    reviewTargets: (_id, _teams, cached) => (cached ? Promise.resolve([mapped]) : live),
+  });
+  render(<ReviewDialog api={api} row={row} onClose={() => undefined} onOpen={() => undefined} onSent={() => undefined} />);
+  expect(await screen.findByRole("status")).toHaveTextContent("Checking channel…");
+  expect(screen.getByRole("button", { name: "Send request" })).toBeDisabled();
+  fail(new Error("slack down"));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Send request" })).toBeEnabled());
+  expect(screen.queryByText("Checking channel…")).not.toBeInTheDocument();
+  expect(screen.getByText("New message in #platform.")).toBeInTheDocument();
+  expect(screen.queryByText(/slack down/)).not.toBeInTheDocument();
+});
+
+test("the cached channel is shown before live names return, then the label updates", async () => {
+  let release: (choices: TargetChoice[]) => void = () => undefined;
+  const live = new Promise<TargetChoice[]>((resolve) => {
+    release = resolve;
+  });
+  const renamed: TargetChoice = {
+    ...mapped,
+    target: { ...mapped.target, channel_name: "platform-renamed" },
+  };
+  const { api } = fake({
+    reviewTargets: (_id, _teams, cached) => (cached ? Promise.resolve([mapped]) : live),
+  });
+  render(<ReviewDialog api={api} row={row} onClose={() => undefined} onOpen={() => undefined} onSent={() => undefined} />);
+  expect(await screen.findByText("New message in #platform.")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Send request" })).toBeDisabled();
+  release([renamed]);
+  await waitFor(() => expect(screen.getByRole("button", { name: "Send request" })).toBeEnabled());
+  expect(screen.getByText("New message in #platform-renamed.")).toBeInTheDocument();
+});
+
+test("a changed channel reloads the preview before Send is enabled", async () => {
+  let release: (choices: TargetChoice[]) => void = () => undefined;
+  const live = new Promise<TargetChoice[]>((resolve) => {
+    release = resolve;
+  });
+  const moved: TargetChoice = {
+    ...mapped,
+    target: { ...mapped.target, channel_id: "C0ACME0099", channel_name: "other" },
+  };
+  const previews: string[] = [];
+  const { api } = fake({
+    reviewTargets: (_id, _teams, cached) => (cached ? Promise.resolve([mapped]) : live),
+    reviewPreview: (_id, target) => {
+      previews.push(target.channel_id);
+      return Promise.resolve({
+        target,
+        action: "request",
+        text: `Review please · #${target.channel_name}`,
+        warnings: [],
+        pr_warnings: [],
+        signed_in: true,
+        bump_count: 0,
+        permalink: null,
+        broadcast: true,
+      });
+    },
+  });
+  render(<ReviewDialog api={api} row={row} onClose={() => undefined} onOpen={() => undefined} onSent={() => undefined} />);
+  expect(await screen.findByText("New message in #platform.")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Send request" })).toBeDisabled();
+  release([moved]);
+  await waitFor(() => expect(screen.getByRole("button", { name: "Send request" })).toBeEnabled());
+  expect(screen.getByText("New message in #other.")).toBeInTheDocument();
+  expect(previews).toEqual(["C0123456789", "C0ACME0099"]);
+});
+
 test("the mapped channel is previewed for the mandatory teams and Send posts it", async () => {
   const { api, calls } = fake();
   const sent: SlackIndicator[] = [];
   render(<ReviewDialog api={api} row={row} onClose={() => undefined} onOpen={() => undefined} onSent={(item) => sent.push(item)} />);
   expect(await screen.findByLabelText("Message preview")).toHaveTextContent("Review please · #platform");
-  expect(calls.targets).toEqual([["@acme/platform"]]);
+  await waitFor(() => expect(calls.targets).toEqual([["@acme/platform"], ["@acme/platform"]]));
   fireEvent.click(screen.getByRole("button", { name: "Send request" }));
   await waitFor(() => expect(sent).toHaveLength(1));
   expect(calls.sent).toEqual([[mapped.target, ["@acme/platform"]]]);
@@ -434,7 +524,7 @@ test("one CODEOWNERS team still uses the channel picker", async () => {
   });
   render(<ReviewDialog api={api} row={row} onClose={() => undefined} onOpen={() => undefined} onSent={() => undefined} />);
   expect(await screen.findByLabelText("Message preview")).toHaveTextContent("Review please · #platform");
-  expect(calls.targets).toEqual([["@acme/platform"]]);
+  await waitFor(() => expect(calls.targets).toEqual([["@acme/platform"], ["@acme/platform"]]));
   expect(screen.getByRole("combobox", { name: "Channel or person" })).toBeInTheDocument();
 });
 

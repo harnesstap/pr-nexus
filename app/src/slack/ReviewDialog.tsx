@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import type { Api, ListRow, ReviewPreview, ReviewTarget, SlackIndicator, SlackWorkspace, TargetChoice } from "../api";
+import { useEffect, useRef, useState } from "react";
+import type { Api, ListRow, PrDetail, ReviewPreview, ReviewTarget, SlackIndicator, SlackWorkspace, TargetChoice } from "../api";
 import { channelLabel, errorMessage, isSendable } from "../api";
 import { Tooltip } from "../Tooltip";
 import { plainText } from "../textInput";
@@ -8,6 +8,7 @@ import { CopyMessageButton } from "./CopyMessageButton";
 import { DraftWarning } from "./DraftWarning";
 import { Mrkdwn } from "./mrkdwn";
 import { CheckNotes, GroupedRequest, needsGroupSends } from "./OwnerGroups";
+import { peekReviewPrefetch } from "./reviewPrefetch";
 import { TargetCombobox } from "./TargetCombobox";
 
 interface Props {
@@ -21,6 +22,18 @@ interface Props {
   onReady?: (id: number) => void;
   /** Shows a toast, e.g. after "Copy message". */
   onNotice?: (toast: Toast) => void;
+  /** Owners the detail panel already loaded. Skips a second `prDetail`. */
+  detail?: PrDetail | null;
+}
+
+function mark(name: string): void {
+  if (import.meta.env.DEV && typeof performance !== "undefined") {
+    performance.mark(name);
+  }
+}
+
+function sameDestination(a: ReviewTarget, b: ReviewTarget): boolean {
+  return a.channel_id === b.channel_id && a.workspace === b.workspace && (a.team_id ?? "") === (b.team_id ?? "");
 }
 
 /**
@@ -36,14 +49,17 @@ export function withNote(text: string, note: string): string {
  * Request or bump review on Slack for one PR (§7.11). Shows the exact text
  * before anything is posted; Send is the only call that reaches Slack.
  */
-export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNotice }: Props) {
-  const [teams, setTeams] = useState<string[]>([]);
-  const [choices, setChoices] = useState<TargetChoice[] | null>(null);
+export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNotice, detail }: Props) {
+  const [seed] = useState(() => peekReviewPrefetch(row.id));
+  const [teams, setTeams] = useState<string[]>(seed?.teams ?? []);
+  const [choices, setChoices] = useState<TargetChoice[] | null>(seed?.choices ?? null);
   const [workspaces, setWorkspaces] = useState<SlackWorkspace[]>([]);
-  const [target, setTarget] = useState<ReviewTarget | null>(null);
+  const [target, setTarget] = useState<ReviewTarget | null>(seed?.target ?? null);
   /** The suggestion picked, whose teams go in the request; null for a searched target. */
-  const [chosen, setChosen] = useState<TargetChoice | null>(null);
-  const [preview, setPreview] = useState<ReviewPreview | null>(null);
+  const [chosen, setChosen] = useState<TargetChoice | null>(seed?.choice ?? null);
+  const [preview, setPreview] = useState<ReviewPreview | null>(seed?.preview ?? null);
+  /** Live channel names are still in flight. Send stays off so the label matches the id. */
+  const [naming, setNaming] = useState(seed?.preview != null);
   const [error, setError] = useState<string | null>(null);
   /** Why no channel is suggested, in plain words (owners or channels failed to load). */
   const [hint, setHint] = useState<string | null>(null);
@@ -56,6 +72,7 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNot
   const [unconfirmed, setUnconfirmed] = useState<string | null>(null);
   /** `true` when several CODEOWNERS lines each need their own send. */
   const [groupsMode, setGroupsMode] = useState(false);
+  const picked = useRef(false);
 
   async function loadPreview(target: ReviewTarget) {
     setPreview(null);
@@ -68,12 +85,17 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNot
   }
 
   useEffect(() => {
-    // ListScreen keys this dialog by PR id, so state starts empty for each PR.
+    // ListScreen keys this dialog by PR id, so state starts empty for each PR
+    // unless a prefetch already filled it.
     let cancel = false;
     void (async () => {
       try {
-        const [detail, signedIn] = await Promise.all([
-          api.prDetail(row.id).catch((err: unknown) => {
+        mark("review-dialog:start");
+        const [owners, signedIn] = await Promise.all([
+          (detail
+            ? Promise.resolve(detail)
+            : api.prDetail(row.id)
+          ).catch((err: unknown) => {
             if (!cancel) {
               setHint(`Couldn't read this PR's code owners, so no channel is suggested (${errorMessage(err)}). Search for one above.`);
             }
@@ -81,20 +103,23 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNot
           }),
           api.slackWorkspaces().catch(() => []),
         ]);
-        if (detail && needsGroupSends(detail.owner_groups)) {
+        mark("review-dialog:owners");
+        if (owners && needsGroupSends(owners.owner_groups)) {
           if (!cancel) {
             setGroupsMode(true);
             setChoices([]);
+            setNaming(false);
           }
           return;
         }
-        const wanted = detail ? (detail.mandatory_teams.length > 0 ? detail.mandatory_teams : detail.candidate_teams) : [];
-        const found = await api.reviewTargets(row.id, wanted).catch((err: unknown) => {
+        const wanted = owners ? (owners.mandatory_teams.length > 0 ? owners.mandatory_teams : owners.candidate_teams) : [];
+        const found = await api.reviewTargets(row.id, wanted, true).catch((err: unknown) => {
           if (!cancel) {
             setHint(`Couldn't load the code-owner channels (${errorMessage(err)}). Search for one above.`);
           }
           return [] as TargetChoice[];
         });
+        mark("review-dialog:targets");
         if (cancel) {
           return;
         }
@@ -104,17 +129,53 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNot
         // Preselect only a channel with a real ID: a name-only mapping is a
         // suggestion to search for, never a target to preview (§7.11).
         const first = found.find((choice) => choice.source !== "unresolved" && isSendable(choice.target));
-        if (first) {
-          setTarget(first.target);
-          setChosen(first);
-          const next = await api.reviewPreview(row.id, first.target);
+        if (!first) {
+          setNaming(false);
+          return;
+        }
+        setTarget(first.target);
+        setChosen(first);
+        const next = await api.reviewPreview(row.id, first.target, true);
+        mark("review-dialog:preview");
+        if (cancel || picked.current) {
+          return;
+        }
+        setPreview(next);
+        setNaming(true);
+        const live = await api.reviewTargets(row.id, wanted, false).catch(() => found);
+        mark("review-dialog:names");
+        if (cancel || picked.current) {
           if (!cancel) {
-            setPreview(next);
+            setNaming(false);
           }
+          return;
+        }
+        const index = found.indexOf(first);
+        const liveChoice = live[index] ?? live.find((choice) => choice.target.channel_id === first.target.channel_id);
+        setChoices(live);
+        if (!liveChoice || sameDestination(liveChoice.target, first.target)) {
+          if (liveChoice && liveChoice.target.channel_name !== first.target.channel_name) {
+            setTarget(liveChoice.target);
+            setChosen(liveChoice);
+            setPreview((current) => (current ? { ...current, target: liveChoice.target } : current));
+          }
+          setNaming(false);
+          return;
+        }
+        setTarget(liveChoice.target);
+        setChosen(liveChoice);
+        setPreview(null);
+        const refreshed = await api.reviewPreview(row.id, liveChoice.target);
+        if (!cancel && !picked.current) {
+          setPreview(refreshed);
+        }
+        if (!cancel) {
+          setNaming(false);
         }
       } catch (err) {
         if (!cancel) {
           setChoices((current) => current ?? []);
+          setNaming(false);
           setError(errorMessage(err));
         }
       }
@@ -122,7 +183,7 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNot
     return () => {
       cancel = true;
     };
-  }, [api, row.id]);
+  }, [api, detail, row.id]);
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
@@ -139,6 +200,8 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNot
     if (!isSendable(next)) {
       return;
     }
+    picked.current = true;
+    setNaming(false);
     setTarget(next);
     setChosen(choice);
     void loadPreview(next);
@@ -225,6 +288,12 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNot
               value={target}
               onSelect={choose}
             />
+            {naming && (
+              <p className="flex items-center gap-1.5 text-xs text-slate-400" role="status">
+                <span aria-hidden="true" className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-slate-600 border-t-slate-300" />
+                Checking channel…
+              </p>
+            )}
             {hint ? (
               <p className="text-xs text-slate-400">{hint}</p>
             ) : choices.length === 0 ? (
@@ -304,7 +373,7 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNot
           <button
             type="button"
             className="rounded bg-violet-500 px-3 py-1.5 font-medium text-white disabled:opacity-40"
-            disabled={!preview || !preview.signed_in || sending || marking || unconfirmed !== null}
+            disabled={!preview || !preview.signed_in || sending || marking || naming || unconfirmed !== null}
             onClick={() => void send()}
           >
             {sending ? "Sending…" : bump ? (draft ? "Bump anyway" : "Bump in thread") : draft ? "Send anyway" : "Send request"}

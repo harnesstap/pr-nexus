@@ -1,6 +1,6 @@
 import { createPortal } from "react-dom";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import type { Api, Bootstrap, ListRow, ProjectDto, RemoteReviewFilter, ReplacedLinkDto } from "../api";
+import type { Api, Bootstrap, ListRow, PrDetail, ProjectDto, RemoteReviewFilter, ReplacedLinkDto } from "../api";
 import { CloseDialog, type CloseTarget } from "../detail/CloseDialog";
 import { MergeQueueDialog } from "../detail/MergeQueueDialog";
 import { errorMessage } from "../api";
@@ -57,6 +57,7 @@ import { ProjectDialog } from "./ProjectDialog";
 import { AccountsSettings } from "../settings/AccountsSettings";
 import { BulkDialog } from "../slack/BulkDialog";
 import { ReviewDialog } from "../slack/ReviewDialog";
+import { cancelReviewPrefetch, scheduleReviewPrefetch } from "../slack/reviewPrefetch";
 import { SettingsScreen } from "../settings/SettingsScreen";
 import { readSettingsSection, type SettingsSection } from "../settings/tabs";
 import { KeyringBanner } from "../KeyringBanner";
@@ -133,6 +134,21 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
   const [editingProject, setEditingProject] = useState<number | null>(null);
   const [detailRow, setDetailRow] = useState<ListRow | null>(null);
   const [reviewRow, setReviewRow] = useState<ListRow | null>(null);
+  const [panelDetail, setPanelDetail] = useState<PrDetail | null>(null);
+  const panelDetailRef = useRef<PrDetail | null>(null);
+  useEffect(() => {
+    panelDetailRef.current = null;
+    if (!detailRow) {
+      cancelReviewPrefetch();
+      return;
+    }
+    const id = detailRow.id;
+    scheduleReviewPrefetch(api, id, () => {
+      const known = panelDetailRef.current;
+      return known && known.id === id ? known : null;
+    });
+    return () => cancelReviewPrefetch();
+  }, [api, detailRow]);
   const closeDetail = () => {
     setDetailRow(null);
     // The detail may have resolved code-owner status the list row now uses.
@@ -1292,6 +1308,10 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
                 }}
                 onSnooze={(choice) => void snoozeRows([detailRow.id], choice)}
                 onMute={(muted) => void muteRows([detailRow.id], muted)}
+                onDetail={(next) => {
+                  panelDetailRef.current = next;
+                  setPanelDetail(next);
+                }}
               />
             )}
             {queueRows && queueRows.length > 0 && (
@@ -1353,6 +1373,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
             key={reviewRow.id}
             api={api}
             row={reviewRow}
+            detail={panelDetail && panelDetail.id === reviewRow.id ? panelDetail : null}
             onNotice={setNotice}
             onClose={() => setReviewRow(null)}
             onReady={(id) => {

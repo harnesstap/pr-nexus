@@ -4,8 +4,10 @@
 //! ([`listing::status_matches`], [`listing::quick_matches`]), so a status here
 //! means exactly what the filter menu and quick filters show.
 
+use std::sync::Arc;
+
 use chrono::Utc;
-use pr_nexus_core::domain::PrId;
+use pr_nexus_core::domain::{PrId, PullRequest};
 use pr_nexus_core::ownership;
 use pr_nexus_core::settings;
 use serde::{Deserialize, Serialize};
@@ -21,16 +23,71 @@ pub const DEFAULT_LIMIT: usize = 50;
 pub const MAX_LIMIT: usize = 200;
 
 /// Readiness, ownership and the explanations behind them (§6, §7.2).
-/// Demo mode uses the fixture provider; otherwise this calls GitHub.
+/// Demo mode uses the fixture provider. A session or store hit skips the
+/// GitHub probe; [`pr_detail_live`] revalidates those in the background.
 pub fn pr_detail(state: &AppState, id: i64) -> Result<PrDetail, AppError> {
+    let _span = tracing::debug_span!("pr_detail", pr = id).entered();
     let pr = stored_pr(state, PrId(id))?;
+    if let Some(detail) = crate::services::bulk::cached_detail(state, &pr) {
+        tracing::debug!(pr = id, "pr detail from session cache");
+        return Ok(detail);
+    }
+    load_detail(state, &pr, true)
+}
+
+/// [`pr_detail`] for the window. A cache hit starts a background probe so the
+/// next open sees fresh reviews.
+pub fn pr_detail_live(state: &Arc<AppState>, id: i64) -> Result<PrDetail, AppError> {
+    let pr = stored_pr(state, PrId(id))?;
+    let from_session = crate::services::bulk::cached_detail(state, &pr).is_some();
+    let detail = pr_detail(state, id)?;
+    if from_session || detail.from_cache {
+        schedule_owner_refresh(state, id);
+    }
+    Ok(detail)
+}
+
+fn load_detail(state: &AppState, pr: &PullRequest, use_store: bool) -> Result<PrDetail, AppError> {
     let flag = settings::blocked_review_required_is_ready(&state.store)?;
+    let now = Utc::now();
     let report = with_vcs(state, |provider| {
-        ownership::resolve(&state.store, provider, &pr, flag, Utc::now())
+        if use_store
+            && let Some(report) = ownership::report_from_cache(&state.store, pr, flag, now)?
+        {
+            return Ok(report);
+        }
+        ownership::resolve(&state.store, provider, pr, flag, now)
     })?;
     let detail = detail_dto(pr.id, report);
-    crate::services::bulk::remember_owners(state, &pr, &detail);
+    crate::services::bulk::remember_owners(state, pr, &detail);
     Ok(detail)
+}
+
+fn schedule_owner_refresh(state: &Arc<AppState>, id: i64) {
+    {
+        let mut inflight = state
+            .owner_refresh
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !inflight.insert(id) {
+            return;
+        }
+    }
+    let state = Arc::clone(state);
+    std::thread::spawn(move || {
+        let refresh = (|| {
+            let pr = stored_pr(&state, PrId(id))?;
+            load_detail(&state, &pr, false)
+        })();
+        if let Err(err) = refresh {
+            tracing::debug!(pr = id, %err, "owner refresh failed");
+        }
+        state
+            .owner_refresh
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&id);
+    });
 }
 
 /// PR Nexus's own statuses, as the list's filter menu and quick filters

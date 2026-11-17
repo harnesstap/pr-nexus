@@ -23,10 +23,12 @@ mod stats;
 pub use notifications::{SCOPE_UNAVAILABLE, TOKEN_TYPE_UNAVAILABLE};
 
 pub use auth::{
-    DevicePoll, DeviceStart, GhProbe, gh_accounts, github_token_from_env, oauth_client_id_from_env,
-    parse_gh_accounts, poll_device_flow, read_gh_token, read_gh_token_for, start_device_flow,
+    DevicePoll, DeviceStart, GhProbe, gh_accounts, github_token_from_env,
+    invalidate_gh_token_cache, oauth_client_id_from_env, parse_gh_accounts, poll_device_flow,
+    read_gh_token, read_gh_token_for, start_device_flow,
 };
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -78,7 +80,9 @@ pub fn worst_case_page_time() -> Duration {
     REQUEST_TIMEOUT * MAX_ATTEMPTS + waits
 }
 
-pub struct GithubClient {
+/// One connection pool and rate gate, shared by every [`GithubClient`] clone
+/// built for the same account and token.
+pub struct GithubInner {
     http: reqwest::blocking::Client,
     api: String,
     token: String,
@@ -87,6 +91,22 @@ pub struct GithubClient {
     budget: Mutex<Option<RateBudget>>,
     backoff: Duration,
     rate_wait_cap: Duration,
+    /// Set after a 401 so the next lookup builds a fresh client.
+    dead: AtomicBool,
+}
+
+/// Blocking GitHub client. Cloning shares the HTTP pool and the concurrency gate.
+#[derive(Clone)]
+pub struct GithubClient {
+    inner: Arc<GithubInner>,
+}
+
+impl std::ops::Deref for GithubClient {
+    type Target = GithubInner;
+
+    fn deref(&self) -> &GithubInner {
+        &self.inner
+    }
 }
 
 impl GithubClient {
@@ -105,28 +125,47 @@ impl GithubClient {
             .build()
             .map_err(|err| ProviderError::Network(err.to_string()))?;
         Ok(Self {
-            http,
-            api: api.into().trim_end_matches('/').to_owned(),
-            token: token.into(),
-            account,
-            gate: Arc::new(http::Gate::new(CONCURRENT_REQUESTS)),
-            budget: Mutex::new(None),
-            backoff: FIRST_BACKOFF,
-            rate_wait_cap: RATE_WAIT_CAP,
+            inner: Arc::new(GithubInner {
+                http,
+                api: api.into().trim_end_matches('/').to_owned(),
+                token: token.into(),
+                account,
+                gate: Arc::new(http::Gate::new(CONCURRENT_REQUESTS)),
+                budget: Mutex::new(None),
+                backoff: FIRST_BACKOFF,
+                rate_wait_cap: RATE_WAIT_CAP,
+                dead: AtomicBool::new(false),
+            }),
         })
     }
 
+    /// The token was rejected. Callers drop this client and read a new token.
+    pub fn is_dead(&self) -> bool {
+        self.dead.load(Ordering::Relaxed)
+    }
+
+    fn note_auth(&self, err: &ProviderError) {
+        if matches!(err, ProviderError::Unauthorized(_)) {
+            self.dead.store(true, Ordering::Relaxed);
+            auth::invalidate_gh_token_cache();
+        }
+    }
+
     /// The first wait before retrying a page GitHub timed out on. Each later
-    /// wait doubles it. Tests set it to zero.
+    /// wait doubles it. Tests set it to zero, before the client is shared.
     pub fn with_backoff(mut self, backoff: Duration) -> Self {
-        self.backoff = backoff;
+        Arc::get_mut(&mut self.inner)
+            .expect("with_backoff before the client is shared")
+            .backoff = backoff;
         self
     }
 
     /// The longest wait on a secondary rate limit before retrying. Tests set
-    /// it to zero.
+    /// it to zero, before the client is shared.
     pub fn with_rate_wait_cap(mut self, cap: Duration) -> Self {
-        self.rate_wait_cap = cap;
+        Arc::get_mut(&mut self.inner)
+            .expect("with_rate_wait_cap before the client is shared")
+            .rate_wait_cap = cap;
         self
     }
 
@@ -159,13 +198,15 @@ impl GithubClient {
             .text()
             .map_err(|err| ProviderError::Network(err.to_string()))?;
         if !(200..300).contains(&status) {
-            return Err(http::classify(
+            let err = http::classify(
                 status,
                 retry.as_deref(),
                 sso.as_deref(),
                 &body,
                 chrono::Utc::now(),
-            ));
+            );
+            self.note_auth(&err);
+            return Err(err);
         }
         let value: Value = serde_json::from_str(&body)
             .map_err(|err| ProviderError::Decode(format!("graphql json: {err}")))?;
@@ -173,6 +214,7 @@ impl GithubClient {
             *self.budget.lock().expect("rate budget") = Some(budget);
         }
         if let Some(err) = parse::graphql_failure(&value) {
+            self.note_auth(&err);
             return Err(err);
         }
         Ok(value)
@@ -277,13 +319,15 @@ impl GithubClient {
             .text()
             .map_err(|err| ProviderError::Network(err.to_string()))?;
         if !(200..300).contains(&status) {
-            return Err(http::classify(
+            let err = http::classify(
                 status,
                 retry.as_deref(),
                 sso.as_deref(),
                 &body,
                 chrono::Utc::now(),
-            ));
+            );
+            self.note_auth(&err);
+            return Err(err);
         }
         Ok(body)
     }

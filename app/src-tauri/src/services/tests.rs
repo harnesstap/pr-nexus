@@ -643,6 +643,7 @@ fn mark_ready_refreshes_the_preview_and_keeps_a_real_ci_block() {
             blocked: Some("check ci is fail".into()),
             teams: Vec::new(),
             groups: Vec::new(),
+            detail: None,
         },
     );
     let stale = bulk::preview(state, &bulk_of(vec![passing], false)).unwrap();
@@ -673,6 +674,7 @@ fn mark_ready_refreshes_the_preview_and_keeps_a_real_ci_block() {
             blocked: Some("check ci is fail".into()),
             teams: Vec::new(),
             groups: Vec::new(),
+            detail: None,
         },
     );
     let cached = bulk::preview(state, &bulk_of(vec![failing], true)).unwrap();
@@ -727,6 +729,7 @@ fn failing_checks_stay_in_the_request_and_pending_checks_do_not() {
             blocked: Some("check ci is fail".into()),
             teams: vec!["acme/billing".into()],
             groups: Vec::new(),
+            detail: None,
         },
     );
     let request: BulkRequest = serde_json::from_value(serde_json::json!({
@@ -806,6 +809,7 @@ fn codeowners_lines_become_one_send_each() {
                 blocked: None,
                 teams: vec!["acme/team-a".into()],
                 groups,
+                detail: None,
             },
         );
     };
@@ -1018,6 +1022,7 @@ fn an_open_request_does_not_hide_other_codeowners_lines() {
                 group(line_a, "/src/", &["acme/team-a"]),
                 group(line_b, "/billing/", &["acme/team-b"]),
             ],
+            detail: None,
         },
     );
     let preview = bulk::preview(

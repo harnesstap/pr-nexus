@@ -127,13 +127,38 @@ pub(crate) fn inputs(
     pr: &PullRequest,
     probe: &OwnershipProbe,
 ) -> Result<OwnershipInputs, ProviderError> {
-    let (files, files_truncated) = files(client, pr)?;
-    let (rules_require_code_owner, rules_error) = match rules(client, pr, &probe.base_ref) {
+    // Files, rules, and protection do not depend on each other. The client's
+    // gate still caps the host at 4 requests.
+    let (files_res, rules_res, protection_res) = std::thread::scope(|scope| {
+        let files = scope.spawn(|| files(client, pr));
+        let rules = scope.spawn(|| rules(client, pr, &probe.base_ref));
+        let protection =
+            scope.spawn(|| protection(client, pr, &probe.base_ref, probe.viewer_is_admin));
+        (
+            files.join().unwrap_or_else(|err| {
+                Err(ProviderError::Network(format!(
+                    "files lookup stopped: {err:?}"
+                )))
+            }),
+            rules.join().unwrap_or_else(|err| {
+                Err(ProviderError::Network(format!(
+                    "rules lookup stopped: {err:?}"
+                )))
+            }),
+            protection.join().unwrap_or_else(|err| {
+                Err(ProviderError::Network(format!(
+                    "protection lookup stopped: {err:?}"
+                )))
+            }),
+        )
+    });
+    let (files, files_truncated) = files_res?;
+    let (rules_require_code_owner, rules_error) = match rules_res {
         Ok(required) => (Some(required), None),
         Err(err) if fatal(&err) => return Err(err),
         Err(err) => (None, Some(format!("branch rules unavailable: {err}"))),
     };
-    let protection = protection(client, pr, &probe.base_ref, probe.viewer_is_admin)?;
+    let protection = protection_res?;
     Ok(OwnershipInputs {
         files,
         files_truncated,

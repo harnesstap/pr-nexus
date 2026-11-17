@@ -1,5 +1,6 @@
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Condvar, Mutex};
+use std::time::{Duration as StdDuration, Instant};
 
 use chrono::TimeZone;
 
@@ -26,7 +27,15 @@ struct Fake {
     rules: Option<bool>,
     members: fn() -> Result<TeamMembers, ProviderError>,
     input_calls: AtomicU32,
+    probe_calls: AtomicU32,
     member_calls: Mutex<Vec<String>>,
+    /// Lookups currently inside [`VcsProvider::team_members`].
+    member_in_flight: Mutex<u32>,
+    member_gate: Condvar,
+    /// When set, each lookup waits until two are in flight (or five seconds).
+    wait_for_overlap: bool,
+    peak_members: AtomicU32,
+    codeowners: Option<String>,
 }
 
 impl Fake {
@@ -44,7 +53,13 @@ impl Fake {
                 })
             },
             input_calls: AtomicU32::new(0),
+            probe_calls: AtomicU32::new(0),
             member_calls: Mutex::new(Vec::new()),
+            member_in_flight: Mutex::new(0),
+            member_gate: Condvar::new(),
+            wait_for_overlap: false,
+            peak_members: AtomicU32::new(0),
+            codeowners: None,
         }
     }
 }
@@ -89,13 +104,14 @@ impl VcsProvider for Fake {
         Err(ProviderError::Unsupported("not used".into()))
     }
     fn ownership_probe(&self, _: &PullRequest) -> Result<OwnershipProbe, ProviderError> {
+        self.probe_calls.fetch_add(1, Ordering::SeqCst);
         Ok(OwnershipProbe {
             head_sha: "h1".into(),
             base_ref: "main".into(),
             codeowners: Some(CodeownersBlob {
                 path: ".github/CODEOWNERS".into(),
                 oid: "blob1".into(),
-                text: CODEOWNERS.into(),
+                text: self.codeowners.clone().unwrap_or_else(|| CODEOWNERS.into()),
             }),
             reviews: ReviewBundle {
                 fetched: true,
@@ -121,7 +137,34 @@ impl VcsProvider for Fake {
     }
     fn team_members(&self, team: &TeamRef) -> Result<TeamMembers, ProviderError> {
         self.member_calls.lock().unwrap().push(team.to_string());
-        (self.members)()
+        if self.wait_for_overlap {
+            let mut in_flight = self.member_in_flight.lock().unwrap();
+            *in_flight += 1;
+            self.peak_members.fetch_max(*in_flight, Ordering::SeqCst);
+            if *in_flight >= 2 {
+                self.member_gate.notify_all();
+            }
+            let started = Instant::now();
+            while *in_flight < 2 && started.elapsed() < StdDuration::from_secs(5) {
+                let (guard, timeout) = self
+                    .member_gate
+                    .wait_timeout(in_flight, StdDuration::from_secs(5))
+                    .unwrap();
+                in_flight = guard;
+                if timeout.timed_out() {
+                    break;
+                }
+            }
+            self.peak_members.fetch_max(*in_flight, Ordering::SeqCst);
+            drop(in_flight);
+        }
+        let result = (self.members)();
+        if self.wait_for_overlap {
+            let mut in_flight = self.member_in_flight.lock().unwrap();
+            *in_flight = in_flight.saturating_sub(1);
+            self.member_gate.notify_all();
+        }
+        result
     }
     fn rate_limit(&self) -> Result<RateBudget, ProviderError> {
         Err(ProviderError::Unsupported("not used".into()))
@@ -287,6 +330,57 @@ fn the_cache_skips_inputs_and_member_lookups_on_the_same_key() {
     let mut moved = pr.clone();
     moved.head_sha = "h2".into();
     assert!(CachedOwnership::for_pr(&entry, &moved).is_none());
+}
+
+#[test]
+fn a_cache_hit_skips_the_probe() {
+    let (_dir, store, pr) = seed();
+    let mut fake = Fake::new();
+    fake.reviews = vec![approval("bob", &[])];
+    resolve(&store, &fake, &pr, true, now()).unwrap();
+    assert_eq!(fake.probe_calls.load(Ordering::SeqCst), 1);
+    let cached = report_from_cache(&store, &pr, true, now() + Duration::hours(1))
+        .unwrap()
+        .expect("head and base still match");
+    assert!(cached.from_cache);
+    assert_eq!(fake.probe_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(fake.input_calls.load(Ordering::SeqCst), 1);
+    let mut moved = pr.clone();
+    moved.head_sha = "h2".into();
+    assert!(
+        report_from_cache(&store, &moved, true, now())
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn cold_member_lookups_overlap_and_a_cache_hit_does_not_probe() {
+    let (_dir, store, pr) = seed();
+    let mut fake = Fake::new();
+    fake.wait_for_overlap = true;
+    fake.reviews = vec![approval("bob", &[])];
+    // One unattributed approval makes every owner team need a member lookup.
+    fake.codeowners = Some("* @acme/core @acme/docs @acme/web\n".into());
+    resolve(&store, &fake, &pr, true, now()).unwrap();
+    assert_eq!(fake.member_calls.lock().unwrap().len(), 3);
+    let peak = fake.peak_members.load(Ordering::SeqCst);
+    assert!(
+        peak >= 2,
+        "team lookups ran one at a time (peak in flight {peak})"
+    );
+    let started = Instant::now();
+    assert!(
+        report_from_cache(&store, &pr, true, now())
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(fake.probe_calls.load(Ordering::SeqCst), 1);
+    assert!(
+        started.elapsed() < StdDuration::from_secs(5),
+        "cache hit took {:?}; it should not probe",
+        started.elapsed()
+    );
 }
 
 #[test]

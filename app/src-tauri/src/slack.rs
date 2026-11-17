@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use chrono::Utc;
 use pr_nexus_core::domain::{
     Account, AccountId, AccountKind, AuthMode, ChatKind, ChecksState, PrId, PrState, PullRequest,
+    SlackChannel, SyncStateEntry,
 };
 use pr_nexus_core::error::{CoreError, ProviderError};
 use pr_nexus_core::mapping::lookup_mapping;
@@ -276,6 +277,43 @@ pub async fn validate_tokens(state: &AppState) {
         return;
     }
     let _ = refresh_grants(state, slack_mcp::SLACK_WEB_API, None, false).await;
+}
+
+const DISCOVERY_KEY: &str = "slack.oauth_discovery";
+
+/// Open MCP sessions for enabled workspaces that already have a token.
+/// Runs off the UI thread after [`validate_tokens`]. Never posts.
+pub fn warm_sessions(state: Arc<AppState>) {
+    if state.demo {
+        return;
+    }
+    if let Ok(Some(entry)) = state.store.get_sync_state(DISCOVERY_KEY.to_owned())
+        && Utc::now().signed_duration_since(entry.updated_at) < chrono::Duration::hours(24)
+    {
+        let _ = slack_mcp::seed_discovery(&entry.value_json);
+    }
+    let Ok(workspaces) = route::workspaces(&state.store) else {
+        return;
+    };
+    for workspace in workspaces {
+        if !workspace.enabled || !token_usable(&state, &workspace.account, false) {
+            continue;
+        }
+        let key = workspace.team_id.clone();
+        let state = Arc::clone(&state);
+        std::thread::spawn(move || {
+            if let Ok(chat) = chat_for(&state, &key) {
+                let _ = chat.warm();
+            }
+            if let Some(json) = slack_mcp::export_discovery() {
+                let _ = state.store.put_sync_state(SyncStateEntry {
+                    key: DISCOVERY_KEY.to_owned(),
+                    value_json: json,
+                    updated_at: Utc::now(),
+                });
+            }
+        });
+    }
 }
 
 /// Remember that Slack rejected an account's token, so Settings offers Reconnect.
@@ -630,17 +668,28 @@ pub async fn review_targets(
     app: Shared<'_>,
     pr_id: i64,
     teams: Vec<String>,
+    cached_names: Option<bool>,
 ) -> Result<Vec<TargetChoice>, AppError> {
     let app = blocking::Handle::new(&app);
     blocking::run(move || {
         let state = app.inner().as_ref();
+        let cached = cached_names.unwrap_or(false);
+        let _span = tracing::debug_span!("review_targets", pr = pr_id, cached).entered();
+        let started = std::time::Instant::now();
         let pr = load_pr(&state.store, pr_id)?;
         let mut choices = targets_for(&state.store, &pr, &teams)?;
         let targets: Vec<_> = choices.iter().map(|choice| choice.target.clone()).collect();
-        let resolved = resolve_targets(state, &review::LiveChats, targets, Names::Live);
+        let names = if cached { Names::Cached } else { Names::Live };
+        let resolved = resolve_targets(state, &review::LiveChats, targets, names);
         for (choice, target) in choices.iter_mut().zip(resolved) {
             choice.target = target;
         }
+        tracing::debug!(
+            pr = pr_id,
+            cached,
+            ms = started.elapsed().as_millis() as u64,
+            "review targets"
+        );
         Ok(choices)
     })
     .await
@@ -1006,9 +1055,24 @@ pub async fn review_preview(
     app: Shared<'_>,
     pr_id: i64,
     target: ReviewTarget,
+    cached_names: Option<bool>,
 ) -> Result<ReviewPreview, AppError> {
     let app = blocking::Handle::new(&app);
-    blocking::run(move || review::preview(app.inner().as_ref(), pr_id, target)).await
+    blocking::run(move || {
+        let names = if cached_names.unwrap_or(false) {
+            Names::Cached
+        } else {
+            Names::Live
+        };
+        review::preview_named(
+            app.inner().as_ref(),
+            &review::LiveChats,
+            pr_id,
+            target,
+            names,
+        )
+    })
+    .await
 }
 
 /// Plans again (the state may have moved since the preview) and posts.
@@ -1401,6 +1465,9 @@ fn demo_matches<'a>(
         .filter(move |(_, name)| name.to_lowercase().contains(&query))
 }
 
+/// How long a name written to `slack_channels_cache` is still a label.
+const STORED_NAME_TTL: chrono::Duration = chrono::Duration::hours(24);
+
 /// How long a name read from Slack is trusted before it is read again.
 pub(crate) const NAME_TTL: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 /// How long a failed lookup is remembered, so an offline or expired
@@ -1411,12 +1478,12 @@ pub(crate) const NAME_LOOKUPS: usize = 4;
 /// Saved-grant checks in flight at once (startup and Refresh).
 const TOKEN_CHECKS: usize = 4;
 
-/// Whether a resolution may ask Slack or only reads the session cache.
+/// Whether a resolution may ask Slack or only reads caches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Names {
-    /// Cache, else the stored name: never touches the network.
+    /// Memory, else `slack_channels_cache` younger than a day. Never the network.
     Cached,
-    /// Cache, else one Slack read per channel.
+    /// Memory, else a stored name younger than [`NAME_TTL`], else one Slack read.
     Live,
 }
 
@@ -1444,10 +1511,48 @@ fn cached_name(state: &AppState, key: &(String, String)) -> Option<Option<String
     (entry.at.elapsed() < ttl).then(|| entry.name.clone())
 }
 
+/// A row in `slack_channels_cache` that is still inside a day.
+fn stored_channel(state: &AppState, key: &(String, String)) -> Option<SlackChannel> {
+    let row = state
+        .store
+        .get_slack_channel(key.0.clone(), key.1.clone())
+        .ok()
+        .flatten()?;
+    let age = Utc::now().signed_duration_since(row.fetched_at);
+    (age >= chrono::Duration::zero() && age < STORED_NAME_TTL).then_some(row)
+}
+
+fn stored_is_fresh(row: &SlackChannel) -> bool {
+    Utc::now().signed_duration_since(row.fetched_at)
+        < chrono::Duration::from_std(NAME_TTL).unwrap_or(chrono::Duration::minutes(30))
+}
+
+fn remember_name(state: &AppState, key: (String, String), name: Option<String>) {
+    if let Some(name) = name.clone() {
+        let _ = state.store.upsert_slack_channel(SlackChannel {
+            slack_workspace: key.0.clone(),
+            channel_id: key.1.clone(),
+            name,
+            is_private: false,
+            is_archived: false,
+            is_member: false,
+            fetched_at: Utc::now(),
+        });
+    }
+    lock(&state.channel_names).insert(
+        key,
+        crate::state::NameEntry {
+            name,
+            at: std::time::Instant::now(),
+        },
+    );
+}
+
 /// The channel's current name, read from Slack by its id and cached for
-/// the session ([`NAME_TTL`], failures [`MISS_TTL`]). `None` when the
-/// lookup fails, the app is offline, or Slack gives no name; callers then
-/// keep the stored name.
+/// the session ([`NAME_TTL`], failures [`MISS_TTL`]) and for a day in
+/// `slack_channels_cache`. `None` when the lookup fails, the app is
+/// offline, or Slack gives no name; callers then keep the stored name.
+/// A failed lookup does not replace a good row in the table.
 pub(crate) fn channel_name(
     state: &AppState,
     chats: &dyn review::ChatSource,
@@ -1458,6 +1563,13 @@ pub(crate) fn channel_name(
     let key = name_key(workspace, team_id, channel_id)?;
     if let Some(hit) = cached_name(state, &key) {
         return hit;
+    }
+    if let Some(row) = stored_channel(state, &key)
+        && stored_is_fresh(&row)
+    {
+        let name = row.name;
+        remember_name(state, key, Some(name.clone()));
+        return Some(name);
     }
     let route = team_id.filter(|team| !team.is_empty()).unwrap_or(workspace);
     let started = std::time::Instant::now();
@@ -1475,13 +1587,17 @@ pub(crate) fn channel_name(
         ms = started.elapsed().as_millis() as u64,
         "slack channel name lookup"
     );
-    lock(&state.channel_names).insert(
-        key,
-        crate::state::NameEntry {
-            name: name.clone(),
-            at: std::time::Instant::now(),
-        },
-    );
+    if name.is_some() {
+        remember_name(state, key, name.clone());
+    } else {
+        lock(&state.channel_names).insert(
+            key,
+            crate::state::NameEntry {
+                name: None,
+                at: std::time::Instant::now(),
+            },
+        );
+    }
     name
 }
 
@@ -1531,8 +1647,21 @@ pub(crate) fn resolve_targets(
         });
     }
     for target in &mut targets {
-        if let Some(Some(name)) = key(target).and_then(|k| cached_name(state, &k)) {
+        let Some(k) = key(target) else {
+            continue;
+        };
+        if let Some(Some(name)) = cached_name(state, &k) {
             target.channel_name = name;
+            continue;
+        }
+        if cached_name(state, &k).is_some() {
+            continue;
+        }
+        if let Some(row) = stored_channel(state, &k) {
+            target.channel_name = row.name.clone();
+            if stored_is_fresh(&row) {
+                remember_name(state, k, Some(row.name));
+            }
         }
     }
     targets
@@ -2217,5 +2346,128 @@ mod tests {
             "probes never overlapped"
         );
         assert_eq!(peak, TOKEN_CHECKS, "probes overlapped, peak {peak}");
+    }
+
+    struct CountingChat {
+        calls: std::sync::Arc<std::sync::atomic::AtomicU32>,
+        name: String,
+    }
+
+    impl ChatProvider for CountingChat {
+        fn kind(&self) -> ChatKind {
+            ChatKind::Slack
+        }
+        fn whoami(&self) -> Result<ChatUser, ProviderError> {
+            Err(ProviderError::Unsupported("test".into()))
+        }
+        fn list_channels(&self, _: Option<String>) -> Result<Page<ChatChannel>, ProviderError> {
+            Err(ProviderError::Unsupported("test".into()))
+        }
+        fn channel_info(&self, id: &str) -> Result<ChatChannel, ProviderError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(ChatChannel {
+                id: id.to_owned(),
+                name: self.name.clone(),
+            })
+        }
+        fn post(&self, _: &OutgoingMessage<'_>) -> Result<PostedMessage, ProviderError> {
+            Err(ProviderError::Unsupported("test".into()))
+        }
+        fn account_id(&self) -> AccountId {
+            AccountId(1)
+        }
+    }
+
+    struct CountingSource {
+        calls: std::sync::Arc<std::sync::atomic::AtomicU32>,
+        name: String,
+    }
+
+    impl review::ChatSource for CountingSource {
+        fn chat(
+            &self,
+            _: &AppState,
+            _: &str,
+        ) -> Result<std::sync::Arc<dyn ChatProvider>, AppError> {
+            Ok(std::sync::Arc::new(CountingChat {
+                calls: self.calls.clone(),
+                name: self.name.clone(),
+            }))
+        }
+    }
+
+    fn channel_row(name: &str, fetched_at: chrono::DateTime<Utc>) -> SlackChannel {
+        SlackChannel {
+            slack_workspace: "t0acme0001".into(),
+            channel_id: "C0ACME0001".into(),
+            name: name.into(),
+            is_private: false,
+            is_archived: false,
+            is_member: false,
+            fetched_at,
+        }
+    }
+
+    #[test]
+    fn cached_names_skip_slack_and_the_table_honors_its_ttl() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::for_tests(&dir.path().join("test.db"), false);
+        state
+            .store
+            .upsert_slack_channel(channel_row("reviews", Utc::now()))
+            .unwrap();
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let chats = CountingSource {
+            calls: calls.clone(),
+            name: "live-name".into(),
+        };
+        let mut row = target("acme", "C0ACME0001", "stored");
+        row.team_id = Some("T0ACME0001".into());
+
+        let resolved = resolve_targets(&state, &chats, vec![row.clone()], Names::Cached);
+        assert_eq!(resolved[0].channel_name, "reviews");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+        let resolved = resolve_targets(&state, &chats, vec![row.clone()], Names::Live);
+        assert_eq!(resolved[0].channel_name, "reviews");
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "a name stored under 30 minutes is not read again"
+        );
+
+        state
+            .store
+            .upsert_slack_channel(channel_row(
+                "reviews",
+                Utc::now() - chrono::Duration::hours(2),
+            ))
+            .unwrap();
+        lock(&state.channel_names).clear();
+        let resolved = resolve_targets(&state, &chats, vec![row.clone()], Names::Cached);
+        assert_eq!(resolved[0].channel_name, "reviews");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+        let resolved = resolve_targets(&state, &chats, vec![row.clone()], Names::Live);
+        assert_eq!(resolved[0].channel_name, "live-name");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let saved = state
+            .store
+            .get_slack_channel("t0acme0001".into(), "C0ACME0001".into())
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.name, "live-name");
+
+        state
+            .store
+            .upsert_slack_channel(channel_row(
+                "stale",
+                Utc::now() - chrono::Duration::hours(25),
+            ))
+            .unwrap();
+        lock(&state.channel_names).clear();
+        let resolved = resolve_targets(&state, &chats, vec![row], Names::Cached);
+        assert_eq!(resolved[0].channel_name, "stored");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 }

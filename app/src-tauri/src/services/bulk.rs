@@ -439,8 +439,26 @@ pub(crate) fn remember_owners(
             blocked,
             teams,
             groups,
+            detail: Some(detail.clone()),
         },
     );
+}
+
+/// The detail view cached for `pr` when head, base, draft, and checks still
+/// match and the entry is inside [`OWNERS_TTL`].
+pub(crate) fn cached_detail(
+    state: &AppState,
+    pr: &PullRequest,
+) -> Option<crate::commands::PrDetail> {
+    let owners = crate::slack::lock(&state.owners);
+    let entry = owners.get(&pr.id.0)?;
+    (entry.at.elapsed() < OWNERS_TTL
+        && entry.head_sha == pr.head_sha
+        && entry.base_ref == pr.base_ref
+        && entry.is_draft == pr.is_draft
+        && entry.checks == pr.checks)
+        .then(|| entry.detail.clone())
+        .flatten()
 }
 
 fn owners_of(detail: &crate::commands::PrDetail) -> Owners {

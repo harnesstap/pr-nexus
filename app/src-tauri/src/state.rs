@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError, TryLockError};
@@ -158,8 +158,14 @@ pub struct AppState {
     /// The id is the truth; a stored name is only a fallback.
     pub channel_names: Mutex<HashMap<(String, String), NameEntry>>,
     /// Owners and blocked reason per PR from the last GitHub resolution,
-    /// keyed by PR id, for the bulk preview (short TTL, see `services::bulk`).
+    /// keyed by PR id, for the bulk preview and the single-PR dialog
+    /// (short TTL, see `services::bulk`).
     pub owners: Mutex<HashMap<i64, OwnersEntry>>,
+    /// Pull requests whose cached owners are being revalidated.
+    pub owner_refresh: Mutex<HashSet<i64>>,
+    /// One GitHub client per account and token, so detail and preview share
+    /// the connection pool and the concurrency gate.
+    pub github_clients: Mutex<HashMap<(i64, String), GithubClient>>,
     /// The Slack sign-in in progress, if any.
     pub slack_cancel: Mutex<Option<CancelHandle>>,
     /// Latest Slack grant check per account (§7.11). A refresh replaces it.
@@ -218,6 +224,8 @@ impl AppState {
             chats: Mutex::new(HashMap::new()),
             channel_names: Mutex::new(HashMap::new()),
             owners: Mutex::new(HashMap::new()),
+            owner_refresh: Mutex::new(HashSet::new()),
+            github_clients: Mutex::new(HashMap::new()),
             slack_cancel: Mutex::new(None),
             slack_tokens: Mutex::new(HashMap::new()),
             slack_proxy: crate::mcp::slack::SlackProxy::default(),
@@ -269,6 +277,22 @@ impl AppState {
             .write()
             .unwrap_or_else(PoisonError::into_inner) = profile.id.clone();
         self.chats
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
+        self.github_clients
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
+        self.owners
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
+        self.channel_names
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
+        self.owner_refresh
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clear();
@@ -580,14 +604,38 @@ fn sync_once(state: &AppState, kind: SyncKind) -> Result<sync::SyncReport, AppEr
     Ok(report)
 }
 
-/// The GitHub account id and a client for it.
-fn github_client(
+/// The GitHub account id and a client for it. The client is the one already
+/// cached for this account and token when GitHub has not rejected it.
+pub(crate) fn github_client(
     state: &AppState,
 ) -> Result<(pr_nexus_core::domain::AccountId, GithubClient), AppError> {
     let account = github_account(&state.store)?
         .ok_or_else(|| AppError::new("unauthorized", "Connect GitHub before syncing"))?;
     let token = resolve_github_token(state, Some(&account))?;
-    Ok((account.id, GithubClient::new(account.id, token)?))
+    Ok((account.id, shared_github_client(state, account.id, token)?))
+}
+
+/// One [`GithubClient`] per account and token. A 401 marks the client dead;
+/// the next call builds another after the gh token cache is dropped.
+pub(crate) fn shared_github_client(
+    state: &AppState,
+    account: pr_nexus_core::domain::AccountId,
+    token: String,
+) -> Result<GithubClient, AppError> {
+    let mut clients = state
+        .github_clients
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let key = (account.0, token);
+    if let Some(existing) = clients.get(&key)
+        && !existing.is_dead()
+    {
+        return Ok(existing.clone());
+    }
+    clients.remove(&key);
+    let client = GithubClient::new(account, key.1.clone())?;
+    clients.insert(key, client.clone());
+    Ok(client)
 }
 
 /// A progress callback that writes [`progress_message`] through `show`, at
@@ -1348,4 +1396,7 @@ pub struct OwnersEntry {
     pub teams: Vec<String>,
     /// CODEOWNERS groups for this head. Empty when the file did not load.
     pub groups: Vec<crate::commands::OwnerGroupDto>,
+    /// Full detail for the single-PR dialog. Absent when only the preview
+    /// fields were seeded.
+    pub detail: Option<crate::commands::PrDetail>,
 }

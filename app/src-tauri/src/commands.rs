@@ -1286,13 +1286,13 @@ pub async fn restore_pr(
     blocking::run(move || projects::restore_pr(app.inner().as_ref(), project_id, pr_id)).await
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct TeamGap {
     pub team: String,
     pub reasons: Vec<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct FileOwners {
     pub path: String,
     pub teams: Vec<String>,
@@ -1311,7 +1311,7 @@ pub struct OwnerGroupDto {
 }
 
 /// The detail view: readiness, owners, and why (§6, §7.2).
-#[derive(Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct PrDetail {
     pub id: i64,
     pub readiness: String,
@@ -1454,7 +1454,7 @@ pub async fn pr_detail(
     id: i64,
 ) -> Result<PrDetail, AppError> {
     let state = app.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || crate::services::prs::pr_detail(&state, id))
+    tauri::async_runtime::spawn_blocking(move || crate::services::prs::pr_detail_live(&state, id))
         .await
         .map_err(|err| AppError::new("internal", err.to_string()))?
 }
@@ -1490,7 +1490,9 @@ pub(crate) fn vcs_client(state: &AppState) -> Result<Box<dyn VcsProvider>, AppEr
     let account = state::github_account(&state.store)?
         .ok_or_else(|| AppError::new("unauthorized", "Connect GitHub first"))?;
     let token = state::resolve_github_token(state, Some(&account))?;
-    Ok(Box::new(GithubClient::new(account.id, token)?))
+    Ok(Box::new(state::shared_github_client(
+        state, account.id, token,
+    )?))
 }
 
 /// The detail panel's cards (§7.2). With `refresh: false` this only reads

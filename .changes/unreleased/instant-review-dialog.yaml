@@ -1,0 +1,3 @@
+kind: Changed
+body: The Request review dialog opens from cached owners and channel names, shows Checking channel… while the live name loads, and enables Send when that name is in.
+time: 2026-11-17T07:30:00Z
