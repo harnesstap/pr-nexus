@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use chrono::Duration;
@@ -18,6 +19,13 @@ struct ThreadChat {
     replies: ThreadReplies,
     unauthorized: bool,
     hits: Vec<SearchHit>,
+    /// Extra wait inside `read_thread`, keyed by channel id.
+    read_pause: Mutex<Vec<(String, std::time::Duration)>>,
+    name_pause: std::time::Duration,
+    reads_inflight: AtomicUsize,
+    reads_peak: AtomicUsize,
+    names_inflight: AtomicUsize,
+    names_peak: AtomicUsize,
 }
 
 impl ChatProvider for ThreadChat {
@@ -54,10 +62,30 @@ impl ChatProvider for ThreadChat {
                 "slack_read_thread: invalid_auth".into(),
             ));
         }
+        let pause = self
+            .read_pause
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(id, _)| id == channel_id)
+            .map(|(_, pause)| *pause)
+            .unwrap_or_default();
+        let now = self.reads_inflight.fetch_add(1, Ordering::SeqCst) + 1;
+        self.reads_peak.fetch_max(now, Ordering::SeqCst);
+        if !pause.is_zero() {
+            std::thread::sleep(pause);
+        }
+        self.reads_inflight.fetch_sub(1, Ordering::SeqCst);
         Ok(self.replies.clone())
     }
     fn user_name(&self, user_id: &str) -> Result<String, ProviderError> {
         self.lookups.lock().unwrap().push(user_id.into());
+        let now = self.names_inflight.fetch_add(1, Ordering::SeqCst) + 1;
+        self.names_peak.fetch_max(now, Ordering::SeqCst);
+        if !self.name_pause.is_zero() {
+            std::thread::sleep(self.name_pause);
+        }
+        self.names_inflight.fetch_sub(1, Ordering::SeqCst);
         Ok(format!("Name of {user_id}"))
     }
     fn search_messages(
@@ -282,6 +310,123 @@ fn active_threads_come_before_closed_ones_with_their_reason() {
             ("D0123456789", ThreadStatus::Active, None),
             ("C0TEAM", ThreadStatus::Closed, Some("Superseded")),
         ]
+    );
+}
+
+/// The slower root is listed first. Completion order would put the fast
+/// read ahead of it; the panel keeps the root order, and the reads overlap.
+#[test]
+fn context_threads_keep_order_while_reads_overlap() {
+    let (_dir, store, pr, account) = with_request();
+    let first = store.list_review_requests(pr.id).unwrap().remove(0);
+    store
+        .close_review_request(first.id, CloseReason::Superseded, at(1))
+        .unwrap();
+    let mut other = target();
+    other.channel_id = "D0123456789".into();
+    other.channel_name = "D0123456789".into();
+    let poster = crate::review::lifecycle::tests::FakeChat {
+        account,
+        ..Default::default()
+    };
+    let planned = plan(&store, &pr, other, None, 24, at(2)).unwrap();
+    send(&store, &poster, &pr, &planned, "[]", at(2)).unwrap();
+
+    let slow = std::time::Duration::from_millis(300);
+    let reader = Arc::new(ThreadChat {
+        account,
+        replies: replies(),
+        read_pause: Mutex::new(vec![("D0123456789".into(), slow), ("C0TEAM".into(), slow)]),
+        ..ThreadChat::default()
+    });
+    let provider: Arc<dyn ChatProvider> = reader.clone();
+    let mut chat_for = |_: &str| Ok(provider.clone());
+    let started = std::time::Instant::now();
+    let threads = context_threads(&store, pr.id, &mut chat_for, at(3), false).unwrap();
+    let elapsed = started.elapsed();
+    let order: Vec<(&str, ThreadStatus)> = threads
+        .iter()
+        .map(|thread| (thread.channel_id.as_str(), thread.status))
+        .collect();
+    assert_eq!(
+        order,
+        vec![
+            ("D0123456789", ThreadStatus::Active),
+            ("C0TEAM", ThreadStatus::Closed),
+        ]
+    );
+    let peak = reader.reads_peak.load(Ordering::SeqCst);
+    assert!(peak >= 2, "reads overlapped, peak {peak}");
+    assert!(
+        elapsed < slow + std::time::Duration::from_millis(200),
+        "elapsed {elapsed:?} is the sum of the two reads"
+    );
+}
+
+#[test]
+fn author_lookups_are_deduped_and_overlap() {
+    let (_dir, store, pr, account) = with_request();
+    let first = store.list_review_requests(pr.id).unwrap().remove(0);
+    store
+        .close_review_request(first.id, CloseReason::Superseded, at(1))
+        .unwrap();
+    let mut other = target();
+    other.channel_id = "D0123456789".into();
+    other.channel_name = "D0123456789".into();
+    let poster = crate::review::lifecycle::tests::FakeChat {
+        account,
+        ..Default::default()
+    };
+    let planned = plan(&store, &pr, other, None, 24, at(2)).unwrap();
+    send(&store, &poster, &pr, &planned, "[]", at(2)).unwrap();
+
+    let shared = message("1700000050.000200", "U0ACME0002", None, "On it");
+    let thread_replies = ThreadReplies {
+        messages: vec![
+            message(
+                "1700000001.000100",
+                "U0ACME0001",
+                Some("Ada Acme"),
+                "Could someone review?",
+            ),
+            shared.clone(),
+            message("1700000060.000300", "U0ACME0003", None, "Done"),
+        ],
+        has_more: false,
+    };
+    let pause = std::time::Duration::from_millis(200);
+    let reader = Arc::new(ThreadChat {
+        account,
+        replies: thread_replies,
+        name_pause: pause,
+        ..ThreadChat::default()
+    });
+    let provider: Arc<dyn ChatProvider> = reader.clone();
+    let mut chat_for = |_: &str| Ok(provider.clone());
+    let started = std::time::Instant::now();
+    let threads = context_threads(&store, pr.id, &mut chat_for, at(3), false).unwrap();
+    let elapsed = started.elapsed();
+
+    assert_eq!(threads[0].messages[0].author, "Ada Acme");
+    assert_eq!(threads[0].messages[1].author, "Name of U0ACME0002");
+    assert_eq!(threads[0].messages[2].author, "Name of U0ACME0003");
+    assert_eq!(threads[1].messages[1].author, "Name of U0ACME0002");
+    let mut lookups = reader.lookups.lock().unwrap().clone();
+    lookups.sort();
+    assert_eq!(
+        lookups,
+        vec!["U0ACME0002".to_owned(), "U0ACME0003".to_owned()],
+        "each author is looked up once across both threads"
+    );
+    let peak = reader.names_peak.load(Ordering::SeqCst);
+    assert!(
+        (2..=AUTHOR_LOOKUPS).contains(&peak),
+        "name lookups overlapped, peak {peak}"
+    );
+    // Two lookups in parallel take about one pause; one after another takes two.
+    assert!(
+        elapsed < pause + std::time::Duration::from_millis(120),
+        "elapsed {elapsed:?} is the sum of the lookups"
     );
 }
 

@@ -330,6 +330,7 @@ async fn refresh_grants(
         }
         return workspace_list(state);
     }
+    let mut jobs = Vec::new();
     for account in &accounts {
         if account_id.is_some_and(|id| id != account.id.0) {
             continue;
@@ -340,8 +341,19 @@ async fn refresh_grants(
         if !force && lock(&state.slack_tokens).contains_key(&account.id.0) {
             continue;
         }
-        let probe =
-            slack_mcp::probe_grant(base, state.vault.clone(), &key, account.slack_team_id()).await;
+        jobs.push(ProbeJob {
+            id: account.id.0,
+            key,
+            team_id: account.slack_team_id().map(str::to_owned),
+        });
+    }
+    let probed = probe_saved_grants(state, base, jobs).await?;
+    let mut by_id: std::collections::HashMap<i64, slack_mcp::GrantProbe> =
+        probed.into_iter().collect();
+    for account in &accounts {
+        let Some(probe) = by_id.remove(&account.id.0) else {
+            continue;
+        };
         if probe.state == TokenState::Valid
             && let Some(identity) = probe.identity.as_ref()
         {
@@ -350,6 +362,46 @@ async fn refresh_grants(
         record_check(state, account.id.0, probe.state, &probe.error);
     }
     workspace_list(state)
+}
+
+struct ProbeJob {
+    id: i64,
+    key: String,
+    team_id: Option<String>,
+}
+
+/// `auth.test` for every job, at most [`TOKEN_CHECKS`] at a time. Results
+/// are not ordered; the caller applies them in account order.
+async fn probe_saved_grants(
+    state: &AppState,
+    base: &str,
+    jobs: Vec<ProbeJob>,
+) -> Result<Vec<(i64, slack_mcp::GrantProbe)>, AppError> {
+    if jobs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let limit = TOKEN_CHECKS.max(1).min(jobs.len());
+    let permits = std::sync::Arc::new(tokio::sync::Semaphore::new(limit));
+    let mut tasks = tokio::task::JoinSet::new();
+    for job in jobs {
+        let permits = permits.clone();
+        let base = base.to_owned();
+        let vault = state.vault.clone();
+        tasks.spawn(async move {
+            let _permit = permits
+                .acquire_owned()
+                .await
+                .expect("token check semaphore");
+            let probe =
+                slack_mcp::probe_grant(&base, vault, &job.key, job.team_id.as_deref()).await;
+            (job.id, probe)
+        });
+    }
+    let mut out = Vec::with_capacity(tasks.len());
+    while let Some(joined) = tasks.join_next().await {
+        out.push(joined.map_err(|err| AppError::new("internal", err.to_string()))?);
+    }
+    Ok(out)
 }
 
 /// Write the name, domain, and handle onto this account id. A domain that is
@@ -1356,6 +1408,8 @@ pub(crate) const NAME_TTL: std::time::Duration = std::time::Duration::from_secs(
 pub(crate) const MISS_TTL: std::time::Duration = std::time::Duration::from_secs(2 * 60);
 /// Name lookups in flight at once (one Slack MCP read each).
 pub(crate) const NAME_LOOKUPS: usize = 4;
+/// Saved-grant checks in flight at once (startup and Refresh).
+const TOKEN_CHECKS: usize = 4;
 
 /// Whether a resolution may ask Slack or only reads the session cache.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2039,5 +2093,107 @@ mod tests {
         assert_eq!(row.check, "connected");
         assert!(row.signed_in);
         assert!(row.checked_at.is_some());
+    }
+
+    #[derive(Clone)]
+    struct PaceHits {
+        inflight: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        peak: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    async fn paced_auth_test(
+        axum::extract::State(hits): axum::extract::State<PaceHits>,
+        headers: axum::http::HeaderMap,
+    ) -> impl axum::response::IntoResponse {
+        let now = hits
+            .inflight
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
+        hits.peak
+            .fetch_max(now, std::sync::atomic::Ordering::SeqCst);
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        hits.inflight
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        let team = bearer(&headers)
+            .rsplit('-')
+            .next()
+            .unwrap_or("1")
+            .to_owned();
+        let body = serde_json::json!({
+            "ok": true,
+            "url": "https://acme.slack.com/",
+            "team": "Acme",
+            "user": "ada",
+            "team_id": format!("T0PACE000{team}"),
+            "user_id": "U0ADA",
+        });
+        (
+            axum::http::StatusCode::OK,
+            [(axum::http::header::CONTENT_TYPE, "application/json")],
+            body.to_string(),
+        )
+    }
+
+    async fn paced_team_info() -> impl axum::response::IntoResponse {
+        (
+            axum::http::StatusCode::OK,
+            [(axum::http::header::CONTENT_TYPE, "application/json")],
+            serde_json::json!({"ok": false, "error": "missing_scope"}).to_string(),
+        )
+    }
+
+    /// Startup checks for several accounts overlap. A sleep on `auth.test`
+    /// would add up if the probes ran one after another.
+    #[tokio::test]
+    async fn refresh_probes_accounts_together() {
+        let hits = PaceHits {
+            inflight: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            peak: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        };
+        let router = axum::Router::new()
+            .route("/auth.test", axum::routing::post(paced_auth_test))
+            .route("/team.info", axum::routing::post(paced_team_info))
+            .with_state(hits.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        let base = format!("http://127.0.0.1:{port}");
+
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::for_tests(&dir.path().join("test.db"), false);
+        for n in 1..=TOKEN_CHECKS {
+            let account = state
+                .store
+                .upsert_account(slack_account(
+                    "Acme",
+                    "acme",
+                    &format!("T0PACE000{n}"),
+                    "U0ADA",
+                ))
+                .unwrap();
+            state
+                .vault
+                .set(
+                    account.keychain_key.as_deref().unwrap(),
+                    &grant(&format!("xoxp-pace-{n}")),
+                )
+                .unwrap();
+        }
+
+        let started = std::time::Instant::now();
+        let list = refresh_grants(&state, &base, None, true).await.unwrap();
+        let elapsed = started.elapsed();
+        let peak = hits.peak.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            list.iter().all(|row| row.check == "connected"),
+            "every probe was accepted: {list:?}"
+        );
+        assert_eq!(peak, TOKEN_CHECKS, "probes overlapped, peak {peak}");
+        assert!(
+            elapsed < std::time::Duration::from_millis(900),
+            "elapsed {elapsed:?} is the sum of the probes"
+        );
     }
 }

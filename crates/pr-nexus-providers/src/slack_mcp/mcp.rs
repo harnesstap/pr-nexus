@@ -1,8 +1,12 @@
 //! The MCP session per workspace and the Slack [`ChatProvider`] (§7.11).
 //!
 //! The session opens lazily on the first call, checks the tool schema pin,
-//! and is reused until it fails; the next call reconnects once. Access
-//! tokens come from the keychain grant and refresh through rmcp.
+//! and is reused until a transport error. The session mutex is held only
+//! long enough to clone the client [`Peer`]; `tools/call` runs after it is
+//! released, so calls on one workspace overlap. A transport error is
+//! reopened by the first caller that still sees the current generation;
+//! the others wait and retry on that session. Access tokens come from the
+//! keychain grant and refresh through rmcp.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -16,11 +20,12 @@ use pr_nexus_core::providers::{
 };
 use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, JsonObject};
-use rmcp::service::{RoleClient, RunningService};
+use rmcp::service::{Peer, RoleClient, RunningService};
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::auth::{AuthClient, OAuthClientConfig};
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use serde_json::{Value, json};
+use tracing::Instrument;
 
 use super::oauth::{self, KeychainCredentialStore};
 use super::schema::{
@@ -33,6 +38,8 @@ use crate::vault::Vault;
 /// Slack allows about one write per second per channel (§7.11).
 const WRITE_SPACING: Duration = Duration::from_secs(1);
 const CALL_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long a replaced session may take to close before the next one opens.
+const CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
 /// How far back the send-result recovery reads the channel.
 const RECOVERY_WINDOW: Duration = Duration::from_secs(60);
 
@@ -53,6 +60,13 @@ pub struct SessionConfig {
 
 type Client = RunningService<RoleClient, ()>;
 
+/// The open client and the generation that installed it.
+struct LiveSession {
+    /// Bumped whenever the client is replaced or cleared.
+    generation: u64,
+    client: Option<Client>,
+}
+
 /// rmcp session on its own small runtime, so callers stay synchronous.
 pub struct RmcpSession {
     runtime: Option<tokio::runtime::Runtime>,
@@ -62,14 +76,18 @@ pub struct RmcpSession {
 struct SessionInner {
     config: SessionConfig,
     vault: Arc<Vault>,
-    client: tokio::sync::Mutex<Option<Client>>,
+    /// Held only while cloning or replacing the client. `tools/call` runs
+    /// on a cloned [`Peer`] after the guard is dropped.
+    session: tokio::sync::Mutex<LiveSession>,
 }
 
 impl RmcpSession {
     pub fn new(config: SessionConfig, vault: Arc<Vault>) -> Result<Self, ProviderError> {
         install_tls_provider();
+        // Calls overlap on this runtime. A handful of workers keeps one
+        // blocking section from stalling every other call on the workspace.
         let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(1)
+            .worker_threads(4)
             .thread_name("slack-mcp")
             .enable_all()
             .build()
@@ -79,7 +97,10 @@ impl RmcpSession {
             inner: Arc::new(SessionInner {
                 config,
                 vault,
-                client: tokio::sync::Mutex::new(None),
+                session: tokio::sync::Mutex::new(LiveSession {
+                    generation: 0,
+                    client: None,
+                }),
             }),
         })
     }
@@ -116,15 +137,26 @@ impl ToolCaller for RmcpSession {
 
 impl SessionInner {
     async fn call(&self, tool: &str, arguments: JsonObject) -> Result<ToolOutput, ProviderError> {
-        let mut guard = self.client.lock().await;
         for attempt in 0..2 {
-            if guard.as_ref().is_none_or(|client| client.is_closed()) {
-                *guard = Some(self.open().await?);
-            }
-            let client = guard.as_ref().expect("session just opened");
+            let (peer, generation, lock_wait) = self.peer().await?;
             let params =
                 CallToolRequestParams::new(tool.to_owned()).with_arguments(arguments.clone());
-            let result = tokio::time::timeout(CALL_TIMEOUT, client.call_tool(params)).await;
+            let span = tracing::debug_span!(
+                "slack_mcp_call",
+                tool,
+                attempt,
+                lock_wait_ms = lock_wait.as_millis() as u64,
+                call_ms = tracing::field::Empty,
+            );
+            let started = Instant::now();
+            let recorded = span.clone();
+            let result = async move {
+                let result = tokio::time::timeout(CALL_TIMEOUT, peer.call_tool(params)).await;
+                recorded.record("call_ms", started.elapsed().as_millis() as u64);
+                result
+            }
+            .instrument(span)
+            .await;
             match result {
                 Ok(Ok(result)) => return Ok(to_output(result)),
                 Ok(Err(err)) => {
@@ -133,14 +165,15 @@ impl SessionInner {
                         err,
                         rmcp::ServiceError::TransportClosed | rmcp::ServiceError::TransportSend(_)
                     );
-                    *guard = None;
                     if transport && attempt == 0 && !is_auth_text(&text) {
+                        self.reconnect(generation).await?;
                         continue;
                     }
+                    self.invalidate(generation).await;
                     return Err(map_service_error(tool, &text));
                 }
                 Err(_) => {
-                    *guard = None;
+                    self.invalidate(generation).await;
                     return Err(ProviderError::Network(format!(
                         "{tool}: Slack MCP timed out"
                     )));
@@ -150,6 +183,74 @@ impl SessionInner {
         Err(ProviderError::Network(format!(
             "{tool}: Slack MCP connection lost"
         )))
+    }
+
+    /// Clone the live peer. Opens a session when there is none. The lock
+    /// is not held across `tools/call`.
+    async fn peer(&self) -> Result<(Peer<RoleClient>, u64, Duration), ProviderError> {
+        let wait_started = Instant::now();
+        let mut guard = self.session.lock().await;
+        let lock_wait = wait_started.elapsed();
+        if guard
+            .client
+            .as_ref()
+            .is_none_or(|client| !session_usable(client))
+        {
+            let stale = guard.client.take();
+            close_session(stale).await;
+            self.install(&mut guard).await?;
+        }
+        let generation = guard.generation;
+        let peer = guard
+            .client
+            .as_ref()
+            .expect("session just opened")
+            .peer()
+            .clone();
+        Ok((peer, generation, lock_wait))
+    }
+
+    /// Replace `seen` with one new session. A caller that lost the race
+    /// (the generation already moved) leaves the new session alone.
+    async fn reconnect(&self, seen: u64) -> Result<(), ProviderError> {
+        let mut guard = self.session.lock().await;
+        if guard.generation != seen {
+            return Ok(());
+        }
+        tracing::debug!(generation = seen, "reopening slack mcp session");
+        let old = guard.client.take();
+        close_session(old).await;
+        self.install(&mut guard).await
+    }
+
+    /// Drop `seen` so the next call opens a fresh session. A 401 takes
+    /// this path: the call is not retried.
+    async fn invalidate(&self, seen: u64) {
+        let mut guard = self.session.lock().await;
+        if guard.generation != seen {
+            return;
+        }
+        guard.generation = guard.generation.wrapping_add(1);
+        let old = guard.client.take();
+        drop(guard);
+        close_session(old).await;
+    }
+
+    async fn install(
+        &self,
+        guard: &mut tokio::sync::MutexGuard<'_, LiveSession>,
+    ) -> Result<(), ProviderError> {
+        match self.open().await {
+            Ok(client) => {
+                guard.generation = guard.generation.wrapping_add(1);
+                guard.client = Some(client);
+                Ok(())
+            }
+            Err(err) => {
+                guard.generation = guard.generation.wrapping_add(1);
+                Err(err)
+            }
+        }
     }
 
     async fn open(&self) -> Result<Client, ProviderError> {
@@ -210,6 +311,19 @@ impl SessionInner {
             });
         }
         Ok(client)
+    }
+}
+
+fn session_usable(client: &Client) -> bool {
+    !client.is_closed() && !client.is_transport_closed()
+}
+
+/// Finish the transport before anything else uses a replacement. Dropping
+/// the owner cancels it; closing first keeps that cancel from racing a call
+/// on a handle we still intend to use.
+async fn close_session(client: Option<Client>) {
+    if let Some(mut client) = client {
+        let _ = client.close_with_timeout(CLOSE_TIMEOUT).await;
     }
 }
 
