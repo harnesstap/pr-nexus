@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError, TryLockError};
 use std::thread;
@@ -170,6 +172,17 @@ pub struct AppState {
     pub slack_cancel: Mutex<Option<CancelHandle>>,
     /// Latest Slack grant check per account (§7.11). A refresh replaces it.
     pub slack_tokens: Mutex<HashMap<i64, SlackTokenCheck>>,
+    /// One grant check at a time. A second caller waits, then sees the cache.
+    pub slack_validation: tokio::sync::Mutex<()>,
+    /// How many times [`crate::slack::validate_tokens`] started.
+    #[cfg(test)]
+    pub token_validations: AtomicUsize,
+    /// How many grant checks actually called Slack (`auth.test`).
+    #[cfg(test)]
+    pub token_probes: AtomicUsize,
+    /// How many ownership resolves called GitHub.
+    #[cfg(test)]
+    pub github_resolves: AtomicUsize,
     /// Upstream sessions behind the Slack tools of the local MCP server.
     pub slack_proxy: crate::mcp::slack::SlackProxy,
     pub sync: Mutex<SyncStatus>,
@@ -228,6 +241,13 @@ impl AppState {
             github_clients: Mutex::new(HashMap::new()),
             slack_cancel: Mutex::new(None),
             slack_tokens: Mutex::new(HashMap::new()),
+            slack_validation: tokio::sync::Mutex::new(()),
+            #[cfg(test)]
+            token_validations: AtomicUsize::new(0),
+            #[cfg(test)]
+            token_probes: AtomicUsize::new(0),
+            #[cfg(test)]
+            github_resolves: AtomicUsize::new(0),
             slack_proxy: crate::mcp::slack::SlackProxy::default(),
             sync: Mutex::new(if demo {
                 SyncStatus::demo()

@@ -272,7 +272,14 @@ fn token_usable(state: &AppState, account: &Account, wait: bool) -> bool {
 
 /// Check every saved grant not checked yet with `auth.test` (startup and
 /// the first workspace list). A later refresh ignores this cache.
+///
+/// Concurrent callers share one check: the second waits, then
+/// [`refresh_grants`] sees the cache and does not call Slack again.
 pub async fn validate_tokens(state: &AppState) {
+    #[cfg(test)]
+    state
+        .token_validations
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     if state.demo {
         return;
     }
@@ -351,6 +358,18 @@ async fn refresh_grants(
     account_id: Option<i64>,
     force: bool,
 ) -> Result<Vec<SlackWorkspace>, AppError> {
+    // One check at a time. The second caller waits, then the cache recorded
+    // by the first means it does not call Slack again. An explicit refresh
+    // (`force`) still checks.
+    let _guard = if force {
+        None
+    } else {
+        #[cfg(test)]
+        state
+            .token_validations
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Some(state.slack_validation.lock().await)
+    };
     let accounts = workspace_accounts(&state.store)?;
     if let Some(id) = account_id
         && !accounts.iter().any(|account| account.id.0 == id)
@@ -418,6 +437,10 @@ async fn probe_saved_grants(
     if jobs.is_empty() {
         return Ok(Vec::new());
     }
+    #[cfg(test)]
+    state
+        .token_probes
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let limit = TOKEN_CHECKS.max(1).min(jobs.len());
     let permits = std::sync::Arc::new(tokio::sync::Semaphore::new(limit));
     let mut tasks = tokio::task::JoinSet::new();
@@ -497,11 +520,27 @@ fn kept_domain(stored: Option<&str>, next: &str, team_id: &str) -> String {
     next.to_owned()
 }
 
+/// Stored workspaces, validating tokens only when `validate` is true.
+///
+/// Settings omits the flag and waits on the check. The review dialog passes
+/// false so the list returns at once, then validates in the background.
+pub(crate) async fn load_workspaces(
+    state: &AppState,
+    validate: bool,
+) -> Result<Vec<SlackWorkspace>, AppError> {
+    if validate {
+        validate_tokens(state).await;
+    }
+    workspace_list(state)
+}
+
 #[tauri::command]
-pub async fn slack_workspaces(app: Shared<'_>) -> Result<Vec<SlackWorkspace>, AppError> {
+pub async fn slack_workspaces(
+    app: Shared<'_>,
+    validate: Option<bool>,
+) -> Result<Vec<SlackWorkspace>, AppError> {
     let state = app.inner().clone();
-    validate_tokens(&state).await;
-    workspace_list(&state)
+    load_workspaces(&state, validate.unwrap_or(true)).await
 }
 
 /// Every workspace, in priority order.
@@ -2469,5 +2508,138 @@ mod tests {
         let resolved = resolve_targets(&state, &chats, vec![row], Names::Cached);
         assert_eq!(resolved[0].channel_name, "stored");
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// Two overlapping grant checks share one `auth.test`. The second waits.
+    #[tokio::test]
+    async fn concurrent_token_checks_probe_slack_once() {
+        #[derive(Clone)]
+        struct Hold {
+            hits: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+            release: tokio::sync::watch::Receiver<bool>,
+        }
+        async fn held_auth(
+            axum::extract::State(hold): axum::extract::State<Hold>,
+        ) -> impl axum::response::IntoResponse {
+            hold.hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut release = hold.release.clone();
+            while !*release.borrow() {
+                if release.changed().await.is_err() {
+                    break;
+                }
+            }
+            (
+                axum::http::StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, "application/json")],
+                serde_json::json!({
+                    "ok": true,
+                    "url": "https://acme.slack.com/",
+                    "team": "Acme",
+                    "user": "ada",
+                    "team_id": "T0ACME0001",
+                    "user_id": "U0ADA",
+                })
+                .to_string(),
+            )
+        }
+        async fn team_info() -> impl axum::response::IntoResponse {
+            (
+                axum::http::StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, "application/json")],
+                serde_json::json!({
+                    "ok": true,
+                    "team": {"id": "T0ACME0001", "name": "Acme", "domain": "acme"},
+                })
+                .to_string(),
+            )
+        }
+
+        let (sender, release) = tokio::sync::watch::channel(false);
+        let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let router = axum::Router::new()
+            .route("/auth.test", axum::routing::post(held_auth))
+            .route("/team.info", axum::routing::post(team_info))
+            .with_state(Hold {
+                hits: hits.clone(),
+                release,
+            });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        let base = format!("http://127.0.0.1:{port}");
+
+        let dir = tempfile::tempdir().unwrap();
+        let state = std::sync::Arc::new(AppState::for_tests(&dir.path().join("test.db"), false));
+        let account = state
+            .store
+            .upsert_account(slack_account("Acme", "acme", "T0ACME0001", "U0ADA"))
+            .unwrap();
+        state
+            .vault
+            .set(
+                account.keychain_key.as_deref().unwrap(),
+                &grant("xoxp-acme"),
+            )
+            .unwrap();
+
+        let first = std::sync::Arc::clone(&state);
+        let base_a = base.clone();
+        let started = tokio::spawn(async move {
+            let _ = refresh_grants(&first, &base_a, None, false).await;
+        });
+        let mut spins = 0;
+        while hits.load(std::sync::atomic::Ordering::SeqCst) < 1 {
+            spins += 1;
+            assert!(spins < 100_000, "auth.test did not start");
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            state.token_probes.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+
+        let second = std::sync::Arc::clone(&state);
+        let base_b = base.clone();
+        let overlapped = tokio::spawn(async move {
+            let _ = refresh_grants(&second, &base_b, None, false).await;
+        });
+        spins = 0;
+        while state
+            .token_validations
+            .load(std::sync::atomic::Ordering::SeqCst)
+            < 2
+        {
+            spins += 1;
+            assert!(spins < 100_000, "the second check did not start");
+            tokio::task::yield_now().await;
+        }
+        let mut spins = 0;
+        while state.token_probes.load(std::sync::atomic::Ordering::SeqCst) == 1 && spins < 64 {
+            tokio::task::yield_now().await;
+            spins += 1;
+        }
+        assert_eq!(
+            hits.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the waiting check does not call auth.test"
+        );
+        assert_eq!(
+            state.token_probes.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+
+        sender.send(true).unwrap();
+        started.await.unwrap();
+        overlapped.await.unwrap();
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            state.token_probes.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        let row = workspace_list(&state).unwrap();
+        assert_eq!(row[0].check, "connected");
+        assert!(row[0].signed_in);
     }
 }

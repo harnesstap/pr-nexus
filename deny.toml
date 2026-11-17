@@ -1,13 +1,15 @@
 [advisories]
 version = 2
 yanked = "deny"
-# Transitive through Tauri / GTK / tauri-plugin-opener. Each advisory says
-# there is no fixed release we can upgrade to.
+# Each advisory says there is no fixed release we can upgrade to. The first
+# four come through Tauri / GTK / tauri-plugin-opener. chrono is also a direct
+# dependency, and oauth2, rmcp, and schemars still require it.
 ignore = [
   { id = "RUSTSEC-2024-0370", reason = "proc-macro-error via gtk/glib; Tauri has not migrated off it." },
   { id = "RUSTSEC-2026-0370", reason = "zvariant folded into zbus 6, which tauri-plugin-opener does not use yet." },
   { id = "RUSTSEC-2026-0371", reason = "zbus_names folded into zbus 6, which tauri-plugin-opener does not use yet." },
   { id = "RUSTSEC-2026-0372", reason = "zvariant_derive folded into zbus 6, which tauri-plugin-opener does not use yet." },
+  { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained; oauth2, rmcp, and schemars still depend on it." },
 ]
 
 [licenses]

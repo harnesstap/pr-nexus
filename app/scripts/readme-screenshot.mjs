@@ -80,6 +80,11 @@ const slackDraftDir = slackDraftFlag === -1 ? null : process.argv[slackDraftFlag
 if (slackDraftFlag !== -1 && !slackDraftDir) {
   throw new Error("--slack-draft needs an output directory");
 }
+const reviewOpenFlag = process.argv.indexOf("--review-open");
+const reviewOpenDir = reviewOpenFlag === -1 ? null : process.argv[reviewOpenFlag + 1];
+if (reviewOpenFlag !== -1 && !reviewOpenDir) {
+  throw new Error("--review-open needs an output directory");
+}
 const repoFilterFlag = process.argv.indexOf("--repo-filter");
 const repoFilterDir = repoFilterFlag === -1 ? null : process.argv[repoFilterFlag + 1];
 if (repoFilterFlag !== -1 && !repoFilterDir) {
@@ -466,6 +471,53 @@ async function filterBarShots(browser, dir) {
   await shoot("filter-bar-sort.png", 1440, "author:me sort:created-asc", true);
 }
 
+async function reviewOpenShots(browser, dir) {
+  mkdirSync(dir, { recursive: true });
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2, colorScheme: "dark" });
+  page.on("pageerror", (err) => console.error("page error:", err.message));
+  await page.addInitScript(() => {
+    globalThis.__reviewTiming = true;
+  });
+  await page.goto(url);
+  await page.getByRole("group", { name: "Quick filters" }).waitFor();
+  await page.getByRole("button", { name: rowButton("lazy-load the card form") }).first().click();
+  await page.getByTestId("detail-panel").getByRole("button", { name: "Request review on Slack" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByText("New message in #web-reviews · Acme.").waitFor();
+  await dialog.getByText("Checking channel…").waitFor();
+  if ((await dialog.getByText("Finding channels…").count()) !== 0) {
+    throw new Error("Finding channels is still showing");
+  }
+  await page.waitForFunction(() => typeof globalThis.__releaseReviewNames === "function");
+  await page.screenshot({ path: resolve(dir, "review-dialog-open.png") });
+  const marks = () =>
+    page.evaluate(() =>
+      performance
+        .getEntriesByType("mark")
+        .filter((mark) => mark.name.startsWith("review-dialog:"))
+        .map((mark) => ({ name: mark.name, startTime: mark.startTime })),
+    );
+  const before = await marks();
+  if (before.some((mark) => mark.name === "review-dialog:names")) {
+    throw new Error("the live name landed before the first shot");
+  }
+  await page.evaluate(() => {
+    globalThis.__releaseReviewNames();
+  });
+  await dialog.getByText("New message in #web-reviews-live · Acme.").waitFor();
+  await page.waitForFunction(() => {
+    const button = [...globalThis.document.querySelectorAll("button")].find((item) => item.textContent === "Send request");
+    return button instanceof globalThis.HTMLButtonElement && !button.disabled;
+  });
+  if ((await dialog.getByText("Checking channel…").count()) !== 0) {
+    throw new Error("Checking channel is still showing");
+  }
+  await page.screenshot({ path: resolve(dir, "review-dialog-live.png") });
+  const after = await marks();
+  console.log(JSON.stringify({ before, after }, null, 2));
+  await page.close();
+}
+
 let browser;
 try {
   browser = await chromium.launch(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: "chrome" });
@@ -477,6 +529,12 @@ try {
   }
   if (settingsNavDir) {
     await settingsNavShots(browser, resolve(settingsNavDir));
+    await browser.close();
+    await vite.close();
+    process.exit(0);
+  }
+  if (reviewOpenDir) {
+    await reviewOpenShots(browser, resolve(reviewOpenDir));
     await browser.close();
     await vite.close();
     process.exit(0);

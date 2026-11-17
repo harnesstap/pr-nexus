@@ -160,8 +160,11 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     }
     return { ok: true, message: "", ids: [2, 13], total: 2, openOnly: false };
   },
-  slack_workspaces: () => {
+  slack_workspaces: (args) => {
     const list = slackScene() ? sceneWorkspaces() : boot.slack_workspaces;
+    if (args.validate === false) {
+      return list;
+    }
     if ((window as { __agentScopes?: boolean }).__agentScopes) {
       return list.map((workspace, index) => ({
         ...workspace,
@@ -182,6 +185,8 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   // `--update` scenes set the answer before the app loads.
   check_update: () => (window as { __update?: unknown }).__update ?? null,
   pr_detail: () => detail,
+  review_teams: () => ({ teams: detail.mandatory_teams, owner_groups: detail.owner_groups, source: "cache" }),
+  review_owners: () => detail,
   // The stored overview follows the row, the same way `set_pr_draft` refreshes
   // the cache. A later read must not put a draft flag back onto a PR that
   // was just marked ready.
@@ -271,7 +276,19 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   list_project_links: (args) =>
     rows.filter((row) => row.project_ids.includes(Number(args.projectId))).map((row) => ({ pr_id: row.id, source: "manual", rule_id: null })),
   rows_by_id: (args) => rows.filter((row) => (args.ids as number[]).includes(row.id)),
-  review_targets: () => reviewChoices,
+  review_targets: (args) => {
+    const timing = (window as { __reviewTiming?: boolean }).__reviewTiming === true;
+    if (args.cachedNames === false && timing) {
+      const renamed = reviewChoices.map((choice) => ({
+        ...choice,
+        target: { ...choice.target, channel_name: "web-reviews-live" },
+      }));
+      return new Promise((resolve) => {
+        (window as { __releaseReviewNames?: () => void }).__releaseReviewNames = () => resolve(renamed);
+      });
+    }
+    return reviewChoices;
+  },
   bulk_preview: (args) => {
     const request = args.request as BulkRequest;
     const picked = rows.filter((item) => request.pr_ids.includes(item.id));

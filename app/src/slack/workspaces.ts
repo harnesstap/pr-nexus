@@ -35,6 +35,19 @@ export function workspaceLabel(workspace: SlackWorkspace): string {
   return workspace.needs_sign_in ? `${name} · needs sign-in` : name;
 }
 
+/**
+ * The workspace whose grant check says the sign-in expired, when `target`
+ * belongs to it. Send uses this; the channel and the preview stay.
+ */
+export function expiredSignIn(
+  target: { workspace: string; team_id?: string | null },
+  workspaces: SlackWorkspace[],
+): SlackWorkspace | null {
+  const byTeam = target.team_id ? workspaces.find((item) => item.team_id === target.team_id) : undefined;
+  const match = byTeam ?? findWorkspace(workspaces, target.workspace);
+  return match && match.check === "expired" && !match.signed_in ? match : null;
+}
+
 /** The connected workspace whose domain matches `value`, if any. */
 export function findWorkspace(workspaces: SlackWorkspace[], value: string): SlackWorkspace | undefined {
   if (isTeamId(value)) {

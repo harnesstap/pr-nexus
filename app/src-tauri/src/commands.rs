@@ -1459,6 +1459,26 @@ pub async fn pr_detail(
         .map_err(|err| AppError::new("internal", err.to_string()))?
 }
 
+/// Teams for the review dialog's first paint. Never calls GitHub.
+#[tauri::command]
+pub async fn review_teams(
+    app: State<'_, std::sync::Arc<AppState>>,
+    id: i64,
+) -> Result<crate::services::prs::StoredReviewTeams, AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || crate::services::prs::stored_review_teams(app.inner().as_ref(), id)).await
+}
+
+/// Live owner resolution for the review dialog, after the first paint.
+#[tauri::command]
+pub async fn review_owners(
+    app: State<'_, std::sync::Arc<AppState>>,
+    id: i64,
+) -> Result<PrDetail, AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || crate::services::prs::pr_detail_resolve(app.inner().as_ref(), id)).await
+}
+
 pub(crate) fn stored_pr(
     state: &AppState,
     id: PrId,

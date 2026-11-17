@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, expect, test, vi } from "vitest";
 import type { Toast } from "../list/model";
-import type { Api, BulkPreview, BulkRequest, ListRow, MappingRow, PrDetail, ReviewPreview, ReviewTarget, SlackIndicator, TargetChoice } from "../api";
+import type { Api, BulkPreview, BulkRequest, ListRow, MappingRow, PrDetail, ReviewPreview, ReviewTarget, SlackIndicator, SlackWorkspace, TargetChoice } from "../api";
 import { beginDraftFlip, resetDraftRecords, settleDraftFlip, takeGeneration } from "../detail/draftRecord";
 import { ReviewDialog, withNote } from "./ReviewDialog";
 import { rememberReviewSeed, resetReviewPrefetch } from "./reviewPrefetch";
@@ -861,6 +861,162 @@ test("saving the picked channel writes that team's mapping, and Remove drops the
   fireEvent.click(within(again).getByRole("button", { name: "Remove @acme/team-b" }));
   await waitFor(() => expect(screen.queryByRole("region", { name: "Choose a channel for @acme/team-b" })).not.toBeInTheDocument());
   expect(screen.getByRole("button", { name: "Send request" })).toBeEnabled();
+});
+
+function previewFor(target: ReviewTarget): ReviewPreview {
+  return {
+    target,
+    action: "request",
+    text: `Review please · #${target.channel_name}`,
+    warnings: [],
+    pr_warnings: [],
+    signed_in: true,
+    bump_count: 0,
+    permalink: null,
+    broadcast: true,
+  };
+}
+
+const acmeWorkspace: SlackWorkspace = {
+  id: 3,
+  team_name: "Acme",
+  domain: "acme",
+  user_name: "ada",
+  signed_in: true,
+  needs_sign_in: false,
+  team_id: "T0ACME0001",
+  enabled: true,
+  priority: 0,
+};
+
+test("cached owners paint a channel and a preview before any GitHub call or Slack token check", async () => {
+  let github = 0;
+  let validations = 0;
+  let githubBeforePreview = -1;
+  let validationsBeforePreview = -1;
+  let releaseOwners: (detail: PrDetail) => void = () => undefined;
+  const owners = new Promise<PrDetail>((resolve) => {
+    releaseOwners = resolve;
+  });
+  const { api } = fake({
+    prDetail: () => {
+      github += 1;
+      return Promise.resolve(detail);
+    },
+    reviewTeams: () => Promise.resolve({ teams: ["@acme/platform"], owner_groups: [], source: "cache" }),
+    reviewOwners: () => {
+      github += 1;
+      return owners;
+    },
+    slackWorkspaces: (validate?: boolean) => {
+      if (validate !== false) {
+        validations += 1;
+      }
+      return Promise.resolve([acmeWorkspace]);
+    },
+    reviewPreview: (_id, target, cached) => {
+      if (cached) {
+        githubBeforePreview = github;
+        validationsBeforePreview = validations;
+      }
+      return Promise.resolve(previewFor(target));
+    },
+  });
+  render(<ReviewDialog api={api} row={row} onClose={() => undefined} onOpen={() => undefined} onSent={() => undefined} />);
+  expect(await screen.findByText("New message in #platform.")).toBeInTheDocument();
+  expect(screen.queryByText("Finding channels…")).not.toBeInTheDocument();
+  expect(githubBeforePreview).toBe(0);
+  expect(validationsBeforePreview).toBe(0);
+  releaseOwners({ ...detail, mandatory_teams: ["@acme/platform"], candidate_teams: [], owner_groups: [] });
+  await waitFor(() => expect(github).toBe(1));
+  expect(screen.getByText("New message in #platform.")).toBeInTheDocument();
+});
+
+test("requested reviewer teams are used when no owner cache exists, then a different owner result updates the channel", async () => {
+  let releaseOwners: (detail: PrDetail) => void = () => undefined;
+  const owners = new Promise<PrDetail>((resolve) => {
+    releaseOwners = resolve;
+  });
+  const docs: TargetChoice = {
+    target: { workspace: "acme", channel_id: "C0ACME0003", channel_name: "docs-reviews" },
+    teams: ["acme/docs"],
+    source: "mapping",
+  };
+  const platform: TargetChoice = {
+    target: { workspace: "acme", channel_id: "C0ACME0002", channel_name: "web-reviews" },
+    teams: ["acme/platform"],
+    source: "mapping",
+  };
+  const seen: string[][] = [];
+  let ownersStarted = false;
+  const { api } = fake({
+    reviewTeams: () => Promise.resolve({ teams: ["acme/docs"], owner_groups: [], source: "requested" }),
+    reviewOwners: () => {
+      ownersStarted = true;
+      return owners;
+    },
+    reviewTargets: (_id, teams) => {
+      seen.push(teams);
+      const choice = teams.some((team) => team.includes("platform")) ? platform : docs;
+      return Promise.resolve([choice]);
+    },
+    reviewPreview: (_id, target) => Promise.resolve(previewFor(target)),
+  });
+  render(<ReviewDialog api={api} row={row} onClose={() => undefined} onOpen={() => undefined} onSent={() => undefined} />);
+  expect(await screen.findByText("New message in #docs-reviews.")).toBeInTheDocument();
+  expect(seen[0]).toEqual(["acme/docs"]);
+  expect(ownersStarted).toBe(true);
+  releaseOwners({ ...detail, mandatory_teams: ["acme/platform"], candidate_teams: [], owner_groups: [] });
+  expect(await screen.findByText("New message in #web-reviews.")).toBeInTheDocument();
+  expect(seen.some((teams) => teams.includes("acme/platform"))).toBe(true);
+});
+
+test("a manual channel pick is kept when a later owner result differs", async () => {
+  let releaseOwners: (detail: PrDetail) => void = () => undefined;
+  const owners = new Promise<PrDetail>((resolve) => {
+    releaseOwners = resolve;
+  });
+  const { api } = fake({
+    reviewTeams: () => Promise.resolve({ teams: ["@acme/platform"], owner_groups: [], source: "cache" }),
+    reviewOwners: () => owners,
+    searchSlackTargets: (query: string) =>
+      Promise.resolve(
+        query === "@grace" ? [{ kind: "member" as const, target: { workspace: "acme", channel_id: "U0ACME0002", channel_name: "Grace Hopper" } }] : [],
+      ),
+    reviewPreview: (_id, target) => Promise.resolve(previewFor(target)),
+  });
+  render(<ReviewDialog api={api} row={row} onClose={() => undefined} onOpen={() => undefined} onSent={() => undefined} />);
+  await screen.findByLabelText("Message preview");
+  const box = screen.getByRole("combobox", { name: "Channel or person" });
+  fireEvent.focus(box);
+  fireEvent.change(box, { target: { value: "@grace" } });
+  fireEvent.click(await screen.findByRole("option", { name: /@Grace Hopper/ }));
+  expect(await screen.findByText("New message in @Grace Hopper.")).toBeInTheDocument();
+  releaseOwners({ ...detail, mandatory_teams: ["acme/docs"], candidate_teams: [], owner_groups: [] });
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(screen.getByText("New message in @Grace Hopper.")).toBeInTheDocument();
+  expect(screen.queryByText("New message in #docs-reviews.")).not.toBeInTheDocument();
+});
+
+test("an expired Slack sign-in disables Send and leaves the preview", async () => {
+  let releaseWorkspaces: (list: (typeof acmeWorkspace)[]) => void = () => undefined;
+  const checked = new Promise<(typeof acmeWorkspace)[]>((resolve) => {
+    releaseWorkspaces = resolve;
+  });
+  const { api } = fake({
+    slackWorkspaces: (validate?: boolean) => (validate === false ? Promise.resolve([acmeWorkspace]) : checked),
+    reviewPreview: (_id, target) => Promise.resolve(previewFor(target)),
+  });
+  render(<ReviewDialog api={api} row={row} onClose={() => undefined} onOpen={() => undefined} onSent={() => undefined} />);
+  expect(await screen.findByText("New message in #platform.")).toBeInTheDocument();
+  await waitFor(() => expect(screen.getByRole("button", { name: "Send request" })).toBeEnabled());
+  releaseWorkspaces([{ ...acmeWorkspace, signed_in: false, needs_sign_in: true, check: "expired" }]);
+  expect(await screen.findByText("Slack sign-in expired. Reconnect the Acme workspace in Settings.")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Send request" })).toBeDisabled();
+  expect(screen.getByText("New message in #platform.")).toBeInTheDocument();
+  expect(screen.queryByText(/Sign in to acme in Settings/)).not.toBeInTheDocument();
 });
 
 test("failing owners are explained instead of an empty list", async () => {

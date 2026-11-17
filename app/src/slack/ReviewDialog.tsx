@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Api, ListRow, PrDetail, ReviewPreview, ReviewTarget, SlackIndicator, SlackWorkspace, TargetChoice } from "../api";
+import type { Api, ListRow, OwnerGroup, PrDetail, ReviewPreview, ReviewTarget, SlackIndicator, SlackWorkspace, TargetChoice } from "../api";
 import { channelLabel, errorMessage, isSendable } from "../api";
 import { beginDraftFlip, draftPhase, offerPreviewDraft, settleDraftCall, settleDraftFlip, takeGeneration, useDraftRecord, type DraftPhase } from "../detail/draftRecord";
 import { Tooltip } from "../Tooltip";
@@ -11,6 +11,7 @@ import { Mrkdwn } from "./mrkdwn";
 import { CheckNotes, GroupedRequest, needsGroupSends } from "./OwnerGroups";
 import { peekReviewPrefetch } from "./reviewPrefetch";
 import { TargetCombobox } from "./TargetCombobox";
+import { expiredSignIn } from "./workspaces";
 
 interface Props {
   api: Api;
@@ -35,6 +36,26 @@ function mark(name: string): void {
 
 function sameDestination(a: ReviewTarget, b: ReviewTarget): boolean {
   return a.channel_id === b.channel_id && a.workspace === b.workspace && (a.team_id ?? "") === (b.team_id ?? "");
+}
+
+function suggestionTeams(detail: { mandatory_teams: string[]; candidate_teams: string[] }): string[] {
+  return detail.mandatory_teams.length > 0 ? detail.mandatory_teams : detail.candidate_teams;
+}
+
+function sameTeams(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+  const a = [...left].sort();
+  const b = [...right].sort();
+  return a.every((team, index) => team === b[index]);
+}
+
+interface Painted {
+  teams: string[];
+  found: TargetChoice[];
+  first: TargetChoice;
+  mine: number;
 }
 
 /**
@@ -116,93 +137,64 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNot
 
   useEffect(() => {
     // ListScreen keys this dialog by PR id, so state starts empty for each PR
-    // unless a prefetch already filled it.
+    // unless a prefetch already filled it. The first paint uses only stored
+    // data. Slack token checks and a live owner lookup start after that.
     let cancel = false;
+    let flight = 0;
+    const sawValidated = { current: false };
     void (async () => {
       try {
         mark("review-dialog:start");
         const [owners, signedIn] = await Promise.all([
-          (detail
-            ? Promise.resolve(detail)
-            : api.prDetail(row.id)
-          ).catch((err: unknown) => {
-            if (!cancel) {
-              setHint(`Couldn't read this PR's code owners, so no channel is suggested (${errorMessage(err)}). Search for one above.`);
-            }
-            return null;
-          }),
-          api.slackWorkspaces().catch(() => []),
+          loadOwners(),
+          api.slackWorkspaces(false).catch(() => [] as SlackWorkspace[]),
         ]);
         mark("review-dialog:owners");
-        if (owners && needsGroupSends(owners.owner_groups)) {
-          if (!cancel) {
-            setGroupsMode(true);
-            setChoices([]);
-            setNaming(false);
-          }
-          return;
-        }
-        const wanted = owners ? (owners.mandatory_teams.length > 0 ? owners.mandatory_teams : owners.candidate_teams) : [];
-        const found = await api.reviewTargets(row.id, wanted, true).catch((err: unknown) => {
-          if (!cancel) {
-            setHint(`Couldn't load the code-owner channels (${errorMessage(err)}). Search for one above.`);
-          }
-          return [] as TargetChoice[];
-        });
-        mark("review-dialog:targets");
         if (cancel) {
           return;
         }
-        setTeams(wanted);
-        setWorkspaces(signedIn);
-        setChoices(found);
-        // Preselect only a channel with a real ID: a name-only mapping is a
-        // suggestion to search for, never a target to preview (§7.11).
-        const first = found.find((choice) => choice.source !== "unresolved" && isSendable(choice.target));
-        if (!first) {
-          setNaming(false);
+        if (!sawValidated.current) {
+          setWorkspaces(signedIn);
+        }
+        const painted = await paintTeams(owners.teams, owners.groups, true);
+        if (cancel) {
           return;
         }
-        setTarget(first.target);
-        setChosen(first);
-        const observed = takeGeneration();
-        const next = await api.reviewPreview(row.id, first.target, true);
-        mark("review-dialog:preview");
-        if (cancel || picked.current) {
+        void api
+          .slackWorkspaces(true)
+          .then((fresh) => {
+            if (cancel) {
+              return;
+            }
+            sawValidated.current = true;
+            setWorkspaces(fresh);
+          })
+          .catch(() => undefined);
+        if (picked.current) {
           return;
         }
-        applyPreview(next, observed);
-        setNaming(true);
-        const live = await api.reviewTargets(row.id, wanted, false).catch(() => found);
-        mark("review-dialog:names");
-        if (cancel || picked.current) {
-          if (!cancel) {
-            setNaming(false);
-          }
-          return;
+        if (api.reviewOwners) {
+          void api
+            .reviewOwners(row.id)
+            .then((live) => {
+              if (cancel || picked.current) {
+                return;
+              }
+              const liveTeams = suggestionTeams(live);
+              const changed = !sameTeams(liveTeams, owners.teams) || needsGroupSends(live.owner_groups) !== needsGroupSends(owners.groups);
+              if (!changed) {
+                return;
+              }
+              void paintTeams(liveTeams, live.owner_groups, false).then((next) => {
+                if (next && !cancel && !picked.current) {
+                  void applyLiveNames(next, false);
+                }
+              });
+            })
+            .catch(() => undefined);
         }
-        const index = found.indexOf(first);
-        const liveChoice = live[index] ?? live.find((choice) => choice.target.channel_id === first.target.channel_id);
-        setChoices(live);
-        if (!liveChoice || sameDestination(liveChoice.target, first.target)) {
-          if (liveChoice && liveChoice.target.channel_name !== first.target.channel_name) {
-            setTarget(liveChoice.target);
-            setChosen(liveChoice);
-            setPreview((current) => (current ? { ...current, target: liveChoice.target } : current));
-          }
-          setNaming(false);
-          return;
-        }
-        setTarget(liveChoice.target);
-        setChosen(liveChoice);
-        setPreview(null);
-        const refreshedGen = takeGeneration();
-        const refreshed = await api.reviewPreview(row.id, liveChoice.target);
-        if (!cancel && !picked.current) {
-          applyPreview(refreshed, refreshedGen);
-        }
-        if (!cancel) {
-          setNaming(false);
+        if (painted) {
+          await applyLiveNames(painted, true);
         }
       } catch (err) {
         if (!cancel) {
@@ -212,6 +204,117 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNot
         }
       }
     })();
+
+    async function loadOwners(): Promise<{ teams: string[]; groups: OwnerGroup[] | undefined }> {
+      if (detail) {
+        return { teams: suggestionTeams(detail), groups: detail.owner_groups };
+      }
+      if (api.reviewTeams) {
+        try {
+          const stored = await api.reviewTeams(row.id);
+          return { teams: stored.teams, groups: stored.owner_groups };
+        } catch (err) {
+          if (!cancel) {
+            setHint(`Couldn't read this PR's code owners, so no channel is suggested (${errorMessage(err)}). Search for one above.`);
+          }
+          return { teams: [], groups: [] };
+        }
+      }
+      try {
+        const loaded = await api.prDetail(row.id);
+        return { teams: suggestionTeams(loaded), groups: loaded.owner_groups };
+      } catch (err) {
+        if (!cancel) {
+          setHint(`Couldn't read this PR's code owners, so no channel is suggested (${errorMessage(err)}). Search for one above.`);
+        }
+        return { teams: [], groups: [] };
+      }
+    }
+
+    async function paintTeams(wanted: string[], groups: OwnerGroup[] | undefined, first: boolean): Promise<Painted | null> {
+      if (needsGroupSends(groups)) {
+        if (!cancel && !picked.current) {
+          setGroupsMode(true);
+          setChoices([]);
+          setNaming(false);
+        }
+        return null;
+      }
+      const mine = ++flight;
+      const found = await api.reviewTargets(row.id, wanted, true).catch((err: unknown) => {
+        if (!cancel && first) {
+          setHint(`Couldn't load the code-owner channels (${errorMessage(err)}). Search for one above.`);
+        }
+        return [] as TargetChoice[];
+      });
+      if (first) {
+        mark("review-dialog:targets");
+      }
+      if (cancel || picked.current || mine !== flight) {
+        return null;
+      }
+      setGroupsMode(false);
+      setTeams(wanted);
+      setChoices(found);
+      // Preselect only a channel with a real ID: a name-only mapping is a
+      // suggestion to search for, never a target to preview (§7.11).
+      const firstChoice = found.find((choice) => choice.source !== "unresolved" && isSendable(choice.target));
+      if (!firstChoice) {
+        setNaming(false);
+        return null;
+      }
+      setTarget(firstChoice.target);
+      setChosen(firstChoice);
+      const observed = takeGeneration();
+      const next = await api.reviewPreview(row.id, firstChoice.target, true);
+      if (first) {
+        mark("review-dialog:preview");
+      }
+      if (cancel || picked.current || mine !== flight) {
+        return null;
+      }
+      applyPreview(next, observed);
+      setNaming(true);
+      return { teams: wanted, found, first: firstChoice, mine };
+    }
+
+    async function applyLiveNames(painted: Painted, first: boolean): Promise<void> {
+      const { found, first: suggestion, mine } = painted;
+      const live = await api.reviewTargets(row.id, painted.teams, false).catch(() => found);
+      if (first && mine === flight) {
+        mark("review-dialog:names");
+      }
+      if (cancel || picked.current || mine !== flight) {
+        if (!cancel && picked.current && mine === flight) {
+          setNaming(false);
+        }
+        return;
+      }
+      const index = found.indexOf(suggestion);
+      const liveChoice = live[index] ?? live.find((choice) => choice.target.channel_id === suggestion.target.channel_id);
+      setChoices(live);
+      if (!liveChoice || sameDestination(liveChoice.target, suggestion.target)) {
+        if (liveChoice && liveChoice.target.channel_name !== suggestion.target.channel_name) {
+          setTarget(liveChoice.target);
+          setChosen(liveChoice);
+          setPreview((current) => (current ? { ...current, target: liveChoice.target } : current));
+        }
+        setNaming(false);
+        return;
+      }
+      setTarget(liveChoice.target);
+      setChosen(liveChoice);
+      setPreview(null);
+      const refreshedGen = takeGeneration();
+      const refreshed = await api.reviewPreview(row.id, liveChoice.target);
+      if (!cancel && !picked.current && mine === flight) {
+        applyPreview(refreshed, refreshedGen);
+      }
+      if (!cancel && mine === flight) {
+        setNaming(false);
+      }
+    }
+
     return () => {
       cancel = true;
     };
@@ -274,6 +377,7 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNot
   }
 
   const bump = preview?.action === "bump";
+  const expired = preview ? expiredSignIn(preview.target, workspaces) : null;
   /** Old threads in channels the teams were remapped away from (§7.11). */
   const previous = (choices ?? []).filter((choice) => choice.source === "previous");
   const phase = draftPhase(record, row.state === "open" && row.is_draft);
@@ -380,10 +484,16 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNot
                     {warning}
                   </p>
                 ))}
-                {!preview.signed_in && (
+                {expired ? (
                   <p className="text-xs text-amber-300">
-                    Sign in to {preview.target.workspace} in Settings → Slack before sending.
+                    Slack sign-in expired. Reconnect the {expired.team_name} workspace in Settings.
                   </p>
+                ) : (
+                  !preview.signed_in && (
+                    <p className="text-xs text-amber-300">
+                      Sign in to {preview.target.workspace} in Settings → Slack before sending.
+                    </p>
+                  )
                 )}
               </div>
             )}
@@ -402,7 +512,7 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNot
           <button
             type="button"
             className="rounded bg-violet-500 px-3 py-1.5 font-medium text-white disabled:opacity-40"
-            disabled={!preview || !preview.signed_in || sending || phase === "marking" || naming || unconfirmed !== null}
+            disabled={!preview || !preview.signed_in || expired !== null || sending || phase === "marking" || naming || unconfirmed !== null}
             onClick={() => void send()}
           >
             {sending ? "Sending…" : sendLabel(phase, Boolean(bump))}
