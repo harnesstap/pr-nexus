@@ -7,10 +7,13 @@ import { toMinutes } from "./tabs";
 import { plainText } from "../textInput";
 import { Tooltip } from "../Tooltip";
 
+export type PreferencesSection = "requests" | "rules" | "schedule" | "notifications";
+
 interface Props {
   api: Api;
   prefs: Preferences;
-  section: "review" | "sync";
+  /** Null keeps the draft mounted without showing the form. */
+  section: PreferencesSection | null;
   permission: NotificationPermission;
   onRequestPermission: () => void;
   onSaved: (prefs: Preferences) => void;
@@ -18,7 +21,7 @@ interface Props {
 
 const input = "mt-1 w-28 rounded border border-slate-700 bg-slate-900 px-2 py-1";
 
-/** Settings → Review and Settings → Sync: the §7.12 keys, saved together. */
+/** Requests, rules, schedule and notifications: one §7.12 draft and one save bar. */
 export function PreferencesForm({ api, prefs, section, permission, onRequestPermission, onSaved }: Props) {
   const { draft, setDraft, bar } = useSaveBar(prefs, async (next) => {
     const saved = await api.savePreferences(next);
@@ -30,6 +33,10 @@ export function PreferencesForm({ api, prefs, section, permission, onRequestPerm
     setDraft((current) => ({ ...current, ...next }));
   }
 
+  if (section === null) {
+    return null;
+  }
+
   return (
     <form
       className="space-y-5"
@@ -38,8 +45,9 @@ export function PreferencesForm({ api, prefs, section, permission, onRequestPerm
         bar.onSave();
       }}
     >
-      {section === "review" ? (
+      {section === "requests" && (
         <>
+          <h2 className="text-base font-semibold">Requests & bumps</h2>
           <Field label="Requester" help='Added in brackets after the PR in review requests, e.g. "Ada Acme". Never on reminders. Empty adds nothing.'>
             <input {...plainText}
               className="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1"
@@ -128,6 +136,11 @@ export function PreferencesForm({ api, prefs, section, permission, onRequestPerm
             checked={draft.blocked_review_required_is_ready}
             onChange={(on) => patch({ blocked_review_required_is_ready: on })}
           />
+        </>
+      )}
+      {section === "rules" && (
+        <>
+          <h2 className="text-base font-semibold">Rules</h2>
           <Field label="Ticket key pattern" help="Regular expression for ticket keys in branch names and titles, used by project rules. Empty restores the default.">
             <input {...plainText}
               className="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 font-mono text-sm"
@@ -163,8 +176,10 @@ export function PreferencesForm({ api, prefs, section, permission, onRequestPerm
             />
           </Field>
         </>
-      ) : (
+      )}
+      {section === "schedule" && (
         <>
+          <h2 className="text-base font-semibold">Schedule</h2>
           <div>
             <Tooltip
               label="Live updates"
@@ -209,8 +224,11 @@ export function PreferencesForm({ api, prefs, section, permission, onRequestPerm
               onChange={(event) => patch({ keep_closed_days: Number(event.target.value) })}
             />
           </Field>
-          <div className="space-y-3 border-t border-slate-800 pt-4">
-            <p className="text-sm text-slate-200">Notifications</p>
+        </>
+      )}
+      {section === "notifications" && (
+        <div className="space-y-3">
+          <h2 className="text-base font-semibold">Notifications</h2>
             <Check
               label="Desktop notifications"
               help="While PR Nexus is open, including when the window is closed. The first sync after launch stays quiet."
@@ -258,8 +276,7 @@ export function PreferencesForm({ api, prefs, section, permission, onRequestPerm
               onChange={(on) => patch({ notify_comment: on })}
             />
             {notificationHint(permission) && <p className="text-xs text-slate-500">{notificationHint(permission)}</p>}
-          </div>
-        </>
+        </div>
       )}
       <SaveBar {...bar} submit />
     </form>

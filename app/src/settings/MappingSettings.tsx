@@ -18,7 +18,7 @@ interface Props {
   onCountChange?: (count: number) => void;
   /** The connected workspaces at boot; refreshed from the backend on open. */
   workspaces?: SlackWorkspace[];
-  /** Opens Settings → Accounts when no workspace is connected. */
+  /** Opens Settings → Slack when no workspace is connected. */
   onConnectSlack?: () => void;
 }
 
@@ -514,7 +514,7 @@ function ImportPanel({
             value={workspace}
             onChange={setPicked}
             onConnect={onConnectSlack}
-            connectLabel="Connect Slack in Accounts"
+            connectLabel="Connect Slack"
           />
         </div>
       </div>

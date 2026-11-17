@@ -34,6 +34,8 @@ interface Props {
   tokenVersion: string;
   /** False when the server picks any free port: the snippet breaks once it moves. */
   fixedPort: boolean;
+  /** Opens Server, where the port is set. Omit when that field is on this page. */
+  onFixPort?: () => void;
   /** Copies the snippet built with the real token. */
   onCopy: (label: string, build: (token: string) => string) => void;
 }
@@ -46,7 +48,7 @@ const STATUS_TEXT: Record<McpClientState["status"], string> = {
 };
 
 /** "Client config" in Settings → Agents: one tab per MCP client, each with its own snippet. */
-export function McpClientConfig({ api, url, tokenMasked, tokenVersion, fixedPort, onCopy }: Props) {
+export function McpClientConfig({ api, url, tokenMasked, tokenVersion, fixedPort, onFixPort, onCopy }: Props) {
   const [client, setClient] = useState<McpClient>(readClient);
   const [states, setStates] = useState<McpClientState[]>([]);
   const [busy, setBusy] = useState(false);
@@ -159,7 +161,18 @@ export function McpClientConfig({ api, url, tokenMasked, tokenVersion, fixedPort
         </pre>
         {!fixedPort && (
           <p className="mt-1 text-xs text-amber-200">
-            The port is picked at random, so this config breaks when it changes. Set a fixed port above.
+            The port is picked at random, so this config breaks when it changes.{" "}
+            {onFixPort ? (
+              <>
+                Set a fixed port on{" "}
+                <button type="button" className="text-sky-300 hover:underline" onClick={onFixPort}>
+                  Server
+                </button>
+                .
+              </>
+            ) : (
+              "Set a fixed port above."
+            )}
           </p>
         )}
       </div>

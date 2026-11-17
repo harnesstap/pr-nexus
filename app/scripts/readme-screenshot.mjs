@@ -10,7 +10,7 @@
 // chips, note and star, starred pinned, Starred filter, compact rows, Settings).
 // `--branch <dir>` saves the Branch card states (branch-*.png) into <dir>: one
 // PR per state, the Update branch menu open, and the rebase confirmation.
-// `--agents-tools <dir>` saves Settings → Agents tool switches (agents-tools-*.png
+// `--agents-tools <dir>` saves Settings → Agents → Permissions tool switches (agents-tools-*.png
 // and agents-workspace-signin.png): collapsed, one category with tools off,
 // a category off with its tools greyed, and Sign in again on two workspaces.
 // `--slack-draft <dir>` saves the Slack dialogs' draft warning (slack-draft-*.png):
@@ -31,6 +31,8 @@
 // one row hovered, and the … menu open.
 // `--close-pr <dir>` saves Close PR (close-*.png): the detail menu, the
 // confirmation with a comment, the bulk confirmation, and the narrow bar menu.
+// `--settings-nav <dir>` saves the settings rail (settings-nav-*.png): Slack,
+// Requests & bumps, Permissions with Reads expanded, and the section menu below 960px.
 // Uses an installed Chrome; set CHROME_PATH to pick another Chromium binary.
 import { mkdirSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -117,6 +119,11 @@ const closePrFlag = process.argv.indexOf("--close-pr");
 const closePrDir = closePrFlag === -1 ? null : process.argv[closePrFlag + 1];
 if (closePrFlag !== -1 && !closePrDir) {
   throw new Error("--close-pr needs an output directory");
+}
+const settingsNavFlag = process.argv.indexOf("--settings-nav");
+const settingsNavDir = settingsNavFlag === -1 ? null : process.argv[settingsNavFlag + 1];
+if (settingsNavFlag !== -1 && !settingsNavDir) {
+  throw new Error("--settings-nav needs an output directory");
 }
 const slackSettingsFlag = process.argv.indexOf("--slack-settings");
 const slackSettingsDir = slackSettingsFlag === -1 ? null : process.argv[slackSettingsFlag + 1];
@@ -468,6 +475,12 @@ try {
     await vite.close();
     process.exit(0);
   }
+  if (settingsNavDir) {
+    await settingsNavShots(browser, resolve(settingsNavDir));
+    await browser.close();
+    await vite.close();
+    process.exit(0);
+  }
   if (slackSettingsDir) {
     await slackSettingsShots(browser, resolve(slackSettingsDir));
     await browser.close();
@@ -687,7 +700,7 @@ async function mergeQueueShots(browser, dir) {
   await page.close();
 }
 
-/** Settings → Agents → What agents may do: collapsed, one category edited, one category off. */
+/** Settings → Agents → Permissions: collapsed, one category edited, one category off. */
 async function agentToolShots(browser, dir) {
   mkdirSync(dir, { recursive: true });
   const page = await browser.newPage({ viewport: { width: 1100, height: 1400 }, deviceScaleFactor: 2, colorScheme: "dark" });
@@ -695,7 +708,7 @@ async function agentToolShots(browser, dir) {
   await page.goto(url);
   await page.getByRole("button", { name: /account menu/ }).click();
   await page.getByRole("menuitem", { name: "Settings" }).click();
-  await page.getByRole("tab", { name: "Agents (MCP)" }).click();
+  await page.getByRole("tab", { name: "Permissions" }).click();
   const section = page.getByRole("region", { name: "What agents may do" });
   await section.getByRole("button", { name: "Reads: 6 of 6 tools" }).waitFor();
   await section.screenshot({ path: resolve(dir, "agents-tools-collapsed.png") });
@@ -737,7 +750,7 @@ async function agentToolShots(browser, dir) {
   await scopes.goto(url);
   await scopes.getByRole("button", { name: /account menu/ }).click();
   await scopes.getByRole("menuitem", { name: "Settings" }).click();
-  await scopes.getByRole("tab", { name: "Agents (MCP)" }).click();
+  await scopes.getByRole("tab", { name: "Permissions" }).click();
   await scopes.getByRole("switch", { name: "Slack reads" }).click();
   const picker = scopes.getByRole("group", { name: "Workspaces agents may read" });
   const again = picker.getByRole("button", { name: "Sign in again to Acme", exact: true });
@@ -748,6 +761,45 @@ async function agentToolShots(browser, dir) {
   await picker.screenshot({ path: resolve(dir, "agents-workspace-signin.png") });
   console.log("wrote agents-workspace-signin.png");
   await scopes.close();
+}
+
+/** Settings rail: Slack, Requests & bumps, Permissions with one category open, and the narrow section menu. */
+async function settingsNavShots(browser, dir) {
+  mkdirSync(dir, { recursive: true });
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, deviceScaleFactor: 2, colorScheme: "dark" });
+  page.on("pageerror", (err) => console.error("page error:", err.message));
+  await page.addInitScript(() => {
+    localStorage.removeItem("pr-nexus.settings-section");
+  });
+  await page.goto(url);
+  await page.getByRole("button", { name: /account menu/ }).click();
+  await page.getByRole("menuitem", { name: "Settings" }).click();
+  await page.getByRole("heading", { name: "Settings", level: 1 }).waitFor();
+
+  async function section(tab, heading, file) {
+    await page.getByRole("tab", { name: tab }).click();
+    await page.getByRole("tabpanel").getByRole("heading", { name: heading }).waitFor();
+    await page.waitForTimeout(300);
+    await page.screenshot({ path: resolve(dir, file) });
+    console.log(`wrote ${file}`);
+  }
+
+  await section("Slack", "Slack", "settings-nav-slack.png");
+  await section("Requests & bumps", "Requests & bumps", "settings-nav-requests.png");
+  await page.getByRole("tab", { name: "Permissions" }).click();
+  await page.getByRole("tabpanel").getByRole("heading", { name: "What agents may do" }).waitFor();
+  await page.getByRole("button", { name: "Reads: 6 of 6 tools" }).click();
+  await page.getByRole("switch", { name: "list_projects", exact: true }).waitFor();
+  await page.setViewportSize({ width: 1280, height: 1100 });
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: resolve(dir, "settings-nav-permissions.png") });
+  console.log("wrote settings-nav-permissions.png");
+  await page.setViewportSize({ width: 940, height: 900 });
+  await page.getByRole("combobox", { name: "Settings section" }).waitFor();
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: resolve(dir, "settings-nav-narrow.png") });
+  console.log("wrote settings-nav-narrow.png");
+  await page.close();
 }
 
 /** Settings → Slack → Connected workspaces: connected, expired, and a refresh in progress. */
@@ -762,6 +814,7 @@ async function slackSettingsShots(browser, dir) {
     await page.goto(url);
     await page.getByRole("button", { name: /account menu/ }).click();
     await page.getByRole("menuitem", { name: "Settings" }).click();
+    await page.getByRole("tab", { name: "Slack" }).click();
     await page.getByRole("heading", { name: "Slack" }).waitFor();
     const block = page.getByTestId("slack-workspaces");
     await block.waitFor();
@@ -878,11 +931,9 @@ async function scenes(page, dir) {
   await page.getByRole("button", { name: "Filter menu" }).click();
   await shot(page, resolve(dir, "starred-filter.png"));
 
-  await page
-    .getByRole("button", { name: /Settings/ })
-    .first()
-    .click();
-  await page.getByRole("tab", { name: "Review" }).click();
+  await page.getByRole("button", { name: /account menu/ }).click();
+  await page.getByRole("menuitem", { name: "Settings" }).click();
+  await page.getByRole("tab", { name: "Rules" }).click();
   await page.getByRole("textbox", { name: "JIRA base URL" }).scrollIntoViewIfNeeded();
   await shot(page, resolve(dir, "settings-jira-base-url.png"));
 }
