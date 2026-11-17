@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, expect, test, vi } from "vitest";
+import { TOOLTIP_DELAY_MS } from "../Tooltip";
 
 // A small page keeps the multi-page tests to a few dozen rows; rendering 130
 // rows in dev-mode jsdom pushed them past the 5s timeout on busy CI runners.
@@ -63,6 +64,7 @@ function Harness({
   onCreateProjectWithPrs = () => Promise.resolve(),
   onEditProject = () => undefined,
   onDetails = () => undefined,
+  onToggleStar,
   detailId = null,
   onRequestReview = () => undefined,
   onBulkReview = () => undefined,
@@ -87,6 +89,7 @@ function Harness({
   onCreateProjectWithPrs?: (name: string, ids: number[]) => Promise<void>;
   onEditProject?: (id: number) => void;
   onDetails?: (row: ListRow) => void;
+  onToggleStar?: (row: ListRow) => void;
   detailId?: number | null;
   onRequestReview?: (row: ListRow) => void;
   onBulkReview?: (ids: number[]) => void;
@@ -121,6 +124,7 @@ function Harness({
       onLinkPrs={onLinkPrs}
       onCreateProjectWithPrs={onCreateProjectWithPrs}
       onDetails={onDetails}
+      onToggleStar={onToggleStar}
       detailId={detailId}
       onRequestReview={onRequestReview}
       onBulkReview={onBulkReview}
@@ -282,9 +286,9 @@ test("the funnel resets filters and leaves grouping in place", async () => {
 test("inline rename saves, cancels, and rejects an empty or duplicate name", async () => {
   const onRename = vi.fn(() => Promise.resolve());
   await show(<Harness rows={rows} onRename={onRename} />);
-  fireEvent.doubleClick(screen.getByText("Unassigned"));
+  fireEvent.doubleClick(within(screen.getByRole("region", { name: "Unassigned" })).getByText("Unassigned"));
   expect(screen.queryByRole("textbox", { name: "Rename Unassigned" })).not.toBeInTheDocument();
-  fireEvent.doubleClick(screen.getByText("Auth"));
+  fireEvent.doubleClick(within(screen.getByRole("region", { name: "Auth" })).getByText("Auth"));
   const input = screen.getByRole("textbox", { name: "Rename Auth" });
   fireEvent.change(input, { target: { value: "   " } });
   fireEvent.keyDown(input, { key: "Enter" });
@@ -460,6 +464,77 @@ test("dragging a selected row onto a project section links the whole selection",
   expect(badges.at(-1)).toBe("1 PR");
   fireEvent.drop(billingSection, { dataTransfer: single });
   expect(onLinkPrs).toHaveBeenLastCalledWith(2, [1]);
+});
+
+test("a long title's tooltip shows the full title, and Enter only on the focused row", async () => {
+  const long = "Rename the checkout session token so the receipt page can show the full order reference without wrapping";
+  await show(
+    <Harness
+      onToggleStar={() => undefined}
+      rows={[
+        row({ id: 1, number: 142, title: "Migrate login", project_ids: [1] }),
+        row({ id: 2, number: 8801, title: long, project_ids: [1] }),
+      ]}
+    />,
+  );
+  vi.useFakeTimers();
+  const articles = screen.getAllByRole("article");
+  const focused = articles.find((article) => article.getAttribute("aria-current") === "true");
+  const other = articles.find((article) => article !== focused);
+  expect(focused).toBeTruthy();
+  expect(other).toBeTruthy();
+  const titleOf = (article: HTMLElement) =>
+    within(article)
+      .getAllByRole("button")
+      .find((button) => button.className.includes("truncate") || button.className.includes("line-clamp-2"))!;
+
+  const openTip = (target: HTMLElement) => {
+    fireEvent.mouseEnter(target);
+    act(() => {
+      vi.advanceTimersByTime(TOOLTIP_DELAY_MS);
+    });
+    return screen.getByRole("tooltip");
+  };
+  const closeTip = (target: HTMLElement) => {
+    fireEvent.mouseLeave(target);
+  };
+
+  const longArticle = articles.find((article) => article.getAttribute("aria-label")?.includes(long));
+  expect(longArticle).toBeTruthy();
+  const longTip = openTip(titleOf(longArticle!));
+  expect(longTip).toHaveTextContent(`#8801 ${long}`);
+  expect(longTip).toHaveTextContent("Click for readiness and code owners");
+  expect(longTip.className).toContain("max-w-[420px]");
+  if (longArticle === focused) {
+    expect(longTip.querySelector("kbd")).toHaveTextContent("Enter");
+  } else {
+    expect(longTip.querySelector("kbd")).toBeNull();
+  }
+  closeTip(titleOf(longArticle!));
+
+  const idle = openTip(titleOf(other!));
+  expect(idle).toHaveTextContent("Click for readiness and code owners");
+  expect(idle.querySelector("kbd")).toBeNull();
+  closeTip(titleOf(other!));
+
+  const current = openTip(titleOf(focused!));
+  expect(current).toHaveTextContent(focused!.getAttribute("aria-label") ?? "");
+  expect(current).toHaveTextContent("Click for readiness and code owners");
+  expect(current.querySelector("kbd")).toHaveTextContent("Enter");
+  closeTip(titleOf(focused!));
+
+  const idleStar = openTip(within(other!).getByRole("button", { name: /^Star / }));
+  expect(idleStar.querySelector("kbd")).toBeNull();
+  closeTip(within(other!).getByRole("button", { name: /^Star / }));
+  const currentStar = openTip(within(focused!).getByRole("button", { name: /^Star / }));
+  expect(currentStar.querySelector("kbd")).toHaveTextContent("Shift+s");
+  closeTip(within(focused!).getByRole("button", { name: /^Star / }));
+
+  const idleGitHub = openTip(within(other!).getByRole("button", { name: /^Open / }));
+  expect(idleGitHub.querySelector("kbd")).toBeNull();
+  closeTip(within(other!).getByRole("button", { name: /^Open / }));
+  const currentGitHub = openTip(within(focused!).getByRole("button", { name: /^Open / }));
+  expect(currentGitHub.querySelector("kbd")).toHaveTextContent("o");
 });
 
 test("the title button and Enter open a row's details", async () => {

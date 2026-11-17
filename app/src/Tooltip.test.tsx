@@ -96,6 +96,24 @@ test("only one bubble is open at a time", () => {
   expect(screen.getByRole("tooltip")).toHaveTextContent("Second");
 });
 
+test("a wide tooltip wraps the title and keeps the shortcut on the detail line", () => {
+  render(
+    <Tooltip label="#8801 Rename the checkout session token" detail="Click for readiness and code owners" shortcut="Enter" shortcutOn="detail" wide>
+      <button type="button">title</button>
+    </Tooltip>,
+  );
+  fireEvent.keyDown(document, { key: "Tab" });
+  fireEvent.focus(screen.getByRole("button", { name: "title" }));
+  const tip = screen.getByRole("tooltip");
+  expect(tip).toHaveTextContent("#8801 Rename the checkout session token");
+  expect(tip).toHaveTextContent("Click for readiness and code owners");
+  expect(tip.className).toContain("max-w-[420px]");
+  const title = [...tip.querySelectorAll("span")].find((node) => node.className.includes("font-medium"));
+  const detail = [...tip.querySelectorAll("span")].find((node) => node.textContent?.includes("Click for readiness"));
+  expect(title?.querySelector("kbd")).toBeNull();
+  expect(detail?.querySelector("kbd")).toHaveTextContent("Enter");
+});
+
 test("placeBubble flips near the bottom edge and clamps to the window", () => {
   const view = { width: 400, height: 300 };
   const bubble = { width: 120, height: 40 };

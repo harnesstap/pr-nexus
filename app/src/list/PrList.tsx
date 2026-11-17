@@ -660,9 +660,15 @@ export function PrList({
               committing={commitRename}
             />
           ) : (
-            <Tooltip label={currentProject !== null ? "Double-click to rename" : null} align="start">
+            <Tooltip
+              label={currentProject !== null ? viewTitle(viewKey, projects, viewTitles) : null}
+              detail={currentProject !== null ? "Double-click to rename" : undefined}
+              wide
+              align="start"
+              className="min-w-0 max-w-full"
+            >
               <h1
-                className="text-lg font-semibold"
+                className="truncate text-lg font-semibold"
                 onDoubleClick={() => {
                   if (currentProject !== null && projects.some((project) => project.id === currentProject)) {
                     setEditing({ id: currentProject, where: "title", name: viewTitle(viewKey, projects, viewTitles), error: null });
@@ -830,9 +836,15 @@ export function PrList({
                     committing={commitRename}
                   />
                 ) : (
-                  <Tooltip label={section.projectId !== null ? "Double-click to rename" : null} align="start">
+                  <Tooltip
+                    label={section.title}
+                    detail={section.projectId !== null ? "Double-click to rename" : undefined}
+                    wide
+                    align="start"
+                    className="min-w-0"
+                  >
                     <span
-                      className="text-sm font-medium"
+                      className="block min-w-0 truncate text-sm font-medium"
                       onDoubleClick={() => {
                         if (section.projectId !== null) {
                           setEditing({ id: section.projectId, where: "section", name: section.title, error: null });
@@ -918,14 +930,26 @@ export function PrList({
                         state={selected.has(row.id) ? "all" : "none"}
                         onToggle={() => toggleRow(row.id)}
                       />
-                      {onToggleStar && <StarButton starred={row.starred} title={row.title} onToggle={() => onToggleStar(row)} />}
-                      <GitHubRowButton title={row.title} onOpen={() => onOpen(row.url)} />
+                      {onToggleStar && (
+                        <StarButton starred={row.starred} title={row.title} shortcut={index === focus} onToggle={() => onToggleStar(row)} />
+                      )}
+                      <GitHubRowButton title={row.title} shortcut={index === focus} onOpen={() => onOpen(row.url)} />
                       {compact ? (
-                        <CompactRow row={row} view={view} viewKey={viewKey} now={now} sla={sla} onDetails={onDetails} onOpen={onOpen} onRequestReview={onRequestReview} />
+                        <CompactRow
+                          row={row}
+                          view={view}
+                          viewKey={viewKey}
+                          now={now}
+                          sla={sla}
+                          active={index === focus}
+                          onDetails={onDetails}
+                          onOpen={onOpen}
+                          onRequestReview={onRequestReview}
+                        />
                       ) : (
                         <>
                           <div className="min-w-64 flex-1 overflow-hidden">
-                            <TitleLine row={row} view={view} now={now} sla={sla} onDetails={onDetails} />
+                            <TitleLine row={row} view={view} now={now} sla={sla} active={index === focus} onDetails={onDetails} />
                             <p className="flex items-center gap-1 truncate text-xs text-slate-500">
                               {view.show.repo && <span className="truncate">{row.repo}</span>}
                               {view.show.repo && view.show.ci && <span aria-hidden="true">·</span>}
@@ -1442,16 +1466,50 @@ function UnreadDot({ unread, className = "shrink-0" }: { unread: boolean; classN
   );
 }
 
-function TitleLine({ row, view, now, sla, onDetails }: { row: ListRow; view: SavedView; now: Date; sla: ReviewSla; onDetails: (row: ListRow) => void }) {
+/** What a click on the title does. Enter is separate: it opens the focused row only. */
+const TITLE_CLICK = "Click for readiness and code owners";
+
+function TitleTip({ row, active, children }: { row: ListRow; active: boolean; children: ReactElement<{ "aria-describedby"?: string }> }) {
+  return (
+    <Tooltip
+      label={`#${row.number} ${row.title}`}
+      detail={TITLE_CLICK}
+      shortcut={active ? hint("details") : undefined}
+      shortcutOn="detail"
+      wide
+      align="start"
+      className="min-w-0"
+    >
+      {children}
+    </Tooltip>
+  );
+}
+
+function TitleLine({
+  row,
+  view,
+  now,
+  sla,
+  active,
+  onDetails,
+}: {
+  row: ListRow;
+  view: SavedView;
+  now: Date;
+  sla: ReviewSla;
+  /** This row is the keyboard focus, so Enter opens it. */
+  active: boolean;
+  onDetails: (row: ListRow) => void;
+}) {
   return (
     <div className="flex min-w-0 items-center gap-2 text-sm">
       <UnreadDot unread={row.unread} />
       {view.show.numberTitle && (
-        <Tooltip label="Readiness and code owners" shortcut="Enter" align="start" className="min-w-0">
+        <TitleTip row={row} active={active}>
           <button type="button" className="min-w-0 truncate text-left hover:underline" onClick={() => onDetails(row)}>
             <span className="text-slate-500">#{row.number}</span> {row.title}
           </button>
-        </Tooltip>
+        </TitleTip>
       )}
       {row.state !== "open" && (
         <span className="shrink-0 rounded bg-slate-800 px-1 text-xs text-slate-300">{row.state === "merged" ? "Merged" : "Closed"}</span>
@@ -1504,6 +1562,7 @@ function CompactRow({
   viewKey,
   now,
   sla,
+  active,
   onDetails,
   onOpen,
   onRequestReview,
@@ -1513,22 +1572,23 @@ function CompactRow({
   viewKey: string;
   now: Date;
   sla: ReviewSla;
+  /** This row is the keyboard focus, so Enter opens it. */
+  active: boolean;
   onDetails: (row: ListRow) => void;
   onOpen: (url: string) => void;
   onRequestReview: (row: ListRow) => void;
 }) {
-  const fullTitle = `#${row.number} ${row.title}`;
   return (
     <div className="flex min-w-0 flex-1 items-start gap-2">
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-start gap-1.5 text-sm leading-snug">
           <UnreadDot unread={row.unread} className="mt-1.5 shrink-0" />
           {view.show.numberTitle && (
-            <Tooltip label={fullTitle} align="start" className="min-w-0">
+            <TitleTip row={row} active={active}>
               <button type="button" className="line-clamp-2 min-w-0 text-left break-words hover:underline" onClick={() => onDetails(row)}>
                 <span className="text-slate-500">#{row.number}</span> {row.title}
               </button>
-            </Tooltip>
+            </TitleTip>
           )}
           {row.state !== "open" && (
             <span className="shrink-0 rounded bg-slate-800 px-1 text-xs text-slate-300">{row.state === "merged" ? "Merged" : "Closed"}</span>

@@ -4,6 +4,7 @@ import { channelLabel, errorMessage } from "../api";
 import { CheckNotes } from "../slack/OwnerGroups";
 import { CopyMessageButton } from "../slack/CopyMessageButton";
 import { Mrkdwn } from "../slack/mrkdwn";
+import { Tooltip } from "../Tooltip";
 import { plainText } from "../textInput";
 import type { Toast } from "./model";
 import { quietLabel, sameIds, samePlan } from "./bumpPlan";
@@ -378,10 +379,18 @@ function Card({
                 onChange={() => onToggle(pr.pr_id)}
               />
               <div className="min-w-0 flex-1">
-                <p className="truncate text-sm text-slate-100">
-                  {pr.repo}#{pr.number} {pr.title}
-                  {quiet.has(pr.pr_id) && <span className="ml-2 text-xs text-slate-500">Quiet {quietLabel(quiet.get(pr.pr_id) ?? 0)}</span>}
-                </p>
+                <Tooltip
+                  label={`${pr.repo}#${pr.number} ${pr.title}`}
+                  detail={quiet.has(pr.pr_id) ? `Quiet ${quietLabel(quiet.get(pr.pr_id) ?? 0)}` : undefined}
+                  wide
+                  align="start"
+                  className="max-w-full"
+                >
+                  <p className="truncate text-sm text-slate-100">
+                    {pr.repo}#{pr.number} {pr.title}
+                    {quiet.has(pr.pr_id) && <span className="ml-2 text-xs text-slate-500">Quiet {quietLabel(quiet.get(pr.pr_id) ?? 0)}</span>}
+                  </p>
+                </Tooltip>
                 <label className="mt-1 block text-xs text-slate-500">
                   Note
                   <textarea

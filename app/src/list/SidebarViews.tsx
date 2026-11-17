@@ -195,7 +195,9 @@ function ViewRow({
         }}
       >
         <ViewIcon view={view} />
-        <span className="min-w-0 flex-1 truncate">{view.name}</span>
+        <Tooltip label={view.name} wide align="start" className="min-w-0 flex-1">
+          <span className="block min-w-0 truncate">{view.name}</span>
+        </Tooltip>
       </button>
       <CountSlot
         count={count}

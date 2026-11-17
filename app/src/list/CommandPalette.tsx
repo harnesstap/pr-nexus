@@ -1,5 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { ListRow } from "../api";
+import { Tooltip } from "../Tooltip";
 import { plainText } from "../textInput";
 
 export interface PaletteCommand {
@@ -206,9 +207,11 @@ export function CommandPalette({ commands, searchPrs, onPickPr, onClose }: Props
                 </>
               ) : (
                 <>
-                  <span className="truncate">
-                    <span className="text-slate-400">#{item.row.number}</span> {item.row.title}
-                  </span>
+                  <Tooltip label={`#${item.row.number} ${item.row.title}`} wide align="start" className="min-w-0">
+                    <span className="block truncate">
+                      <span className="text-slate-400">#{item.row.number}</span> {item.row.title}
+                    </span>
+                  </Tooltip>
                   <span className="shrink-0 text-xs text-slate-400">{item.row.repo}</span>
                 </>
               )}

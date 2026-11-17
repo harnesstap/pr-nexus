@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { Api, PrStack, StackMemberDto } from "../api";
+import { Tooltip } from "../Tooltip";
 
 interface Props {
   api: Api;
@@ -64,9 +65,11 @@ function StackRow({ member, current, onOpen }: { member: StackMemberDto; current
     >
       <span className="flex min-w-0 items-center gap-2 text-xs">
         <span className="w-4 shrink-0 text-slate-500">{member.position}</span>
-        <span className="min-w-0 flex-1 truncate text-slate-200" style={{ paddingLeft: member.depth * 12 }}>
-          <span className="text-slate-500">#{member.number}</span> {member.title}
-        </span>
+        <Tooltip label={`#${member.number} ${member.title}`} wide align="start" className="min-w-0 flex-1">
+          <span className="block min-w-0 truncate text-slate-200" style={{ paddingLeft: member.depth * 12 }}>
+            <span className="text-slate-500">#{member.number}</span> {member.title}
+          </span>
+        </Tooltip>
         {member.blocking && <span className="shrink-0 rounded bg-slate-800 px-1 text-[11px] text-slate-400">Merge first</span>}
       </span>
       <span className="pl-6 text-[11px] text-slate-500" style={{ paddingLeft: 24 + member.depth * 12 }}>

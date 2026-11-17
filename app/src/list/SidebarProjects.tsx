@@ -1,5 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { createPortal } from "react-dom";
+import { Tooltip } from "../Tooltip";
 import { CountSlot, opensRowMenu } from "./CountBadge";
 import { DRAG_MIME, parseDragIds } from "./model";
 import { formatViewCount, sidebarCountLabel } from "./viewCount";
@@ -87,7 +88,9 @@ export function ProjectRow({
         <span className="flex w-4 shrink-0 justify-center">
           <span aria-hidden="true" className="ml-1 mr-0.5 h-2 w-2 rounded-sm" style={{ background: color }} />
         </span>
-        <span className="min-w-0 flex-1 truncate">{name}</span>
+        <Tooltip label={name} wide align="start" className="min-w-0 flex-1">
+          <span className="block min-w-0 truncate">{name}</span>
+        </Tooltip>
       </button>
       <CountSlot count={count} badgeId={badgeId} menuOpen={menuOpen} menuLabel="Project menu" register={register} onMenu={onMenu} />
     </div>

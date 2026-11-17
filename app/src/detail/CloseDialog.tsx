@@ -1,6 +1,7 @@
 import { useState, type KeyboardEvent } from "react";
 import type { Api, CloseReport } from "../api";
 import { errorMessage } from "../api";
+import { Tooltip } from "../Tooltip";
 import { plainText } from "../textInput";
 
 /** A pull request the dialog can name before GitHub answers. */
@@ -149,11 +150,16 @@ export function CloseDialog({ api, ids, known = [], onDismiss, onClosed, onNotic
           {title}
         </h2>
         <ul className="mt-3 max-h-40 space-y-1 overflow-y-auto text-slate-300">
-          {pending.map((id) => (
-            <li key={id} className="truncate">
-              {targetLabel(knownById.get(id), id)}
-            </li>
-          ))}
+          {pending.map((id) => {
+            const text = targetLabel(knownById.get(id), id);
+            return (
+              <li key={id} className="min-w-0">
+                <Tooltip label={text} wide align="start" className="max-w-full">
+                  <span className="block truncate">{text}</span>
+                </Tooltip>
+              </li>
+            );
+          })}
         </ul>
         <p className="mt-3 text-slate-400">
           {pending.length === 1
