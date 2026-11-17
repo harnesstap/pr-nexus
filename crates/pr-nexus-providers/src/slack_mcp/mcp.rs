@@ -46,6 +46,11 @@ const RECOVERY_WINDOW: Duration = Duration::from_secs(60);
 /// One MCP tool call, blocking. Lets the provider be tested without a server.
 pub trait ToolCaller: Send + Sync {
     fn call(&self, tool: &str, arguments: JsonObject) -> Result<ToolOutput, ProviderError>;
+
+    /// Open the session (OAuth metadata, initialize, tools/list) without a tool call.
+    fn warm(&self) -> Result<(), ProviderError> {
+        Ok(())
+    }
 }
 
 /// Everything needed to reopen a workspace session after a restart.
@@ -132,6 +137,11 @@ impl ToolCaller for RmcpSession {
         let inner = self.inner.clone();
         let tool = tool.to_owned();
         self.run(async move { inner.call(&tool, arguments).await })
+    }
+
+    fn warm(&self) -> Result<(), ProviderError> {
+        let inner = self.inner.clone();
+        self.run(async move { inner.warm().await })
     }
 }
 
@@ -240,7 +250,11 @@ impl SessionInner {
         &self,
         guard: &mut tokio::sync::MutexGuard<'_, LiveSession>,
     ) -> Result<(), ProviderError> {
-        match self.open().await {
+        match self
+            .open()
+            .instrument(tracing::debug_span!("mcp_session_open"))
+            .await
+        {
             Ok(client) => {
                 guard.generation = guard.generation.wrapping_add(1);
                 guard.client = Some(client);
@@ -253,9 +267,17 @@ impl SessionInner {
         }
     }
 
+    /// Opens the session if it is not already open. Does not call a tool.
+    /// Uses the same generation as a call, so a warm and a call cannot
+    /// each install a session.
+    async fn warm(&self) -> Result<(), ProviderError> {
+        self.peer().await.map(|_| ())
+    }
+
     async fn open(&self) -> Result<Client, ProviderError> {
         let config = &self.config;
         let mut manager = oauth::new_manager(&config.mcp_url)
+            .instrument(tracing::debug_span!("oauth_discovery"))
             .await
             .map_err(|err| ProviderError::Network(err.to_string()))?;
         let mut client_config =
@@ -284,12 +306,16 @@ impl SessionInner {
             AuthClient::new(http, manager),
             StreamableHttpClientTransportConfig::with_uri(config.mcp_url.clone()),
         );
+        // `serve` sends initialize and the initialized notification.
         let client = ()
             .serve(transport)
+            .instrument(tracing::debug_span!("initialize"))
             .await
             .map_err(|err| map_service_error("initialize", &err.to_string()))?;
+        tracing::debug!("mcp session initialized");
         let tools = client
             .list_all_tools()
+            .instrument(tracing::debug_span!("tools_list"))
             .await
             .map_err(|err| map_service_error("tools/list", &err.to_string()))?;
         let shapes: Vec<ToolShape> = tools
@@ -518,6 +544,10 @@ pub fn send_arguments(message: &OutgoingMessage<'_>) -> JsonObject {
 impl ChatProvider for SlackMcpChatProvider {
     fn kind(&self) -> ChatKind {
         ChatKind::Slack
+    }
+
+    fn warm(&self) -> Result<(), ProviderError> {
+        self.caller.warm()
     }
 
     fn whoami(&self) -> Result<ChatUser, ProviderError> {

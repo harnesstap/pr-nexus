@@ -7,7 +7,7 @@ use std::ffi::OsStr;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -205,13 +205,80 @@ fn wait_with_timeout(mut child: Child, timeout: Duration) -> Result<Finished, St
     ))
 }
 
+/// How long a `gh auth token` answer is reused. A 401 drops it.
+const GH_TOKEN_TTL: Duration = Duration::from_secs(5 * 60);
+
+struct GhTokenHit {
+    /// Empty string is the active gh account (`read_gh_token`).
+    login: String,
+    token: String,
+    at: Instant,
+}
+
+struct GhTokenCache {
+    entries: Mutex<Vec<GhTokenHit>>,
+}
+
+impl GhTokenCache {
+    fn get(&self, login: Option<&str>, now: Instant) -> Option<String> {
+        let key = login.unwrap_or("");
+        let entries = self.entries.lock().unwrap_or_else(|err| err.into_inner());
+        entries.iter().find_map(|hit| {
+            (hit.login == key && now.saturating_duration_since(hit.at) < GH_TOKEN_TTL)
+                .then(|| hit.token.clone())
+        })
+    }
+
+    fn put(&self, login: Option<&str>, token: String, now: Instant) {
+        let key = login.unwrap_or("").to_owned();
+        let mut entries = self.entries.lock().unwrap_or_else(|err| err.into_inner());
+        entries.retain(|hit| hit.login != key);
+        entries.push(GhTokenHit {
+            login: key,
+            token,
+            at: now,
+        });
+    }
+
+    fn clear(&self) {
+        self.entries
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .clear();
+    }
+}
+
+fn gh_token_cache() -> &'static GhTokenCache {
+    static CACHE: OnceLock<GhTokenCache> = OnceLock::new();
+    CACHE.get_or_init(|| GhTokenCache {
+        entries: Mutex::new(Vec::new()),
+    })
+}
+
+/// Drops every cached `gh auth token` answer. Called when GitHub returns 401.
+pub fn invalidate_gh_token_cache() {
+    gh_token_cache().clear();
+}
+
 pub fn read_gh_token() -> GhProbe {
     read_gh_token_for(None)
 }
 
 /// `gh auth token` for one of the accounts gh knows (`--user <login>`), or
-/// the active one. Never switches gh's active account.
+/// the active one. Never switches gh's active account. A successful read is
+/// reused for [`GH_TOKEN_TTL`].
 pub fn read_gh_token_for(login: Option<&str>) -> GhProbe {
+    if let Some(token) = gh_token_cache().get(login, Instant::now()) {
+        return GhProbe::Ready { token };
+    }
+    let probe = read_gh_token_uncached(login);
+    if let GhProbe::Ready { token } = &probe {
+        gh_token_cache().put(login, token.clone(), Instant::now());
+    }
+    probe
+}
+
+fn read_gh_token_uncached(login: Option<&str>) -> GhProbe {
     let Some(gh) = find_gh() else {
         return GhProbe::Unavailable {
             reason: NOT_FOUND.into(),
@@ -578,6 +645,47 @@ pub fn parse_gh_accounts(output: &str) -> Vec<String> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod token_cache_tests {
+    use std::sync::Mutex;
+    use std::time::Instant;
+
+    use super::{GH_TOKEN_TTL, GhProbe, GhTokenCache};
+
+    #[test]
+    fn reuses_a_token_until_it_expires_or_is_cleared() {
+        let cache = GhTokenCache {
+            entries: Mutex::new(Vec::new()),
+        };
+        let now = Instant::now();
+        assert!(cache.get(Some("acme-user"), now).is_none());
+        cache.put(Some("acme-user"), "gho_test".into(), now);
+        assert_eq!(
+            cache.get(Some("acme-user"), now).as_deref(),
+            Some("gho_test")
+        );
+        assert!(
+            cache.get(None, now).is_none(),
+            "accounts do not share a token"
+        );
+        let later = now + GH_TOKEN_TTL + std::time::Duration::from_secs(1);
+        assert!(cache.get(Some("acme-user"), later).is_none());
+        cache.put(Some("acme-user"), "gho_test".into(), now);
+        cache.clear();
+        assert!(cache.get(Some("acme-user"), now).is_none());
+    }
+
+    #[test]
+    fn read_gh_token_for_returns_the_cached_token() {
+        let login = "acme-cache-user";
+        super::gh_token_cache().put(Some(login), "gho_cached".into(), Instant::now());
+        match super::read_gh_token_for(Some(login)) {
+            GhProbe::Ready { token } => assert_eq!(token, "gho_cached"),
+            other => panic!("expected the cached token, got {other:?}"),
+        }
+    }
 }
 
 #[cfg(test)]

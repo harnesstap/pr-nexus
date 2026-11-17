@@ -54,6 +54,8 @@ interface Props {
   onSnooze?: (choice: "day" | "week" | "activity" | "off") => void;
   /** Mute or unmute from the header menu. */
   onMute?: (muted: boolean) => void;
+  /** Owners for this PR, once `prDetail` returns. */
+  onDetail?: (detail: PrDetail) => void;
 }
 
 /** Panel width as a share of the window, remembered across launches. */
@@ -80,11 +82,15 @@ function storedWidth(): number {
  * The PR detail slide-over (§7.2): docked on the right while the list stays usable, so a
  * click or ↑/↓ in the list switches the PR. Esc or ✕ closes it.
  */
-export function DetailPanel({ api, row, version, onClose, onOpen, onRequestReview, onNotice, onDraftChange, onMerged, onQueueChange, onClosed, slack, onToggleStar, onOpenPr, onSnooze, onMute }: Props) {
+export function DetailPanel({ api, row, version, onClose, onOpen, onRequestReview, onNotice, onDraftChange, onMerged, onQueueChange, onClosed, slack, onToggleStar, onOpenPr, onSnooze, onMute, onDetail }: Props) {
   const [overview, setOverview] = useState<PrOverview | null>(null);
   const [overviewError, setOverviewError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [detail, setDetail] = useState<PrDetail | null>(null);
+  const onDetailRef = useRef(onDetail);
+  useEffect(() => {
+    onDetailRef.current = onDetail;
+  }, [onDetail]);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [width, setWidth] = useState(storedWidth);
   const [flipping, setFlipping] = useState(false);
@@ -117,7 +123,13 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
     let cancel = false;
     api
       .prDetail(row.id)
-      .then((next) => !cancel && setDetail(next))
+      .then((next) => {
+        if (cancel) {
+          return;
+        }
+        setDetail(next);
+        onDetailRef.current?.(next);
+      })
       .catch((err: unknown) => !cancel && setDetailError(errorMessage(err)));
     return () => {
       cancel = true;

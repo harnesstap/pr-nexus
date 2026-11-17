@@ -8,18 +8,20 @@
 //! 5. Identify team and user, then save the grant in the keychain under
 //!    `slack:<team>:<user>`.
 
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use oauth2::TokenResponse;
 use pr_nexus_core::error::CoreError;
 use rmcp::transport::auth::{
-    AuthError, AuthorizationManager, AuthorizationRequest, AuthorizationSession, CredentialStore,
-    OAuthTokenResponse, StoredCredentials,
+    AuthError, AuthorizationManager, AuthorizationMetadata, AuthorizationRequest,
+    AuthorizationSession, CredentialStore, OAuthTokenResponse, StoredCredentials,
 };
 use serde::Deserialize;
 use serde_json::Value;
+use tracing::Instrument;
 
 use super::http::SlackOAuthHttpClient;
 use super::loopback::{self, CancelHandle, Loopback};
@@ -134,17 +136,115 @@ pub async fn connect_with_listener(
     })
 }
 
+/// How long discovered OAuth metadata is reused. The MCP URL rarely changes.
+const DISCOVERY_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+
+struct DiscoveryHit {
+    metadata: AuthorizationMetadata,
+    at: Instant,
+}
+
+struct DiscoveryCache {
+    entries: Mutex<HashMap<String, DiscoveryHit>>,
+}
+
+impl DiscoveryCache {
+    fn get(&self, url: &str, now: Instant) -> Option<AuthorizationMetadata> {
+        let entries = self.entries.lock().unwrap_or_else(|err| err.into_inner());
+        let hit = entries.get(url)?;
+        (now.saturating_duration_since(hit.at) < DISCOVERY_TTL).then(|| hit.metadata.clone())
+    }
+
+    fn put(&self, url: String, metadata: AuthorizationMetadata, now: Instant) {
+        self.entries
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .insert(url, DiscoveryHit { metadata, at: now });
+    }
+}
+
+fn discovery_cache() -> &'static DiscoveryCache {
+    static CACHE: OnceLock<DiscoveryCache> = OnceLock::new();
+    CACHE.get_or_init(|| DiscoveryCache {
+        entries: Mutex::new(HashMap::new()),
+    })
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct DiscoveryFile {
+    entries: Vec<DiscoveryRow>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct DiscoveryRow {
+    url: String,
+    metadata: AuthorizationMetadata,
+}
+
+/// Loads discovery JSON written by [`export_discovery`] when nothing fresher
+/// is already in memory. Returns how many URLs were seeded.
+pub fn seed_discovery(json: &str) -> usize {
+    let Ok(file) = serde_json::from_str::<DiscoveryFile>(json) else {
+        return 0;
+    };
+    let cache = discovery_cache();
+    let now = Instant::now();
+    let mut seeded = 0;
+    for row in file.entries {
+        if cache.get(&row.url, now).is_some() {
+            continue;
+        }
+        cache.put(row.url, row.metadata, now);
+        seeded += 1;
+    }
+    seeded
+}
+
+/// Every fresh discovery entry, for `sync_state`. `None` when the cache is empty.
+pub fn export_discovery() -> Option<String> {
+    let entries = discovery_cache()
+        .entries
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
+    let now = Instant::now();
+    let rows: Vec<DiscoveryRow> = entries
+        .iter()
+        .filter(|(_, hit)| now.saturating_duration_since(hit.at) < DISCOVERY_TTL)
+        .map(|(url, hit)| DiscoveryRow {
+            url: url.clone(),
+            metadata: hit.metadata.clone(),
+        })
+        .collect();
+    if rows.is_empty() {
+        return None;
+    }
+    serde_json::to_string(&DiscoveryFile { entries: rows }).ok()
+}
+
 /// Manager with discovery done, using Slack's OAuth error adapter.
+///
+/// Metadata for `mcp_url` is reused from memory for [`DISCOVERY_TTL`].
 pub(crate) async fn new_manager(mcp_url: &str) -> Result<AuthorizationManager, SlackAuthError> {
     let http =
         SlackOAuthHttpClient::new().map_err(|err| SlackAuthError::Discovery(err.to_string()))?;
     let mut manager = AuthorizationManager::new_with_oauth_http_client(mcp_url, Arc::new(http))
         .await
         .map_err(|err| SlackAuthError::Discovery(err.to_string()))?;
+    if let Some(metadata) = discovery_cache().get(mcp_url, Instant::now()) {
+        tracing::debug!(url = mcp_url, "oauth discovery cache hit");
+        manager.set_metadata(metadata);
+        return Ok(manager);
+    }
     let resolution = manager
         .resolve_metadata()
+        .instrument(tracing::debug_span!("oauth_discovery", url = mcp_url))
         .await
         .map_err(|err| SlackAuthError::Discovery(err.to_string()))?;
+    discovery_cache().put(
+        mcp_url.to_owned(),
+        resolution.metadata.clone(),
+        Instant::now(),
+    );
     manager.set_metadata(resolution.metadata);
     Ok(manager)
 }
@@ -837,5 +937,31 @@ mod tests {
         );
         assert_eq!(domain_from_url("https://example.com/"), None);
         assert_eq!(domain_from_url("https://a.b.slack.com/"), None);
+    }
+
+    #[test]
+    fn discovery_metadata_is_reused_until_it_expires_and_roundtrips() {
+        let cache = DiscoveryCache {
+            entries: Mutex::new(HashMap::new()),
+        };
+        let mut metadata = AuthorizationMetadata::default();
+        metadata.authorization_endpoint = "https://acme.example/authorize".into();
+        metadata.token_endpoint = "https://acme.example/token".into();
+        let url = "https://mcp.example.test/mcp";
+        let now = Instant::now();
+        assert!(cache.get(url, now).is_none());
+        cache.put(url.into(), metadata, now);
+        assert_eq!(
+            cache.get(url, now).unwrap().token_endpoint,
+            "https://acme.example/token"
+        );
+        let later = now + DISCOVERY_TTL + Duration::from_secs(1);
+        assert!(cache.get(url, later).is_none());
+
+        let json = r#"{"entries":[{"url":"https://mcp.example.test/cached","metadata":{"authorization_endpoint":"https://acme.example/authorize","token_endpoint":"https://acme.example/token"}}]}"#;
+        assert_eq!(seed_discovery(json), 1);
+        assert_eq!(seed_discovery(json), 0, "memory keeps the first copy");
+        let exported = export_discovery().expect("cache has rows");
+        assert!(exported.contains("https://mcp.example.test/cached"));
     }
 }

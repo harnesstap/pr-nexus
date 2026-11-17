@@ -18,6 +18,7 @@ pub mod notify;
 pub mod onboarding;
 pub mod overview;
 pub mod ownership;
+pub mod parallel;
 pub mod profiles;
 pub mod providers;
 pub mod redact;

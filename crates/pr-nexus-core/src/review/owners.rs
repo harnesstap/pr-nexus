@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::domain::{TeamRef, Tri};
 use crate::review::readiness::FILES_TRUNCATED;
@@ -21,13 +21,13 @@ pub struct AttributedApproval {
     pub commit: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OnBehalfOf {
     pub org: String,
     pub slug: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReviewRecord {
     pub id: Option<String>,
     pub state: String,
@@ -37,7 +37,7 @@ pub struct ReviewRecord {
     pub on_behalf_of: Vec<OnBehalfOf>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReviewBundle {
     pub fetched: bool,
     pub complete: bool,

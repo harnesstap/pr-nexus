@@ -53,8 +53,21 @@ pub fn preview_with(
     pr_id: i64,
     target: ReviewTarget,
 ) -> Result<ReviewPreview, AppError> {
+    preview_named(state, chats, pr_id, target, crate::slack::Names::Live)
+}
+
+/// [`preview_with`] that can label the channel from cache only.
+pub(crate) fn preview_named(
+    state: &AppState,
+    chats: &dyn ChatSource,
+    pr_id: i64,
+    target: ReviewTarget,
+    names: crate::slack::Names,
+) -> Result<ReviewPreview, AppError> {
     let pr = load_pr(&state.store, pr_id)?;
-    let target = crate::slack::resolve_target(state, chats, validate_target(target)?);
+    let target = crate::slack::resolve_targets(state, chats, vec![validate_target(target)?], names)
+        .pop()
+        .expect("one target in, one out");
     let plan = plan(state, &pr, &target)?;
     let workspaces = route::workspaces(&state.store)?;
     let (action, bump_count, permalink, signed_in) = match &plan.action {

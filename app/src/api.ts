@@ -1133,8 +1133,8 @@ export interface Api {
    * Absent in fakes that do not refresh.
    */
   slackRefreshWorkspaces?(accountId?: number): Promise<SlackWorkspace[]>;
-  reviewTargets(prId: number, teams: string[]): Promise<TargetChoice[]>;
-  reviewPreview(prId: number, target: ReviewTarget): Promise<ReviewPreview>;
+  reviewTargets(prId: number, teams: string[], cachedNames?: boolean): Promise<TargetChoice[]>;
+  reviewPreview(prId: number, target: ReviewTarget, cachedNames?: boolean): Promise<ReviewPreview>;
   /** `#term` channels, `@term` members, a bare term both; scoped to one workspace. */
   /** Searches every enabled workspace in priority order; merged and labeled. */
   searchSlackTargets(query: string): Promise<TargetMatch[]>;
@@ -1333,8 +1333,10 @@ export const tauriApi: Api = {
   slackSetWorkspaceEnabled: (teamId, enabled) => invoke("slack_set_workspace_enabled", { teamId, enabled }),
   slackSetWorkspaceOrder: (teamIds) => invoke("slack_set_workspace_order", { teamIds }),
   slackRefreshWorkspaces: (accountId) => invoke("slack_refresh_workspaces", { accountId: accountId ?? null }),
-  reviewTargets: (prId, teams) => invoke("review_targets", { prId, teams }),
-  reviewPreview: (prId, target) => invoke("review_preview", { prId, target }),
+  reviewTargets: (prId, teams, cachedNames) =>
+    invoke("review_targets", { prId, teams, ...(cachedNames === undefined ? {} : { cachedNames }) }),
+  reviewPreview: (prId, target, cachedNames) =>
+    invoke("review_preview", { prId, target, ...(cachedNames === undefined ? {} : { cachedNames }) }),
   searchSlackTargets: (query) => invoke("slack_search_targets", { query }),
   slackChannelNames: (channels) => invoke("slack_channel_names", { channels }),
   sendReview: (prId, target, teams, note) => invoke("send_review", { prId, target, teams, note: note?.trim() ? note : null }),

@@ -1,11 +1,14 @@
 //! Ownership for one pull request: fetch, cache, and decide (§6, §7.2).
 //!
-//! The probe runs every time. It is one GraphQL call and returns the cache key
-//! and the reviews, which change without the key changing. Files, rules, and
-//! protection are fetched only when `(head_sha, base_ref, codeowners oid)`
-//! differs from the cached row. Team members are cached for 24 hours.
+//! [`resolve`] probes every time: the probe is one GraphQL call and returns
+//! the cache key and the reviews, which change without the key changing.
+//! Files, rules, and protection are fetched only when
+//! `(head_sha, base_ref, codeowners oid)` differs from the cached row.
+//! Team members are cached for 24 hours and fetched at most 4 at a time.
 //!
-//! [`build_report`] is pure; [`resolve`] adds the store and the provider.
+//! [`report_from_cache`] skips the probe when a previous resolve stored one
+//! for the same head and base. Callers that use it revalidate with
+//! [`resolve`] in the background. [`build_report`] is pure.
 
 use std::collections::BTreeMap;
 
@@ -35,12 +38,21 @@ pub const TEAM_MEMBERS_TTL_HOURS: i64 = 24;
 /// Teams looked up per resolution. More candidates than this stay unverified.
 pub const MAX_MEMBERSHIP_LOOKUPS: usize = 20;
 
+/// Team-member requests in flight at once. The GitHub client also gates each
+/// host at 4 (SPEC §6), so this does not exceed that.
+pub const MEMBER_LOOKUPS_IN_FLIGHT: usize = 4;
+
 /// What `ownership_cache.decision_json` holds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CachedOwnership {
     pub inputs: OwnershipInputs,
     /// From the last resolution. The list reads it while the head and base match.
     pub code_owner_review_pending: Option<bool>,
+    /// The probe from that resolution, so a later open can skip the network
+    /// while the head and base still match. Absent on rows written before it
+    /// was stored.
+    #[serde(default)]
+    pub probe: Option<OwnershipProbe>,
 }
 
 impl CachedOwnership {
@@ -436,6 +448,50 @@ pub fn resolve_unknown_code_owner_reviews(
     Ok(resolved)
 }
 
+/// The last report for `pr` when its head and base still match a stored
+/// probe, without calling the provider. `None` when the row is missing, the
+/// head or base moved, the probe was not stored, or a team that needs a
+/// membership check has no fresh cache entry.
+pub fn report_from_cache(
+    store: &Store,
+    pr: &PullRequest,
+    blocked_review_required_is_ready: bool,
+    now: DateTime<Utc>,
+) -> Result<Option<OwnershipReport>, CoreError> {
+    let Some(entry) = store.get_ownership_cache(pr.id)? else {
+        return Ok(None);
+    };
+    let Some(cached) = CachedOwnership::for_pr(&entry, pr) else {
+        return Ok(None);
+    };
+    let Some(probe) = cached.probe else {
+        return Ok(None);
+    };
+    if probe.head_sha != pr.head_sha || probe.base_ref != pr.base_ref {
+        return Ok(None);
+    }
+    let catalog = catalog(&probe, &cached.inputs.files);
+    let teams: Vec<_> = teams_needing_membership(pr, &probe, &catalog)
+        .into_iter()
+        .take(MAX_MEMBERSHIP_LOOKUPS)
+        .collect();
+    let mut membership = BTreeMap::new();
+    for team in teams {
+        let Some(members) = cached_team_members(store, &team, now)? else {
+            return Ok(None);
+        };
+        membership.insert(team, members);
+    }
+    Ok(Some(build_report(
+        pr,
+        &probe,
+        &cached.inputs,
+        &membership,
+        blocked_review_required_is_ready,
+        true,
+    )))
+}
+
 /// Probes, reuses or refreshes the cached inputs, checks team membership, and
 /// stores the result.
 pub fn resolve(
@@ -445,7 +501,16 @@ pub fn resolve(
     blocked_review_required_is_ready: bool,
     now: DateTime<Utc>,
 ) -> Result<OwnershipReport, CoreError> {
-    let probe = provider.ownership_probe(pr)?;
+    let started = std::time::Instant::now();
+    let probe = {
+        let _span = tracing::debug_span!("ownership_probe", pr = pr.id.0).entered();
+        provider.ownership_probe(pr)?
+    };
+    tracing::debug!(
+        pr = pr.id.0,
+        ms = started.elapsed().as_millis() as u64,
+        "ownership probe"
+    );
     let oid = probe.codeowners.as_ref().map(|blob| blob.oid.clone());
     let cached = store.get_ownership_cache(pr.id)?.and_then(|entry| {
         let same_key = entry.head_sha == probe.head_sha
@@ -458,19 +523,43 @@ pub fn resolve(
         }
     });
     let from_cache = cached.is_some();
+    let inputs_started = std::time::Instant::now();
     let inputs = match cached {
         Some(cached) => cached.inputs,
-        None => provider.ownership_inputs(pr, &probe)?,
+        None => {
+            let _span = tracing::debug_span!("ownership_inputs", pr = pr.id.0).entered();
+            provider.ownership_inputs(pr, &probe)?
+        }
     };
+    tracing::debug!(
+        pr = pr.id.0,
+        cached = from_cache,
+        ms = inputs_started.elapsed().as_millis() as u64,
+        "ownership inputs"
+    );
 
     let catalog = catalog(&probe, &inputs.files);
-    let mut membership = BTreeMap::new();
-    for team in teams_needing_membership(pr, &probe, &catalog)
+    let teams: Vec<_> = teams_needing_membership(pr, &probe, &catalog)
         .into_iter()
         .take(MAX_MEMBERSHIP_LOOKUPS)
-    {
-        let members = team_members(store, provider, &team, now)?;
-        membership.insert(team, members);
+        .collect();
+    let members_started = std::time::Instant::now();
+    let looked_up = {
+        let _span =
+            tracing::debug_span!("ownership_members", pr = pr.id.0, teams = teams.len()).entered();
+        crate::parallel::bounded_map(&teams, MEMBER_LOOKUPS_IN_FLIGHT, |team| {
+            team_members(store, provider, team, now)
+        })
+    };
+    tracing::debug!(
+        pr = pr.id.0,
+        teams = teams.len(),
+        ms = members_started.elapsed().as_millis() as u64,
+        "ownership members"
+    );
+    let mut membership = BTreeMap::new();
+    for (team, members) in teams.into_iter().zip(looked_up) {
+        membership.insert(team, members?);
     }
 
     let report = build_report(
@@ -484,6 +573,7 @@ pub fn resolve(
     let decision_json = serde_json::to_string(&CachedOwnership {
         inputs,
         code_owner_review_pending: report.code_owner_review_pending,
+        probe: Some(probe.clone()),
     })
     .map_err(|err| CoreError::Store(err.to_string()))?;
     store.upsert_ownership_cache(OwnershipCacheEntry {
@@ -495,6 +585,26 @@ pub fn resolve(
         computed_at: now,
     })?;
     Ok(report)
+}
+
+/// A fresh team-member row, or `None` when it is missing or older than
+/// [`TEAM_MEMBERS_TTL_HOURS`]. Does not call the provider.
+fn cached_team_members(
+    store: &Store,
+    team: &TeamRef,
+    now: DateTime<Utc>,
+) -> Result<Option<Membership>, CoreError> {
+    let Some(entry) = store.get_team_members(team.org.clone(), team.slug.clone())? else {
+        return Ok(None);
+    };
+    if now - entry.fetched_at >= Duration::hours(TEAM_MEMBERS_TTL_HOURS) {
+        return Ok(None);
+    }
+    let members: Vec<String> = serde_json::from_str(&entry.members_json).unwrap_or_default();
+    Ok(Some(Membership {
+        complete: entry.complete,
+        members,
+    }))
 }
 
 /// Members from the cache when fresh, otherwise from the provider.

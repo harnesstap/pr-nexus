@@ -326,7 +326,7 @@ pub struct CodeownersBlob {
 ///
 /// It carries the cache key `(head_sha, base_ref, codeowners oid)` and the
 /// reviews, which change without the key changing.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OwnershipProbe {
     pub head_sha: String,
     pub base_ref: String,
@@ -595,6 +595,12 @@ pub trait VcsProvider: Send + Sync {
 
 pub trait ChatProvider: Send + Sync {
     fn kind(&self) -> ChatKind;
+
+    /// Open the transport without posting or calling a write tool.
+    fn warm(&self) -> Result<(), ProviderError> {
+        Ok(())
+    }
+
     fn whoami(&self) -> Result<ChatUser, ProviderError>;
     fn list_channels(&self, cursor: Option<String>) -> Result<Page<ChatChannel>, ProviderError>;
     fn channel_info(&self, channel_id: &str) -> Result<ChatChannel, ProviderError>;

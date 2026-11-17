@@ -1,5 +1,6 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::{Duration as StdDuration, Instant};
 
 use chrono::TimeZone;
 
@@ -26,7 +27,11 @@ struct Fake {
     rules: Option<bool>,
     members: fn() -> Result<TeamMembers, ProviderError>,
     input_calls: AtomicU32,
+    probe_calls: AtomicU32,
     member_calls: Mutex<Vec<String>>,
+    /// Sleep inside the probe and each team lookup, for timing tests.
+    pause: StdDuration,
+    codeowners: Option<String>,
 }
 
 impl Fake {
@@ -44,7 +49,10 @@ impl Fake {
                 })
             },
             input_calls: AtomicU32::new(0),
+            probe_calls: AtomicU32::new(0),
             member_calls: Mutex::new(Vec::new()),
+            pause: StdDuration::ZERO,
+            codeowners: None,
         }
     }
 }
@@ -89,13 +97,17 @@ impl VcsProvider for Fake {
         Err(ProviderError::Unsupported("not used".into()))
     }
     fn ownership_probe(&self, _: &PullRequest) -> Result<OwnershipProbe, ProviderError> {
+        self.probe_calls.fetch_add(1, Ordering::SeqCst);
+        if !self.pause.is_zero() {
+            std::thread::sleep(self.pause);
+        }
         Ok(OwnershipProbe {
             head_sha: "h1".into(),
             base_ref: "main".into(),
             codeowners: Some(CodeownersBlob {
                 path: ".github/CODEOWNERS".into(),
                 oid: "blob1".into(),
-                text: CODEOWNERS.into(),
+                text: self.codeowners.clone().unwrap_or_else(|| CODEOWNERS.into()),
             }),
             reviews: ReviewBundle {
                 fetched: true,
@@ -121,6 +133,9 @@ impl VcsProvider for Fake {
     }
     fn team_members(&self, team: &TeamRef) -> Result<TeamMembers, ProviderError> {
         self.member_calls.lock().unwrap().push(team.to_string());
+        if !self.pause.is_zero() {
+            std::thread::sleep(self.pause);
+        }
         (self.members)()
     }
     fn rate_limit(&self) -> Result<RateBudget, ProviderError> {
@@ -287,6 +302,62 @@ fn the_cache_skips_inputs_and_member_lookups_on_the_same_key() {
     let mut moved = pr.clone();
     moved.head_sha = "h2".into();
     assert!(CachedOwnership::for_pr(&entry, &moved).is_none());
+}
+
+#[test]
+fn a_cache_hit_skips_the_probe() {
+    let (_dir, store, pr) = seed();
+    let mut fake = Fake::new();
+    fake.reviews = vec![approval("bob", &[])];
+    resolve(&store, &fake, &pr, true, now()).unwrap();
+    assert_eq!(fake.probe_calls.load(Ordering::SeqCst), 1);
+    let cached = report_from_cache(&store, &pr, true, now() + Duration::hours(1))
+        .unwrap()
+        .expect("head and base still match");
+    assert!(cached.from_cache);
+    assert_eq!(fake.probe_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(fake.input_calls.load(Ordering::SeqCst), 1);
+    let mut moved = pr.clone();
+    moved.head_sha = "h2".into();
+    assert!(
+        report_from_cache(&store, &moved, true, now())
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn cold_member_lookups_overlap_and_a_cache_hit_does_not_probe() {
+    let (_dir, store, pr) = seed();
+    let mut fake = Fake::new();
+    fake.pause = StdDuration::from_millis(40);
+    fake.reviews = vec![approval("bob", &[])];
+    // One unattributed approval makes every owner team need a member lookup.
+    fake.codeowners = Some("* @acme/core @acme/docs @acme/web\n".into());
+    let started = Instant::now();
+    resolve(&store, &fake, &pr, true, now()).unwrap();
+    let cold_ms = started.elapsed().as_millis();
+    assert_eq!(fake.member_calls.lock().unwrap().len(), 3);
+    // Probe 40ms, then three member lookups. Sequential would be ~160ms;
+    // four-wide fan-out keeps the lookups in one wave (~40ms).
+    eprintln!("owner cold resolve {cold_ms}ms for 1 probe + 3 team lookups at 40ms each");
+    assert!(
+        cold_ms < 140,
+        "cold resolve took {cold_ms}ms; team lookups did not overlap"
+    );
+    let started = Instant::now();
+    assert!(
+        report_from_cache(&store, &pr, true, now())
+            .unwrap()
+            .is_some()
+    );
+    let hit_us = started.elapsed().as_micros();
+    eprintln!("owner cache hit {hit_us}us");
+    assert_eq!(fake.probe_calls.load(Ordering::SeqCst), 1);
+    assert!(
+        hit_us < 20_000,
+        "cache hit took {hit_us}us, expected no probe sleep"
+    );
 }
 
 #[test]

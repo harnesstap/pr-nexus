@@ -59,7 +59,10 @@ pub fn run() {
             state::spawn_scheduler(Arc::clone(&shared));
             live::spawn(Arc::clone(&shared));
             let tokens = Arc::clone(&shared);
-            tauri::async_runtime::spawn(async move { slack::validate_tokens(&tokens).await });
+            tauri::async_runtime::spawn(async move {
+                slack::validate_tokens(&tokens).await;
+                slack::warm_sessions(tokens);
+            });
             let handle = app.handle().clone();
             let on_write: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
                 let _ = handle.emit(mcp::DATA_CHANGED_EVENT, ());
