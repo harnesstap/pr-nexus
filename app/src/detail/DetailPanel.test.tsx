@@ -1,12 +1,14 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { Api, ContextThread, ListRow, PrOverview } from "../api";
 import { BlockerList, DetailPanel, WIDTH_KEY, clampWidth } from "./DetailPanel";
 import { mockBranch, mockDetail, mockOverview } from "./mock";
 import { bumpView, latestThread } from "./SlackLine";
 import { draftView } from "./draft";
+import { resetDraftRecords } from "./draftRecord";
 import { peopleGroups, PeopleRow, personLine, requiredSeats } from "./People";
 
+beforeEach(() => resetDraftRecords());
 afterEach(() => window.localStorage.clear());
 
 const row = {

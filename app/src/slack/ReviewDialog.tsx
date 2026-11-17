@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Api, ListRow, PrDetail, ReviewPreview, ReviewTarget, SlackIndicator, SlackWorkspace, TargetChoice } from "../api";
 import { channelLabel, errorMessage, isSendable } from "../api";
+import { beginDraftFlip, draftPhase, offerPreviewDraft, settleDraftCall, settleDraftFlip, takeGeneration, useDraftRecord, type DraftPhase } from "../detail/draftRecord";
 import { Tooltip } from "../Tooltip";
 import { plainText } from "../textInput";
 import type { Toast } from "../list/model";
@@ -45,12 +46,31 @@ export function withNote(text: string, note: string): string {
   return trimmed ? `${text.trimEnd()}\n\n${trimmed}\n` : text;
 }
 
+function hasDraft(preview: ReviewPreview): boolean {
+  return preview.pr_warnings.some((warning) => warning.kind === "draft");
+}
+
+function sendLabel(phase: DraftPhase, bump: boolean): string {
+  switch (phase) {
+    case "draft":
+      return bump ? "Bump anyway" : "Send anyway";
+    case "marking":
+    case "ready":
+      return bump ? "Bump in thread" : "Send request";
+    default: {
+      const unexpected: never = phase;
+      return unexpected;
+    }
+  }
+}
+
 /**
  * Request or bump review on Slack for one PR (§7.11). Shows the exact text
  * before anything is posted; Send is the only call that reaches Slack.
  */
 export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNotice, detail }: Props) {
   const [seed] = useState(() => peekReviewPrefetch(row.id));
+  const record = useDraftRecord(row.id);
   const [teams, setTeams] = useState<string[]>(seed?.teams ?? []);
   const [choices, setChoices] = useState<TargetChoice[] | null>(seed?.choices ?? null);
   const [workspaces, setWorkspaces] = useState<SlackWorkspace[]>([]);
@@ -65,24 +85,34 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNot
   const [hint, setHint] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [note, setNote] = useState("");
-  /** Set once "Mark ready for review" took it out of draft here. */
-  const [markedReady, setMarkedReady] = useState(false);
-  const [marking, setMarking] = useState(false);
   /** The send went through but its link is unknown: never offer a resend. */
   const [unconfirmed, setUnconfirmed] = useState<string | null>(null);
   /** `true` when several CODEOWNERS lines each need their own send. */
   const [groupsMode, setGroupsMode] = useState(false);
   const picked = useRef(false);
+  /** Newest preview applied. An older cached read cannot replace it. */
+  const previewGen = useRef(seed?.generation ?? 0);
 
-  async function loadPreview(target: ReviewTarget) {
-    setPreview(null);
+  const applyPreview = useCallback((next: ReviewPreview, observed: number) => {
+    if (hasDraft(next)) offerPreviewDraft(row.id, observed);
+    if (observed < previewGen.current) return;
+    previewGen.current = observed;
+    setPreview(next);
+  }, [row.id]);
+
+  async function loadPreview(nextTarget: ReviewTarget) {
+    const observed = takeGeneration();
     setError(null);
     try {
-      setPreview(await api.reviewPreview(row.id, target));
+      applyPreview(await api.reviewPreview(row.id, nextTarget), observed);
     } catch (err) {
       setError(errorMessage(err));
     }
   }
+
+  useEffect(() => {
+    if (seed?.preview && hasDraft(seed.preview)) offerPreviewDraft(row.id, seed.generation);
+  }, [row.id, seed]);
 
   useEffect(() => {
     // ListScreen keys this dialog by PR id, so state starts empty for each PR
@@ -135,12 +165,13 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNot
         }
         setTarget(first.target);
         setChosen(first);
+        const observed = takeGeneration();
         const next = await api.reviewPreview(row.id, first.target, true);
         mark("review-dialog:preview");
         if (cancel || picked.current) {
           return;
         }
-        setPreview(next);
+        applyPreview(next, observed);
         setNaming(true);
         const live = await api.reviewTargets(row.id, wanted, false).catch(() => found);
         mark("review-dialog:names");
@@ -165,9 +196,10 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNot
         setTarget(liveChoice.target);
         setChosen(liveChoice);
         setPreview(null);
+        const refreshedGen = takeGeneration();
         const refreshed = await api.reviewPreview(row.id, liveChoice.target);
         if (!cancel && !picked.current) {
-          setPreview(refreshed);
+          applyPreview(refreshed, refreshedGen);
         }
         if (!cancel) {
           setNaming(false);
@@ -183,7 +215,7 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNot
     return () => {
       cancel = true;
     };
-  }, [api, detail, row.id]);
+  }, [api, applyPreview, detail, row.id]);
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
@@ -209,20 +241,18 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNot
 
   /** The same call as the merge card's "Mark ready for review". */
   async function markReady() {
-    setMarking(true);
     setError(null);
+    const observed = beginDraftFlip(row.id, false);
     try {
-      await api.setPrDraft(row.id, false);
-      setMarkedReady(true);
-      onReady?.(row.id);
-      if (target) {
-        await loadPreview(target);
-      }
+      const fresh = await api.setPrDraft(row.id, false);
+      settleDraftCall(row.id, observed, fresh, false);
     } catch (err) {
+      settleDraftFlip(row.id, observed, { ok: false });
       setError(`Couldn't mark it ready for review: ${errorMessage(err)}`);
-    } finally {
-      setMarking(false);
+      return;
     }
+    onReady?.(row.id);
+    if (target) await loadPreview(target);
   }
 
   async function send() {
@@ -246,8 +276,7 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNot
   const bump = preview?.action === "bump";
   /** Old threads in channels the teams were remapped away from (§7.11). */
   const previous = (choices ?? []).filter((choice) => choice.source === "previous");
-  const draft =
-    !markedReady && ((row.state === "open" && row.is_draft) || (preview?.pr_warnings ?? []).some((warning) => warning.kind === "draft"));
+  const phase = draftPhase(record, row.state === "open" && row.is_draft);
   return (
     <div
       className="fixed inset-0 z-40 flex items-start justify-center overflow-auto bg-black/50 p-8"
@@ -271,9 +300,9 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNot
           <GroupedRequest api={api} row={row} onClose={onClose} onSent={onSent} onOpen={onOpen} onReady={onReady} onNotice={onNotice} />
         ) : (
           <>
-        {draft && (
-          <DraftWarning busy={marking} onMarkReady={() => void markReady()}>
-            This PR is still a draft. Reviewers may skip it.
+        {(phase === "draft" || phase === "marking") && (
+          <DraftWarning busy={phase === "marking"} busyLabel="Marking ready…" onMarkReady={() => void markReady()}>
+            {phase === "marking" ? "Marking this PR ready for review…" : "This PR is still a draft. Reviewers may skip it."}
           </DraftWarning>
         )}
         {preview && <CheckNotes warnings={preview.pr_warnings} />}
@@ -373,10 +402,10 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNot
           <button
             type="button"
             className="rounded bg-violet-500 px-3 py-1.5 font-medium text-white disabled:opacity-40"
-            disabled={!preview || !preview.signed_in || sending || marking || naming || unconfirmed !== null}
+            disabled={!preview || !preview.signed_in || sending || phase === "marking" || naming || unconfirmed !== null}
             onClick={() => void send()}
           >
-            {sending ? "Sending…" : bump ? (draft ? "Bump anyway" : "Bump in thread") : draft ? "Send anyway" : "Send request"}
+            {sending ? "Sending…" : sendLabel(phase, Boolean(bump))}
           </button>
         </footer>
           </>

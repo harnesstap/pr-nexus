@@ -1,0 +1,3 @@
+kind: Fixed
+body: The Request review dialog follows the live draft state, so Mark ready clears the banner and the send label even when a cached preview arrives late.
+time: 2026-11-17T10:45:00Z

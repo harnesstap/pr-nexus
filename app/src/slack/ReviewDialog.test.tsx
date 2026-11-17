@@ -1,8 +1,15 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { expect, test, vi } from "vitest";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { beforeEach, expect, test, vi } from "vitest";
 import type { Toast } from "../list/model";
 import type { Api, BulkPreview, BulkRequest, ListRow, MappingRow, PrDetail, ReviewPreview, ReviewTarget, SlackIndicator, TargetChoice } from "../api";
+import { beginDraftFlip, resetDraftRecords, settleDraftFlip, takeGeneration } from "../detail/draftRecord";
 import { ReviewDialog, withNote } from "./ReviewDialog";
+import { rememberReviewSeed, resetReviewPrefetch } from "./reviewPrefetch";
+
+beforeEach(() => {
+  resetDraftRecords();
+  resetReviewPrefetch();
+});
 
 const row = {
   id: 7,
@@ -331,8 +338,109 @@ test("if marking ready fails, the warning stays and nothing is sent", async () =
   await screen.findByLabelText("Message preview");
   fireEvent.click(screen.getByRole("button", { name: "Mark ready for review" }));
   expect(await screen.findByText(/Couldn't mark it ready for review: no access/)).toBeInTheDocument();
-  expect(screen.getByRole("note", { name: "Draft warning" })).toBeInTheDocument();
+  expect(screen.getByRole("note", { name: "Draft warning" })).toHaveTextContent("This PR is still a draft. Reviewers may skip it.");
   expect(calls.sent).toEqual([]);
+});
+
+function gate<T>() {
+  let resolve: (value: T) => void = () => undefined;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+function previewOf(target: ReviewTarget, text: string, draft: boolean): ReviewPreview {
+  return {
+    target,
+    action: "request",
+    text,
+    warnings: [],
+    pr_warnings: draft ? [{ kind: "draft", pr_id: 7, number: 42, message: "#42 is still a draft." }] : [],
+    signed_in: true,
+    bump_count: 0,
+    permalink: null,
+    broadcast: true,
+  };
+}
+
+test("Mark ready in the banner waits on the call, then clears the warning and the send label", async () => {
+  const flip = gate<Awaited<ReturnType<Api["setPrDraft"]>>>();
+  let previews = 0;
+  const { api, calls } = fake({
+    reviewPreview: (_id: number, target: ReviewTarget) => {
+      previews += 1;
+      return Promise.resolve(previewOf(target, previews === 1 ? "While draft" : "After ready", previews === 1));
+    },
+    setPrDraft: () => flip.promise,
+  });
+  render(<ReviewDialog api={api} row={draftRow} onClose={() => undefined} onOpen={() => undefined} onReady={() => undefined} onSent={() => undefined} />);
+  expect(await screen.findByRole("note", { name: "Draft warning" })).toHaveTextContent("This PR is still a draft. Reviewers may skip it.");
+  fireEvent.click(screen.getByRole("button", { name: "Mark ready for review" }));
+  expect(await screen.findByRole("button", { name: "Marking ready…" })).toBeDisabled();
+  expect(screen.queryByText("This PR is still a draft. Reviewers may skip it.")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Send request" })).toBeDisabled();
+  await act(async () => {
+    flip.resolve({} as Awaited<ReturnType<Api["setPrDraft"]>>);
+    await flip.promise;
+  });
+  await waitFor(() => expect(screen.queryByRole("note", { name: "Draft warning" })).not.toBeInTheDocument());
+  expect(screen.getByRole("button", { name: "Send request" })).toBeEnabled();
+  expect(screen.getByLabelText("Message preview")).toHaveTextContent("After ready");
+  expect(calls.sent).toEqual([]);
+});
+
+test("mark ready from outside the dialog updates it, including a cached draft preview", async () => {
+  const flip = gate<void>();
+  const observed = takeGeneration();
+  rememberReviewSeed({
+    prId: 7,
+    teams: ["@acme/platform"],
+    choices: [mapped],
+    choice: mapped,
+    target: mapped.target,
+    preview: previewOf(mapped.target, "Cached while draft", true),
+    generation: observed,
+  });
+  const ready = beginDraftFlip(7, false);
+  const { api } = fake();
+  render(<ReviewDialog api={api} row={draftRow} onClose={() => undefined} onOpen={() => undefined} onSent={() => undefined} />);
+  expect(await screen.findByRole("button", { name: "Marking ready…" })).toBeDisabled();
+  expect(screen.queryByText("This PR is still a draft. Reviewers may skip it.")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Send request" })).toBeDisabled();
+  void flip.promise.then(() => settleDraftFlip(7, ready, { ok: true, isDraft: false, fetchedAt: "2026-11-17T12:00:00Z" }));
+  await act(async () => {
+    flip.resolve();
+    await flip.promise;
+  });
+  await waitFor(() => expect(screen.queryByRole("note", { name: "Draft warning" })).not.toBeInTheDocument());
+  expect(screen.getByRole("button", { name: "Send request" })).toBeEnabled();
+});
+
+test("a stale cached preview resolving after mark-ready does not bring the draft banner back", async () => {
+  const stale = gate<ReviewPreview>();
+  let previews = 0;
+  const { api } = fake({
+    reviewPreview: (_id: number, target: ReviewTarget) => {
+      previews += 1;
+      return previews === 1 ? stale.promise : Promise.resolve(previewOf(target, "After ready", false));
+    },
+  });
+  render(<ReviewDialog api={api} row={draftRow} onClose={() => undefined} onOpen={() => undefined} onSent={() => undefined} />);
+  expect(await screen.findByRole("note", { name: "Draft warning" })).toHaveTextContent("This PR is still a draft. Reviewers may skip it.");
+  await waitFor(() => expect(previews).toBe(1));
+  fireEvent.click(screen.getByRole("button", { name: "Mark ready for review" }));
+  await waitFor(() => expect(screen.queryByRole("note", { name: "Draft warning" })).not.toBeInTheDocument());
+  expect(screen.getByRole("button", { name: "Send request" })).toBeEnabled();
+  expect(screen.getByLabelText("Message preview")).toHaveTextContent("After ready");
+  await act(async () => {
+    stale.resolve(previewOf(mapped.target, "While draft", true));
+    await stale.promise;
+  });
+  expect(screen.queryByRole("note", { name: "Draft warning" })).not.toBeInTheDocument();
+  expect(screen.queryByText("This PR is still a draft. Reviewers may skip it.")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Send request" })).toBeEnabled();
+  expect(screen.getByLabelText("Message preview")).toHaveTextContent("After ready");
 });
 
 test("the preview renders like Slack and shows the optional note, which is sent", async () => {

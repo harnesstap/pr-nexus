@@ -182,7 +182,13 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   // `--update` scenes set the answer before the app loads.
   check_update: () => (window as { __update?: unknown }).__update ?? null,
   pr_detail: () => detail,
-  pr_overview: (args) => ({ ...overviewFor(args.id), fetched_at: new Date().toISOString() }),
+  // The stored overview follows the row, the same way `set_pr_draft` refreshes
+  // the cache. A later read must not put a draft flag back onto a PR that
+  // was just marked ready.
+  pr_overview: (args) => {
+    const row = rows.find((item) => item.id === args.id);
+    return { ...overviewFor(args.id), ...(row ? { is_draft: row.is_draft } : {}), fetched_at: new Date().toISOString() };
+  },
   merge_pr: (args) => ({ ...overviewFor(args.id), state: "merged", fetched_at: new Date().toISOString() }),
   close_pull_requests: (args) => {
     const ids = Array.isArray(args.ids) ? args.ids : [];
