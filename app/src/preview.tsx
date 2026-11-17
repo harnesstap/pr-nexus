@@ -936,6 +936,45 @@ if (screenName === "request-review-suggest") {
     }
   }, 600);
 }
+// ?screen=request-review-refresh paints the cached channel and holds the live
+// name read until `window.__releaseReviewNames()` so a screenshot can catch
+// both labels. Send stays disabled until that release.
+if (screenName === "request-review-refresh") {
+  const cached = {
+    workspace: "acme",
+    team_id: "T0ACME0001",
+    workspace_name: "Acme",
+    channel_id: "C0ACME0001",
+    channel_name: "platform",
+  };
+  const renamed = { ...cached, channel_name: "platform-renamed" };
+  const liveChoice = { target: renamed, teams: ["@acme/platform"], source: "mapping" as const };
+  let release: (choices: (typeof liveChoice)[]) => void = () => undefined;
+  const live = new Promise<(typeof liveChoice)[]>((resolve) => {
+    release = resolve;
+  });
+  Object.assign(window, {
+    __releaseReviewNames: () => release([liveChoice]),
+  });
+  previewApi.prDetail = () =>
+    Promise.resolve(mockDetail(1, { mandatory_teams: ["@acme/platform"], candidate_teams: [] }));
+  previewApi.slackWorkspaces = () =>
+    Promise.resolve([{ id: 1, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false, team_id: "T0ACME0001", enabled: true, priority: 0 }]);
+  previewApi.reviewTargets = (_id, teams, cachedNames) =>
+    cachedNames === false ? live : Promise.resolve([{ target: cached, teams, source: "mapping" as const }]);
+  previewApi.reviewPreview = (_id, target) =>
+    Promise.resolve({
+      target,
+      action: "request" as const,
+      text: "Hello team\nCould someone please review this pull request?\nhttps://github.com/acme/data-service/pull/549\nThanks!",
+      warnings: [],
+      pr_warnings: [],
+      signed_in: true,
+      bump_count: 0,
+      permalink: null,
+      broadcast: true,
+    });
+}
 // ?screen=codeowners shows one PR that already has a request in #team-a-pr-reviews
 // and a second CODEOWNERS line with no saved channel. ?case=open focuses that
 // line's channel picker. The picker searches the fictional channels below.
@@ -1107,7 +1146,7 @@ createRoot(root).render(
       <div className="min-h-screen bg-slate-950 text-slate-200">
         <ReviewDialog api={previewApi} row={codeownersRow} onClose={() => undefined} onSent={() => undefined} onOpen={() => undefined} />
       </div>
-    ) : screenName === "request-review-suggest" ? (
+    ) : screenName === "request-review-suggest" || screenName === "request-review-refresh" ? (
       <div className="min-h-screen bg-slate-950 text-slate-200">
         <ReviewDialog api={previewApi} row={suggestRow} onClose={() => undefined} onSent={() => undefined} onOpen={() => undefined} />
       </div>
