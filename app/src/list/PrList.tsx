@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import type { ListRow, ProjectDto } from "../api";
 import type { StackPlace } from "./stack";
 import { AlertIcon, ChevronDownIcon, ChevronRightIcon, ClockIcon, CommentIcon, DraftIcon, FunnelIcon, MoreIcon, SlackLogo, StackIcon } from "../icons";
@@ -18,7 +18,6 @@ import { DEFAULT_REVIEW_SLA, wipHint, type ReviewSla } from "./sla";
 import type { SnoozeChoice, Toast } from "./model";
 import { displayKey, hint, matchShortcut, shortcut, type ShortcutId } from "./shortcuts";
 import {
-  ago,
   bulkIds,
   checkState,
   ciLabel,
@@ -56,6 +55,7 @@ import { plainText } from "../textInput";
 import { githubQueryOf, searchFieldValue, sortLocksOrder, splitSearch } from "./searchText";
 import { queueChip } from "../detail/mergeQueue";
 import { commentsText, compactSlack, rowPills, staleCue, viewEmptyState, type RowPill, type StaleCue } from "./rowCues";
+import { ClockProvider, RelativeTime, useNow } from "./clock";
 
 /** A section as drawn: its loaded rows, plus counts and ids over every match. */
 type ShownSection = Section & { count: number; ids: number[] };
@@ -64,6 +64,18 @@ type ShownSection = Section & { count: number; ids: number[] };
 const LOAD_AHEAD_PX = 600;
 /** Search waits this long after the last keystroke (§8.2). */
 export const SEARCH_DEBOUNCE_MS = 200;
+
+/** How many times a list row body has rendered. Tests watch this across clock ticks. */
+export const prRowRenderCountRef = { current: 0 };
+
+/** A callback whose identity stays put while it calls the latest function. */
+function useStable<Args extends unknown[], Result>(fn: (...args: Args) => Result): (...args: Args) => Result {
+  const ref = useRef(fn);
+  useEffect(() => {
+    ref.current = fn;
+  });
+  return useCallback((...args: Args) => ref.current(...args), []);
+}
 
 interface Props {
   /** `list_page`: the backend filters, searches, groups and pages. */
@@ -331,6 +343,13 @@ export function PrList({
   );
   const currentProject = projectIdOf(viewKey);
   const flat = useMemo(() => sections.flatMap((section) => section.rows.map((row) => ({ section, row }))), [sections]);
+  const indexOf = useMemo(() => {
+    const map = new Map<string, number>();
+    flat.forEach((item, index) => {
+      map.set(`${item.section.key}:${item.row.id}`, index);
+    });
+    return map;
+  }, [flat]);
   // Every matching id, loaded or not: select-all, counts and drag cover them all.
   const ids = useMemo(() => pageIds(page?.sections ?? []).filter((id) => !removedIds?.has(id)), [page, removedIds]);
   const hidden = hiddenSelectedCount(selected, ids);
@@ -645,7 +664,23 @@ export function PrList({
   const titleProject = currentProject !== null ? projects.find((project) => project.id === currentProject) : undefined;
   const sectionProject = (id: number | null) => (id === null ? undefined : projects.find((project) => project.id === id));
 
+  const activeRef = useRef(active);
+  useEffect(() => {
+    activeRef.current = active;
+  }, [active]);
+  const onToggleId = useStable((id: number) => toggleRow(id));
+  const onFocusIndex = useStable((index: number) => setFocusIndex(index));
+  const openUrl = useStable((url: string) => onOpen(url));
+  const openDetails = useStable((row: ListRow) => onDetails(row));
+  const requestReview = useStable((row: ListRow) => onRequestReview(row));
+  const toggleStar = useStable((row: ListRow) => {
+    onToggleStar?.(row);
+  });
+  const endDrag = useStable(() => setDropTarget(null));
+  const idsForDrag = useStable((id: number) => dragIds(id, activeRef.current));
+
   return (
+    <ClockProvider now={now}>
     <div className="flex min-h-0 flex-1 flex-col">
       <header className="px-4 py-3">
         <div className="min-w-0">
@@ -900,85 +935,29 @@ export function PrList({
               )}
               {open &&
                 section.rows.map((row) => {
-                  const index = flat.findIndex((item) => item.row.id === row.id && item.section.key === section.key);
+                  const index = indexOf.get(`${section.key}:${row.id}`) ?? -1;
                   return (
-                    <article
+                    <PrRow
                       key={`${section.key}-${row.id}`}
-                      draggable
-                      onDragStart={(event) => {
-                        const ids = dragIds(row.id, active);
-                        event.dataTransfer.setData(DRAG_MIME, JSON.stringify(ids));
-                        event.dataTransfer.setData("text/plain", ids.length === 1 ? row.url : `${ids.length} pull requests`);
-                        event.dataTransfer.effectAllowed = "link";
-                        setDragBadge(event.dataTransfer, ids.length);
-                      }}
-                      onDragEnd={() => setDropTarget(null)}
-                      onMouseDown={() => setFocusIndex(index)}
-                      onClick={(event) => {
-                        // The whole row opens (or switches) the panel; its own controls keep their behaviour.
-                        if (rowClickOpens(event.target, event.currentTarget) && detailId !== row.id) {
-                          onDetails(row);
-                        }
-                      }}
-                      aria-label={`#${row.number} ${row.title}`}
-                      aria-current={index === focus ? "true" : undefined}
-                      data-focused={index === focus ? "true" : undefined}
-                      className={`group flex ${compact ? "items-start gap-2 py-1" : "items-center gap-3 py-1.5"} cursor-pointer border-t border-l-2 border-t-slate-800 px-2 ${index === focus ? "border-l-violet-400 bg-slate-900" : "border-l-transparent hover:bg-slate-900/60"}`}
-                    >
-                      <TriCheckbox
-                        label={`Select ${row.title}`}
-                        state={selected.has(row.id) ? "all" : "none"}
-                        onToggle={() => toggleRow(row.id)}
-                      />
-                      {onToggleStar && (
-                        <StarButton starred={row.starred} title={row.title} shortcut={index === focus} onToggle={() => onToggleStar(row)} />
-                      )}
-                      <GitHubRowButton title={row.title} shortcut={index === focus} onOpen={() => onOpen(row.url)} />
-                      {compact ? (
-                        <CompactRow
-                          row={row}
-                          view={view}
-                          viewKey={viewKey}
-                          now={now}
-                          sla={sla}
-                          active={index === focus}
-                          onDetails={onDetails}
-                          onOpen={onOpen}
-                          onRequestReview={onRequestReview}
-                        />
-                      ) : (
-                        <>
-                          <div className="min-w-64 flex-1 overflow-hidden">
-                            <TitleLine row={row} view={view} now={now} sla={sla} active={index === focus} onDetails={onDetails} />
-                            <p className="flex items-center gap-1 truncate text-xs text-slate-500">
-                              {view.show.repo && <span className="truncate">{row.repo}</span>}
-                              {view.show.repo && view.show.ci && <span aria-hidden="true">·</span>}
-                              {view.show.ci && <CiStatus checks={row.checks} />}
-                              {view.show.activity && <span className="whitespace-nowrap"> · updated {ago(row.updated_at, now)}</span>}
-                            </p>
-                          </div>
-                          {view.show.review && (
-                            <div className="flex w-40 shrink-0 items-center">
-                              <NextActionBadge row={row} viewKey={viewKey} now={now} sla={sla} onOpen={onOpen} onRequestReview={onRequestReview} onDetails={onDetails} />
-                            </div>
-                          )}
-                          {view.show.review && (
-                            <div className="flex w-20 shrink-0 items-center justify-end">
-                              <ReviewerAvatars reviewers={row.pending_reviewers} />
-                            </div>
-                          )}
-                          {/* Lowest priority first: the comment count, then the Slack text, give way on narrow lists. */}
-                          {view.show.threads && (
-                            <div className="hidden w-14 shrink-0 @min-[64rem]:flex">
-                              <Threads row={row} />
-                            </div>
-                          )}
-                          <div className="hidden w-20 shrink-0 items-center justify-end @min-[56rem]:flex">
-                            <SlackCell row={row} now={now} showMissing={view.show.notRequested} onOpen={onOpen} />
-                          </div>
-                        </>
-                      )}
-                    </article>
+                      row={row}
+                      index={index}
+                      focused={index === focus}
+                      checked={selected.has(row.id)}
+                      compact={compact}
+                      show={view.show}
+                      viewKey={viewKey}
+                      sla={sla}
+                      detailId={detailId}
+                      canStar={onToggleStar !== undefined}
+                      onFocusIndex={onFocusIndex}
+                      onToggle={onToggleId}
+                      onOpen={openUrl}
+                      onDetails={openDetails}
+                      onRequestReview={requestReview}
+                      onToggleStar={toggleStar}
+                      onDragEnd={endDrag}
+                      dragIdsFor={idsForDrag}
+                    />
                   );
                 })}
             </section>
@@ -1107,6 +1086,7 @@ export function PrList({
         </dialog>
       )}
     </div>
+    </ClockProvider>
   );
 
   async function commit(projectId: number) {
@@ -1303,13 +1283,125 @@ function RenameField({
   );
 }
 
+interface RowProps {
+  row: ListRow;
+  index: number;
+  focused: boolean;
+  checked: boolean;
+  compact: boolean;
+  show: ShowFlags;
+  viewKey: string;
+  sla: ReviewSla;
+  detailId: number | null;
+  canStar: boolean;
+  onFocusIndex: (index: number) => void;
+  onToggle: (id: number) => void;
+  onOpen: (url: string) => void;
+  onDetails: (row: ListRow) => void;
+  onRequestReview: (row: ListRow) => void;
+  onToggleStar: (row: ListRow) => void;
+  onDragEnd: () => void;
+  dragIdsFor: (id: number) => number[];
+}
+
+/** One pull request. Memoized so a clock tick does not rebuild every row. */
+export const PrRow = memo(function PrRow({
+  row,
+  index,
+  focused,
+  checked,
+  compact,
+  show,
+  viewKey,
+  sla,
+  detailId,
+  canStar,
+  onFocusIndex,
+  onToggle,
+  onOpen,
+  onDetails,
+  onRequestReview,
+  onToggleStar,
+  onDragEnd,
+  dragIdsFor,
+}: RowProps) {
+  // Test instrumentation: a clock tick must not increment this.
+  // eslint-disable-next-line react-hooks/immutability -- counts row commits for the list test
+  prRowRenderCountRef.current += 1;
+  return (
+    <article
+      draggable
+      onDragStart={(event) => {
+        const ids = dragIdsFor(row.id);
+        event.dataTransfer.setData(DRAG_MIME, JSON.stringify(ids));
+        event.dataTransfer.setData("text/plain", ids.length === 1 ? row.url : `${ids.length} pull requests`);
+        event.dataTransfer.effectAllowed = "link";
+        setDragBadge(event.dataTransfer, ids.length);
+      }}
+      onDragEnd={onDragEnd}
+      onMouseDown={() => onFocusIndex(index)}
+      onClick={(event) => {
+        if (rowClickOpens(event.target, event.currentTarget) && detailId !== row.id) {
+          onDetails(row);
+        }
+      }}
+      aria-label={`#${row.number} ${row.title}`}
+      aria-current={focused ? "true" : undefined}
+      data-focused={focused ? "true" : undefined}
+      className={`group flex ${compact ? "items-start gap-2 py-1" : "items-center gap-3 py-1.5"} cursor-pointer border-t border-l-2 border-t-slate-800 px-2 ${focused ? "border-l-violet-400 bg-slate-900" : "border-l-transparent hover:bg-slate-900/60"}`}
+    >
+      <TriCheckbox label={`Select ${row.title}`} state={checked ? "all" : "none"} onToggle={() => onToggle(row.id)} />
+      {canStar && <StarButton starred={row.starred} title={row.title} shortcut={focused} onToggle={() => onToggleStar(row)} />}
+      <GitHubRowButton title={row.title} shortcut={focused} onOpen={() => onOpen(row.url)} />
+      {compact ? (
+        <CompactRow row={row} show={show} viewKey={viewKey} sla={sla} active={focused} onDetails={onDetails} onOpen={onOpen} onRequestReview={onRequestReview} />
+      ) : (
+        <>
+          <div className="min-w-64 flex-1 overflow-hidden">
+            <TitleLine row={row} show={show} sla={sla} active={focused} onDetails={onDetails} />
+            <p className="flex items-center gap-1 truncate text-xs text-slate-500">
+              {show.repo && <span className="truncate">{row.repo}</span>}
+              {show.repo && show.ci && <span aria-hidden="true">·</span>}
+              {show.ci && <CiStatus checks={row.checks} />}
+              {show.activity && (
+                <span className="whitespace-nowrap">
+                  {" "}
+                  · updated <RelativeTime iso={row.updated_at} />
+                </span>
+              )}
+            </p>
+          </div>
+          {show.review && (
+            <div className="flex w-40 shrink-0 items-center">
+              <NextActionBadge row={row} viewKey={viewKey} sla={sla} onOpen={onOpen} onRequestReview={onRequestReview} onDetails={onDetails} />
+            </div>
+          )}
+          {show.review && (
+            <div className="flex w-20 shrink-0 items-center justify-end">
+              <ReviewerAvatars reviewers={row.pending_reviewers} />
+            </div>
+          )}
+          {show.threads && (
+            <div className="hidden w-14 shrink-0 @min-[64rem]:flex">
+              <Threads row={row} />
+            </div>
+          )}
+          <div className="hidden w-20 shrink-0 items-center justify-end @min-[56rem]:flex">
+            <SlackCell row={row} showMissing={show.notRequested} onOpen={onOpen} />
+          </div>
+        </>
+      )}
+    </article>
+  );
+});
+
 /**
  * The Slack cell of a list row: the coloured logo plus "6h ago" once a request
  * was sent (a link to the message when there is one), a grey logo otherwise.
  * Workspace, channel and action live in the tooltip and the aria-label.
  */
-function SlackCell({ row, now, showMissing, onOpen }: { row: ListRow; now: Date; showMissing: boolean; onOpen: (url: string) => void }) {
-  const slack = compactSlack(row.slack, now);
+function SlackCell({ row, showMissing, onOpen }: { row: ListRow; showMissing: boolean; onOpen: (url: string) => void }) {
+  const slack = compactSlack(row.slack, useNow());
   if (!slack.sent && !showMissing) {
     return null;
   }
@@ -1409,8 +1501,8 @@ function StaleChip({ cue }: { cue: StaleCue }) {
 }
 
 /** Row cues after the title: draft, conflict, queue, and bot pills, then the age chip. */
-function RowCues({ row, now, sla }: { row: ListRow; now: Date; sla: ReviewSla }) {
-  const stale = staleCue(row, now, sla);
+function RowCues({ row, sla }: { row: ListRow; sla: ReviewSla }) {
+  const stale = staleCue(row, useNow(), sla);
   const bots = row.bot_comments ?? 0;
   const botLabel = bots === 1 ? "1 bot comment" : `${bots} bot comments`;
   const queue = queueChip(row.merge_queue);
@@ -1487,15 +1579,13 @@ function TitleTip({ row, active, children }: { row: ListRow; active: boolean; ch
 
 function TitleLine({
   row,
-  view,
-  now,
+  show,
   sla,
   active,
   onDetails,
 }: {
   row: ListRow;
-  view: SavedView;
-  now: Date;
+  show: ShowFlags;
   sla: ReviewSla;
   /** This row is the keyboard focus, so Enter opens it. */
   active: boolean;
@@ -1504,7 +1594,7 @@ function TitleLine({
   return (
     <div className="flex min-w-0 items-center gap-2 text-sm">
       <UnreadDot unread={row.unread} />
-      {view.show.numberTitle && (
+      {show.numberTitle && (
         <TitleTip row={row} active={active}>
           <button type="button" className="min-w-0 truncate text-left hover:underline" onClick={() => onDetails(row)}>
             <span className="text-slate-500">#{row.number}</span> {row.title}
@@ -1514,8 +1604,8 @@ function TitleLine({
       {row.state !== "open" && (
         <span className="shrink-0 rounded bg-slate-800 px-1 text-xs text-slate-300">{row.state === "merged" ? "Merged" : "Closed"}</span>
       )}
-      <RowCues row={row} now={now} sla={sla} />
-      {view.show.badges && row.project_ids.length > 1 && (
+      <RowCues row={row} sla={sla} />
+      {show.badges && row.project_ids.length > 1 && (
         <Tooltip label={`Also in ${row.project_ids.length - 1} other project${row.project_ids.length > 2 ? "s" : ""}`} className="shrink-0">
           <span className="shrink-0 rounded bg-slate-800 px-1 text-xs text-slate-400">+{row.project_ids.length - 1}</span>
         </Tooltip>
@@ -1558,9 +1648,8 @@ function CiStatus({ checks }: { checks: string }) {
  */
 function CompactRow({
   row,
-  view,
+  show,
   viewKey,
-  now,
   sla,
   active,
   onDetails,
@@ -1568,9 +1657,8 @@ function CompactRow({
   onRequestReview,
 }: {
   row: ListRow;
-  view: SavedView;
+  show: ShowFlags;
   viewKey: string;
-  now: Date;
   sla: ReviewSla;
   /** This row is the keyboard focus, so Enter opens it. */
   active: boolean;
@@ -1583,7 +1671,7 @@ function CompactRow({
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-start gap-1.5 text-sm leading-snug">
           <UnreadDot unread={row.unread} className="mt-1.5 shrink-0" />
-          {view.show.numberTitle && (
+          {show.numberTitle && (
             <TitleTip row={row} active={active}>
               <button type="button" className="line-clamp-2 min-w-0 text-left break-words hover:underline" onClick={() => onDetails(row)}>
                 <span className="text-slate-500">#{row.number}</span> {row.title}
@@ -1595,25 +1683,25 @@ function CompactRow({
           )}
         </div>
         <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-slate-500">
-          {view.show.repo && (
+          {show.repo && (
             <Tooltip label={row.repo} align="start" className="min-w-0 max-w-[16rem]">
               <span className="truncate">{row.repo}</span>
             </Tooltip>
           )}
-          {view.show.ci && (
+          {show.ci && (
             <>
               <span aria-hidden="true">·</span>
               <CiStatus checks={row.checks} />
             </>
           )}
           {row.stack && <StackBadge stack={row.stack} />}
-          <RowCues row={row} now={now} sla={sla} />
+          <RowCues row={row} sla={sla} />
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-1.5 pt-0.5 text-xs text-slate-400">
-        {view.show.review && <NextActionBadge row={row} viewKey={viewKey} now={now} sla={sla} compact onOpen={onOpen} onRequestReview={onRequestReview} onDetails={onDetails} />}
-        {view.show.threads && <Threads row={row} />}
-        <SlackCell row={row} now={now} showMissing={view.show.notRequested} onOpen={onOpen} />
+        {show.review && <NextActionBadge row={row} viewKey={viewKey} sla={sla} compact onOpen={onOpen} onRequestReview={onRequestReview} onDetails={onDetails} />}
+        {show.threads && <Threads row={row} />}
+        <SlackCell row={row} showMissing={show.notRequested} onOpen={onOpen} />
       </div>
     </div>
   );

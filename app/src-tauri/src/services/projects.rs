@@ -36,18 +36,22 @@ pub fn page_for(
     request: &listing::PageRequest,
 ) -> Result<listing::PageDto, AppError> {
     let projects = all_projects(state)?;
-    let mut items = list_items(state)?;
+    let cached = list_items(state)?;
+    let mut extended = None;
     if let Some(wanted) = &request.github_ids {
-        let have: HashSet<i64> = items.iter().map(|item| item.row.id).collect();
+        let have: HashSet<i64> = cached.iter().map(|item| item.row.id).collect();
         let missing: HashSet<i64> = wanted
             .iter()
             .copied()
             .filter(|id| !have.contains(id))
             .collect();
         if !missing.is_empty() {
+            let mut items = cached.as_ref().clone();
             items.extend(crate::commands::items_for_ids(state, &missing)?);
+            extended = Some(items);
         }
     }
+    let items = extended.as_deref().unwrap_or(cached.as_ref());
     let rule_text = pr_nexus_core::view_rule::analyze(&request.view_rule).text;
     let combined = match (request.query.trim(), rule_text.trim()) {
         ("", "") => String::new(),
@@ -65,14 +69,15 @@ pub fn page_for(
     request.review_sla_hours = sla.hours;
     request.review_sla_working_days = sla.working_days;
     request.tz_offset_minutes = local_offset_east_minutes();
-    Ok(listing::page(&items, &projects, &request, found.as_ref()))
+    Ok(listing::page(items, &projects, &request, found.as_ref()))
 }
 
 /// Rows by id, in the order asked, for dialogs that outlive the loaded pages.
 pub fn rows_by_id(state: &AppState, ids: Vec<i64>) -> Result<Vec<ListRow>, AppError> {
-    let mut by_id: HashMap<i64, ListRow> = list_items(state)?
-        .into_iter()
-        .map(|item| (item.row.id, item.row))
+    let items = list_items(state)?;
+    let mut by_id: HashMap<i64, ListRow> = items
+        .iter()
+        .map(|item| (item.row.id, item.row.clone()))
         .collect();
     Ok(ids.iter().filter_map(|id| by_id.remove(id)).collect())
 }
@@ -95,8 +100,9 @@ pub fn link_candidates(
         .filter(|link| !matches!(link.source, LinkSource::Excluded))
         .map(|link| link.pr.0)
         .collect();
-    let mut items: Vec<listing::Item> = list_items(state)?
-        .into_iter()
+    let cached = list_items(state)?;
+    let mut items: Vec<&listing::Item> = cached
+        .iter()
         .filter(|item| {
             found.contains(&item.row.id)
                 && !linked.contains(&item.row.id)
@@ -115,7 +121,7 @@ pub fn link_candidates(
     Ok(items
         .into_iter()
         .take(limit.min(50))
-        .map(|item| item.row)
+        .map(|item| item.row.clone())
         .collect())
 }
 

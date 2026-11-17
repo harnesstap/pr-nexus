@@ -226,10 +226,12 @@ pub fn list_prs(state: &AppState, filter: &PrFilter) -> Result<PrListPage, AppEr
         Some(query) => search_ids(state, &all_projects(state)?, query)?,
         None => None,
     };
-    let mut items: Vec<listing::Item> = list_items(state)?
-        .into_iter()
+    let cached = list_items(state)?;
+    let mut items: Vec<listing::Item> = cached
+        .iter()
         .filter(|item| matches_filter(item, filter, now_ms, &sla, zone))
         .filter(|item| found.as_ref().is_none_or(|ids| ids.contains(&item.row.id)))
+        .cloned()
         .collect();
     items.sort_by(|left, right| {
         right
@@ -321,8 +323,9 @@ pub fn pr_info(state: &AppState, id: i64) -> Result<PrInfo, AppError> {
     let sla = settings::review_sla(&state.store)?;
     let zone = pr_nexus_core::sla::local_offset_east_minutes();
     let item = list_items(state)?
-        .into_iter()
+        .iter()
         .find(|item| item.row.id == id)
+        .cloned()
         .ok_or_else(|| AppError::new("not_found", format!("No pull request with id {id}")))?;
     let note = crate::services::project_info::pr_note(state, id)?;
     // A failed compare is "no branch info", not a failed read.

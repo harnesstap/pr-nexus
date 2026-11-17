@@ -172,7 +172,8 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
   const [listColumn, setListColumn] = useState<HTMLDivElement | null>(null);
   /** The bulk run's summary, shown as a toast once its dialog closes. */
   const [bulkSummary, setBulkSummary] = useState<string | null>(null);
-  const view = views[viewKey] ?? defaultView();
+  const fallbackView = useRef(defaultView());
+  const view = views[viewKey] ?? fallbackView.current;
   const sidebarView = catalog.find((item) => item.key === viewKey) ?? null;
   const sidebarQuery = sidebarView?.query ?? "";
   const ruleInfo = analyzeViewRule(sidebarQuery);

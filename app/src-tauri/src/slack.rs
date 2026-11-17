@@ -171,8 +171,17 @@ pub fn workspace_accounts(store: &Store) -> Result<Vec<Account>, CoreError> {
 }
 
 pub fn workspace_dto(state: &AppState, account: &Account) -> SlackWorkspace {
-    let team_id = account.slack_team_id().unwrap_or_default().to_owned();
     let workspaces = route::workspaces(&state.store).unwrap_or_default();
+    workspace_from(state, account, &workspaces)
+}
+
+/// One workspace row. `workspaces` is the routing list, read once per screen.
+pub(crate) fn workspace_from(
+    state: &AppState,
+    account: &Account,
+    workspaces: &[Workspace],
+) -> SlackWorkspace {
+    let team_id = account.slack_team_id().unwrap_or_default().to_owned();
     let priority = workspaces
         .iter()
         .position(|ws| ws.team_id == team_id)
@@ -407,9 +416,11 @@ pub async fn slack_workspaces(app: Shared<'_>) -> Result<Vec<SlackWorkspace>, Ap
 
 /// Every workspace, in priority order.
 pub(crate) fn workspace_list(state: &AppState) -> Result<Vec<SlackWorkspace>, AppError> {
-    let mut list: Vec<SlackWorkspace> = workspace_accounts(&state.store)?
+    let accounts = workspace_accounts(&state.store)?;
+    let workspaces = route::workspaces(&state.store).unwrap_or_default();
+    let mut list: Vec<SlackWorkspace> = accounts
         .iter()
-        .map(|account| workspace_dto(state, account))
+        .map(|account| workspace_from(state, account, &workspaces))
         .collect();
     list.sort_by_key(|ws| (ws.priority, ws.id));
     Ok(list)

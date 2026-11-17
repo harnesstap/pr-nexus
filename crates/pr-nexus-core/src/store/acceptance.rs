@@ -816,7 +816,7 @@ fn upgrading_from_version_3_rebuilds_search_text_with_the_new_fold() {
                     params![],
                 )
                 .map_err(db)?;
-                // Undo 0006-0008 and 0010-0012 so the upgrade replays them from version 3.
+                // Undo 0006-0008 and 0010-0013 so the upgrade replays them from version 3.
                 conn.execute_batch(
                     "UPDATE accounts SET slack_workspace_unique_v1 = slack_workspace;
                      ALTER TABLE accounts DROP COLUMN slack_workspace;
@@ -829,7 +829,8 @@ fn upgrading_from_version_3_rebuilds_search_text_with_the_new_fold() {
                      DROP TABLE mcp_audit;
                      DROP TABLE pr_close_notes;
                      DROP TABLE pr_attention;
-                     DROP TABLE pr_merge_queue;",
+                     DROP TABLE pr_merge_queue;
+                     ALTER TABLE pr_overview_cache DROP COLUMN bot_comment_count;",
                 )
                 .map_err(db)?;
                 conn.pragma_update(None, "user_version", 3_i64)
@@ -1028,6 +1029,196 @@ fn pr_overview_cache_upserts_and_follows_its_pull_request() {
     );
     // Unparseable JSON from an older build reads as "no cache".
     assert_eq!(crate::overview::cached(&store, pr.id).unwrap(), None);
+}
+
+#[test]
+fn bot_comment_count_is_stored_and_matches_parsing_the_overview() {
+    let (_dir, store) = open_temp();
+    let (_account, _repo, pr) = seed_pr(&store, "PR_bots", PrState::Open);
+    let json = serde_json::json!({
+        "feedback": [
+            {
+                "login": "ada",
+                "actor_bot": false,
+                "kind": "issue",
+                "snippet": "looks good",
+                "url": "https://github.com/acme/widgets/pull/42#ada",
+                "unresolved": false,
+                "at": "2026-10-01T00:00:00Z"
+            },
+            {
+                "login": "dependabot[bot]",
+                "actor_bot": true,
+                "kind": "issue",
+                "snippet": "bump",
+                "url": "https://github.com/acme/widgets/pull/42#bot",
+                "unresolved": false,
+                "at": "2026-10-02T00:00:00Z"
+            },
+            {
+                "login": "review-helper",
+                "actor_bot": false,
+                "kind": "issue",
+                "snippet": "nit",
+                "url": "https://github.com/acme/widgets/pull/42#helper",
+                "unresolved": false,
+                "at": "2026-10-03T00:00:00Z"
+            }
+        ]
+    })
+    .to_string();
+    let parsed = crate::bots::count_in_json(&json, &[]);
+    store.upsert_pr_overview(pr.id, json.clone(), at()).unwrap();
+    assert_eq!(stored_bot_count(&store, pr.id), Some(i64::from(parsed)));
+    assert_eq!(
+        store.bot_comment_counts().unwrap().get(&pr.id).copied(),
+        Some(parsed)
+    );
+
+    let id = pr.id.0;
+    store
+        .write(move |conn| {
+            conn.execute(
+                "UPDATE pr_overview_cache SET bot_comment_count = NULL WHERE pr_id = ?1",
+                [id],
+            )
+            .map_err(db)?;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(stored_bot_count(&store, pr.id), None);
+    assert_eq!(
+        store.bot_comment_counts().unwrap().get(&pr.id).copied(),
+        Some(parsed),
+        "a missing count is filled from the cached JSON"
+    );
+    assert_eq!(stored_bot_count(&store, pr.id), Some(i64::from(parsed)));
+
+    let mut prefs = crate::settings::preferences(&store).unwrap();
+    prefs.bot_logins = vec!["review-helper".into()];
+    crate::settings::save_preferences(&store, &prefs).unwrap();
+    assert_eq!(stored_bot_count(&store, pr.id), None);
+    let with_extra = crate::bots::count_in_json(&json, &["review-helper".into()]);
+    assert!(with_extra > parsed);
+    assert_eq!(
+        store.bot_comment_counts().unwrap().get(&pr.id).copied(),
+        Some(with_extra)
+    );
+    assert_eq!(stored_bot_count(&store, pr.id), Some(i64::from(with_extra)));
+
+    prefs.bot_logins = vec!["Review-Helper".into()];
+    crate::settings::save_preferences(&store, &prefs).unwrap();
+    assert_eq!(
+        stored_bot_count(&store, pr.id),
+        Some(i64::from(with_extra)),
+        "a spelling-only change keeps the stored count"
+    );
+}
+
+fn stored_bot_count(store: &Store, pr: PrId) -> Option<i64> {
+    store
+        .read(move |conn| {
+            conn.query_row(
+                "SELECT bot_comment_count FROM pr_overview_cache WHERE pr_id = ?1",
+                [pr.0],
+                |row| row.get(0),
+            )
+            .map_err(db)
+        })
+        .unwrap()
+}
+
+#[test]
+fn list_review_requests_matches_loading_each_row() {
+    let (_dir, store) = open_temp();
+    let (_gh, _repo, pr) = seed_pr(&store, "NODE_LIST_RR", PrState::Open);
+    let slack = store
+        .insert_account(account(
+            AccountKind::Slack,
+            "T0ACME0001:U0ALICE",
+            AuthMode::SlackMcpOauth,
+            Some("acme"),
+        ))
+        .unwrap();
+    store
+        .insert_account(account(
+            AccountKind::Slack,
+            "T0TWIN0001:U0ALICE",
+            AuthMode::SlackMcpOauth,
+            Some("acme"),
+        ))
+        .unwrap();
+    let labs = store
+        .insert_account(account(
+            AccountKind::Slack,
+            "T0LABS0001:U0ALICE",
+            AuthMode::SlackMcpOauth,
+            Some("acme-labs"),
+        ))
+        .unwrap();
+    let bare = store
+        .insert_account(account(
+            AccountKind::Slack,
+            "BAREID",
+            AuthMode::SlackMcpOauth,
+            Some("bare"),
+        ))
+        .unwrap();
+    // No colon: SQLite's substr length is negative, so the team prefix is empty.
+    let bare_team = String::new();
+
+    let make = |channel: &str, workspace: &str, team: Option<&str>| {
+        store
+            .insert_review_request(ReviewRequest {
+                team_id: team.map(str::to_owned),
+                id: crate::domain::ReviewRequestId(0),
+                pr: pr.id,
+                root: ProviderRef {
+                    account: AccountId(0),
+                    id: format!("{channel}:1.000100"),
+                },
+                workspace: workspace.to_owned(),
+                channel_id: channel.to_owned(),
+                channel_name: "team-widgets".to_owned(),
+                root_ts: "1.000100".to_owned(),
+                permalink: None,
+                requested_at: at(),
+                last_bumped_at: None,
+                bump_count: 0,
+                status: RequestStatus::Active,
+                closed_at: None,
+                source: RequestSource::App,
+            })
+            .unwrap()
+    };
+    make("C100", "acme", Some("T0ACME0001"));
+    make("C200", "acme", None);
+    make("C300", "acme-labs", None);
+    make("C400", "bare", Some(&bare_team));
+
+    let listed = store.list_review_requests(pr.id).unwrap();
+    assert_eq!(listed.len(), 4);
+    for request in &listed {
+        let loaded = store.get_review_request(request.id).unwrap().unwrap();
+        assert_eq!(request, &loaded);
+    }
+    assert_eq!(listed[0].root.account, slack.id);
+    assert_eq!(listed[1].root.account, AccountId(0));
+    assert_eq!(listed[2].root.account, labs.id);
+    assert_eq!(listed[3].root.account, bare.id);
+}
+
+#[test]
+fn next_snooze_expiry_is_the_soonest_future_until() {
+    let (_dir, store) = open_temp();
+    let (_gh, _repo, pr) = seed_pr(&store, "NODE_SNOOZE", PrState::Open);
+    assert_eq!(store.next_snooze_expiry(at()).unwrap(), None);
+    store
+        .set_attention_snooze(&[pr.id], crate::attention::SnoozeChoice::Day, at())
+        .unwrap();
+    let expiry = store.next_snooze_expiry(at()).unwrap().unwrap();
+    assert_eq!(expiry, at() + chrono::Duration::days(1));
+    assert_eq!(store.next_snooze_expiry(expiry).unwrap(), None);
 }
 
 #[test]

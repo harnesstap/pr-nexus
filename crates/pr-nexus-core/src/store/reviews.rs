@@ -130,20 +130,23 @@ impl Store {
 
     pub fn list_review_requests(&self, pr: PrId) -> Result<Vec<ReviewRequest>, CoreError> {
         self.read(move |conn| {
+            let accounts = slack_account_rows(conn)?;
             let mut stmt = conn
-                .prepare("SELECT id FROM review_requests WHERE pr_id = ?1 ORDER BY id")
+                .prepare("SELECT * FROM review_requests WHERE pr_id = ?1 ORDER BY id")
                 .map_err(db)?;
-            let ids = stmt
-                .query_map([pr.0], |row| row.get::<_, i64>(0))
+            let mut rows = stmt
+                .query_map([pr.0], map_request)
                 .map_err(db)?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(db)?;
-            ids.into_iter()
-                .map(|id| {
-                    load_request(conn, ReviewRequestId(id))?
-                        .ok_or_else(|| CoreError::Store(format!("review request {id} disappeared")))
-                })
-                .collect()
+            for request in &mut rows {
+                request.root.account = resolve_slack_account(
+                    &accounts,
+                    request.team_id.as_deref(),
+                    &request.workspace,
+                );
+            }
+            Ok(rows)
         })
     }
 
@@ -442,6 +445,67 @@ pub(super) fn map_request(row: &rusqlite::Row<'_>) -> rusqlite::Result<ReviewReq
         closed_at: opt_ts_col(row.get("closed_at")?)?,
         source: parse_enum::<RequestSource>(row.get("source")?)?,
     })
+}
+
+struct SlackAccountRow {
+    id: i64,
+    external_id: String,
+    workspace: Option<String>,
+}
+
+fn slack_account_rows(conn: &Connection) -> Result<Vec<SlackAccountRow>, CoreError> {
+    let mut stmt = conn
+        .prepare("SELECT id, external_id, slack_workspace FROM accounts WHERE kind = 'slack'")
+        .map_err(db)?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(SlackAccountRow {
+                id: row.get(0)?,
+                external_id: row.get(1)?,
+                workspace: row.get(2)?,
+            })
+        })
+        .map_err(db)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(db)?;
+    Ok(rows)
+}
+
+/// Same account `slack_account` would pick, from one read of the Slack rows.
+fn resolve_slack_account(
+    rows: &[SlackAccountRow],
+    team_id: Option<&str>,
+    workspace: &str,
+) -> AccountId {
+    let ids: Vec<i64> = match team_id {
+        Some(team) => rows
+            .iter()
+            .filter(|row| team_prefix(&row.external_id) == team)
+            .map(|row| row.id)
+            .collect(),
+        None => rows
+            .iter()
+            .filter(|row| {
+                row.workspace
+                    .as_deref()
+                    .is_some_and(|stored| stored.eq_ignore_ascii_case(workspace))
+            })
+            .map(|row| row.id)
+            .collect(),
+    };
+    AccountId(match ids.as_slice() {
+        [one] => *one,
+        _ => 0,
+    })
+}
+
+/// `substr(external_id, 1, instr(external_id, ':') - 1)`.
+/// No colon makes that length negative, and SQLite then returns an empty string.
+fn team_prefix(external_id: &str) -> String {
+    match external_id.find(':') {
+        Some(index) => external_id[..index].to_owned(),
+        None => String::new(),
+    }
 }
 
 /// The Slack account behind a request: by team when known, else by a domain

@@ -27,6 +27,7 @@ pub use listing::ListFacts;
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
 
@@ -47,6 +48,8 @@ pub struct Store {
     writer_tx: Sender<WriterMsg>,
     writer: Mutex<Option<JoinHandle<()>>>,
     reads: Mutex<Vec<Connection>>,
+    /// Successful writes. List builds are cached against this value.
+    revision: AtomicU64,
 }
 
 impl Store {
@@ -79,7 +82,15 @@ impl Store {
             writer_tx: tx,
             writer: Mutex::new(Some(writer)),
             reads: Mutex::new(reads),
+            revision: AtomicU64::new(0),
         })
+    }
+
+    /// How many successful writes this process has committed.
+    ///
+    /// Starts at 0 after open, including migrations. A failed write does not move it.
+    pub fn revision(&self) -> u64 {
+        self.revision.load(Ordering::Acquire)
     }
 
     pub fn path(&self) -> &Path {
@@ -121,9 +132,13 @@ impl Store {
                 let _ = reply_tx.send(result);
             })))
             .map_err(|_| CoreError::Store("store writer is stopped".to_owned()))?;
-        reply_rx
+        let result = reply_rx
             .recv()
-            .map_err(|_| CoreError::Store("store writer dropped the reply".to_owned()))?
+            .map_err(|_| CoreError::Store("store writer dropped the reply".to_owned()))?;
+        if result.is_ok() {
+            self.revision.fetch_add(1, Ordering::Release);
+        }
+        result
     }
 }
 
@@ -159,6 +174,10 @@ fn open_connection(path: &Path, read_only: bool) -> Result<Connection, CoreError
             "journal_mode is {mode}, want wal"
         )));
     }
+    // WAL plus NORMAL survives a process crash. FULL fsyncs every commit,
+    // which dominates a sync that writes many small rows.
+    conn.pragma_update(None, "synchronous", "NORMAL")
+        .map_err(db)?;
     if read_only {
         conn.pragma_update(None, "query_only", "ON").map_err(db)?;
     }
@@ -185,10 +204,13 @@ mod tests {
     #[test]
     fn migration_is_wal_and_idempotent() {
         let (dir, store) = open_temp();
-        let (mode, foreign_keys, busy, version, tables) = store
+        let (mode, synchronous, foreign_keys, busy, version, tables) = store
             .read(|conn| {
                 let mode: String = conn
                     .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+                    .map_err(db)?;
+                let synchronous: i64 = conn
+                    .query_row("PRAGMA synchronous", [], |row| row.get(0))
                     .map_err(db)?;
                 let foreign_keys: i64 = conn
                     .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
@@ -209,13 +231,15 @@ mod tests {
                     .map_err(db)?
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(db)?;
-                Ok((mode, foreign_keys, busy, version, names))
+                Ok((mode, synchronous, foreign_keys, busy, version, names))
             })
             .unwrap();
         assert_eq!(mode.to_ascii_lowercase(), "wal");
+        // SQLite's NORMAL is 1.
+        assert_eq!(synchronous, 1);
         assert_eq!(foreign_keys, 1);
         assert_eq!(busy, 5000);
-        assert_eq!(version, 12);
+        assert_eq!(version, 13);
         assert!(tables.contains(&"pull_requests".to_owned()));
         assert!(tables.contains(&"review_requests".to_owned()));
         assert!(tables.contains(&"view_state".to_owned()));
@@ -232,7 +256,7 @@ mod tests {
                     .map_err(db)
             })
             .unwrap();
-        assert_eq!(version, 12);
+        assert_eq!(version, 13);
     }
 
     #[test]
