@@ -1,16 +1,19 @@
 //! The tools agents see. Each one is a thin call into [`crate::services`]
 //! plus a schema and a description written for an agent.
 //!
-//! Adding a tool (phase 5): add a [`ToolSpec`] to [`registry`] with
-//! the [`Capability`] it needs. Listing, gating and auditing follow.
+//! Adding a tool: add a [`ToolSpec`] to [`registry`] with the
+//! [`Capability`] it needs. Listing, gating and auditing follow. A new
+//! Slack send tool defaults off in Settings (it is not in
+//! [`super::config::SLACK_SEND_BASELINE`]); a new tool in any other
+//! capability defaults on.
 
 use std::sync::Arc;
 
 use rmcp::handler::server::common::schema_for_type;
 use rmcp::model::{JsonObject, Tool, ToolAnnotations};
 use schemars::JsonSchema;
-use serde::Deserialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::Capability;
@@ -57,6 +60,40 @@ impl ToolSpec {
                     Capability::Reads | Capability::LocalWrites
                 )),
         )
+    }
+}
+
+/// One tool as Settings lists it. `description` is the first sentence of
+/// the agent-facing text.
+#[derive(Debug, Clone, Serialize)]
+pub struct ToolInfo {
+    pub name: &'static str,
+    pub description: String,
+    pub category: Capability,
+    /// False for a Slack send tool outside [`super::config::SLACK_SEND_BASELINE`].
+    pub defaults_on: bool,
+}
+
+/// The tools Settings shows, in registry order. This is the same list the
+/// server gates, not a second copy.
+pub fn catalog() -> Vec<ToolInfo> {
+    registry()
+        .into_iter()
+        .map(|spec| ToolInfo {
+            name: spec.name,
+            description: one_line(spec.description),
+            category: spec.capability,
+            defaults_on: super::config::tool_defaults_on(spec.capability, spec.name),
+        })
+        .collect()
+}
+
+/// The first sentence, whitespace collapsed, for a settings row.
+fn one_line(description: &str) -> String {
+    let flat = description.split_whitespace().collect::<Vec<_>>().join(" ");
+    match flat.find(". ") {
+        Some(end) => flat[..=end].to_owned(),
+        None => flat,
     }
 }
 

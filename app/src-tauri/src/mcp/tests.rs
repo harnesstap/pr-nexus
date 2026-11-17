@@ -720,6 +720,159 @@ async fn turning_reads_off_hides_and_refuses_the_tools() {
     assert_eq!(events[1].capability, Capability::Reads);
 }
 
+fn tool_names(reply: &Value) -> Vec<&str> {
+    reply["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap())
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_disabled_tool_is_hidden_refused_and_audited() {
+    let h = harness().await;
+    let session = h.session().await;
+    h.control
+        .update(McpSettings {
+            enabled: true,
+            disabled_tools: vec!["list_projects".into()],
+            ..McpSettings::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        h.control.settings().disabled_tools,
+        vec!["list_projects".to_owned()]
+    );
+
+    let listed = h.rpc(&session, 3, "tools/list", json!({})).await;
+    let names = tool_names(&listed);
+    assert!(!names.contains(&"list_projects"), "{names:?}");
+    assert!(names.contains(&"get_project"), "{names:?}");
+
+    let denied = h.call(&session, "list_projects", json!({})).await;
+    assert_eq!(denied["isError"], true);
+    assert_eq!(denied["structuredContent"]["kind"], "forbidden");
+    let message = denied["structuredContent"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("list_projects") && message.contains("What agents may do"),
+        "{message}"
+    );
+
+    let rows = h.store().mcp_audit(None, 10).unwrap();
+    assert_eq!(rows[0].tool, "list_projects");
+    assert_eq!(rows[0].outcome, AuditOutcome::Denied);
+    assert_eq!(rows[0].capability, "reads");
+    assert!(
+        rows[0]
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("What agents may do")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn category_off_overrides_a_selected_tool_and_turning_it_on_restores_it() {
+    let h = harness().await;
+    let session = h.session().await;
+    let selected = McpSettings {
+        enabled: true,
+        reads: true,
+        disabled_tools: vec!["get_pr".into()],
+        ..McpSettings::default()
+    };
+    h.control.update(selected.clone()).await.unwrap();
+
+    h.control
+        .update(McpSettings {
+            reads: false,
+            ..selected.clone()
+        })
+        .await
+        .unwrap();
+    let hidden = h.rpc(&session, 3, "tools/list", json!({})).await;
+    assert!(tool_names(&hidden).is_empty(), "{hidden}");
+    let denied = h.call(&session, "list_projects", json!({})).await;
+    assert_eq!(denied["structuredContent"]["kind"], "forbidden");
+    let message = denied["structuredContent"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("turned off") && !message.contains("What agents may do"),
+        "{message}"
+    );
+    assert_eq!(
+        h.control.settings().disabled_tools,
+        vec!["get_pr".to_owned()],
+        "the capability switch does not clear the tool selection"
+    );
+
+    h.control.update(selected).await.unwrap();
+    let listed = h.rpc(&session, 4, "tools/list", json!({})).await;
+    let names = tool_names(&listed);
+    assert!(names.contains(&"list_projects"), "{names:?}");
+    assert!(!names.contains(&"get_pr"), "{names:?}");
+    let page = h.call(&session, "list_projects", json!({})).await;
+    assert_eq!(page["isError"], false, "{page}");
+    let still = h.call(&session, "get_pr", json!({"pr_id": 1})).await;
+    assert_eq!(still["structuredContent"]["kind"], "forbidden");
+    assert!(
+        still["structuredContent"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("What agents may do")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn one_slack_send_tool_can_be_off_while_the_category_is_on() {
+    let h = harness().await;
+    let session = h.session().await;
+    h.control
+        .update(McpSettings {
+            enabled: true,
+            slack_sends: true,
+            disabled_tools: vec!["slack_send_message".into()],
+            ..McpSettings::default()
+        })
+        .await
+        .unwrap();
+    let listed = h.rpc(&session, 3, "tools/list", json!({})).await;
+    let names = tool_names(&listed);
+    assert!(!names.contains(&"slack_send_message"), "{names:?}");
+    assert!(names.contains(&"slack_schedule_message"), "{names:?}");
+    let denied = h.call(&session, "slack_send_message", json!({})).await;
+    assert_eq!(denied["structuredContent"]["kind"], "forbidden");
+    let rows = h.store().mcp_audit(None, 5).unwrap();
+    assert_eq!(rows[0].tool, "slack_send_message");
+    assert_eq!(rows[0].outcome, AuditOutcome::Denied);
+    assert_eq!(rows[0].capability, "slack_sends");
+}
+
+#[test]
+fn the_settings_catalog_is_the_registry() {
+    let tools = super::tools::catalog();
+    let registry = super::tools::registry();
+    assert_eq!(tools.len(), registry.len());
+    for (info, spec) in tools.iter().zip(&registry) {
+        assert_eq!(info.name, spec.name);
+        assert_eq!(info.category, spec.capability);
+        assert!(!info.description.is_empty());
+        assert!(!info.description.contains('\n'));
+        assert_eq!(
+            info.defaults_on,
+            super::config::tool_defaults_on(spec.capability, spec.name)
+        );
+    }
+    for name in super::config::SLACK_SEND_BASELINE {
+        let spec = registry.iter().find(|spec| spec.name == *name);
+        assert!(
+            spec.is_some_and(|spec| spec.capability == Capability::SlackSends),
+            "{name} is not a Slack send tool"
+        );
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn turning_the_server_off_closes_the_port() {
     let h = harness().await;

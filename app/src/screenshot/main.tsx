@@ -113,6 +113,7 @@ function sceneWorkspaces() {
 
 const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   mcp_settings: () => mcp.mcpSettings(),
+  mcp_tools: () => mcp.mcpTools(),
   save_mcp_settings: (args) => mcp.saveMcpSettings(args.settings as McpSettings),
   mcp_token: () => mcp.mcpToken(),
   regenerate_mcp_token: () => mcp.regenerateMcpToken(),
@@ -121,6 +122,8 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   mcp_open_client_config: (args) => mcp.mcpOpenClientConfig(args.client as McpClientId),
   mcp_activity: (args) => mcp.mcpActivity((args.outcome as McpOutcome | null) ?? undefined),
   clear_mcp_activity: () => mcp.clearMcpActivity(),
+  mcp_slack_proposals: () => mcp.mcpSlackProposals(),
+  decide_mcp_slack_proposal: (args) => mcp.decideMcpSlackProposal(Number(args.id), args.approve === true),
   review_stats: (args) => mcp.reviewStats(args.days as StatsPeriod, { repo: args.repo as string | null, org: args.org as string | null }, false),
   load_message_templates: () => Object.entries(templateDefaults).map(([kind, text]) => ({ kind, text, default_text: text })),
   preview_message_template: (args) => mockTemplatePreview(String(args.kind), String(args.text)),
@@ -157,7 +160,19 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     }
     return { ok: true, message: "", ids: [2, 13], total: 2, openOnly: false };
   },
-  slack_workspaces: () => (slackScene() ? sceneWorkspaces() : boot.slack_workspaces),
+  slack_workspaces: () => {
+    const list = slackScene() ? sceneWorkspaces() : boot.slack_workspaces;
+    if ((window as { __agentScopes?: boolean }).__agentScopes) {
+      return list.map((workspace, index) => ({
+        ...workspace,
+        scopes_missing:
+          index === 0
+            ? ["reactions:read", "files:read", "canvases:read", "lists:read", "search:read.im"]
+            : ["reactions:read"],
+      }));
+    }
+    return list;
+  },
   slack_refresh_workspaces: () => {
     if (slackScene() === "refreshing") {
       return new Promise(() => undefined);

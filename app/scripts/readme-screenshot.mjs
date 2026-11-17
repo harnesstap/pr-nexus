@@ -10,6 +10,9 @@
 // chips, note and star, starred pinned, Starred filter, compact rows, Settings).
 // `--branch <dir>` saves the Branch card states (branch-*.png) into <dir>: one
 // PR per state, the Update branch menu open, and the rebase confirmation.
+// `--agents-tools <dir>` saves Settings → Agents tool switches (agents-tools-*.png
+// and agents-workspace-signin.png): collapsed, one category with tools off,
+// a category off with its tools greyed, and Sign in again on two workspaces.
 // `--slack-draft <dir>` saves the Slack dialogs' draft warning (slack-draft-*.png):
 // the single request for draft #488 (default and narrow), after Mark ready, and
 // the bulk dialog with #488 and #58 as drafts, before and after Mark all ready.
@@ -119,6 +122,11 @@ const slackSettingsFlag = process.argv.indexOf("--slack-settings");
 const slackSettingsDir = slackSettingsFlag === -1 ? null : process.argv[slackSettingsFlag + 1];
 if (slackSettingsFlag !== -1 && !slackSettingsDir) {
   throw new Error("--slack-settings needs an output directory");
+}
+const agentsToolsFlag = process.argv.indexOf("--agents-tools");
+const agentsToolsDir = agentsToolsFlag === -1 ? null : process.argv[agentsToolsFlag + 1];
+if (agentsToolsFlag !== -1 && !agentsToolsDir) {
+  throw new Error("--agents-tools needs an output directory");
 }
 /** A row's own button, not its star (both carry the title). */
 const rowButton = (title) => new RegExp(`^(?!Star |Unstar |Open ).*${title}`);
@@ -466,6 +474,12 @@ try {
     await vite.close();
     process.exit(0);
   }
+  if (agentsToolsDir) {
+    await agentToolShots(browser, resolve(agentsToolsDir));
+    await browser.close();
+    await vite.close();
+    process.exit(0);
+  }
   if (mergeQueueDir) {
     await mergeQueueShots(browser, resolve(mergeQueueDir));
     await browser.close();
@@ -671,6 +685,69 @@ async function mergeQueueShots(browser, dir) {
   await page.waitForTimeout(300);
   await shot(page, resolve(dir, "merge-queue-narrow.png"));
   await page.close();
+}
+
+/** Settings → Agents → What agents may do: collapsed, one category edited, one category off. */
+async function agentToolShots(browser, dir) {
+  mkdirSync(dir, { recursive: true });
+  const page = await browser.newPage({ viewport: { width: 1100, height: 1400 }, deviceScaleFactor: 2, colorScheme: "dark" });
+  page.on("pageerror", (err) => console.error("page error:", err.message));
+  await page.goto(url);
+  await page.getByRole("button", { name: /account menu/ }).click();
+  await page.getByRole("menuitem", { name: "Settings" }).click();
+  await page.getByRole("tab", { name: "Agents (MCP)" }).click();
+  const section = page.getByRole("region", { name: "What agents may do" });
+  await section.getByRole("button", { name: "Reads: 6 of 6 tools" }).waitFor();
+  await section.screenshot({ path: resolve(dir, "agents-tools-collapsed.png") });
+  console.log("wrote agents-tools-collapsed.png");
+
+  await section.getByRole("button", { name: "Reads: 6 of 6 tools" }).click();
+  await section.getByRole("switch", { name: "list_projects", exact: true }).click();
+  await section.getByRole("switch", { name: "get_review_stats", exact: true }).click();
+  await section.getByRole("button", { name: "Reads: 4 of 6 tools" }).waitFor();
+  await section.screenshot({ path: resolve(dir, "agents-tools-reads-expanded.png") });
+  console.log("wrote agents-tools-reads-expanded.png");
+
+  await section.getByRole("button", { name: "Local writes: 11 of 11 tools" }).click();
+  await section.getByRole("switch", { name: "create_project", exact: true }).click();
+  await section.getByRole("switch", { name: "set_pr_note", exact: true }).click();
+  await section.getByRole("button", { name: "Local writes: 9 of 11 tools" }).waitFor();
+  await section.getByRole("switch", { name: "Local writes", exact: true }).click();
+  const greyed = section.getByRole("switch", { name: "create_project", exact: true });
+  await greyed.waitFor();
+  if (await greyed.isEnabled()) {
+    throw new Error("create_project stayed enabled after Local writes was turned off");
+  }
+  if ((await greyed.getAttribute("aria-checked")) !== "false") {
+    throw new Error("create_project lost its off state when the category turned off");
+  }
+  const kept = section.getByRole("switch", { name: "archive_project", exact: true });
+  if ((await kept.getAttribute("aria-checked")) !== "true") {
+    throw new Error("archive_project did not stay on while the category is off");
+  }
+  await section.screenshot({ path: resolve(dir, "agents-tools-writes-off.png") });
+  console.log("wrote agents-tools-writes-off.png");
+  await page.close();
+
+  const scopes = await browser.newPage({ viewport: { width: 1100, height: 900 }, deviceScaleFactor: 2, colorScheme: "dark" });
+  scopes.on("pageerror", (err) => console.error("page error:", err.message));
+  await scopes.addInitScript(() => {
+    globalThis.__agentScopes = true;
+  });
+  await scopes.goto(url);
+  await scopes.getByRole("button", { name: /account menu/ }).click();
+  await scopes.getByRole("menuitem", { name: "Settings" }).click();
+  await scopes.getByRole("tab", { name: "Agents (MCP)" }).click();
+  await scopes.getByRole("switch", { name: "Slack reads" }).click();
+  const picker = scopes.getByRole("group", { name: "Workspaces agents may read" });
+  const again = picker.getByRole("button", { name: "Sign in again to Acme", exact: true });
+  await again.waitFor();
+  await picker.getByRole("button", { name: "Sign in again to Acme Labs", exact: true }).waitFor();
+  await again.click();
+  await picker.getByText(/Slack did not give these permissions/).waitFor();
+  await picker.screenshot({ path: resolve(dir, "agents-workspace-signin.png") });
+  console.log("wrote agents-workspace-signin.png");
+  await scopes.close();
 }
 
 /** Settings → Slack → Connected workspaces: connected, expired, and a refresh in progress. */

@@ -938,6 +938,29 @@ export interface McpSettings {
   port: number | null;
   /** Hostnames, optionally with a port, allowed besides 127.0.0.1, localhost and [::1]. */
   extra_allowed_hosts: string[];
+  /** Tool names switched off. Empty: every tool that defaults on stays on. */
+  disabled_tools: string[];
+  /**
+   * Slack send tools that default off and the user has switched on.
+   * Empty by default. Other capabilities ignore this list.
+   */
+  enabled_slack_send_tools: string[];
+}
+
+/** A capability in Settings → Agents → What agents may do. */
+export type McpCapability = "reads" | "local_writes" | "slack_reads" | "slack_private_search" | "slack_sends";
+
+/** One MCP tool, from the server registry (`mcp_tools`). */
+export interface McpToolInfo {
+  name: string;
+  /** First sentence of the agent-facing description. */
+  description: string;
+  category: McpCapability;
+  /**
+   * False for a Slack send tool added after per-tool switches shipped.
+   * Those stay off until listed in `enabled_slack_send_tools`.
+   */
+  defaults_on: boolean;
 }
 
 export type SlackSendMode = "approve_all" | "automatic" | "allowlist";
@@ -1243,6 +1266,8 @@ export interface Api {
   /** Latest GitHub release when it is newer than this build; null otherwise. */
   checkUpdate(): Promise<UpdateInfo | null>;
   mcpSettings(): Promise<McpView>;
+  /** Tools the Agents tab lists, from the server registry. */
+  mcpTools(): Promise<McpToolInfo[]>;
   /** Saves and starts, stops or moves the local MCP server. */
   saveMcpSettings(settings: McpSettings): Promise<McpView>;
   /** The full bearer token, for copying. Created on first use. */
@@ -1401,6 +1426,7 @@ export const tauriApi: Api = {
   appInfo: () => invoke("app_info"),
   checkUpdate: () => invoke("check_update"),
   mcpSettings: () => invoke("mcp_settings"),
+  mcpTools: () => invoke("mcp_tools"),
   saveMcpSettings: (settings) => invoke("save_mcp_settings", { settings }),
   mcpToken: () => invoke("mcp_token"),
   regenerateMcpToken: () => invoke("regenerate_mcp_token"),

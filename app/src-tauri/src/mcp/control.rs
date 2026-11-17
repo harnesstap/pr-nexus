@@ -303,6 +303,13 @@ pub async fn mcp_settings(mcp: State<'_, Arc<McpControl>>) -> Result<McpView, Ap
     Ok(mcp.view())
 }
 
+/// The tools Settings lists under each capability: name, one-line
+/// description and category, from the server registry.
+#[tauri::command]
+pub async fn mcp_tools() -> Result<Vec<super::tools::ToolInfo>, AppError> {
+    Ok(super::tools::catalog())
+}
+
 /// Saves the Agents (MCP) settings and starts or stops the server.
 #[tauri::command]
 pub async fn save_mcp_settings(

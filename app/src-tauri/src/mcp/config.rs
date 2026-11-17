@@ -90,6 +90,36 @@ pub struct McpSettings {
     /// and Origin headers are allowed besides `127.0.0.1`, `localhost`,
     /// and `[::1]`. Empty by default. `*` is not accepted.
     pub extra_allowed_hosts: Vec<String>,
+    /// Tool names the user switched off. Empty by default, including
+    /// settings saved before per-tool switches, so a tool that defaults on
+    /// stays on. Turning a capability off does not change this list.
+    pub disabled_tools: Vec<String>,
+    /// Slack send tools that default off (anything outside
+    /// [`SLACK_SEND_BASELINE`]) which the user has switched on. Empty by
+    /// default. Other capabilities ignore it: a new tool there defaults on
+    /// and is turned off only through [`McpSettings::disabled_tools`].
+    pub enabled_slack_send_tools: Vec<String>,
+}
+
+/// Slack send tools that existed when per-tool switches shipped. A send
+/// tool that is not listed here defaults off, because a send acts as the
+/// user. Do not add a newly introduced send tool: leave it out so existing
+/// settings keep it off until the user turns it on.
+pub const SLACK_SEND_BASELINE: &[&str] = &[
+    "request_reviews",
+    "slack_add_reaction",
+    "slack_get_proposal",
+    "slack_schedule_message",
+    "slack_send_message",
+    "slack_send_message_draft",
+];
+
+/// Whether `name` is on until the user switches it off. Slack send tools
+/// outside [`SLACK_SEND_BASELINE`] are off until named in
+/// [`McpSettings::enabled_slack_send_tools`].
+pub fn tool_defaults_on(capability: Capability, name: &str) -> bool {
+    !matches!(capability, Capability::SlackSends)
+        || SLACK_SEND_BASELINE.binary_search(&name).is_ok()
 }
 
 impl Default for McpSettings {
@@ -107,12 +137,15 @@ impl Default for McpSettings {
             slack_elicit: true,
             port: None,
             extra_allowed_hosts: Vec::new(),
+            disabled_tools: Vec::new(),
+            enabled_slack_send_tools: Vec::new(),
         }
     }
 }
 
 impl McpSettings {
-    /// Whether tools needing `capability` are listed and callable.
+    /// Whether tools needing `capability` are listed and callable, before
+    /// the per-tool switch.
     pub fn allows(&self, capability: Capability) -> bool {
         capability.available()
             && match capability {
@@ -122,6 +155,24 @@ impl McpSettings {
                 Capability::SlackReads => self.slack_reads,
                 Capability::SlackPrivateSearch => self.slack_private_search,
             }
+    }
+
+    /// The per-tool switch, ignoring the capability master. A capability
+    /// that is off leaves this as the user set it.
+    pub fn tool_selected(&self, capability: Capability, name: &str) -> bool {
+        if self.disabled_tools.iter().any(|tool| tool == name) {
+            return false;
+        }
+        tool_defaults_on(capability, name)
+            || self
+                .enabled_slack_send_tools
+                .iter()
+                .any(|tool| tool == name)
+    }
+
+    /// Listed and callable: the capability is on and the tool is selected.
+    pub fn allows_tool(&self, capability: Capability, name: &str) -> bool {
+        self.allows(capability) && self.tool_selected(capability, name)
     }
 
     /// Clears what this build cannot do, so a saved `true` never outlives
@@ -145,8 +196,21 @@ impl McpSettings {
             self.port = None;
         }
         self.extra_allowed_hosts = hosts::normalize(&self.extra_allowed_hosts);
+        tidy_names(&mut self.disabled_tools);
+        tidy_names(&mut self.enabled_slack_send_tools);
+        self.enabled_slack_send_tools
+            .retain(|name| !self.disabled_tools.contains(name));
         self
     }
+}
+
+fn tidy_names(names: &mut Vec<String>) {
+    for name in names.iter_mut() {
+        *name = name.trim().to_owned();
+    }
+    names.retain(|name| !name.is_empty());
+    names.sort();
+    names.dedup();
 }
 
 /// The Slack part of [`McpSettings`], kept per profile (§8.4) under
@@ -277,6 +341,82 @@ mod tests {
         assert_eq!(
             noisy.extra_allowed_hosts,
             vec!["host.docker.internal".to_owned()]
+        );
+    }
+
+    #[test]
+    fn older_saves_leave_tools_on_and_new_slack_sends_default_off() {
+        let saved: McpSettings =
+            serde_json::from_str(r#"{"enabled":true,"reads":true,"slack_sends":true}"#).unwrap();
+        let saved = saved.normalized();
+        assert!(saved.disabled_tools.is_empty());
+        assert!(saved.enabled_slack_send_tools.is_empty());
+        assert!(saved.allows_tool(Capability::Reads, "list_projects"));
+        assert!(saved.allows_tool(Capability::SlackSends, "slack_send_message"));
+        assert!(!saved.tool_selected(Capability::SlackSends, "slack_future_send"));
+        assert!(!saved.allows_tool(Capability::SlackSends, "slack_future_send"));
+        assert!(saved.tool_selected(Capability::Reads, "list_projects"));
+
+        let picked = McpSettings {
+            enabled: true,
+            slack_sends: true,
+            enabled_slack_send_tools: vec!["slack_future_send".into()],
+            ..McpSettings::default()
+        }
+        .normalized();
+        assert!(picked.tool_selected(Capability::SlackSends, "slack_future_send"));
+        assert!(picked.allows_tool(Capability::SlackSends, "slack_future_send"));
+
+        // The capability stays the master. The per-tool choice is unchanged.
+        let off = McpSettings {
+            slack_sends: false,
+            ..picked
+        };
+        assert!(off.tool_selected(Capability::SlackSends, "slack_send_message"));
+        assert!(!off.allows_tool(Capability::SlackSends, "slack_send_message"));
+        assert!(off.tool_selected(Capability::SlackSends, "slack_future_send"));
+        assert!(!off.allows_tool(Capability::SlackSends, "slack_future_send"));
+    }
+
+    #[test]
+    fn tool_lists_trim_sort_and_let_disabled_win() {
+        let noisy = McpSettings {
+            disabled_tools: vec![
+                " list_projects ".into(),
+                "list_projects".into(),
+                String::new(),
+            ],
+            enabled_slack_send_tools: vec![
+                "slack_future_send".into(),
+                "list_projects".into(),
+                " slack_future_send ".into(),
+            ],
+            ..McpSettings::default()
+        }
+        .normalized();
+        assert_eq!(noisy.disabled_tools, vec!["list_projects".to_owned()]);
+        assert_eq!(
+            noisy.enabled_slack_send_tools,
+            vec!["slack_future_send".to_owned()]
+        );
+    }
+
+    #[test]
+    fn slack_send_baseline_is_the_tools_that_stay_on() {
+        let mut sorted = SLACK_SEND_BASELINE.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted, SLACK_SEND_BASELINE);
+        assert_eq!(
+            SLACK_SEND_BASELINE,
+            [
+                "request_reviews",
+                "slack_add_reaction",
+                "slack_get_proposal",
+                "slack_schedule_message",
+                "slack_send_message",
+                "slack_send_message_draft",
+            ]
         );
     }
 }

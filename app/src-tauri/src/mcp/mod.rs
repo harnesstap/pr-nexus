@@ -5,7 +5,8 @@
 //!   Origin checks against DNS rebinding. Loopback is always allowed;
 //!   [`hosts`] is the extra names from Settings.
 //! - [`tools`]: the tool registry. Each tool names the [`Capability`] it
-//!   needs; the Settings toggles gate capabilities, not tools.
+//!   needs. Settings gates the capability, and can switch a tool off on
+//!   its own.
 //! - [`writes`]: the Local writes tools (projects, links, notes, stars).
 //! - [`audit`]: every call goes through one [`audit::AuditSink`]; the
 //!   default one also keeps the `mcp_audit` table shown under Activity.

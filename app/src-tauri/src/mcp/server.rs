@@ -103,7 +103,7 @@ impl ServerHandler for NexusMcp {
         Ok(ListToolsResult::with_all_items(
             self.tools
                 .iter()
-                .filter(|spec| settings.allows(spec.capability))
+                .filter(|spec| settings.allows_tool(spec.capability, spec.name))
                 .map(ToolSpec::tool)
                 .collect(),
         ))
@@ -225,9 +225,22 @@ impl ServerHandler for NexusMcp {
                         .flatten(),
                 });
             };
-        if !self.shared.settings().allows(spec.capability) {
+        let settings = self.shared.settings();
+        if !settings.allows(spec.capability) {
             let message = format!(
                 "{} is turned off in PR Nexus Settings → Agents (MCP).",
+                spec.name
+            );
+            audit(Outcome::Denied, None, Some(message.clone()));
+            return Ok(CallToolResult::structured_error(json!({
+                "kind": "forbidden",
+                "message": message,
+            }))
+            .into());
+        }
+        if !settings.tool_selected(spec.capability, spec.name) {
+            let message = format!(
+                "{} is switched off under What agents may do in PR Nexus Settings → Agents (MCP).",
                 spec.name
             );
             audit(Outcome::Denied, None, Some(message.clone()));
