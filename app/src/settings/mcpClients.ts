@@ -1,4 +1,4 @@
-/** Per-client MCP config snippets for Settings → Agents → Connect an agent. Pure: no DOM, no IPC. */
+/** Per-client MCP config snippets for Settings → Agents → Connect a client. Pure: no DOM, no IPC. */
 
 export const MCP_CLIENTS = [
   { id: "claude-desktop", label: "Claude Desktop" },

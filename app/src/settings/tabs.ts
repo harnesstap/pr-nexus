@@ -1,35 +1,135 @@
-export const SETTINGS_TABS = [
-  { id: "accounts", label: "Accounts" },
-  { id: "profiles", label: "Profiles" },
-  { id: "mappings", label: "Mappings" },
-  { id: "review", label: "Review" },
-  { id: "sync", label: "Sync" },
-  { id: "agents", label: "Agents (MCP)" },
-  { id: "changelog", label: "Changelog" },
-  { id: "about", label: "About" },
+/** Settings groups. The labels match the sidebar headings (CSS uppercases them). */
+export const SETTINGS_GROUPS = [
+  {
+    id: "connections",
+    label: "Connections",
+    sections: [
+      { id: "github", label: "GitHub" },
+      { id: "slack", label: "Slack" },
+      { id: "profiles", label: "Profiles" },
+    ],
+  },
+  {
+    id: "review",
+    label: "Review",
+    sections: [
+      { id: "requests", label: "Requests & bumps" },
+      { id: "rules", label: "Rules" },
+      { id: "mappings", label: "Mappings" },
+    ],
+  },
+  {
+    id: "sync",
+    label: "Sync",
+    sections: [
+      { id: "schedule", label: "Schedule" },
+      { id: "notifications", label: "Notifications" },
+    ],
+  },
+  {
+    id: "agents",
+    label: "Agents",
+    sections: [
+      { id: "server", label: "Server" },
+      { id: "permissions", label: "Permissions" },
+      { id: "client", label: "Connect a client" },
+      { id: "proposals", label: "Proposals" },
+      { id: "activity", label: "Activity" },
+    ],
+  },
+  {
+    id: "about",
+    label: "About",
+    sections: [
+      { id: "app", label: "App & updates" },
+      { id: "changelog", label: "Changelog" },
+      { id: "keychain", label: "Keychain" },
+      { id: "setup", label: "Setup" },
+    ],
+  },
 ] as const;
 
-export type SettingsTab = (typeof SETTINGS_TABS)[number]["id"];
+export type SettingsSection = (typeof SETTINGS_GROUPS)[number]["sections"][number]["id"];
 
-/** Arrow keys, Home and End move between tabs (WAI-ARIA tabs pattern). */
-export function tabAfterKey(current: SettingsTab, key: string): SettingsTab | null {
-  const ids = SETTINGS_TABS.map((tab) => tab.id);
-  const index = ids.indexOf(current);
+const SECTION_IDS: readonly SettingsSection[] = SETTINGS_GROUPS.flatMap((group) => group.sections.map((section) => section.id));
+
+export function isSettingsSection(value: string): value is SettingsSection {
+  return (SECTION_IDS as readonly string[]).includes(value);
+}
+
+export function settingsSectionLabel(id: SettingsSection): string {
+  for (const group of SETTINGS_GROUPS) {
+    for (const section of group.sections) {
+      if (section.id === id) {
+        return section.label;
+      }
+    }
+  }
+  return id;
+}
+
+/** The window minimum. Below this, settings navigation is the section menu. */
+export const SETTINGS_NAV_VIEWPORT_PX = 960;
+
+/** Below this settings-pane width the 180px rail leaves too little room for a form. */
+export const SETTINGS_NAV_PANE_PX = 760;
+
+/**
+ * Compact navigation: the viewport is under the window minimum, or the
+ * settings pane itself is too narrow. A width of 0 means it has not been
+ * measured yet, so the rail stays.
+ */
+export function settingsNavIsCompact(viewportWidth: number, paneWidth: number): boolean {
+  if (viewportWidth > 0 && viewportWidth < SETTINGS_NAV_VIEWPORT_PX) {
+    return true;
+  }
+  if (paneWidth > 0 && paneWidth < SETTINGS_NAV_PANE_PX) {
+    return true;
+  }
+  return false;
+}
+
+/** Last section opened, per machine. Not a setting: it is UI state, like dismissed banners. */
+export const SETTINGS_SECTION_KEY = "pr-nexus.settings-section";
+
+export function readSettingsSection(): SettingsSection {
+  try {
+    const stored = window.localStorage.getItem(SETTINGS_SECTION_KEY);
+    if (stored && isSettingsSection(stored)) {
+      return stored;
+    }
+  } catch {
+    // Private mode can throw on storage reads.
+  }
+  return "github";
+}
+
+export function writeSettingsSection(section: SettingsSection): void {
+  try {
+    window.localStorage.setItem(SETTINGS_SECTION_KEY, section);
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+/** Up and down, Home and End move between sections (vertical tabs). */
+export function sectionAfterKey(current: SettingsSection, key: string): SettingsSection | null {
+  const index = SECTION_IDS.indexOf(current);
   switch (key) {
-    case "ArrowRight":
-      return ids[(index + 1) % ids.length];
-    case "ArrowLeft":
-      return ids[(index - 1 + ids.length) % ids.length];
+    case "ArrowDown":
+      return SECTION_IDS[(index + 1) % SECTION_IDS.length];
+    case "ArrowUp":
+      return SECTION_IDS[(index - 1 + SECTION_IDS.length) % SECTION_IDS.length];
     case "Home":
-      return ids[0];
+      return SECTION_IDS[0];
     case "End":
-      return ids[ids.length - 1];
+      return SECTION_IDS[SECTION_IDS.length - 1];
     default:
       return null;
   }
 }
 
-/** Seconds ↔ whole minutes for the Sync tab. */
+/** Seconds ↔ whole minutes for the Schedule section. */
 export function toMinutes(seconds: number): number {
   return Math.max(1, Math.round(seconds / 60));
 }

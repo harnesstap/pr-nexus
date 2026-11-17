@@ -141,7 +141,7 @@ test("first launch opens the setup wizard on one step", async () => {
   expect(screen.queryByRole("heading", { name: /provider/ })).not.toBeInTheDocument();
 });
 
-test("Settings → About → Re-run setup opens the wizard at step 1 and Back returns to the list", async () => {
+test("Settings → Setup → Re-run setup opens the wizard at step 1 and Back returns to the list", async () => {
   const finished = { ...boot, onboarding: { ...boot.onboarding, step: "done" as const, finished_at: "2026-10-26T00:00:00Z" }, resume_step: "done" as const, tracked_orgs: ["acme"], github_connected: true, github_login: "ada" };
   const saved: (string | null)[] = [];
   const fake: Api = {
@@ -155,7 +155,7 @@ test("Settings → About → Re-run setup opens the wizard at step 1 and Back re
   render(<App api={fake} />);
   fireEvent.click(await screen.findByRole("button", { name: /account menu/ }));
   fireEvent.click(screen.getByRole("menuitem", { name: "Settings" }));
-  fireEvent.click(await screen.findByRole("tab", { name: "About" }));
+  fireEvent.click(await screen.findByRole("tab", { name: "Setup" }));
   fireEvent.click(await screen.findByRole("button", { name: "Re-run setup" }));
   expect(await screen.findByRole("heading", { name: /Step 1 of 5/ })).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Next" }));

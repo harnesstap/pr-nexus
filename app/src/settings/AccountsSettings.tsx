@@ -5,6 +5,8 @@ import { SlackSettings } from "../slack/SlackSettings";
 import { Switch } from "../Switch";
 import { SaveBar, useSaveBar } from "./SaveBar";
 
+export type AccountsSection = "github" | "slack";
+
 interface Props {
   api: Api;
   boot: Bootstrap;
@@ -12,6 +14,11 @@ interface Props {
   onOrgsSaved: (orgs: string[], personal: boolean) => Promise<void>;
   onMentionsChange: (scope: MentionsScope) => void;
   onWorkspacesChange?: (workspaces: SlackWorkspace[]) => void;
+  /**
+   * Which half to show. Omit to show both (the old Accounts page).
+   * Null keeps the draft mounted and shows nothing.
+   */
+  section?: AccountsSection | null;
 }
 
 export interface AccountsDraft {
@@ -32,8 +39,8 @@ export function accountsFromBoot(boot: Bootstrap): AccountsDraft {
 
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
-/** Settings → Accounts: providers, tracked orgs and Slack, saved together from one save bar. */
-export function AccountsSettings({ api, boot, onOrgsSaved, onMentionsChange, onWorkspacesChange }: Props) {
+/** GitHub and Slack share one draft and one save bar. */
+export function AccountsSettings({ api, boot, onOrgsSaved, onMentionsChange, onWorkspacesChange, section }: Props) {
   const { draft, setDraft, bar } = useSaveBar(accountsFromBoot(boot), async (next, saved) => {
     if (!same(next.slack, saved.slack)) {
       await api.saveSlack(next.slack.clientId.trim(), next.slack.clientSecret, next.slack.redirectUri.trim());
@@ -54,14 +61,22 @@ export function AccountsSettings({ api, boot, onOrgsSaved, onMentionsChange, onW
       orgs: (current.orgs.includes(org) ? current.orgs.filter((item) => item !== org) : [...current.orgs, org]).sort(),
     }));
 
+  if (section === null) {
+    return null;
+  }
+  const github = section === undefined || section === "github";
+  const slack = section === undefined || section === "slack";
+
   return (
     <div className="space-y-8">
+      {github && (
+        <>
       <section aria-labelledby="accounts-providers">
         <h2 id="accounts-providers" className="text-base font-semibold">
           Providers
         </h2>
         <p className="mt-2 text-sm text-slate-300">GitHub{boot.github_login ? ` · signed in as ${boot.github_login}` : ""} · Slack</p>
-        <p className="mt-1 text-xs text-slate-500">To change the GitHub account, use About → Re-run setup.</p>
+        <p className="mt-1 text-xs text-slate-500">To change the GitHub account, use Setup.</p>
       </section>
       <section aria-labelledby="accounts-orgs">
         <h2 id="accounts-orgs" className="text-base font-semibold">
@@ -87,6 +102,9 @@ export function AccountsSettings({ api, boot, onOrgsSaved, onMentionsChange, onW
           Include my personal repos
         </Switch>
       </section>
+        </>
+      )}
+      {slack && (
       <SlackSettings
         api={api}
         fields={draft.slack}
@@ -98,6 +116,7 @@ export function AccountsSettings({ api, boot, onOrgsSaved, onMentionsChange, onW
         initialWorkspaces={boot.slack_workspaces}
         onWorkspacesChange={onWorkspacesChange}
       />
+      )}
       <SaveBar {...bar} />
     </div>
   );

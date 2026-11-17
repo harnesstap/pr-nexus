@@ -58,7 +58,7 @@ import { AccountsSettings } from "../settings/AccountsSettings";
 import { BulkDialog } from "../slack/BulkDialog";
 import { ReviewDialog } from "../slack/ReviewDialog";
 import { SettingsScreen } from "../settings/SettingsScreen";
-import type { SettingsTab } from "../settings/tabs";
+import { readSettingsSection, type SettingsSection } from "../settings/tabs";
 import { KeyringBanner } from "../KeyringBanner";
 import { SlackSignInBanner, SyncErrorBanner, SyncPopover } from "./SyncBanners";
 import { MappingHint } from "./Banners";
@@ -74,7 +74,7 @@ interface Props {
   api: Api;
   boot: Bootstrap;
   onBoot: (boot: Bootstrap) => void;
-  /** Settings → About → Re-run setup. */
+  /** Settings → Setup. */
   onRerunSetup?: () => void;
   /** Account menu → another profile. */
   onSwitchProfile?: (id: string) => void;
@@ -123,7 +123,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
   /** First load of the list: null while loading, then "ready" or the error. */
   const [listState, setListState] = useState<{ phase: "loading" } | { phase: "ready" } | { phase: "error"; message: string }>({ phase: "loading" });
   const [attempt, setAttempt] = useState(0);
-  const [settingsTab, setSettingsTab] = useState<SettingsTab>("accounts");
+  const [settingsTab, setSettingsTab] = useState<SettingsSection>(readSettingsSection);
   const [mappingHint, setMappingHint] = useState(() => showMappingHint(boot.mapping_count, boot.slack_workspaces.length));
   const [draft, setDraft] = useState<{ name: string; error: string | null; withSelection: boolean } | null>(null);
   /** The list's current selection, offered to the sidebar's new-project field. */
@@ -1085,7 +1085,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
                 onAdd={() => onAddProfile?.()}
                 onSettings={() => setViewKey("settings")}
                 onAbout={() => {
-                  setSettingsTab("about");
+                  setSettingsTab("app");
                   setViewKey("settings");
                 }}
               />
@@ -1137,15 +1137,15 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
           <SlackSignInBanner
             workspaces={boot.slack_workspaces}
             onReconnect={() => {
-              setSettingsTab("accounts");
+              setSettingsTab("slack");
               setViewKey("settings");
             }}
           />
         )}
         <KeyringBanner api={api} initial={boot.keyring} onReady={() => void api.bootstrap().then(onBoot)} />
         {viewKey === "settings" ? (
-          <section className="min-h-0 flex-1 overflow-auto px-6 py-8">
-            <h1 className="mx-auto mb-4 max-w-3xl text-lg font-semibold">Settings</h1>
+          <section className="flex min-h-0 flex-1 flex-col overflow-hidden px-6 py-6">
+            <h1 className="mb-4 shrink-0 text-lg font-semibold">Settings</h1>
             <SettingsScreen
               api={api}
               boot={boot}
@@ -1230,7 +1230,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
                 onViewChange={(next) => setViews((current) => ({ ...current, [viewKey]: next }))}
                 onShowView={showViewKeepingSearch}
                 onOpenSettings={() => {
-                  setSettingsTab("accounts");
+                  setSettingsTab("github");
                   setViewKey("settings");
                 }}
                 onOpen={(url) => void api.openExternal(url)}

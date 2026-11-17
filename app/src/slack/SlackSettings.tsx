@@ -16,11 +16,11 @@ interface Props {
   onWorkspacesChange?: (workspaces: SlackWorkspace[]) => void;
 }
 
-/** Settings → Accounts → Slack. App fields and mentions save through the Settings save bar. */
+/** Settings → Slack. App fields, workspaces, mentions and message templates. The app fields save with the accounts bar. */
 export function SlackSettings({ api, fields, onFieldsChange, mentions, onMentionsChange, secretSaved, savedClientId, initialWorkspaces, onWorkspacesChange }: Props) {
   const [workspaces, setWorkspaces] = useState(initialWorkspaces);
   return (
-    <section className="mt-10 border-t border-slate-800 pt-6" aria-labelledby="slack-settings">
+    <section aria-labelledby="slack-settings">
       <h2 id="slack-settings" className="text-lg font-semibold">
         Slack
       </h2>

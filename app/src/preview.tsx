@@ -1125,7 +1125,7 @@ createRoot(root).render(
       </div>
     ) : screenName === "notifications" ? (
       <div className="min-h-screen bg-slate-950 px-6 py-8 text-slate-200">
-        <SettingsScreen api={previewApi} boot={boot} onBoot={() => undefined} accounts={null} tab="sync" onTabChange={() => undefined} onRerunSetup={() => undefined} />
+        <SettingsScreen api={previewApi} boot={boot} onBoot={() => undefined} accounts={null} tab="notifications" onTabChange={() => undefined} onRerunSetup={() => undefined} />
       </div>
     ) : settingsScene === "profiles" ? (
       <div className="min-h-screen bg-slate-950 px-6 py-8 text-slate-200">
@@ -1137,7 +1137,7 @@ createRoot(root).render(
       </div>
     ) : screenName === "review-settings" ? (
       <div className="min-h-screen bg-slate-950 px-6 py-8 text-slate-200">
-        <SettingsScreen api={previewApi} boot={boot} onBoot={() => undefined} accounts={null} tab="review" onTabChange={() => undefined} onRerunSetup={() => undefined} />
+        <SettingsScreen api={previewApi} boot={boot} onBoot={() => undefined} accounts={null} tab="requests" onTabChange={() => undefined} onRerunSetup={() => undefined} />
       </div>
     ) : screenName === "slack-scopes" ? (
       <div className="min-h-screen bg-slate-950 px-6 py-8 text-slate-200">
@@ -1160,7 +1160,7 @@ createRoot(root).render(
       </div>
     ) : settingsScene === "review" ? (
       <div className="min-h-screen bg-slate-950 px-6 py-8 text-slate-200">
-        <SettingsScreen api={previewApi} boot={boot} onBoot={() => undefined} accounts={null} tab="review" onTabChange={() => undefined} onRerunSetup={() => undefined} />
+        <SettingsScreen api={previewApi} boot={boot} onBoot={() => undefined} accounts={null} tab="requests" onTabChange={() => undefined} onRerunSetup={() => undefined} />
       </div>
     ) : changelogPreview === "tab" ? (
       <div className="min-h-screen bg-slate-950 px-6 py-8 text-slate-200">

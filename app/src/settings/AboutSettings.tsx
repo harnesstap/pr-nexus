@@ -4,15 +4,19 @@ import { errorMessage } from "../api";
 import { updateSummary } from "../list/UpdateIndicator";
 import { Tooltip } from "../Tooltip";
 
+export type AboutSection = "app" | "keychain" | "setup";
+
 interface Props {
   api: Api;
   onRerunSetup: () => void;
+  /** Which block to show. Omit to show every block. */
+  section?: AboutSection;
 }
 
 type UpdateState = { phase: "idle" | "checking" | "current" } | { phase: "available"; update: UpdateInfo } | { phase: "error"; message: string };
 
-/** Settings → About: version, paths, the keychain explainer, update check, Re-run setup. */
-export function AboutSettings({ api, onRerunSetup }: Props) {
+/** App & updates, keychain and setup. Changelog is its own section. */
+export function AboutSettings({ api, onRerunSetup, section }: Props) {
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [update, setUpdate] = useState<UpdateState>({ phase: "idle" });
@@ -64,8 +68,11 @@ export function AboutSettings({ api, onRerunSetup }: Props) {
   }
 
   const isMac = info.os === "macos";
+  const show = (part: AboutSection) => section === undefined || section === part;
   return (
     <div className="space-y-8 text-sm">
+      {show("app") && (
+      <>
       <section aria-labelledby="about-app">
         <h2 id="about-app" className="text-base font-semibold">
           PR Nexus {info.version}
@@ -137,7 +144,10 @@ export function AboutSettings({ api, onRerunSetup }: Props) {
           </div>
         )}
       </section>
+      </>
+      )}
 
+      {show("keychain") && (
       <section aria-labelledby="about-keychain">
         <h2 id="about-keychain" className="text-base font-semibold">
           {isMac ? "Keychain prompts" : "Credential store"}
@@ -157,7 +167,9 @@ export function AboutSettings({ api, onRerunSetup }: Props) {
           <p className="mt-2 text-slate-300">PR Nexus keeps every token in one entry of the system credential store.</p>
         )}
       </section>
+      )}
 
+      {show("setup") && (
       <section aria-labelledby="about-setup">
         <h2 id="about-setup" className="text-base font-semibold">
           Setup
@@ -170,6 +182,7 @@ export function AboutSettings({ api, onRerunSetup }: Props) {
           Re-run setup
         </button>
       </section>
+      )}
     </div>
   );
 }

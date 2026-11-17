@@ -11,14 +11,20 @@ import { plainText } from "../textInput";
 import { McpClientConfig } from "./McpClientConfig";
 import { parseExtraHost, parsePort } from "./tabs";
 
+export type AgentsSection = "server" | "permissions" | "client" | "proposals" | "activity";
+
 interface Props {
   api: Pick<Api, "mcpSettings" | "mcpTools" | "saveMcpSettings" | "mcpToken" | "regenerateMcpToken" | "mcpClientStates" | "mcpAddToClient" | "mcpOpenClientConfig" | "mcpActivity" | "clearMcpActivity" | "reviewStats" | "openExternal" | "slackWorkspaces" | "slackConnect" | "mcpSlackProposals" | "decideMcpSlackProposal">;
+  /** Which block to show. Omit to show every block. */
+  section?: AgentsSection;
+  /** Opens another Agents section when only one section is on screen. */
+  onOpenSection?: (section: AgentsSection) => void;
 }
 
 const button = "rounded border border-slate-700 px-3 py-1.5 text-sm hover:bg-slate-800 disabled:opacity-50";
 
-/** Settings → Agents (MCP): the local server local AI agents connect to. */
-export function AgentsSettings({ api }: Props) {
+/** Settings → Agents: server, permissions, client, proposals and activity. */
+export function AgentsSettings({ api, section, onOpenSection }: Props) {
   const [view, setView] = useState<McpView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -151,8 +157,10 @@ export function AgentsSettings({ api }: Props) {
 
   const { settings, status } = view;
   const url = status.url;
+  const show = (part: AgentsSection) => section === undefined || section === part;
   return (
     <div className="space-y-8 text-sm">
+      {show("server") && (
       <section aria-labelledby="agents-server">
         <h2 id="agents-server" className="text-base font-semibold">
           Local MCP server
@@ -200,8 +208,75 @@ export function AgentsSettings({ api }: Props) {
           disabled={busy}
           onChange={(extra_allowed_hosts) => save({ extra_allowed_hosts })}
         />
+        <dl className="mt-4 space-y-2">
+          <div>
+            <dt className="text-slate-400">Endpoint</dt>
+            <dd className="flex min-w-0 items-center gap-2">
+              <span className="min-w-0 truncate font-mono text-xs">{url ?? "Starts when the server is on"}</span>
+              {url && (
+                <button
+                  type="button"
+                  aria-label="Copy endpoint"
+                  className="shrink-0 rounded px-2 py-0.5 text-xs hover:bg-slate-800"
+                  onClick={() => copy("endpoint", url)}
+                >
+                  Copy
+                </button>
+              )}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-slate-400">Token</dt>
+            <dd className="flex min-w-0 items-center gap-2">
+              <span className="min-w-0 truncate font-mono text-xs" aria-label="Token, masked">
+                {view.token_masked ?? "Created when the server first starts"}
+              </span>
+              {view.token_masked && (
+                <button
+                  type="button"
+                  aria-label="Copy token"
+                  className="shrink-0 rounded px-2 py-0.5 text-xs hover:bg-slate-800"
+                  onClick={() => copy("token", api.mcpToken())}
+                >
+                  Copy
+                </button>
+              )}
+            </dd>
+          </div>
+        </dl>
+        <div className="mt-4">
+          {confirming ? (
+            <div
+              role="group"
+              aria-label="Confirm new token"
+              className="flex flex-wrap items-center gap-2 rounded border border-amber-700/60 bg-amber-950/30 p-2"
+            >
+              <span className="text-amber-100">Agents using the current token stop working until you give them the new one.</span>
+              <button
+                type="button"
+                className={`${button} border-amber-600`}
+                disabled={busy}
+                onClick={() => {
+                  setConfirming(false);
+                  run(() => api.regenerateMcpToken());
+                }}
+              >
+                Regenerate token
+              </button>
+              <button type="button" className={button} onClick={() => setConfirming(false)}>
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <button type="button" className={button} disabled={busy || !view.token_masked} onClick={() => setConfirming(true)}>
+              Regenerate token…
+            </button>
+          )}
+        </div>
       </section>
+      )}
 
+      {show("permissions") && (
       <section aria-labelledby="agents-capabilities">
         <h2 id="agents-capabilities" className="text-base font-semibold">
           What agents may do
@@ -239,7 +314,8 @@ export function AgentsSettings({ api }: Props) {
             note={
               settings.local_writes ? (
                 <p id="agents-writes-note" className="mt-1 text-xs text-slate-400">
-                  Agents cannot delete projects. Every call shows under Activity below.
+                  Agents cannot delete projects. Every call shows under{" "}
+                  <SectionJump label="Activity" target="activity" section={section} onOpen={onOpenSection} inlineFallback="Activity below" />.
                 </p>
               ) : null
             }
@@ -331,7 +407,10 @@ export function AgentsSettings({ api }: Props) {
                       />
                       <span>
                         Ask in the agent when it supports it
-                        <span className="block text-xs text-slate-400">A held write is shown in the agent to confirm; unanswered ones still wait here.</span>
+                        <span className="block text-xs text-slate-400">
+                          A held write is shown in the agent to confirm; unanswered ones still wait{" "}
+                          <SectionJump label="Proposals" target="proposals" section={section} onOpen={onOpenSection} inlineFallback="here" lead="under " />.
+                        </span>
                       </span>
                     </label>
                   )}
@@ -351,48 +430,14 @@ export function AgentsSettings({ api }: Props) {
           </CapabilityRow>
         </ul>
       </section>
+      )}
 
+      {show("client") && (
       <section aria-labelledby="agents-connect">
         <h2 id="agents-connect" className="text-base font-semibold">
-          Connect an agent
+          Connect a client
         </h2>
-        <dl className="mt-3 space-y-2">
-          <div>
-            <dt className="text-slate-400">Endpoint</dt>
-            <dd className="flex min-w-0 items-center gap-2">
-              <span className="min-w-0 truncate font-mono text-xs">{url ?? "Starts when the server is on"}</span>
-              {url && (
-                <button
-                  type="button"
-                  aria-label="Copy endpoint"
-                  className="shrink-0 rounded px-2 py-0.5 text-xs hover:bg-slate-800"
-                  onClick={() => copy("endpoint", url)}
-                >
-                  Copy
-                </button>
-              )}
-            </dd>
-          </div>
-          <div>
-            <dt className="text-slate-400">Token</dt>
-            <dd className="flex min-w-0 items-center gap-2">
-              <span className="min-w-0 truncate font-mono text-xs" aria-label="Token, masked">
-                {view.token_masked ?? "Created when the server first starts"}
-              </span>
-              {view.token_masked && (
-                <button
-                  type="button"
-                  aria-label="Copy token"
-                  className="shrink-0 rounded px-2 py-0.5 text-xs hover:bg-slate-800"
-                  onClick={() => copy("token", api.mcpToken())}
-                >
-                  Copy
-                </button>
-              )}
-            </dd>
-          </div>
-        </dl>
-        {url && view.token_masked && (
+        {url && view.token_masked ? (
           <McpClientConfig
             url={url}
             tokenMasked={view.token_masked}
@@ -400,53 +445,68 @@ export function AgentsSettings({ api }: Props) {
             api={api}
             tokenVersion={view.token_masked}
             onCopy={(label, build) => copy(label, api.mcpToken().then(build))}
+            onFixPort={section !== undefined && onOpenSection ? () => onOpenSection("server") : undefined}
           />
-        )}
-        {copied && (
-          <p role="status" className="mt-1 text-xs text-slate-300">
-            Copied {copied}.
-          </p>
-        )}
-        <div className="mt-4">
-          {confirming ? (
-            <div
-              role="group"
-              aria-label="Confirm new token"
-              className="flex flex-wrap items-center gap-2 rounded border border-amber-700/60 bg-amber-950/30 p-2"
-            >
-              <span className="text-amber-100">Agents using the current token stop working until you give them the new one.</span>
-              <button
-                type="button"
-                className={`${button} border-amber-600`}
-                disabled={busy}
-                onClick={() => {
-                  setConfirming(false);
-                  run(() => api.regenerateMcpToken());
-                }}
-              >
-                Regenerate token
-              </button>
-              <button type="button" className={button} onClick={() => setConfirming(false)}>
-                Cancel
-              </button>
-            </div>
-          ) : (
-            <button type="button" className={button} disabled={busy || !view.token_masked} onClick={() => setConfirming(true)}>
-              Regenerate token…
-            </button>
-          )}
-        </div>
-        {error && (
-          <p role="alert" className="mt-2 text-rose-300">
-            {error}
-          </p>
+        ) : (
+          <p className="mt-2 max-w-prose text-slate-400">Turn the server on to connect a client. The token is on Server.</p>
         )}
       </section>
+      )}
 
-      {settings.slack_reads && <SlackProposals api={api} canSend={settings.slack_sends} />}
+      {show("proposals") && settings.slack_reads && <SlackProposals api={api} canSend={settings.slack_sends} />}
+      {section === "proposals" && !settings.slack_reads && (
+        <p className="text-slate-400">Turn on Slack reads under Permissions to see proposals.</p>
+      )}
 
-      <McpActivity api={api} />
+      {show("activity") && <McpActivity api={api} />}
+      {copied && (
+        <p role="status" className="text-xs text-slate-300">
+          Copied {copied}.
+        </p>
+      )}
+      {error && (
+        <p role="alert" className="text-rose-300">
+          {error}
+        </p>
+      )}
     </div>
+  );
+}
+
+/** A section name. On the combined page it stays the old nearby wording. */
+function SectionJump({
+  label,
+  target,
+  section,
+  onOpen,
+  inlineFallback,
+  lead = "",
+}: {
+  label: string;
+  target: AgentsSection;
+  section?: AgentsSection;
+  onOpen?: (section: AgentsSection) => void;
+  inlineFallback: string;
+  lead?: string;
+}) {
+  if (section === undefined) {
+    return <>{inlineFallback}</>;
+  }
+  if (!onOpen) {
+    return (
+      <>
+        {lead}
+        {label}
+      </>
+    );
+  }
+  return (
+    <>
+      {lead}
+      <button type="button" className="text-sky-300 hover:underline" onClick={() => onOpen(target)}>
+        {label}
+      </button>
+    </>
   );
 }
 

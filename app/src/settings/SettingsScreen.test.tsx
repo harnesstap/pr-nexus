@@ -1,10 +1,11 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, expect, test } from "vitest";
 import type { Api, Bootstrap, MappingEntry, Preferences, SlackWorkspace } from "../api";
-import { DEFAULT_PREFERENCES, fakeSettingsApi } from "./fakes";
+import { DEFAULT_PREFERENCES, fakeMcp, fakeSettingsApi } from "./fakes";
+import { AccountsSettings } from "./AccountsSettings";
 import { SettingsScreen } from "./SettingsScreen";
-import type { SettingsTab } from "./tabs";
-import { useState } from "react";
+import { isSettingsSection, readSettingsSection, sectionAfterKey, settingsNavIsCompact, type SettingsSection } from "./tabs";
+import { useState, type ReactNode } from "react";
 
 const boot = {
   bump_broadcast: true,
@@ -14,17 +15,31 @@ const boot = {
 
 function Harness({
   api,
-  start = "accounts",
+  start,
   onBoot = () => undefined,
   onRerun = () => undefined,
+  boot: bootOverride = boot,
+  accounts,
 }: {
   api: Api;
-  start?: SettingsTab;
+  start?: SettingsSection;
   onBoot?: (boot: Bootstrap) => void;
   onRerun?: () => void;
+  boot?: Bootstrap;
+  accounts?: ReactNode;
 }) {
-  const [tab, setTab] = useState<SettingsTab>(start);
-  return <SettingsScreen api={api} boot={boot} onBoot={onBoot} accounts={<p>Accounts body</p>} tab={tab} onTabChange={setTab} onRerunSetup={onRerun} />;
+  const [tab, setTab] = useState<SettingsSection>(() => start ?? readSettingsSection());
+  return (
+    <SettingsScreen
+      api={api}
+      boot={bootOverride}
+      onBoot={onBoot}
+      accounts={accounts ?? <p>GitHub body</p>}
+      tab={tab}
+      onTabChange={setTab}
+      onRerunSetup={onRerun}
+    />
+  );
 }
 
 beforeEach(() => window.localStorage.clear());
@@ -66,19 +81,50 @@ const entry = (partial: Partial<MappingEntry> & { slug: string }): MappingEntry 
   has_imported: partial.has_imported ?? true,
 });
 
-test("tabs follow the WAI-ARIA pattern: one tab stop, arrows and Home/End move focus", () => {
+test("sections follow the vertical tab pattern: one tab stop, up and down, Home and End", () => {
   render(<Harness api={fakeSettingsApi() as Api} />);
-  const accounts = screen.getByRole("tab", { name: "Accounts" });
-  expect(accounts).toHaveAttribute("aria-selected", "true");
+  const github = screen.getByRole("tab", { name: "GitHub" });
+  expect(github).toHaveAttribute("aria-selected", "true");
+  expect(github).toHaveClass("bg-violet-500/20");
+  expect(github.className).toMatch(/focus-visible:outline-violet-400/);
   expect(screen.getByRole("tab", { name: "Mappings" })).toHaveAttribute("tabindex", "-1");
-  expect(screen.getByRole("tabpanel")).toHaveTextContent("Accounts body");
-  fireEvent.keyDown(accounts, { key: "ArrowLeft" });
-  expect(screen.getByRole("tab", { name: "About" })).toHaveAttribute("aria-selected", "true");
-  expect(screen.getByRole("tab", { name: "About" })).toHaveFocus();
-  fireEvent.keyDown(screen.getByRole("tab", { name: "About" }), { key: "Home" });
-  expect(accounts).toHaveFocus();
-  fireEvent.keyDown(accounts, { key: "ArrowRight" });
-  expect(screen.getByRole("tab", { name: "Profiles" })).toHaveAttribute("aria-selected", "true");
+  expect(screen.getByRole("tablist", { name: "Connections" })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "Connections" })).toHaveClass("uppercase");
+  expect(screen.queryByRole("tab", { name: "Connections" })).not.toBeInTheDocument();
+  expect(screen.getByRole("tabpanel")).toHaveTextContent("GitHub body");
+  fireEvent.keyDown(github, { key: "ArrowLeft" });
+  expect(github).toHaveAttribute("aria-selected", "true");
+  fireEvent.keyDown(github, { key: "ArrowUp" });
+  const setup = screen.getByRole("tab", { name: "Setup" });
+  expect(setup).toHaveAttribute("aria-selected", "true");
+  expect(setup).toHaveFocus();
+  fireEvent.keyDown(setup, { key: "Home" });
+  expect(github).toHaveFocus();
+  fireEvent.keyDown(github, { key: "ArrowDown" });
+  expect(screen.getByRole("tab", { name: "Slack" })).toHaveAttribute("aria-selected", "true");
+  fireEvent.keyDown(screen.getByRole("tab", { name: "Slack" }), { key: "End" });
+  expect(setup).toHaveAttribute("aria-selected", "true");
+  expect(setup).toHaveFocus();
+});
+
+test("arrow keys, Home and End walk the section list", () => {
+  expect(sectionAfterKey("github", "ArrowDown")).toBe("slack");
+  expect(sectionAfterKey("github", "ArrowUp")).toBe("setup");
+  expect(sectionAfterKey("github", "ArrowLeft")).toBeNull();
+  expect(sectionAfterKey("github", "ArrowRight")).toBeNull();
+  expect(sectionAfterKey("slack", "Home")).toBe("github");
+  expect(sectionAfterKey("requests", "End")).toBe("setup");
+  expect(isSettingsSection("slack")).toBe(true);
+  expect(isSettingsSection("accounts")).toBe(false);
+  expect(isSettingsSection("agents")).toBe(false);
+});
+
+test("the rail collapses under 960px or when the pane is too narrow", () => {
+  expect(settingsNavIsCompact(959, 0)).toBe(true);
+  expect(settingsNavIsCompact(960, 759)).toBe(true);
+  expect(settingsNavIsCompact(960, 760)).toBe(false);
+  expect(settingsNavIsCompact(1440, 0)).toBe(false);
+  expect(settingsNavIsCompact(0, 0)).toBe(false);
 });
 
 test("Review saves the bump broadcast setting and passes it up to the app", async () => {
@@ -90,7 +136,7 @@ test("Review saves the bump broadcast setting and passes it up to the app", asyn
       return Promise.resolve(prefs);
     },
   }) as Api;
-  render(<Harness api={api} start="review" onBoot={(next) => booted.push(next)} />);
+  render(<Harness api={api} start="requests" onBoot={(next) => booted.push(next)} />);
   const toggle = await screen.findByRole("switch", { name: "Also post bumps to the channel" });
   expect(toggle).toBeChecked();
   expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
@@ -109,7 +155,7 @@ test("Review saves the review wait and the open PR limit", async () => {
       return Promise.resolve(prefs);
     },
   }) as Api;
-  render(<Harness api={api} start="review" />);
+  render(<Harness api={api} start="requests" />);
   const hours = await screen.findByRole("spinbutton", { name: "Review now after (hours)" });
   expect(hours).toHaveValue(48);
   fireEvent.change(hours, { target: { value: "24" } });
@@ -128,7 +174,7 @@ test("Sync edits intervals in minutes and shows an error from the backend", asyn
       return Promise.reject(new Error("sync.focused_interval_s must be between 60 and 3600"));
     },
   }) as Api;
-  render(<Harness api={api} start="sync" />);
+  render(<Harness api={api} start="schedule" />);
   const focused = await screen.findByRole("spinbutton", { name: /window focused/ });
   expect(focused).toHaveValue(3);
   fireEvent.change(focused, { target: { value: "45" } });
@@ -285,7 +331,7 @@ test("Import: Choose file loads the picked CSV for the same preview", async () =
   expect(previewed).toEqual(["github_org,github_team_slug\nacme,web"]);
 });
 
-test("Import: with no workspace connected the select is disabled and links to Accounts", async () => {
+test("Import: with no workspace connected the select is disabled and links to Slack", async () => {
   render(<Harness api={fakeSettingsApi() as Api} start="mappings" />);
   const select = await screen.findByRole("combobox", { name: "Default Slack workspace" });
   expect(select).toBeDisabled();
@@ -297,8 +343,8 @@ test("Import: with no workspace connected the select is disabled and links to Ac
   expect(screen.getByText(/add a/)).toHaveTextContent("Connect a Slack workspace, or add a slack_workspace column to the CSV.");
   fireEvent.change(csv, { target: { value: "github_org,github_team_slug,slack_workspace\nacme,web,acme" } });
   expect(preview).toBeEnabled();
-  fireEvent.click(screen.getByRole("button", { name: "Connect Slack in Accounts" }));
-  expect(screen.getByRole("tab", { name: "Accounts" })).toHaveAttribute("aria-selected", "true");
+  fireEvent.click(screen.getByRole("button", { name: "Connect Slack" }));
+  expect(screen.getByRole("tab", { name: "Slack" })).toHaveAttribute("aria-selected", "true");
 });
 
 test("Import: several workspaces preselect the last used one and list expired sign-ins", async () => {
@@ -368,15 +414,17 @@ test("About shows paths, the keychain explainer, update check and Re-run setup",
         behind_by: null,
       }),
   }) as Api;
-  render(<Harness api={api} start="about" onRerun={() => (reruns += 1)} />);
+  render(<Harness api={api} start="app" onRerun={() => (reruns += 1)} />);
   expect(await screen.findByRole("heading", { name: "PR Nexus 0.1.0" })).toBeInTheDocument();
-  expect(screen.getByText(/one keychain item/)).toBeInTheDocument();
-  expect(screen.getByText(/Always Allow/)).toBeInTheDocument();
   expect(screen.getByText(/Open Anyway/)).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Copy database" })).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Check for updates" }));
   expect(await screen.findByText(/0.2.0 is available/)).toBeInTheDocument();
-  fireEvent.click(screen.getByRole("button", { name: "Re-run setup" }));
+  fireEvent.click(screen.getByRole("tab", { name: "Keychain" }));
+  expect(await screen.findByText(/one keychain item/)).toBeInTheDocument();
+  expect(screen.getByText(/Always Allow/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("tab", { name: "Setup" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Re-run setup" }));
   expect(reruns).toBe(1);
 });
 
@@ -385,10 +433,11 @@ test("About warns when tokens only live in memory", async () => {
     appInfo: () => Promise.resolve({ version: "0.1.0", repository: "", db_path: "/tmp/a.db", log_dir: "/tmp/logs", keyring_in_memory: true, os: "linux" }),
     checkUpdate: () => Promise.resolve(null),
   }) as Api;
-  render(<Harness api={api} start="about" />);
+  render(<Harness api={api} start="keychain" />);
   expect(await screen.findByRole("alert")).toHaveTextContent(/in memory only/);
   expect(screen.queryByText(/Open Anyway/)).not.toBeInTheDocument();
-  fireEvent.click(screen.getByRole("button", { name: "Check for updates" }));
+  fireEvent.click(screen.getByRole("tab", { name: "App & updates" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Check for updates" }));
   expect(await screen.findByText("You have the latest release.")).toBeInTheDocument();
 });
 
@@ -400,7 +449,7 @@ test("Sync blocks out-of-range values before they reach the backend", async () =
       return Promise.resolve(prefs);
     },
   }) as Api;
-  render(<Harness api={api} start="sync" />);
+  render(<Harness api={api} start="schedule" />);
   fireEvent.change(await screen.findByRole("spinbutton", { name: /window focused/ }), { target: { value: "90" } });
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
   await Promise.resolve();
@@ -415,7 +464,7 @@ test("Sync has a Live updates toggle, on by default, that saves off", async () =
       return Promise.resolve(prefs);
     },
   }) as Api;
-  render(<Harness api={api} start="sync" />);
+  render(<Harness api={api} start="schedule" />);
   const toggle = await screen.findByRole("switch", { name: "Live updates" });
   expect(toggle).toBeChecked();
   fireEvent.click(toggle);
@@ -433,7 +482,7 @@ test("Sync notification toggles save, and a denial is a grey note", async () => 
     },
     notificationPermission: () => Promise.resolve("denied"),
   }) as Api;
-  render(<Harness api={api} start="sync" />);
+  render(<Harness api={api} start="notifications" />);
   expect(await screen.findByRole("switch", { name: "New comments" })).not.toBeChecked();
   const hint = await screen.findByText("Notifications are off for PR Nexus in system settings.");
   expect(hint).not.toHaveAttribute("role", "alert");
@@ -445,19 +494,139 @@ test("Sync notification toggles save, and a denial is a grey note", async () => 
   expect(saved[0]?.notify_enabled).toBe(true);
 });
 
-test("the tab row scrolls at narrow widths and brings the active tab into view", () => {
+test("the rail scrolls the active section into view", () => {
   const scrolled: string[] = [];
   const original = HTMLElement.prototype.scrollIntoView;
   HTMLElement.prototype.scrollIntoView = function (this: HTMLElement) {
     scrolled.push(this.textContent ?? "");
   };
   try {
-    render(<Harness api={fakeSettingsApi() as Api} start="agents" />);
-    expect(screen.getByRole("tablist")).toHaveClass("overflow-x-auto");
-    expect(scrolled).toContain("Agents (MCP)");
+    render(<Harness api={fakeSettingsApi() as Api} start="activity" />);
+    expect(screen.getByRole("navigation", { name: "Settings" })).toHaveClass("overflow-y-auto");
+    expect(scrolled).toContain("Activity");
     fireEvent.click(screen.getByRole("tab", { name: "Mappings" }));
     expect(scrolled.at(-1)).toBe("Mappings");
   } finally {
     HTMLElement.prototype.scrollIntoView = original;
   }
+});
+
+test("a narrow window uses a section menu instead of the rail", async () => {
+  const original = window.matchMedia;
+  window.matchMedia = ((query: string) => ({
+    matches: query.includes("959"),
+    media: query,
+    onchange: null,
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined,
+    dispatchEvent: () => false,
+    addListener: () => undefined,
+    removeListener: () => undefined,
+  })) as typeof window.matchMedia;
+  try {
+    render(<Harness api={fakeSettingsApi() as Api} start="rules" />);
+    const menu = await screen.findByRole("combobox", { name: "Settings section" });
+    expect(screen.queryByRole("tablist")).not.toBeInTheDocument();
+    expect(menu).toHaveValue("rules");
+    expect(await screen.findByRole("heading", { name: "Rules" })).toBeInTheDocument();
+    fireEvent.change(menu, { target: { value: "requests" } });
+    expect(await screen.findByRole("heading", { name: "Requests & bumps" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Settings section" })).toHaveValue("requests");
+  } finally {
+    window.matchMedia = original;
+  }
+});
+
+test("the last opened section is remembered", () => {
+  const { unmount } = render(<Harness api={fakeSettingsApi() as Api} />);
+  fireEvent.click(screen.getByRole("tab", { name: "Rules" }));
+  expect(window.localStorage.getItem("pr-nexus.settings-section")).toBe("rules");
+  unmount();
+  render(<Harness api={fakeSettingsApi() as Api} />);
+  expect(screen.getByRole("tab", { name: "Rules" })).toHaveAttribute("aria-selected", "true");
+});
+
+test("a programmatic section opens that section", async () => {
+  render(<Harness api={fakeSettingsApi() as Api} start="changelog" />);
+  expect(screen.getByRole("tab", { name: "Changelog" })).toHaveAttribute("aria-selected", "true");
+  expect(await screen.findByRole("heading", { name: "Recent changes" })).toBeInTheDocument();
+  expect(window.localStorage.getItem("pr-nexus.settings-section")).toBe("changelog");
+});
+
+test("Agents opens on Permissions without the server controls", async () => {
+  render(<Harness api={fakeSettingsApi() as Api} start="permissions" />);
+  expect(screen.getByRole("tab", { name: "Permissions" })).toHaveAttribute("aria-selected", "true");
+  expect(await screen.findByRole("heading", { name: "What agents may do" })).toBeInTheDocument();
+  expect(screen.queryByRole("switch", { name: "Enable MCP server" })).not.toBeInTheDocument();
+});
+
+test("Activity and Server links open those sections", async () => {
+  render(<Harness api={fakeSettingsApi(fakeMcp({ enabled: true, local_writes: true })) as Api} start="permissions" />);
+  fireEvent.click(await screen.findByRole("button", { name: "Activity" }));
+  expect(screen.getByRole("tab", { name: "Activity" })).toHaveAttribute("aria-selected", "true");
+  expect(await screen.findByRole("heading", { name: "Activity" })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("tab", { name: "Connect a client" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Server" }));
+  expect(screen.getByRole("tab", { name: "Server" })).toHaveAttribute("aria-selected", "true");
+  expect(await screen.findByRole("heading", { name: "Local MCP server" })).toBeInTheDocument();
+});
+
+test("an unsaved preferences edit stays across sections of that form", async () => {
+  const saved: Preferences[] = [];
+  const api = fakeSettingsApi({
+    savePreferences: (prefs) => {
+      saved.push(prefs);
+      return Promise.resolve(prefs);
+    },
+  }) as Api;
+  render(<Harness api={api} start="requests" />);
+  const requester = await screen.findByRole("textbox", { name: /^Requester/ });
+  fireEvent.change(requester, { target: { value: "Ada" } });
+  expect(screen.getByRole("region", { name: "Unsaved changes" })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("tab", { name: "Rules" }));
+  fireEvent.change(await screen.findByRole("textbox", { name: "JIRA base URL" }), { target: { value: "https://acme-labs.atlassian.net" } });
+  fireEvent.click(screen.getByRole("tab", { name: "Mappings" }));
+  expect(await screen.findByText("No team channels mapped yet.")).toBeInTheDocument();
+  expect(screen.queryByRole("region", { name: "Unsaved changes" })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("tab", { name: "Requests & bumps" }));
+  expect(screen.getByRole("textbox", { name: /^Requester/ })).toHaveValue("Ada");
+  fireEvent.click(screen.getByRole("tab", { name: "Schedule" }));
+  expect(screen.getByRole("region", { name: "Unsaved changes" })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  expect(await screen.findByText("Saved")).toBeInTheDocument();
+  expect(saved[0]?.review_requester).toBe("Ada");
+  expect(saved[0]?.jira_base_url).toBe("https://acme-labs.atlassian.net");
+});
+
+test("GitHub and Slack share one draft", async () => {
+  const rich = {
+    ...boot,
+    github_login: "ada",
+    org_choices: ["acme"],
+    tracked_orgs: ["acme"],
+    include_personal: false,
+    orgs_needing_sso: [],
+    slack_client_id: "111.222",
+    slack_redirect_uri: "http://127.0.0.1:47821/mcp/oauth/callback",
+    slack_secret_saved: true,
+    slack_mentions: "off",
+    slack_workspaces: [],
+  } as Bootstrap;
+  render(
+    <Harness
+      api={fakeSettingsApi() as Api}
+      start="github"
+      boot={rich}
+      accounts={<AccountsSettings api={fakeSettingsApi() as Api} boot={rich} onOrgsSaved={() => Promise.resolve()} onMentionsChange={() => undefined} />}
+    />,
+  );
+  const personal = await screen.findByRole("switch", { name: "Include my personal repos" });
+  fireEvent.click(personal);
+  expect(screen.getByRole("region", { name: "Unsaved changes" })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("tab", { name: "Slack" }));
+  expect(await screen.findByRole("heading", { name: "Slack" })).toBeInTheDocument();
+  expect(screen.getByRole("region", { name: "Unsaved changes" })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("tab", { name: "Profiles" }));
+  fireEvent.click(screen.getByRole("tab", { name: "GitHub" }));
+  expect(screen.getByRole("switch", { name: "Include my personal repos" })).toBeChecked();
 });
