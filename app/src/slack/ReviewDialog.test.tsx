@@ -66,6 +66,40 @@ function fake(overrides: Partial<Api> = {}) {
   return { api, calls };
 }
 
+test("Checking channel… shows while the live name loads, then leaves when Send enables", async () => {
+  let release: (choices: TargetChoice[]) => void = () => undefined;
+  const live = new Promise<TargetChoice[]>((resolve) => {
+    release = resolve;
+  });
+  const { api } = fake({
+    reviewTargets: (_id, _teams, cached) => (cached ? Promise.resolve([mapped]) : live),
+  });
+  render(<ReviewDialog api={api} row={row} onClose={() => undefined} onOpen={() => undefined} onSent={() => undefined} />);
+  expect(await screen.findByRole("status")).toHaveTextContent("Checking channel…");
+  expect(screen.getByRole("button", { name: "Send request" })).toBeDisabled();
+  release([mapped]);
+  await waitFor(() => expect(screen.getByRole("button", { name: "Send request" })).toBeEnabled());
+  expect(screen.queryByText("Checking channel…")).not.toBeInTheDocument();
+});
+
+test("Checking channel… goes away when the live lookup fails and Send keeps the cached name", async () => {
+  let fail: (reason: unknown) => void = () => undefined;
+  const live = new Promise<TargetChoice[]>((_, reject) => {
+    fail = reject;
+  });
+  const { api } = fake({
+    reviewTargets: (_id, _teams, cached) => (cached ? Promise.resolve([mapped]) : live),
+  });
+  render(<ReviewDialog api={api} row={row} onClose={() => undefined} onOpen={() => undefined} onSent={() => undefined} />);
+  expect(await screen.findByRole("status")).toHaveTextContent("Checking channel…");
+  expect(screen.getByRole("button", { name: "Send request" })).toBeDisabled();
+  fail(new Error("slack down"));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Send request" })).toBeEnabled());
+  expect(screen.queryByText("Checking channel…")).not.toBeInTheDocument();
+  expect(screen.getByText("New message in #platform.")).toBeInTheDocument();
+  expect(screen.queryByText(/slack down/)).not.toBeInTheDocument();
+});
+
 test("the cached channel is shown before live names return, then the label updates", async () => {
   let release: (choices: TargetChoice[]) => void = () => undefined;
   const live = new Promise<TargetChoice[]>((resolve) => {

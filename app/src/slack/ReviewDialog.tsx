@@ -288,6 +288,12 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNot
               value={target}
               onSelect={choose}
             />
+            {naming && (
+              <p className="flex items-center gap-1.5 text-xs text-slate-400" role="status">
+                <span aria-hidden="true" className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-slate-600 border-t-slate-300" />
+                Checking channel…
+              </p>
+            )}
             {hint ? (
               <p className="text-xs text-slate-400">{hint}</p>
             ) : choices.length === 0 ? (
