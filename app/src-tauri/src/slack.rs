@@ -2099,6 +2099,9 @@ mod tests {
     struct PaceHits {
         inflight: std::sync::Arc<std::sync::atomic::AtomicUsize>,
         peak: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        opened: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        timed_out: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        release_at: usize,
     }
 
     async fn paced_auth_test(
@@ -2111,7 +2114,25 @@ mod tests {
             + 1;
         hits.peak
             .fetch_max(now, std::sync::atomic::Ordering::SeqCst);
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        if hits.release_at > 1 && !hits.opened.load(std::sync::atomic::Ordering::SeqCst) {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                let current = hits.inflight.load(std::sync::atomic::Ordering::SeqCst);
+                if current >= hits.release_at
+                    || hits.opened.load(std::sync::atomic::Ordering::SeqCst)
+                {
+                    hits.opened.store(true, std::sync::atomic::Ordering::SeqCst);
+                    break;
+                }
+                if std::time::Instant::now() >= deadline {
+                    hits.opened.store(true, std::sync::atomic::Ordering::SeqCst);
+                    hits.timed_out
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        }
         hits.inflight
             .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
         let team = bearer(&headers)
@@ -2142,13 +2163,16 @@ mod tests {
         )
     }
 
-    /// Startup checks for several accounts overlap. A sleep on `auth.test`
-    /// would add up if the probes ran one after another.
+    /// Startup checks for several accounts overlap. Each `auth.test` waits
+    /// until every probe is in flight.
     #[tokio::test]
     async fn refresh_probes_accounts_together() {
         let hits = PaceHits {
             inflight: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             peak: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            opened: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            timed_out: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            release_at: TOKEN_CHECKS,
         };
         let router = axum::Router::new()
             .route("/auth.test", axum::routing::post(paced_auth_test))
@@ -2182,18 +2206,16 @@ mod tests {
                 .unwrap();
         }
 
-        let started = std::time::Instant::now();
         let list = refresh_grants(&state, &base, None, true).await.unwrap();
-        let elapsed = started.elapsed();
         let peak = hits.peak.load(std::sync::atomic::Ordering::SeqCst);
         assert!(
             list.iter().all(|row| row.check == "connected"),
             "every probe was accepted: {list:?}"
         );
-        assert_eq!(peak, TOKEN_CHECKS, "probes overlapped, peak {peak}");
         assert!(
-            elapsed < std::time::Duration::from_millis(900),
-            "elapsed {elapsed:?} is the sum of the probes"
+            !hits.timed_out.load(std::sync::atomic::Ordering::SeqCst),
+            "probes never overlapped"
         );
+        assert_eq!(peak, TOKEN_CHECKS, "probes overlapped, peak {peak}");
     }
 }

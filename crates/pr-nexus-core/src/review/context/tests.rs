@@ -1,5 +1,6 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::Instant;
 
 use chrono::Duration;
 
@@ -19,13 +20,66 @@ struct ThreadChat {
     replies: ThreadReplies,
     unauthorized: bool,
     hits: Vec<SearchHit>,
-    /// Extra wait inside `read_thread`, keyed by channel id.
-    read_pause: Mutex<Vec<(String, std::time::Duration)>>,
-    name_pause: std::time::Duration,
+    /// `read_thread` waits until this many reads are in flight. `0` does not wait.
+    reads_release_at: usize,
     reads_inflight: AtomicUsize,
     reads_peak: AtomicUsize,
+    reads_opened: AtomicBool,
+    reads_gate: Mutex<()>,
+    reads_cv: Condvar,
+    /// `user_name` waits until this many lookups are in flight. `0` does not wait.
+    names_release_at: usize,
     names_inflight: AtomicUsize,
     names_peak: AtomicUsize,
+    names_opened: AtomicBool,
+    names_gate: Mutex<()>,
+    names_cv: Condvar,
+}
+
+/// Count one in-flight call and, when `release_at` is greater than one, stay
+/// there until that many overlap. A sequential caller hits the timeout.
+/// `opened` stays set so a caller that leaves does not hide the overlap from
+/// one that has not checked yet.
+fn wait_for_overlap(
+    inflight: &AtomicUsize,
+    peak: &AtomicUsize,
+    release_at: usize,
+    opened: &AtomicBool,
+    lock: &Mutex<()>,
+    cv: &Condvar,
+) {
+    let now = inflight.fetch_add(1, Ordering::SeqCst) + 1;
+    peak.fetch_max(now, Ordering::SeqCst);
+    if release_at <= 1 {
+        return;
+    }
+    let mut guard = lock.lock().unwrap();
+    let started = Instant::now();
+    let limit = std::time::Duration::from_secs(5);
+    loop {
+        if inflight.load(Ordering::SeqCst) >= release_at || opened.load(Ordering::SeqCst) {
+            opened.store(true, Ordering::SeqCst);
+            cv.notify_all();
+            return;
+        }
+        let left = limit.saturating_sub(started.elapsed());
+        assert!(
+            !left.is_zero(),
+            "only {} of {release_at} calls overlapped",
+            inflight.load(Ordering::SeqCst)
+        );
+        let (next, status) = cv.wait_timeout(guard, left).unwrap();
+        guard = next;
+        if status.timed_out()
+            && inflight.load(Ordering::SeqCst) < release_at
+            && !opened.load(Ordering::SeqCst)
+        {
+            panic!(
+                "only {} of {release_at} calls overlapped",
+                inflight.load(Ordering::SeqCst)
+            );
+        }
+    }
 }
 
 impl ChatProvider for ThreadChat {
@@ -62,29 +116,27 @@ impl ChatProvider for ThreadChat {
                 "slack_read_thread: invalid_auth".into(),
             ));
         }
-        let pause = self
-            .read_pause
-            .lock()
-            .unwrap()
-            .iter()
-            .find(|(id, _)| id == channel_id)
-            .map(|(_, pause)| *pause)
-            .unwrap_or_default();
-        let now = self.reads_inflight.fetch_add(1, Ordering::SeqCst) + 1;
-        self.reads_peak.fetch_max(now, Ordering::SeqCst);
-        if !pause.is_zero() {
-            std::thread::sleep(pause);
-        }
+        wait_for_overlap(
+            &self.reads_inflight,
+            &self.reads_peak,
+            self.reads_release_at,
+            &self.reads_opened,
+            &self.reads_gate,
+            &self.reads_cv,
+        );
         self.reads_inflight.fetch_sub(1, Ordering::SeqCst);
         Ok(self.replies.clone())
     }
     fn user_name(&self, user_id: &str) -> Result<String, ProviderError> {
         self.lookups.lock().unwrap().push(user_id.into());
-        let now = self.names_inflight.fetch_add(1, Ordering::SeqCst) + 1;
-        self.names_peak.fetch_max(now, Ordering::SeqCst);
-        if !self.name_pause.is_zero() {
-            std::thread::sleep(self.name_pause);
-        }
+        wait_for_overlap(
+            &self.names_inflight,
+            &self.names_peak,
+            self.names_release_at,
+            &self.names_opened,
+            &self.names_gate,
+            &self.names_cv,
+        );
         self.names_inflight.fetch_sub(1, Ordering::SeqCst);
         Ok(format!("Name of {user_id}"))
     }
@@ -313,8 +365,8 @@ fn active_threads_come_before_closed_ones_with_their_reason() {
     );
 }
 
-/// The slower root is listed first. Completion order would put the fast
-/// read ahead of it; the panel keeps the root order, and the reads overlap.
+/// The active root is listed first. The reads overlap, and the panel keeps
+/// root order.
 #[test]
 fn context_threads_keep_order_while_reads_overlap() {
     let (_dir, store, pr, account) = with_request();
@@ -332,18 +384,15 @@ fn context_threads_keep_order_while_reads_overlap() {
     let planned = plan(&store, &pr, other, None, 24, at(2)).unwrap();
     send(&store, &poster, &pr, &planned, "[]", at(2)).unwrap();
 
-    let slow = std::time::Duration::from_millis(300);
     let reader = Arc::new(ThreadChat {
         account,
         replies: replies(),
-        read_pause: Mutex::new(vec![("D0123456789".into(), slow), ("C0TEAM".into(), slow)]),
+        reads_release_at: 2,
         ..ThreadChat::default()
     });
     let provider: Arc<dyn ChatProvider> = reader.clone();
     let mut chat_for = |_: &str| Ok(provider.clone());
-    let started = std::time::Instant::now();
     let threads = context_threads(&store, pr.id, &mut chat_for, at(3), false).unwrap();
-    let elapsed = started.elapsed();
     let order: Vec<(&str, ThreadStatus)> = threads
         .iter()
         .map(|thread| (thread.channel_id.as_str(), thread.status))
@@ -357,10 +406,6 @@ fn context_threads_keep_order_while_reads_overlap() {
     );
     let peak = reader.reads_peak.load(Ordering::SeqCst);
     assert!(peak >= 2, "reads overlapped, peak {peak}");
-    assert!(
-        elapsed < slow + std::time::Duration::from_millis(200),
-        "elapsed {elapsed:?} is the sum of the two reads"
-    );
 }
 
 #[test]
@@ -394,18 +439,15 @@ fn author_lookups_are_deduped_and_overlap() {
         ],
         has_more: false,
     };
-    let pause = std::time::Duration::from_millis(200);
     let reader = Arc::new(ThreadChat {
         account,
         replies: thread_replies,
-        name_pause: pause,
+        names_release_at: 2,
         ..ThreadChat::default()
     });
     let provider: Arc<dyn ChatProvider> = reader.clone();
     let mut chat_for = |_: &str| Ok(provider.clone());
-    let started = std::time::Instant::now();
     let threads = context_threads(&store, pr.id, &mut chat_for, at(3), false).unwrap();
-    let elapsed = started.elapsed();
 
     assert_eq!(threads[0].messages[0].author, "Ada Acme");
     assert_eq!(threads[0].messages[1].author, "Name of U0ACME0002");
@@ -422,11 +464,6 @@ fn author_lookups_are_deduped_and_overlap() {
     assert!(
         (2..=AUTHOR_LOOKUPS).contains(&peak),
         "name lookups overlapped, peak {peak}"
-    );
-    // Two lookups in parallel take about one pause; one after another takes two.
-    assert!(
-        elapsed < pause + std::time::Duration::from_millis(120),
-        "elapsed {elapsed:?} is the sum of the lookups"
     );
 }
 

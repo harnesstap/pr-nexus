@@ -4,7 +4,7 @@
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -459,8 +459,9 @@ fn session_refreshes_the_grant_and_posts_through_mcp() {
     drop(server);
 }
 
-/// Local MCP server. Tool calls can sleep together, and the first session's
-/// calls can fail so the client has to open the session again.
+/// Local MCP server. Successful tool calls wait until `release_at` of them
+/// are in flight, and the first session's calls can fail so the client has
+/// to open the session again.
 struct PaceServer {
     runtime: Option<tokio::runtime::Runtime>,
     url: String,
@@ -473,7 +474,11 @@ struct PaceStats {
     failed_calls: AtomicUsize,
     inflight: AtomicUsize,
     peak: AtomicUsize,
-    hold: Duration,
+    /// Successful `tools/call`s wait until this many are in flight. `0` answers
+    /// immediately. Once that many have overlapped, later calls do not wait.
+    release_at: AtomicUsize,
+    opened: AtomicBool,
+    timed_out: AtomicBool,
     fail_first_session: bool,
     fail_sessions: Mutex<std::collections::HashSet<String>>,
     log: Mutex<Vec<String>>,
@@ -506,13 +511,15 @@ fn fresh_grant() -> String {
     .to_string()
 }
 
-fn pace_server(hold: Duration, fail_first_session: bool) -> PaceServer {
+fn pace_server(fail_first_session: bool) -> PaceServer {
     let stats = Arc::new(PaceStats {
         initializes: AtomicUsize::new(0),
         failed_calls: AtomicUsize::new(0),
         inflight: AtomicUsize::new(0),
         peak: AtomicUsize::new(0),
-        hold,
+        release_at: AtomicUsize::new(0),
+        opened: AtomicBool::new(false),
+        timed_out: AtomicBool::new(false),
         fail_first_session,
         fail_sessions: Mutex::new(std::collections::HashSet::new()),
         log: Mutex::new(Vec::new()),
@@ -712,10 +719,7 @@ async fn mcp_response(stats: &PaceStats, session: &str, body: &[u8]) -> Vec<u8> 
                 stats.failed_calls.fetch_add(1, Ordering::SeqCst);
                 return status_response(500, "Internal Server Error", session);
             }
-            let now = stats.inflight.fetch_add(1, Ordering::SeqCst) + 1;
-            stats.peak.fetch_max(now, Ordering::SeqCst);
-            tokio::time::sleep(stats.hold).await;
-            stats.inflight.fetch_sub(1, Ordering::SeqCst);
+            hold_for_overlap(stats).await;
             let user = value["params"]["arguments"]["user_id"]
                 .as_str()
                 .unwrap_or("Ada Acme");
@@ -732,6 +736,32 @@ async fn mcp_response(stats: &PaceStats, session: &str, body: &[u8]) -> Vec<u8> 
         session,
         &json!({"jsonrpc": "2.0", "id": id, "result": result}).to_string(),
     )
+}
+
+/// Stay inside `tools/call` until `release_at` calls overlap, then answer.
+/// A caller that never sees that many sets `timed_out` after 10s so the rest
+/// can finish and the test can report it.
+async fn hold_for_overlap(stats: &PaceStats) {
+    let need = stats.release_at.load(Ordering::SeqCst);
+    let now = stats.inflight.fetch_add(1, Ordering::SeqCst) + 1;
+    stats.peak.fetch_max(now, Ordering::SeqCst);
+    if need > 1 && !stats.opened.load(Ordering::SeqCst) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let current = stats.inflight.load(Ordering::SeqCst);
+            if current >= need || stats.opened.load(Ordering::SeqCst) {
+                stats.opened.store(true, Ordering::SeqCst);
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                stats.opened.store(true, Ordering::SeqCst);
+                stats.timed_out.store(true, Ordering::SeqCst);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+    stats.inflight.fetch_sub(1, Ordering::SeqCst);
 }
 
 fn note(stats: &PaceStats, line: String) {
@@ -783,15 +813,16 @@ fn json_response(status: u16, reason: &str, session: &str, body: &str) -> Vec<u8
 
 #[test]
 fn concurrent_calls_overlap_on_one_session() {
-    let hold = Duration::from_millis(400);
-    let server = pace_server(hold, false);
+    let server = pace_server(false);
     let slack = signed_in(&server);
     slack.user_name("U0WARM0001").expect("warmup");
     server.stats.peak.store(0, Ordering::SeqCst);
     server.stats.inflight.store(0, Ordering::SeqCst);
+    server.stats.opened.store(false, Ordering::SeqCst);
+    server.stats.timed_out.store(false, Ordering::SeqCst);
+    server.stats.release_at.store(4, Ordering::SeqCst);
 
     let ids: Vec<String> = (1..=4).map(|n| format!("U0ACME000{n}")).collect();
-    let started = std::time::Instant::now();
     let names = std::thread::scope(|scope| {
         let mut handles = Vec::new();
         for id in &ids {
@@ -802,19 +833,18 @@ fn concurrent_calls_overlap_on_one_session() {
             .map(|handle| handle.join().expect("thread"))
             .collect::<Vec<_>>()
     });
-    let elapsed = started.elapsed();
     let peak = server.stats.peak.load(Ordering::SeqCst);
     let log = server.stats.log.lock().unwrap().join("\n");
     for (id, name) in ids.iter().zip(names) {
         assert_eq!(name.expect("profile"), *id, "{log}");
     }
     assert!(
-        peak >= ids.len(),
-        "peak {peak} calls did not overlap\n{log}"
+        !server.stats.timed_out.load(Ordering::SeqCst),
+        "calls never overlapped\n{log}"
     );
     assert!(
-        elapsed < hold * (ids.len() as u32 - 1),
-        "elapsed {elapsed:?} is the sum of {hold:?} calls, peak {peak}\n{log}"
+        peak >= ids.len(),
+        "peak {peak} calls did not overlap\n{log}"
     );
     assert_eq!(
         server.stats.initializes.load(Ordering::SeqCst),
@@ -825,11 +855,10 @@ fn concurrent_calls_overlap_on_one_session() {
 
 #[test]
 fn a_dropped_session_is_reopened_once() {
-    let hold = Duration::from_millis(200);
-    let server = pace_server(hold, true);
+    let server = pace_server(true);
+    server.stats.release_at.store(2, Ordering::SeqCst);
     let slack = signed_in(&server);
     let ids: Vec<String> = (1..=6).map(|n| format!("U0ACME000{n}")).collect();
-    let started = std::time::Instant::now();
     let names = std::thread::scope(|scope| {
         let mut handles = Vec::new();
         for id in &ids {
@@ -840,7 +869,6 @@ fn a_dropped_session_is_reopened_once() {
             .map(|handle| handle.join().expect("thread"))
             .collect::<Vec<_>>()
     });
-    let elapsed = started.elapsed();
     let log = server.stats.log.lock().unwrap().join("\n");
     for (id, name) in ids.iter().zip(&names) {
         assert_eq!(name.as_deref().ok(), Some(id.as_str()), "{name:?}\n{log}");
@@ -853,7 +881,8 @@ fn a_dropped_session_is_reopened_once() {
     );
     let peak = server.stats.peak.load(Ordering::SeqCst);
     assert!(
-        peak >= 2,
-        "retries overlapped, peak {peak}, elapsed {elapsed:?}\n{log}"
+        !server.stats.timed_out.load(Ordering::SeqCst),
+        "retries never overlapped\n{log}"
     );
+    assert!(peak >= 2, "retries overlapped, peak {peak}\n{log}");
 }
