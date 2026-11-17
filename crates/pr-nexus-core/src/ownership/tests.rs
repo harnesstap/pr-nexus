@@ -1,5 +1,5 @@
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Condvar, Mutex};
 use std::time::{Duration as StdDuration, Instant};
 
 use chrono::TimeZone;
@@ -29,8 +29,12 @@ struct Fake {
     input_calls: AtomicU32,
     probe_calls: AtomicU32,
     member_calls: Mutex<Vec<String>>,
-    /// Sleep inside the probe and each team lookup, for timing tests.
-    pause: StdDuration,
+    /// Lookups currently inside [`VcsProvider::team_members`].
+    member_in_flight: Mutex<u32>,
+    member_gate: Condvar,
+    /// When set, each lookup waits until two are in flight (or five seconds).
+    wait_for_overlap: bool,
+    peak_members: AtomicU32,
     codeowners: Option<String>,
 }
 
@@ -51,7 +55,10 @@ impl Fake {
             input_calls: AtomicU32::new(0),
             probe_calls: AtomicU32::new(0),
             member_calls: Mutex::new(Vec::new()),
-            pause: StdDuration::ZERO,
+            member_in_flight: Mutex::new(0),
+            member_gate: Condvar::new(),
+            wait_for_overlap: false,
+            peak_members: AtomicU32::new(0),
             codeowners: None,
         }
     }
@@ -98,9 +105,6 @@ impl VcsProvider for Fake {
     }
     fn ownership_probe(&self, _: &PullRequest) -> Result<OwnershipProbe, ProviderError> {
         self.probe_calls.fetch_add(1, Ordering::SeqCst);
-        if !self.pause.is_zero() {
-            std::thread::sleep(self.pause);
-        }
         Ok(OwnershipProbe {
             head_sha: "h1".into(),
             base_ref: "main".into(),
@@ -133,10 +137,34 @@ impl VcsProvider for Fake {
     }
     fn team_members(&self, team: &TeamRef) -> Result<TeamMembers, ProviderError> {
         self.member_calls.lock().unwrap().push(team.to_string());
-        if !self.pause.is_zero() {
-            std::thread::sleep(self.pause);
+        if self.wait_for_overlap {
+            let mut in_flight = self.member_in_flight.lock().unwrap();
+            *in_flight += 1;
+            self.peak_members.fetch_max(*in_flight, Ordering::SeqCst);
+            if *in_flight >= 2 {
+                self.member_gate.notify_all();
+            }
+            let started = Instant::now();
+            while *in_flight < 2 && started.elapsed() < StdDuration::from_secs(5) {
+                let (guard, timeout) = self
+                    .member_gate
+                    .wait_timeout(in_flight, StdDuration::from_secs(5))
+                    .unwrap();
+                in_flight = guard;
+                if timeout.timed_out() {
+                    break;
+                }
+            }
+            self.peak_members.fetch_max(*in_flight, Ordering::SeqCst);
+            drop(in_flight);
         }
-        (self.members)()
+        let result = (self.members)();
+        if self.wait_for_overlap {
+            let mut in_flight = self.member_in_flight.lock().unwrap();
+            *in_flight = in_flight.saturating_sub(1);
+            self.member_gate.notify_all();
+        }
+        result
     }
     fn rate_limit(&self) -> Result<RateBudget, ProviderError> {
         Err(ProviderError::Unsupported("not used".into()))
@@ -330,20 +358,16 @@ fn a_cache_hit_skips_the_probe() {
 fn cold_member_lookups_overlap_and_a_cache_hit_does_not_probe() {
     let (_dir, store, pr) = seed();
     let mut fake = Fake::new();
-    fake.pause = StdDuration::from_millis(40);
+    fake.wait_for_overlap = true;
     fake.reviews = vec![approval("bob", &[])];
     // One unattributed approval makes every owner team need a member lookup.
     fake.codeowners = Some("* @acme/core @acme/docs @acme/web\n".into());
-    let started = Instant::now();
     resolve(&store, &fake, &pr, true, now()).unwrap();
-    let cold_ms = started.elapsed().as_millis();
     assert_eq!(fake.member_calls.lock().unwrap().len(), 3);
-    // Probe 40ms, then three member lookups. Sequential would be ~160ms;
-    // four-wide fan-out keeps the lookups in one wave (~40ms).
-    eprintln!("owner cold resolve {cold_ms}ms for 1 probe + 3 team lookups at 40ms each");
+    let peak = fake.peak_members.load(Ordering::SeqCst);
     assert!(
-        cold_ms < 140,
-        "cold resolve took {cold_ms}ms; team lookups did not overlap"
+        peak >= 2,
+        "team lookups ran one at a time (peak in flight {peak})"
     );
     let started = Instant::now();
     assert!(
@@ -351,12 +375,11 @@ fn cold_member_lookups_overlap_and_a_cache_hit_does_not_probe() {
             .unwrap()
             .is_some()
     );
-    let hit_us = started.elapsed().as_micros();
-    eprintln!("owner cache hit {hit_us}us");
     assert_eq!(fake.probe_calls.load(Ordering::SeqCst), 1);
     assert!(
-        hit_us < 20_000,
-        "cache hit took {hit_us}us, expected no probe sleep"
+        started.elapsed() < StdDuration::from_secs(5),
+        "cache hit took {:?}; it should not probe",
+        started.elapsed()
     );
 }
 
