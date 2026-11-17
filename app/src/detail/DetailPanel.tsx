@@ -16,6 +16,7 @@ import { BranchAction, BranchCard, BranchError, RebaseConfirm, useBranch } from 
 import { Expander } from "./Expander";
 import { NoteSection } from "./NoteSection";
 import { draftView, type DraftView } from "./draft";
+import { beginDraftFlip, offerOverview, settleDraftCall, settleDraftFlip, takeGeneration } from "./draftRecord";
 import { peopleGroups, PeopleRow, requiredSeats } from "./People";
 import { SlackLine } from "./SlackLine";
 import { StatCards, VerdictIcon } from "./StatCards";
@@ -96,21 +97,37 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
   const [flipping, setFlipping] = useState(false);
   const [confirmClose, setConfirmClose] = useState(false);
   const panelRef = useRef<HTMLElement>(null);
-  const branch = useBranch({ api, prId: row.id, overview, fresh: loaded && !overviewError, onOverview: setOverview, onNotice });
+  const branch = useBranch({
+    api,
+    prId: row.id,
+    overview,
+    fresh: loaded && !overviewError,
+    onOverview: (next, observed) => {
+      if (offerOverview(row.id, next, observed)) setOverview(next);
+    },
+    onNotice,
+  });
 
   // Cache first so the cards show at once, then GitHub; again after every sync.
+  // Each read keeps the generation it started with, so a late draft copy cannot
+  // replace the overview a newer mark-ready already stored.
   useEffect(() => {
     let cancel = false;
+    const cachedGen = takeGeneration();
+    const freshGen = takeGeneration();
     api
       .prOverview(row.id, false)
-      .then((cached) => !cancel && cached && setOverview((current) => current ?? cached))
+      .then((cached) => {
+        if (cancel || !cached || !offerOverview(row.id, cached, cachedGen)) return;
+        setOverview((current) => current ?? cached);
+      })
       .catch(() => undefined);
     api
       .prOverview(row.id, true)
       .then((fresh) => {
         if (cancel) return;
         setOverviewError(null);
-        if (fresh) setOverview(fresh);
+        if (fresh && offerOverview(row.id, fresh, freshGen)) setOverview(fresh);
       })
       .catch((err: unknown) => !cancel && setOverviewError(errorMessage(err)))
       .finally(() => !cancel && setLoaded(true));
@@ -192,6 +209,7 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
     if (!view.available || flipping || !overview) return;
     const before = overview;
     const next = !view.draft;
+    const observed = beginDraftFlip(row.id, next);
     setFlipping(true);
     setOverview({
       ...before,
@@ -201,10 +219,12 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
     onDraftChange?.(row.id, next);
     try {
       const fresh = await api.setPrDraft(row.id, next);
+      settleDraftCall(row.id, observed, fresh, next);
       setOverview(fresh);
       onDraftChange?.(row.id, "saved");
       onNotice(next ? `#${row.number} is a draft again` : `#${row.number} is ready for review`);
     } catch (err) {
+      settleDraftFlip(row.id, observed, { ok: false });
       setOverview(before);
       onDraftChange?.(row.id, null);
       onNotice(`Couldn't ${next ? "convert to draft" : "mark ready for review"}: ${errorMessage(err)}`);

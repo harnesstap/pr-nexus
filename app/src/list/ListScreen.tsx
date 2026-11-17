@@ -691,10 +691,12 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
         return rest;
       });
       setDetailRow((current) => (current && current.id === id ? { ...current, is_draft: !current.is_draft } : current));
+      setReviewRow((current) => (current && current.id === id ? { ...current, is_draft: !current.is_draft } : current));
       return;
     }
     setDraftPatches((current) => ({ ...current, [id]: { draft, until: Number.MAX_SAFE_INTEGER } }));
     setDetailRow((current) => (current && current.id === id ? { ...current, is_draft: draft } : current));
+    setReviewRow((current) => (current && current.id === id ? { ...current, is_draft: draft } : current));
   }
 
   // PRs merged or closed from the app leave the list at once. The backend has

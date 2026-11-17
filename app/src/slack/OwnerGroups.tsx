@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Api, BulkCard, BulkGroup, BulkMessage, BulkPreview, GroupChannelChoice, GroupChoice, GroupRef, ListRow, MappingRow, OwnerGroup, PrWarning, ReviewTarget, SlackIndicator, SlackWorkspace, TargetChoice } from "../api";
 import { channelLabel, errorMessage } from "../api";
+import { beginDraftFlip, draftPhase, offerPreviewDraft, settleDraftCall, settleDraftFlip, takeGeneration, useDraftRecord, type DraftPhase } from "../detail/draftRecord";
 import type { Toast } from "../list/model";
 import { plainText } from "../textInput";
 import { Tooltip } from "../Tooltip";
@@ -356,14 +357,14 @@ export function GroupedRequest({ api, row, onClose, onSent, onOpen, onReady, onN
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [note, setNote] = useState("");
-  const [markedReady, setMarkedReady] = useState(false);
-  const [marking, setMarking] = useState(false);
   const [unconfirmed, setUnconfirmed] = useState<string | null>(null);
   const generation = useRef(0);
+  const record = useDraftRecord(row.id);
 
   const plan = useCallback(
     async (groupChoices: GroupChoice[], groupChannels: GroupChannelChoice[], skippedGroups: GroupRef[]) => {
       const run = ++generation.current;
+      const observed = takeGeneration();
       const current = () => run === generation.current;
       const body = {
         pr_ids: [row.id],
@@ -386,6 +387,7 @@ export function GroupedRequest({ api, row, onClose, onSent, onOpen, onReady, onN
       if (!current()) {
         return;
       }
+      if (first.pr_warnings.some((warning) => warning.kind === "draft")) offerPreviewDraft(row.id, observed);
       setPreview(first);
       setLoading(false);
       if (!first.names_pending) {
@@ -395,6 +397,7 @@ export function GroupedRequest({ api, row, onClose, onSent, onOpen, onReady, onN
       try {
         const named = await api.bulkPreview({ ...body, cached_names: false });
         if (current()) {
+          if (named.pr_warnings.some((warning) => warning.kind === "draft")) offerPreviewDraft(row.id, observed);
           setPreview(named);
         }
       } catch {
@@ -407,6 +410,20 @@ export function GroupedRequest({ api, row, onClose, onSent, onOpen, onReady, onN
     },
     [api, row.id],
   );
+
+  function groupedLabel(phase: DraftPhase, label: string): string {
+    switch (phase) {
+      case "draft":
+        return `${label} anyway`;
+      case "marking":
+      case "ready":
+        return label;
+      default: {
+        const unexpected: never = phase;
+        return unexpected;
+      }
+    }
+  }
 
   useEffect(() => {
     void api.slackWorkspaces().then(setWorkspaces).catch(() => setWorkspaces([]));
@@ -463,19 +480,19 @@ export function GroupedRequest({ api, row, onClose, onSent, onOpen, onReady, onN
   }
 
   async function markReady() {
-    setMarking(true);
     setError(null);
+    const observed = beginDraftFlip(row.id, false);
     try {
-      await api.setPrDraft(row.id, false);
-      setMarkedReady(true);
-      onReady?.(row.id);
-      setLoading(true);
-      await plan(choices, channels, skipped);
+      const fresh = await api.setPrDraft(row.id, false);
+      settleDraftCall(row.id, observed, fresh, false);
     } catch (err) {
+      settleDraftFlip(row.id, observed, { ok: false });
       setError(`Couldn't mark it ready for review: ${errorMessage(err)}`);
-    } finally {
-      setMarking(false);
+      return;
     }
+    onReady?.(row.id);
+    setLoading(true);
+    await plan(choices, channels, skipped);
   }
 
   async function send() {
@@ -505,7 +522,7 @@ export function GroupedRequest({ api, row, onClose, onSent, onOpen, onReady, onN
   }
 
   const groups = preview?.groups ?? [];
-  const drafts = !markedReady && (preview?.pr_warnings ?? []).some((warning) => warning.kind === "draft");
+  const phase = draftPhase(record, row.state === "open" && row.is_draft);
   const messageCount = preview?.cards.reduce((sum, card) => sum + card.messages.length, 0) ?? 0;
   const unsigned = preview?.cards.some((card) => !card.signed_in) ?? false;
   const label = messageCount > 1 ? `Send ${messageCount} messages` : "Send request";
@@ -513,9 +530,9 @@ export function GroupedRequest({ api, row, onClose, onSent, onOpen, onReady, onN
 
   return (
     <>
-      {(drafts || (row.state === "open" && row.is_draft && !markedReady)) && (
-        <DraftWarning busy={marking} onMarkReady={() => void markReady()}>
-          This PR is still a draft. Reviewers may skip it.
+      {(phase === "draft" || phase === "marking") && (
+        <DraftWarning busy={phase === "marking"} busyLabel="Marking ready…" onMarkReady={() => void markReady()}>
+          {phase === "marking" ? "Marking this PR ready for review…" : "This PR is still a draft. Reviewers may skip it."}
         </DraftWarning>
       )}
       {preview && <CheckNotes warnings={preview.pr_warnings} />}
@@ -584,10 +601,10 @@ export function GroupedRequest({ api, row, onClose, onSent, onOpen, onReady, onN
         <button
           type="button"
           className="rounded bg-violet-500 px-3 py-1.5 font-medium text-white disabled:opacity-40"
-          disabled={!preview || loading || naming || messageCount === 0 || unsigned || sending || marking || unconfirmed !== null}
+          disabled={!preview || loading || naming || messageCount === 0 || unsigned || sending || phase === "marking" || unconfirmed !== null}
           onClick={() => void send()}
         >
-          {sending ? "Sending…" : drafts ? `${label} anyway` : label}
+          {sending ? "Sending…" : groupedLabel(phase, label)}
         </button>
       </footer>
     </>

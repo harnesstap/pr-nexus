@@ -3,6 +3,7 @@ import type { Api, BranchState, BranchStatus, PrOverview, UpdateMethod } from ".
 import { errorMessage } from "../api";
 import { CloseButton } from "../CloseButton";
 import { AlertIcon, CheckIcon, ChevronDownIcon, DeclinedIcon, ExternalIcon, GitBranchIcon } from "../icons";
+import { takeGeneration } from "./draftRecord";
 import { BAR_SLOT, CAPTION, CARD, VALUE } from "./StatCards";
 import { Tooltip } from "../Tooltip";
 import { TONE_TEXT, type Tone } from "./status";
@@ -66,7 +67,7 @@ export function useBranch({
   prId: number;
   overview: PrOverview | null;
   fresh: boolean;
-  onOverview: (next: PrOverview) => void;
+  onOverview: (next: PrOverview, observed: number) => void;
   onNotice: (text: string) => void;
 }): BranchController {
   // Everything below belongs to one PR; a different id starts from scratch.
@@ -107,12 +108,13 @@ export function useBranch({
       return;
     }
     let live = true;
+    const observed = takeGeneration();
     const timer = window.setTimeout(() => {
       api
         .prOverview(prId, true)
         .then((next) => {
           if (live && next) {
-            latest.current(next);
+            latest.current(next, observed);
           }
         })
         .catch(() => undefined)
@@ -126,10 +128,11 @@ export function useBranch({
 
   function run(method: UpdateMethod) {
     patch({ confirmingRebase: false, updating: method, error: null });
+    const observed = takeGeneration();
     api
       .updatePrBranch(prId, method)
       .then((result) => {
-        onOverview(result.overview);
+        onOverview(result.overview, observed);
         patch({ status: result.branch, attempts: 0 });
         onNotice(method === "rebase" ? `Rebased onto ${view.base}.` : `Merged ${view.base} into the branch.`);
       })
