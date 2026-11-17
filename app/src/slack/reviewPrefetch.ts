@@ -1,4 +1,4 @@
-import type { Api, PrDetail, ReviewPreview, ReviewTarget, TargetChoice } from "../api";
+import type { Api, PrDetail, ReviewPreview, ReviewTarget, StoredReviewTeams, TargetChoice } from "../api";
 import { isSendable } from "../api";
 import { takeGeneration } from "../detail/draftRecord";
 import { needsGroupSends } from "./OwnerGroups";
@@ -65,8 +65,16 @@ export function scheduleReviewPrefetch(api: Api, prId: number, detail: () => PrD
   }, PREFETCH_MS);
 }
 
+function detailFromStored(stored: StoredReviewTeams): PrDetail {
+  return { mandatory_teams: stored.teams, candidate_teams: [], owner_groups: stored.owner_groups } as unknown as PrDetail;
+}
+
 async function fill(api: Api, prId: number, known: PrDetail | null, gen: number, observed: number): Promise<void> {
-  const detail = known ?? (await api.prDetail(prId).catch(() => null));
+  const detail =
+    known ??
+    (api.reviewTeams
+      ? await api.reviewTeams(prId).then(detailFromStored).catch(() => null)
+      : await api.prDetail(prId).catch(() => null));
   if (gen !== generation || !detail) {
     return;
   }

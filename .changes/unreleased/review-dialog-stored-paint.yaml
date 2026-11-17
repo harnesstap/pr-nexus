@@ -1,0 +1,3 @@
+kind: Changed
+body: The Request review dialog shows a stored channel immediately and checks Slack sign-in and code owners in the background.
+time: 2026-11-17T12:40:00Z

@@ -916,6 +916,14 @@ export interface PrDetail {
   from_cache: boolean;
 }
 
+/** Owners the review dialog can paint without calling GitHub. */
+export interface StoredReviewTeams {
+  teams: string[];
+  owner_groups: OwnerGroup[];
+  /** `session`, `cache`, or `requested`. */
+  source: string;
+}
+
 /** Settings → Agents (MCP). */
 export interface McpSettings {
   enabled: boolean;
@@ -1119,7 +1127,11 @@ export interface Api {
   saveMessageTemplate?(kind: TemplateKind, text: string | null): Promise<void>;
   /** The message `text` produces for a sample PR, rendered by the backend builder. */
   previewMessageTemplate?(kind: TemplateKind, text: string): Promise<string>;
-  slackWorkspaces(): Promise<SlackWorkspace[]>;
+  /**
+   * Stored workspaces. `validate: false` returns at once and does not call Slack.
+   * Omitted, the list waits on the grant check (Settings and startup).
+   */
+  slackWorkspaces(validate?: boolean): Promise<SlackWorkspace[]>;
   /** Opens the system browser and resolves after the redirect, a timeout, or cancel. */
   slackConnect(): Promise<SlackWorkspace>;
   slackCancelConnect(): Promise<void>;
@@ -1223,6 +1235,10 @@ export interface Api {
   saveSidebarViews?(views: SidebarView[]): Promise<SidebarView[]>;
   openExternal(url: string): Promise<void>;
   prDetail(id: number): Promise<PrDetail>;
+  /** Stored owners for the review dialog. Never calls GitHub. Absent in fakes that still use `prDetail`. */
+  reviewTeams?(id: number): Promise<StoredReviewTeams>;
+  /** Live owner resolution after the dialog's first paint. Absent in fakes that do not refresh owners. */
+  reviewOwners?(id: number): Promise<PrDetail>;
   /** The detail panel's cards. `refresh: false` reads only the cache (null when empty). */
   prOverview(id: number, refresh: boolean): Promise<PrOverview | null>;
   /** The stack this pull request belongs to, from stored refs. Null when it is not stacked. */
@@ -1326,7 +1342,7 @@ export const tauriApi: Api = {
   messageTemplates: () => invoke("load_message_templates"),
   saveMessageTemplate: (kind, text) => invoke("save_message_template", { kind, text }),
   previewMessageTemplate: (kind, text) => invoke("preview_message_template", { kind, text }),
-  slackWorkspaces: () => invoke("slack_workspaces"),
+  slackWorkspaces: (validate) => invoke("slack_workspaces", validate === undefined ? {} : { validate }),
   slackConnect: () => invoke("slack_connect"),
   slackCancelConnect: () => invoke("slack_cancel_connect"),
   slackRemoveWorkspace: (id) => invoke("slack_remove_workspace", { id }),
@@ -1403,6 +1419,8 @@ export const tauriApi: Api = {
   saveSidebarViews: (views) => invoke("save_sidebar_views", { views }),
   openExternal: (url) => invoke("open_external", { url }),
   prDetail: (id) => invoke("pr_detail", { id }),
+  reviewTeams: (id) => invoke("review_teams", { id }),
+  reviewOwners: (id) => invoke("review_owners", { id }),
   prOverview: (id, refresh) => invoke("pr_overview", { id, refresh }),
   prStack: (id) => invoke("pr_stack", { id }),
   setAutoMerge: (id, method) => invoke("set_auto_merge", { id, method }),

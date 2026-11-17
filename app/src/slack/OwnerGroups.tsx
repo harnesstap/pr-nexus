@@ -9,6 +9,7 @@ import { CopyMessageButton } from "./CopyMessageButton";
 import { DraftWarning } from "./DraftWarning";
 import { Mrkdwn } from "./mrkdwn";
 import { TargetCombobox } from "./TargetCombobox";
+import { expiredSignIn } from "./workspaces";
 
 function withNote(text: string, note: string): string {
   const trimmed = note.trim();
@@ -426,7 +427,32 @@ export function GroupedRequest({ api, row, onClose, onSent, onOpen, onReady, onN
   }
 
   useEffect(() => {
-    void api.slackWorkspaces().then(setWorkspaces).catch(() => setWorkspaces([]));
+    let cancel = false;
+    const validated = { current: false };
+    void api
+      .slackWorkspaces(false)
+      .then((list) => {
+        if (!cancel && !validated.current) {
+          setWorkspaces(list);
+        }
+      })
+      .catch(() => {
+        if (!cancel && !validated.current) {
+          setWorkspaces([]);
+        }
+      });
+    void api
+      .slackWorkspaces(true)
+      .then((list) => {
+        if (!cancel) {
+          validated.current = true;
+          setWorkspaces(list);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancel = true;
+    };
   }, [api]);
 
   useEffect(() => {
@@ -525,6 +551,7 @@ export function GroupedRequest({ api, row, onClose, onSent, onOpen, onReady, onN
   const phase = draftPhase(record, row.state === "open" && row.is_draft);
   const messageCount = preview?.cards.reduce((sum, card) => sum + card.messages.length, 0) ?? 0;
   const unsigned = preview?.cards.some((card) => !card.signed_in) ?? false;
+  const expiredSend = preview?.cards.some((card) => expiredSignIn(card.target, workspaces)) ?? false;
   const label = messageCount > 1 ? `Send ${messageCount} messages` : "Send request";
   const overridden = (group: BulkGroup) => channels.some((choice) => choice.pr_id === group.pr_id && choice.group_id === group.group_id);
 
@@ -601,7 +628,7 @@ export function GroupedRequest({ api, row, onClose, onSent, onOpen, onReady, onN
         <button
           type="button"
           className="rounded bg-violet-500 px-3 py-1.5 font-medium text-white disabled:opacity-40"
-          disabled={!preview || loading || naming || messageCount === 0 || unsigned || sending || phase === "marking" || unconfirmed !== null}
+          disabled={!preview || loading || naming || messageCount === 0 || unsigned || expiredSend || sending || phase === "marking" || unconfirmed !== null}
           onClick={() => void send()}
         >
           {sending ? "Sending…" : groupedLabel(phase, label)}
@@ -646,6 +673,7 @@ function GroupCard({
   const teams = [...new Set(mine.flatMap((group) => group.teams))];
   const prIds = [...new Set(mine.map((group) => group.pr_id))];
   const label = channelLabel(card.target);
+  const expired = expiredSignIn(card.target, workspaces);
   return (
     <section aria-label={label} className="rounded border border-slate-700 p-3">
       <header className="flex items-start justify-between gap-2">
@@ -681,7 +709,11 @@ function GroupCard({
       {mine.filter((group) => overridden(group) && group.selected).map((group) => (
         <SaveChannelBox key={groupKey(group)} team={group.selected as string} checked={saveChecked(saveFor, group)} onChange={(checked) => onSave(group, checked)} />
       ))}
-      {!card.signed_in && <p className="mt-1 text-xs text-amber-300">Sign in to {card.target.workspace} in Settings → Slack before sending.</p>}
+      {expired ? (
+        <p className="mt-1 text-xs text-amber-300">Slack sign-in expired. Reconnect the {expired.team_name} workspace in Settings.</p>
+      ) : (
+        !card.signed_in && <p className="mt-1 text-xs text-amber-300">Sign in to {card.target.workspace} in Settings → Slack before sending.</p>
+      )}
     </section>
   );
 }

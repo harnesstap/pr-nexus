@@ -1665,3 +1665,148 @@ fn a_name_only_mapping_is_an_unresolved_suggestion() {
     assert_eq!(choices[0].source, "mapping");
     assert_eq!(choices[0].target.channel_id, "C0ACME0001");
 }
+
+fn replace_pr(state: &AppState, pr: PullRequest) {
+    let accounts = state.store.list_accounts().unwrap();
+    let github = accounts
+        .into_iter()
+        .find(|account| account.kind == AccountKind::GitHub)
+        .unwrap();
+    let repos = state.store.list_repositories(github.id).unwrap();
+    let repo = repos
+        .into_iter()
+        .find(|repo| repo.owner == pr.repo.owner && repo.name == pr.repo.name)
+        .unwrap();
+    state.store.upsert_pull_request(repo.id, pr).unwrap();
+}
+
+fn preselected(choices: &[crate::slack::TargetChoice]) -> &crate::slack::TargetChoice {
+    choices
+        .iter()
+        .find(|choice| choice.source != "unresolved" && !choice.target.channel_id.is_empty())
+        .expect("a sendable channel")
+}
+
+/// Stored owners, a stored workspace list, and a cached channel name reach a
+/// preview without a GitHub resolve or a Slack token check.
+#[test]
+fn review_dialog_paints_from_the_store_without_network() {
+    let mut fx = fixture("paint-store");
+    let state = &mut fx.state;
+    connect_fake_workspace(state);
+    let slack = Arc::new(FakeSlack::default());
+    let (pr, team) = pr_with_team(state);
+    map_team(state, &team, "C0ACME0002", "web-reviews");
+    let github = state.github_resolves.load(Ordering::SeqCst);
+    let validations = state.token_validations.load(Ordering::SeqCst);
+
+    state.demo = false;
+    let stored = prs::stored_review_teams(state, pr).unwrap();
+    assert!(
+        stored.source == "session" || stored.source == "cache",
+        "{}",
+        stored.source
+    );
+    assert!(
+        stored
+            .teams
+            .iter()
+            .any(|name| name.trim_start_matches('@') == team.trim_start_matches('@'))
+    );
+    let row = crate::slack::load_pr(&state.store, pr).unwrap();
+    let choices = crate::slack::targets_for(&state.store, &row, &stored.teams).unwrap();
+    let choice = preselected(&choices);
+    assert_eq!(choice.target.channel_id, "C0ACME0002");
+    let preview = review::preview_named(
+        state,
+        &slack,
+        pr,
+        choice.target.clone(),
+        crate::slack::Names::Cached,
+    )
+    .unwrap();
+    assert!(!preview.text.is_empty());
+    assert!(slack.lookups.lock().unwrap().is_empty());
+    assert_eq!(state.github_resolves.load(Ordering::SeqCst), github);
+    assert_eq!(state.token_validations.load(Ordering::SeqCst), validations);
+    assert_eq!(state.token_probes.load(Ordering::SeqCst), 0);
+
+    state.demo = true;
+    let (quiet, checked) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let quiet = crate::slack::load_workspaces(state, false).await.unwrap();
+            let checked = crate::slack::load_workspaces(state, true).await.unwrap();
+            (quiet, checked)
+        });
+    assert!(!quiet.is_empty());
+    assert!(!checked.is_empty());
+    assert_eq!(
+        state.token_validations.load(Ordering::SeqCst),
+        validations + 1
+    );
+    assert_eq!(state.token_probes.load(Ordering::SeqCst), 0);
+    assert!(slack.lookups.lock().unwrap().is_empty());
+    assert_eq!(state.github_resolves.load(Ordering::SeqCst), github);
+}
+
+/// No owner cache: the requested reviewer team already on the pull request
+/// is the suggestion. A later resolve can name different teams.
+#[test]
+fn review_dialog_falls_back_to_requested_teams() {
+    let mut fx = fixture("paint-requested");
+    let state = &mut fx.state;
+    connect_fake_workspace(state);
+    let slack = Arc::new(FakeSlack::default());
+    let (pr, team) = pr_with_team(state);
+    let github = state.github_resolves.load(Ordering::SeqCst);
+    let requested = if team.contains("docs") {
+        "acme/platform"
+    } else {
+        "acme/docs"
+    };
+    let (org, slug) = requested.split_once('/').unwrap();
+    let mut stored_pr = crate::slack::load_pr(&state.store, pr).unwrap();
+    stored_pr.head_sha = format!("{}-moved", stored_pr.head_sha);
+    stored_pr.requested_reviewers = vec![pr_nexus_core::domain::RequestedReviewer::bare(
+        pr_nexus_core::domain::Reviewer::Team(TeamRef {
+            org: org.into(),
+            slug: slug.into(),
+        }),
+    )];
+    replace_pr(state, stored_pr);
+    map_team(state, requested, "C0ACME0003", "docs-reviews");
+
+    state.demo = false;
+    let stored = prs::stored_review_teams(state, pr).unwrap();
+    assert_eq!(stored.source, "requested");
+    assert_eq!(stored.teams, vec![requested.to_string()]);
+    assert_eq!(state.github_resolves.load(Ordering::SeqCst), github);
+    let row = crate::slack::load_pr(&state.store, pr).unwrap();
+    let choices = crate::slack::targets_for(&state.store, &row, &stored.teams).unwrap();
+    let choice = preselected(&choices);
+    assert_eq!(choice.target.channel_id, "C0ACME0003");
+    let preview = review::preview_named(
+        state,
+        &slack,
+        pr,
+        choice.target.clone(),
+        crate::slack::Names::Cached,
+    )
+    .unwrap();
+    assert!(!preview.text.is_empty());
+    assert_eq!(state.github_resolves.load(Ordering::SeqCst), github);
+    assert!(slack.lookups.lock().unwrap().is_empty());
+
+    state.demo = true;
+    let live = prs::pr_detail_resolve(state, pr).unwrap();
+    let live_teams = if live.mandatory_teams.is_empty() {
+        live.candidate_teams
+    } else {
+        live.mandatory_teams
+    };
+    assert_ne!(live_teams, stored.teams);
+    assert_eq!(state.github_resolves.load(Ordering::SeqCst), github + 1);
+}

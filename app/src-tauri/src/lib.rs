@@ -210,6 +210,8 @@ pub fn run() {
             commands::save_sidebar_views,
             commands::open_external,
             commands::pr_detail,
+            commands::review_teams,
+            commands::review_owners,
             commands::pr_stack,
             commands::pr_overview,
             commands::set_auto_merge,
