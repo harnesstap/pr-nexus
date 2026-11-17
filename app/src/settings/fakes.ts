@@ -1,4 +1,4 @@
-import type { Api, ReviewStats, StatsFilter, StatsPeriod, McpActivityEntry, McpClientId, McpClientState, McpOutcome, McpSettings, McpView, Preferences, SlackProposal, SlackWorkspace } from "../api";
+import type { Api, ReviewStats, StatsFilter, StatsPeriod, McpActivityEntry, McpCapability, McpClientId, McpClientState, McpOutcome, McpSettings, McpToolInfo, McpView, Preferences, SlackProposal, SlackWorkspace } from "../api";
 
 /** The §7.12 defaults, as the backend returns them on a fresh database. */
 export const DEFAULT_PREFERENCES: Preferences = {
@@ -43,6 +43,7 @@ type SettingsApi = Pick<
   | "slackChannelNames"
   | "pickMappingFile"
   | "mcpSettings"
+  | "mcpTools"
   | "saveMcpSettings"
   | "mcpToken"
   | "regenerateMcpToken"
@@ -64,6 +65,7 @@ export const FAKE_MCP_TOKEN = "pnx_0123456789abcdef0123456789abcdef0123456789abc
 type FakeMcp = Pick<
   Api,
   | "mcpSettings"
+  | "mcpTools"
   | "saveMcpSettings"
   | "mcpToken"
   | "regenerateMcpToken"
@@ -89,6 +91,67 @@ export const FAKE_CLIENT_PATHS: Record<McpClientId, string> = {
   codex: "~/.codex/config.toml",
   opencode: "~/.config/opencode/opencode.jsonc",
 };
+
+function sampleTools(category: McpCapability, rows: readonly (readonly [string, string])[], defaultsOn = true): McpToolInfo[] {
+  return rows.map(([name, description]) => ({ name, description, category, defaults_on: defaultsOn }));
+}
+
+/**
+ * The registry the screenshot harness and tests stand in for. Names match
+ * the server; descriptions are the first sentence, shortened where the
+ * real one is a paragraph. `mcp_tools` is the source in the app.
+ */
+export const SAMPLE_MCP_TOOLS: McpToolInfo[] = [
+  ...sampleTools("reads", [
+    ["list_profiles", "List PR Nexus profiles (id, name, active)."],
+    ["list_projects", "List PR Nexus projects in display order."],
+    ["get_project", "One project with its description, JIRA links, counts and a page of pull requests."],
+    ["list_prs", "List synced pull requests, starred first, then most recently updated."],
+    ["get_pr", "One pull request by PR Nexus id, including the private note and star."],
+    ["get_review_stats", "Review statistics for the user's own pull requests."],
+  ]),
+  ...sampleTools("local_writes", [
+    ["create_project", "Create a project, a named group of pull requests."],
+    ["update_project", "Change a project's name, description or color."],
+    ["archive_project", "Archive a project so it leaves the sidebar."],
+    ["unarchive_project", "Bring an archived project back to the sidebar."],
+    ["add_prs_to_project", "Link pull requests to a project by hand."],
+    ["remove_prs_from_project", "Unlink pull requests from a project."],
+    ["set_project_jira_links", "Replace all of a project's JIRA links."],
+    ["add_jira_link", "Append one JIRA link to a project."],
+    ["remove_jira_link", "Remove one JIRA link from a project."],
+    ["set_pr_note", "Replace the user's private note on a pull request."],
+    ["set_pr_starred", "Star or unstar a pull request."],
+  ]),
+  ...sampleTools("slack_reads", [
+    ["slack_list_workspaces", "The Slack workspaces the user exposed to agents."],
+    ["slack_resolve", "Turn a Slack link or ID into tool arguments."],
+    ["slack_search_public", "Search messages in public channels."],
+    ["slack_search_channels", "Find channels by name or topic."],
+    ["slack_search_users", "Find people by name, title or handle."],
+    ["slack_list_user_channels", "Channels the user is a member of."],
+    ["slack_read_channel", "Recent messages of one channel, newest first."],
+    ["slack_read_thread", "A message and its replies."],
+    ["slack_read_user_profile", "One person's name, title, time zone and status."],
+    ["slack_get_reactions", "The emoji reactions on one message."],
+    ["slack_list_channel_members", "Who is in one channel."],
+    ["slack_search_emojis", "Custom emoji whose name matches a query."],
+    ["slack_read_file", "The text of one file shared in Slack."],
+    ["slack_read_canvas", "One canvas as Markdown."],
+    ["slack_read_list", "The items of one Slack list."],
+  ]),
+  ...sampleTools("slack_private_search", [
+    ["slack_search_public_and_private", "Search messages, including private channels and DMs."],
+  ]),
+  ...sampleTools("slack_sends", [
+    ["slack_send_message", "Send a message to a channel or a person."],
+    ["slack_schedule_message", "Schedule a message for later."],
+    ["slack_send_message_draft", "Save a draft without sending it."],
+    ["slack_add_reaction", "Add an emoji reaction to a message."],
+    ["slack_get_proposal", "The state of a send this session asked for."],
+    ["request_reviews", "Ask for reviews of the user's open pull requests on Slack."],
+  ]),
+];
 
 /** Two made-up workspaces: `acme`, and `acme-labs` on an Enterprise Grid. */
 export const FAKE_SLACK_WORKSPACES: SlackWorkspace[] = [
@@ -179,6 +242,7 @@ export function fakeMcp(
   initialWorkspaces: SlackWorkspace[] = [],
   initialProposals: SlackProposal[] = [],
   initialClients: Partial<Record<McpClientId, McpClientState["status"]>> = {},
+  tools: McpToolInfo[] = SAMPLE_MCP_TOOLS,
 ): FakeMcp {
   let clients = { ...initialClients };
   let log = [...activity];
@@ -197,6 +261,8 @@ export function fakeMcp(
     slack_elicit: true,
     port: null,
     extra_allowed_hosts: [],
+    disabled_tools: [],
+    enabled_slack_send_tools: [],
     ...initial,
   };
   let token: string | null = settings.enabled ? FAKE_MCP_TOKEN : null;
@@ -217,6 +283,7 @@ export function fakeMcp(
   };
   return {
     mcpSettings: () => Promise.resolve(view()),
+    mcpTools: () => Promise.resolve(tools),
     slackWorkspaces: () => Promise.resolve(workspaces),
     // Signing in again grants every scope to the first workspace missing some.
     slackConnect: () => {

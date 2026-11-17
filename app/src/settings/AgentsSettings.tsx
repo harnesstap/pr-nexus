@@ -1,8 +1,10 @@
-import { useEffect, useState } from "react";
-import type { Api, McpSettings, McpView, SlackSendMode, SlackWorkspace } from "../api";
+import { useEffect, useState, type ReactNode } from "react";
+import type { Api, McpCapability, McpSettings, McpToolInfo, McpView, SlackSendMode, SlackWorkspace } from "../api";
 import { errorMessage } from "../api";
+import { ChevronRightIcon } from "../icons";
 import { Switch } from "../Switch";
 import { Tooltip } from "../Tooltip";
+import { categoryEnabled, toolOn, toolSummary, withTool, withTools } from "./agentTools";
 import { McpActivity } from "./McpActivity";
 import { SlackProposals } from "./SlackProposals";
 import { plainText } from "../textInput";
@@ -10,7 +12,7 @@ import { McpClientConfig } from "./McpClientConfig";
 import { parseExtraHost, parsePort } from "./tabs";
 
 interface Props {
-  api: Pick<Api, "mcpSettings" | "saveMcpSettings" | "mcpToken" | "regenerateMcpToken" | "mcpClientStates" | "mcpAddToClient" | "mcpOpenClientConfig" | "mcpActivity" | "clearMcpActivity" | "reviewStats" | "openExternal" | "slackWorkspaces" | "slackConnect" | "mcpSlackProposals" | "decideMcpSlackProposal">;
+  api: Pick<Api, "mcpSettings" | "mcpTools" | "saveMcpSettings" | "mcpToken" | "regenerateMcpToken" | "mcpClientStates" | "mcpAddToClient" | "mcpOpenClientConfig" | "mcpActivity" | "clearMcpActivity" | "reviewStats" | "openExternal" | "slackWorkspaces" | "slackConnect" | "mcpSlackProposals" | "decideMcpSlackProposal">;
 }
 
 const button = "rounded border border-slate-700 px-3 py-1.5 text-sm hover:bg-slate-800 disabled:opacity-50";
@@ -29,6 +31,9 @@ export function AgentsSettings({ api }: Props) {
   // Workspaces signed in again that still lack scopes: the Slack app itself
   // does not list them, so another sign-in alone cannot help.
   const [notGranted, setNotGranted] = useState<string[]>([]);
+  const [tools, setTools] = useState<McpToolInfo[]>([]);
+  const [toolsError, setToolsError] = useState<string | null>(null);
+  const [openTools, setOpenTools] = useState<ReadonlySet<McpCapability>>(() => new Set());
 
   useEffect(() => {
     let cancel = false;
@@ -50,6 +55,25 @@ export function AgentsSettings({ api }: Props) {
     };
   }, [api]);
 
+  useEffect(() => {
+    let cancel = false;
+    api
+      .mcpTools()
+      .then((list) => {
+        if (!cancel) {
+          setTools(list);
+        }
+      })
+      .catch((err: unknown) => {
+        if (!cancel) {
+          setToolsError(errorMessage(err));
+        }
+      });
+    return () => {
+      cancel = true;
+    };
+  }, [api]);
+
   function run(work: () => Promise<McpView>) {
     setBusy(true);
     setError(null);
@@ -63,6 +87,18 @@ export function AgentsSettings({ api }: Props) {
     if (view) {
       run(() => api.saveMcpSettings({ ...view.settings, ...patch }));
     }
+  }
+
+  function toggleTools(category: McpCapability) {
+    setOpenTools((current) => {
+      const next = new Set(current);
+      if (next.has(category)) {
+        next.delete(category);
+      } else {
+        next.add(category);
+      }
+      return next;
+    });
   }
 
   function applyPort() {
@@ -170,112 +206,149 @@ export function AgentsSettings({ api }: Props) {
         <h2 id="agents-capabilities" className="text-base font-semibold">
           What agents may do
         </h2>
+        {toolsError && (
+          <p role="alert" className="mt-2 text-xs text-rose-300">
+            Could not load the tool list: {toolsError}
+          </p>
+        )}
         <ul className="mt-3 space-y-2">
-          <li>
-            <Switch label="Reads" checked={settings.reads} disabled={busy} onChange={(reads) => save({ reads })}>
-              Reads <span className="text-slate-400">— list and read projects, pull requests, notes and stars</span>
-            </Switch>
-          </li>
-          <li>
-            <Switch
-              label="Local writes"
-              checked={settings.local_writes}
-              disabled={busy}
-              aria-describedby={settings.local_writes ? "agents-writes-note" : undefined}
-              onChange={(local_writes) => save({ local_writes })}
-            >
-              Local writes <span className="text-slate-400">— create, edit and archive projects, link PRs and JIRA issues, set notes and stars</span>
-            </Switch>
-            {settings.local_writes && (
-              <p id="agents-writes-note" className="mt-1 text-xs text-slate-400">
-                Agents cannot delete projects. Every call shows under Activity below.
+          <CapabilityRow
+            label="Reads"
+            category="reads"
+            settings={settings}
+            tools={tools}
+            busy={busy}
+            open={openTools.has("reads")}
+            onToggle={() => toggleTools("reads")}
+            onChange={(reads) => save({ reads })}
+            onTools={(patch) => save(patch)}
+          >
+            Reads <span className="text-slate-400">— list and read projects, pull requests, notes and stars</span>
+          </CapabilityRow>
+          <CapabilityRow
+            label="Local writes"
+            category="local_writes"
+            settings={settings}
+            tools={tools}
+            busy={busy}
+            open={openTools.has("local_writes")}
+            onToggle={() => toggleTools("local_writes")}
+            describedBy={settings.local_writes ? "agents-writes-note" : undefined}
+            onChange={(local_writes) => save({ local_writes })}
+            onTools={(patch) => save(patch)}
+            note={
+              settings.local_writes ? (
+                <p id="agents-writes-note" className="mt-1 text-xs text-slate-400">
+                  Agents cannot delete projects. Every call shows under Activity below.
+                </p>
+              ) : null
+            }
+          >
+            Local writes <span className="text-slate-400">— create, edit and archive projects, link PRs and JIRA issues, set notes and stars</span>
+          </CapabilityRow>
+          <CapabilityRow
+            label="Slack reads"
+            category="slack_reads"
+            settings={settings}
+            tools={tools}
+            busy={busy}
+            open={openTools.has("slack_reads")}
+            onToggle={() => toggleTools("slack_reads")}
+            describedBy="agents-slack-note"
+            onChange={(slack_reads) => save({ slack_reads })}
+            onTools={(patch) => save(patch)}
+            note={
+              <p id="agents-slack-note" className="mt-1 max-w-prose text-xs text-slate-400">
+                Each workspace answers through its own Slack sign-in. Slack replies reach agents as Slack returns them, marked as
+                untrusted content.
               </p>
-            )}
-          </li>
-          <li>
-            <Switch
-              label="Slack reads"
-              checked={settings.slack_reads}
-              disabled={busy}
-              aria-describedby="agents-slack-note"
-              onChange={(slack_reads) => save({ slack_reads })}
-            >
-              Slack reads <span className="text-slate-400">— search and read public channels and your channels in the workspaces ticked below</span>
-            </Switch>
-            <p id="agents-slack-note" className="mt-1 max-w-prose text-xs text-slate-400">
-              Each workspace answers through its own Slack sign-in. Slack replies reach agents as Slack returns them, marked as
-              untrusted content.
-            </p>
-            {settings.slack_reads && (
-              <SlackWorkspacePicker
-                workspaces={workspaces}
-                selected={settings.slack_workspaces}
-                disabled={busy}
-                reauthing={reauthing}
-                notGranted={notGranted}
-                onChange={(slack_workspaces) => save({ slack_workspaces })}
-                onReauth={reauth}
-              />
-            )}
-          </li>
-          <li>
-            <Switch
-              label="Slack private search"
-              checked={settings.slack_reads && settings.slack_private_search}
-              disabled={busy || !settings.slack_reads}
-              aria-describedby="agents-private-note"
-              onChange={(slack_private_search) => save({ slack_private_search })}
-            >
-              Slack private search <span className="text-slate-400">— also search private channels, DMs and group DMs you are in</span>
-            </Switch>
-            <p id="agents-private-note" className="mt-1 max-w-prose text-xs text-slate-400">
-              {settings.slack_reads ? "Off by default. Applies to the same ticked workspaces." : "Turn on Slack reads first."}
-            </p>
-          </li>
-          <li>
-            <Switch
-              label="Slack sends"
-              checked={settings.slack_reads && settings.slack_sends}
-              disabled={busy || !settings.slack_reads}
-              aria-describedby="agents-sends-note"
-              onChange={(slack_sends) => save({ slack_sends })}
-            >
-              Slack sends <span className="text-slate-400">— agents send messages, drafts, schedules and reactions as you</span>
-            </Switch>
-            <p id="agents-sends-note" className="mt-1 max-w-prose text-xs text-slate-400">
-              {settings.slack_reads
-                ? "Each write names one workspace."
-                : "Turn on Slack reads first."}
-            </p>
-            {settings.slack_reads && settings.slack_sends && (
-              <>
-                <SendModes mode={settings.slack_send_mode} disabled={busy} onChange={(slack_send_mode) => save({ slack_send_mode })} />
-                {settings.slack_send_mode !== "automatic" && (
-                  <label className="mt-2 ml-1 flex items-start gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      className="mt-1"
-                      checked={settings.slack_elicit}
-                      disabled={busy}
-                      onChange={(e) => save({ slack_elicit: e.target.checked })}
-                    />
-                    <span>
-                      Ask in the agent when it supports it
-                      <span className="block text-xs text-slate-400">A held write is shown in the agent to confirm; unanswered ones still wait here.</span>
-                    </span>
-                  </label>
-                )}
-                {settings.slack_send_mode === "automatic" && (
-                  <p role="note" className="mt-1 ml-1 max-w-prose text-xs text-amber-300">
-                    Agents&apos; messages are sent immediately as you, with no approval.
-                  </p>
-                )}
-                {settings.slack_send_mode === "allowlist" && (
-                  <AutoSendChannels channels={settings.slack_auto_send_channels} disabled={busy} onChange={(slack_auto_send_channels) => save({ slack_auto_send_channels })} />
-                )}
-              </>
-            )}
-          </li>
+            }
+            details={
+              settings.slack_reads ? (
+                <SlackWorkspacePicker
+                  workspaces={workspaces}
+                  selected={settings.slack_workspaces}
+                  disabled={busy}
+                  reauthing={reauthing}
+                  notGranted={notGranted}
+                  onChange={(slack_workspaces) => save({ slack_workspaces })}
+                  onReauth={reauth}
+                />
+              ) : null
+            }
+          >
+            Slack reads <span className="text-slate-400">— search and read public channels and your channels in the workspaces ticked below</span>
+          </CapabilityRow>
+          <CapabilityRow
+            label="Slack private search"
+            category="slack_private_search"
+            settings={settings}
+            tools={tools}
+            busy={busy}
+            switchDisabled={!settings.slack_reads}
+            open={openTools.has("slack_private_search")}
+            onToggle={() => toggleTools("slack_private_search")}
+            describedBy="agents-private-note"
+            onChange={(slack_private_search) => save({ slack_private_search })}
+            onTools={(patch) => save(patch)}
+            note={
+              <p id="agents-private-note" className="mt-1 max-w-prose text-xs text-slate-400">
+                {settings.slack_reads ? "Off by default. Applies to the same ticked workspaces." : "Turn on Slack reads first."}
+              </p>
+            }
+          >
+            Slack private search <span className="text-slate-400">— also search private channels, DMs and group DMs you are in</span>
+          </CapabilityRow>
+          <CapabilityRow
+            label="Slack sends"
+            category="slack_sends"
+            settings={settings}
+            tools={tools}
+            busy={busy}
+            switchDisabled={!settings.slack_reads}
+            open={openTools.has("slack_sends")}
+            onToggle={() => toggleTools("slack_sends")}
+            describedBy="agents-sends-note"
+            onChange={(slack_sends) => save({ slack_sends })}
+            onTools={(patch) => save(patch)}
+            note={
+              <p id="agents-sends-note" className="mt-1 max-w-prose text-xs text-slate-400">
+                {settings.slack_reads ? "Each write names one workspace." : "Turn on Slack reads first."}
+              </p>
+            }
+            details={
+              settings.slack_reads && settings.slack_sends ? (
+                <>
+                  <SendModes mode={settings.slack_send_mode} disabled={busy} onChange={(slack_send_mode) => save({ slack_send_mode })} />
+                  {settings.slack_send_mode !== "automatic" && (
+                    <label className="mt-2 ml-1 flex items-start gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        className="mt-1"
+                        checked={settings.slack_elicit}
+                        disabled={busy}
+                        onChange={(e) => save({ slack_elicit: e.target.checked })}
+                      />
+                      <span>
+                        Ask in the agent when it supports it
+                        <span className="block text-xs text-slate-400">A held write is shown in the agent to confirm; unanswered ones still wait here.</span>
+                      </span>
+                    </label>
+                  )}
+                  {settings.slack_send_mode === "automatic" && (
+                    <p role="note" className="mt-1 ml-1 max-w-prose text-xs text-amber-300">
+                      Agents&apos; messages are sent immediately as you, with no approval.
+                    </p>
+                  )}
+                  {settings.slack_send_mode === "allowlist" && (
+                    <AutoSendChannels channels={settings.slack_auto_send_channels} disabled={busy} onChange={(slack_auto_send_channels) => save({ slack_auto_send_channels })} />
+                  )}
+                </>
+              ) : null
+            }
+          >
+            Slack sends <span className="text-slate-400">— agents send messages, drafts, schedules and reactions as you</span>
+          </CapabilityRow>
         </ul>
       </section>
 
@@ -377,6 +450,124 @@ export function AgentsSettings({ api }: Props) {
   );
 }
 
+interface CapabilityProps {
+  label: string;
+  category: McpCapability;
+  settings: McpSettings;
+  tools: McpToolInfo[];
+  busy: boolean;
+  /** The category switch itself is disabled (Slack reads is off). */
+  switchDisabled?: boolean;
+  open: boolean;
+  describedBy?: string;
+  onToggle: () => void;
+  onChange: (on: boolean) => void;
+  onTools: (patch: Pick<McpSettings, "disabled_tools" | "enabled_slack_send_tools">) => void;
+  note?: ReactNode;
+  details?: ReactNode;
+  children: ReactNode;
+}
+
+/** A capability switch, with its tools collapsed on the same row. */
+function CapabilityRow({
+  label,
+  category,
+  settings,
+  tools,
+  busy,
+  switchDisabled = false,
+  open,
+  describedBy,
+  onToggle,
+  onChange,
+  onTools,
+  note,
+  details,
+  children,
+}: CapabilityProps) {
+  const mine = tools.filter((tool) => tool.category === category);
+  const selected = mine.filter((tool) => toolOn(tool, settings)).length;
+  const checked = categoryEnabled(settings, category);
+  const locked = busy || !checked;
+  const summary = toolSummary(selected, mine.length);
+  const panelId = `agents-tools-${category}`;
+  return (
+    <li>
+      <div className="flex items-start gap-2">
+        <div className="min-w-0 flex-1">
+          <Switch
+            label={label}
+            checked={checked}
+            disabled={busy || switchDisabled}
+            aria-describedby={describedBy}
+            onChange={onChange}
+          >
+            {children}
+          </Switch>
+        </div>
+        {mine.length > 0 && (
+          <button
+            type="button"
+            aria-expanded={open}
+            aria-controls={panelId}
+            aria-label={`${label}: ${summary}`}
+            className="mt-0.5 inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-xs text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+            onClick={onToggle}
+          >
+            <ChevronRightIcon size={12} className={open ? "rotate-90" : ""} />
+            {summary}
+          </button>
+        )}
+      </div>
+      {note}
+      {open && mine.length > 0 && (
+        <div id={panelId} className="mt-1 ml-11">
+          <div className="mb-1 flex gap-3 text-xs">
+            <button
+              type="button"
+              className="text-sky-300 hover:underline disabled:cursor-not-allowed disabled:opacity-40 disabled:no-underline"
+              disabled={locked}
+              aria-label={`Enable all ${label} tools`}
+              onClick={() => onTools(withTools(settings, mine, true))}
+            >
+              All
+            </button>
+            <button
+              type="button"
+              className="text-sky-300 hover:underline disabled:cursor-not-allowed disabled:opacity-40 disabled:no-underline"
+              disabled={locked}
+              aria-label={`Enable no ${label} tools`}
+              onClick={() => onTools(withTools(settings, mine, false))}
+            >
+              None
+            </button>
+          </div>
+          <ul className="space-y-1">
+            {mine.map((tool) => {
+              const on = toolOn(tool, settings);
+              return (
+                <li key={tool.name} className="flex items-start gap-2">
+                  <Switch
+                    compact
+                    label={tool.name}
+                    checked={on}
+                    disabled={locked}
+                    onChange={(next) => onTools(withTool(settings, tool, next))}
+                  >
+                    <code className={`font-mono text-xs ${locked ? "text-slate-500" : "text-slate-200"}`}>{tool.name}</code>
+                  </Switch>
+                  <span className={`min-w-0 pt-0.5 text-xs ${locked ? "text-slate-500" : "text-slate-400"}`}>{tool.description}</span>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+      {details}
+    </li>
+  );
+}
+
 interface PickerProps {
   workspaces: SlackWorkspace[];
   selected: string[];
@@ -405,45 +596,46 @@ function SlackWorkspacePicker({ workspaces, selected, disabled, reauthing, notGr
           const missing = ws.scopes_missing ?? [];
           const noteId = `agents-scopes-${ws.team_id}`;
           return (
-            <li key={ws.team_id} className="flex flex-wrap items-center gap-x-3">
-              <label className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  className="accent-sky-500"
-                  checked={selected.includes(ws.team_id)}
-                  disabled={disabled}
-                  onChange={(event) => toggle(ws.team_id, event.target.checked)}
-                />
-                <span>{ws.team_name}</span>
-                <span className="text-xs text-slate-500">{ws.domain}.slack.com</span>
-                {unavailable && <span className="text-xs text-amber-300">— {unavailable}</span>}
-              </label>
-              {!unavailable && missing.length > 0 && (
-                <>
-                  {notGranted.includes(ws.team_id) ? (
-                    <span id={noteId} className="basis-full text-xs text-amber-300">
+            <li key={ws.team_id} className="flex items-start gap-x-3">
+              <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2">
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    className="accent-sky-500"
+                    checked={selected.includes(ws.team_id)}
+                    disabled={disabled}
+                    onChange={(event) => toggle(ws.team_id, event.target.checked)}
+                  />
+                  <span>{ws.team_name}</span>
+                  <span className="text-xs text-slate-500">{ws.domain}.slack.com</span>
+                  {unavailable && <span className="text-xs text-amber-300">— {unavailable}</span>}
+                </label>
+                {!unavailable && missing.length > 0 &&
+                  (notGranted.includes(ws.team_id) ? (
+                    <span id={noteId} className="min-w-0 flex-1 text-xs text-amber-300">
                       Slack did not give these permissions: <code>{missing.join(", ")}</code>. Your Slack app does not
                       list them. Open your app on api.slack.com, go to OAuth &amp; Permissions, add them under User Token
                       Scopes, then sign in again.
                     </span>
                   ) : (
-                    <Tooltip label="Missing permissions" detail={missing.join(", ")} align="start">
-                      <span id={noteId} className="text-xs text-amber-300">
+                    <Tooltip label="Missing permissions" detail={missing.join(", ")} align="start" className="min-w-0 flex-1">
+                      <span id={noteId} className="min-w-0 text-xs text-amber-300">
                         — needs new Slack permissions for reactions, files, canvases and lists
                       </span>
                     </Tooltip>
-                  )}
-                  <button
-                    type="button"
-                    className="rounded px-2 py-0.5 text-xs text-sky-300 hover:bg-slate-800 disabled:opacity-50"
-                    aria-label={`Sign in again to ${ws.team_name}`}
-                    aria-describedby={noteId}
-                    disabled={disabled}
-                    onClick={() => onReauth(ws.team_id)}
-                  >
-                    {reauthing === ws.team_id ? "Waiting for Slack…" : "Sign in again"}
-                  </button>
-                </>
+                  ))}
+              </div>
+              {!unavailable && missing.length > 0 && (
+                <button
+                  type="button"
+                  className="shrink-0 whitespace-nowrap rounded px-2 py-0.5 text-xs text-sky-300 hover:bg-slate-800 disabled:opacity-50"
+                  aria-label={`Sign in again to ${ws.team_name}`}
+                  aria-describedby={noteId}
+                  disabled={disabled}
+                  onClick={() => onReauth(ws.team_id)}
+                >
+                  {reauthing === ws.team_id ? "Waiting for Slack…" : "Sign in again"}
+                </button>
               )}
             </li>
           );

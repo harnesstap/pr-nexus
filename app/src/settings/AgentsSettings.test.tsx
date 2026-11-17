@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { AgentsSettings } from "./AgentsSettings";
-import type { SlackProposal } from "../api";
+import type { McpToolInfo, SlackProposal } from "../api";
 import { FAKE_MCP_TOKEN, FAKE_SLACK_WORKSPACES, fakeMcp, sampleActivity, sampleSlackActivity } from "./fakes";
 import { mcpClientSnippet } from "./mcpClients";
 import { parseExtraHost, parsePort } from "./tabs";
@@ -27,7 +27,7 @@ test("is off by default and starts the server when enabled", async () => {
 
   fireEvent.click(master);
   expect(await screen.findByText("● Running on port 43117")).toBeInTheDocument();
-  expect(save).toHaveBeenCalledWith({ enabled: true, reads: true, local_writes: false, slack_sends: false, slack_reads: false, slack_private_search: false, slack_workspaces: [], slack_auto_send_channels: [], slack_send_mode: "allowlist", slack_elicit: true, port: null, extra_allowed_hosts: [] });
+  expect(save).toHaveBeenCalledWith({ enabled: true, reads: true, local_writes: false, slack_sends: false, slack_reads: false, slack_private_search: false, slack_workspaces: [], slack_auto_send_channels: [], slack_send_mode: "allowlist", slack_elicit: true, port: null, extra_allowed_hosts: [], disabled_tools: [], enabled_slack_send_tools: [] });
   expect(screen.getByText("http://127.0.0.1:43117/mcp")).toBeInTheDocument();
   expect(screen.getByLabelText("Token, masked")).toHaveTextContent("pnx_••••••••••••7f3e");
   expect(document.body.textContent).not.toContain(FAKE_MCP_TOKEN);
@@ -168,7 +168,7 @@ test("a bad port is refused before saving; a server error is shown", async () =>
   expect(save).not.toHaveBeenCalled();
 
   save.mockResolvedValueOnce({
-    settings: { enabled: true, reads: true, local_writes: false, slack_sends: false, slack_reads: false, slack_private_search: false, slack_workspaces: [], slack_auto_send_channels: [], slack_send_mode: "allowlist", slack_elicit: true, port: 40100, extra_allowed_hosts: [] },
+    settings: { enabled: true, reads: true, local_writes: false, slack_sends: false, slack_reads: false, slack_private_search: false, slack_workspaces: [], slack_auto_send_channels: [], slack_send_mode: "allowlist", slack_elicit: true, port: 40100, extra_allowed_hosts: [], disabled_tools: [], enabled_slack_send_tools: [] },
     status: { state: "error", url: null, port: 40100, error: "Port 40100 is already in use on 127.0.0.1." },
     token_masked: "pnx_••••••••••••7f3e",
   });
@@ -422,6 +422,96 @@ test("a proposal confirmed in the agent says where", async () => {
   render(<AgentsSettings api={api} />);
   expect(await screen.findByText("Approved in claude-code")).toBeInTheDocument();
   expect(screen.getByText("Declined in claude-code")).toBeInTheDocument();
+});
+
+const DISCLOSURE_TOOLS: McpToolInfo[] = [
+  { name: "list_projects", description: "List projects.", category: "reads", defaults_on: true },
+  { name: "get_project", description: "One project.", category: "reads", defaults_on: true },
+  { name: "slack_send_message", description: "Send a message.", category: "slack_sends", defaults_on: true },
+  { name: "slack_future_send", description: "A later send tool.", category: "slack_sends", defaults_on: false },
+];
+
+test("each capability discloses its tools, and a category off keeps the selection", async () => {
+  const api = fakeMcp({ enabled: true, reads: true, slack_reads: true, slack_sends: true }, [], [], [], {}, DISCLOSURE_TOOLS);
+  const save = vi.spyOn(api, "saveMcpSettings");
+  render(<AgentsSettings api={api} />);
+
+  const reads = await screen.findByRole("button", { name: "Reads: 2 of 2 tools" });
+  expect(reads).toHaveAttribute("aria-expanded", "false");
+  expect(screen.queryByRole("switch", { name: "list_projects" })).toBeNull();
+  expect(screen.queryByText("List projects.")).toBeNull();
+
+  fireEvent.click(reads);
+  expect(screen.getByRole("button", { name: "Reads: 2 of 2 tools" })).toHaveAttribute("aria-expanded", "true");
+  const listed = screen.getByRole("switch", { name: "list_projects" });
+  expect(listed).toHaveAttribute("aria-checked", "true");
+  expect(listed).toBeEnabled();
+  expect(screen.getByText("list_projects").tagName).toBe("CODE");
+  expect(screen.getByText("List projects.")).toBeInTheDocument();
+
+  fireEvent.click(listed);
+  await vi.waitFor(() => {
+    expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ reads: true, disabled_tools: ["list_projects"], enabled_slack_send_tools: [] }));
+    expect(screen.getByRole("switch", { name: "list_projects" })).toHaveAttribute("aria-checked", "false");
+  });
+  expect(screen.getByRole("button", { name: "Reads: 1 of 2 tools" })).toBeInTheDocument();
+  expect(screen.getByRole("switch", { name: "get_project" })).toHaveAttribute("aria-checked", "true");
+
+  fireEvent.click(screen.getByRole("switch", { name: "Reads" }));
+  await vi.waitFor(() => expect(screen.getByRole("switch", { name: "Reads" })).toHaveAttribute("aria-checked", "false"));
+  expect(screen.getByRole("switch", { name: "list_projects" })).toBeDisabled();
+  expect(screen.getByRole("switch", { name: "list_projects" })).toHaveAttribute("aria-checked", "false");
+  expect(screen.getByRole("switch", { name: "get_project" })).toBeDisabled();
+  expect(screen.getByRole("switch", { name: "get_project" })).toHaveAttribute("aria-checked", "true");
+  expect(screen.getByRole("button", { name: "Enable all Reads tools" })).toBeDisabled();
+  expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ reads: false, disabled_tools: ["list_projects"] }));
+
+  fireEvent.click(screen.getByRole("switch", { name: "Reads" }));
+  await vi.waitFor(() => expect(screen.getByRole("switch", { name: "get_project" })).toBeEnabled());
+  expect(screen.getByRole("switch", { name: "list_projects" })).toHaveAttribute("aria-checked", "false");
+  expect(screen.getByRole("switch", { name: "get_project" })).toHaveAttribute("aria-checked", "true");
+  expect(screen.getByRole("switch", { name: "Reads" })).toHaveAttribute("aria-checked", "true");
+
+  fireEvent.click(screen.getByRole("button", { name: "Enable all Reads tools" }));
+  await vi.waitFor(() => {
+    expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ disabled_tools: [] }));
+    expect(screen.getByRole("switch", { name: "list_projects" })).toHaveAttribute("aria-checked", "true");
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Enable no Reads tools" }));
+  await vi.waitFor(() => {
+    expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ disabled_tools: ["get_project", "list_projects"] }));
+    expect(screen.getByRole("switch", { name: "get_project" })).toHaveAttribute("aria-checked", "false");
+  });
+
+  fireEvent.click(screen.getByRole("button", { name: "Slack sends: 1 of 2 tools" }));
+  expect(screen.getByRole("switch", { name: "slack_send_message" })).toHaveAttribute("aria-checked", "true");
+  const future = screen.getByRole("switch", { name: "slack_future_send" });
+  expect(future).toHaveAttribute("aria-checked", "false");
+  fireEvent.click(future);
+  await vi.waitFor(() => {
+    expect(save).toHaveBeenLastCalledWith(
+      expect.objectContaining({ enabled_slack_send_tools: ["slack_future_send"], disabled_tools: ["get_project", "list_projects"] }),
+    );
+    expect(screen.getByRole("button", { name: "Slack sends: 2 of 2 tools" })).toBeInTheDocument();
+  });
+});
+
+test("Sign in again stays on the right of each workspace row", async () => {
+  const stale = [
+    { ...FAKE_SLACK_WORKSPACES[0], scopes_missing: ["reactions:read", "files:read", "canvases:read", "lists:read"] },
+    { ...FAKE_SLACK_WORKSPACES[1], scopes_missing: ["reactions:read"] },
+  ];
+  const api = fakeMcp({ enabled: true, slack_reads: true }, [], stale);
+  render(<AgentsSettings api={api} />);
+  const first = await screen.findByRole("button", { name: "Sign in again to Acme" });
+  const second = screen.getByRole("button", { name: "Sign in again to Acme Labs" });
+  for (const button of [first, second]) {
+    const row = button.closest("li");
+    expect(row).toHaveClass("items-start");
+    expect(row?.className).not.toMatch(/flex-wrap/);
+    expect(button).toHaveClass("shrink-0");
+  }
+  expect(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });
 
 test("activity links Slack writes to the message and opens it in the browser", async () => {

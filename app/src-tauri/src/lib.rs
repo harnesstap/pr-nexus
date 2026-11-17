@@ -218,6 +218,7 @@ pub fn run() {
             commands::pr_branch_status,
             commands::update_pr_branch,
             mcp::control::mcp_settings,
+            mcp::control::mcp_tools,
             mcp::control::save_mcp_settings,
             mcp::control::mcp_token,
             mcp::control::regenerate_mcp_token,
