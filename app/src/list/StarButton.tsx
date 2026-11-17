@@ -2,10 +2,26 @@ import { GitHubIcon, StarIcon } from "../icons";
 import { Tooltip } from "../Tooltip";
 import { hint } from "./shortcuts";
 
-/** The row's star: toggles without opening the panel, shown in full and compact rows. */
-export function StarButton({ starred, title, onToggle, size = 14 }: { starred: boolean; title: string; onToggle: () => void; size?: number }) {
+/**
+ * The row's star: toggles without opening the panel, shown in full and compact rows.
+ * `shortcut` is the focused row only: Shift+s stars that row, not the one under the pointer.
+ */
+export function StarButton({
+  starred,
+  title,
+  onToggle,
+  size = 14,
+  shortcut = true,
+}: {
+  starred: boolean;
+  title: string;
+  onToggle: () => void;
+  size?: number;
+  /** Show the Shift+s chip. The detail header passes the default; a list row passes whether it is focused. */
+  shortcut?: boolean;
+}) {
   return (
-    <Tooltip label={starred ? "Unstar" : "Star"} shortcut={hint("star")} detail="Starred PRs stay at the top of the list">
+    <Tooltip label={starred ? "Unstar" : "Star"} shortcut={shortcut ? hint("star") : undefined} detail="Starred PRs stay at the top of the list">
       <button
         type="button"
         aria-label={`${starred ? "Unstar" : "Star"} ${title}`}
@@ -23,9 +39,9 @@ export function StarButton({ starred, title, onToggle, size = 14 }: { starred: b
 }
 
 /** Opens the PR on GitHub straight from its row, without opening the detail panel. */
-export function GitHubRowButton({ title, onOpen, size = 14 }: { title: string; onOpen: () => void; size?: number }) {
+export function GitHubRowButton({ title, onOpen, size = 14, shortcut = false }: { title: string; onOpen: () => void; size?: number; shortcut?: boolean }) {
   return (
-    <Tooltip label="Open on GitHub" shortcut={hint("github")}>
+    <Tooltip label="Open on GitHub" shortcut={shortcut ? hint("github") : undefined}>
       <button
         type="button"
         aria-label={`Open ${title} on GitHub`}

@@ -236,9 +236,11 @@ export function ProjectDialog({ api, project, onClose, onChanged }: Props) {
               {candidates.length === 0 && <li className="px-2 py-1.5 text-xs text-slate-500">No matching PRs outside this project.</li>}
               {candidates.map((row) => (
                 <li key={row.id} className="flex items-center justify-between gap-2 border-t border-slate-800 px-2 py-1 first:border-t-0">
-                  <span className="truncate">
-                    <span className="text-slate-500">{row.repo}#{row.number}</span> {row.title}
-                  </span>
+                  <Tooltip label={`${row.repo}#${row.number} ${row.title}`} wide align="start" className="min-w-0 flex-1">
+                    <span className="block truncate">
+                      <span className="text-slate-500">{row.repo}#{row.number}</span> {row.title}
+                    </span>
+                  </Tooltip>
                   <button
                     type="button"
                     aria-label={`Add ${row.title}`}
@@ -259,10 +261,12 @@ export function ProjectDialog({ api, project, onClose, onChanged }: Props) {
               const title = row ? row.title : `Pull request ${link.pr_id} (not in the list)`;
               return (
                 <li key={link.pr_id} className={`flex items-center gap-2 px-2 py-1.5 ${link.source === "excluded" ? "text-slate-500" : ""}`}>
-                  <span className="min-w-0 flex-1 truncate">
-                    {row && <span className="text-slate-500">{row.repo}#{row.number} </span>}
-                    {title}
-                  </span>
+                  <Tooltip label={row ? `${row.repo}#${row.number} ${title}` : title} wide align="start" className="min-w-0 flex-1">
+                    <span className="block min-w-0 truncate">
+                      {row && <span className="text-slate-500">{row.repo}#{row.number} </span>}
+                      {title}
+                    </span>
+                  </Tooltip>
                   <SourceBadge source={link.source} rule={rule} />
                   {link.source === "excluded" ? (
                     <Tooltip label="Let auto-link rules add this PR again" align="end">

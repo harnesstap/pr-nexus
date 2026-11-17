@@ -583,6 +583,15 @@ try {
 async function shootTooltips(page, dir) {
   const list = page.getByRole("article");
   const targets = [
+    [
+      "pr-title",
+      () =>
+        page
+          .locator("article")
+          .filter({ hasText: "split the payment step" })
+          .locator("button.truncate, button.line-clamp-2")
+          .first(),
+    ],
     ["slack-cell", () => list.getByRole("button", { name: /^Open Slack request for/ }).first()],
     ["status-pill", () => list.getByText(/^(Draft|Conflicts)$/).first()],
     ["toolbar-chip", () => page.getByRole("group", { name: "Quick filters" }).getByRole("button").first()],

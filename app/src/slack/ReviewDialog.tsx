@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Api, ListRow, ReviewPreview, ReviewTarget, SlackIndicator, SlackWorkspace, TargetChoice } from "../api";
 import { channelLabel, errorMessage, isSendable } from "../api";
+import { Tooltip } from "../Tooltip";
 import { plainText } from "../textInput";
 import type { Toast } from "../list/model";
 import { CopyMessageButton } from "./CopyMessageButton";
@@ -198,9 +199,11 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNot
         <h2 id="review-dialog-title" className="text-base font-semibold">
           {bump ? "Bump review request on Slack" : "Request review on Slack"}
         </h2>
-        <p className="truncate text-xs text-slate-500">
-          #{row.number} {row.title} · {row.repo}
-        </p>
+        <Tooltip label={`#${row.number} ${row.title} · ${row.repo}`} wide align="start" className="max-w-full">
+          <p className="truncate text-xs text-slate-500">
+            #{row.number} {row.title} · {row.repo}
+          </p>
+        </Tooltip>
         {groupsMode ? (
           <GroupedRequest api={api} row={row} onClose={onClose} onSent={onSent} onOpen={onOpen} onReady={onReady} onNotice={onNotice} />
         ) : (

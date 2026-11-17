@@ -265,9 +265,11 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
               </span>
             </Tooltip>
           </div>
-          <h2 id="pr-detail-title" className="mt-1.5 text-base font-semibold leading-snug">
-            <span className="text-slate-500">#{row.number}</span> {row.title}
-          </h2>
+          <Tooltip label={`#${row.number} ${row.title}`} wide align="start" className="min-w-0">
+            <h2 id="pr-detail-title" tabIndex={0} className="mt-1.5 text-base font-semibold leading-snug break-words outline-none">
+              <span className="text-slate-500">#{row.number}</span> {row.title}
+            </h2>
+          </Tooltip>
         </div>
         <div className="flex shrink-0 items-center gap-0.5">
           {onToggleStar && <StarButton starred={row.starred} title={row.title} size={16} onToggle={onToggleStar} />}

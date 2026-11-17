@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import type { Api, ListRow, QueueReport } from "../api";
 import { errorMessage } from "../api";
+import { Tooltip } from "../Tooltip";
 import { enqueuePlan } from "./mergeQueue";
 
 interface Props {
@@ -110,19 +111,26 @@ export function MergeQueueDialog({ api, rows, onDismiss, onDone, onNotice }: Pro
         {plan.add.length > 0 && (
           <ul className="mt-3 space-y-1">
             {plan.add.map((row) => (
-              <li key={row.id} className="truncate">
-                {label(row)}
+              <li key={row.id} className="min-w-0">
+                <Tooltip label={label(row)} wide align="start" className="max-w-full">
+                  <span className="block truncate">{label(row)}</span>
+                </Tooltip>
               </li>
             ))}
           </ul>
         )}
         {plan.skip.length > 0 && (
           <ul className="mt-3 space-y-1 text-slate-400">
-            {plan.skip.map(({ row, reason }) => (
-              <li key={row.id} className="truncate">
-                Skip {label(row)} — {reason}
-              </li>
-            ))}
+            {plan.skip.map(({ row, reason }) => {
+              const text = `Skip ${label(row)} — ${reason}`;
+              return (
+                <li key={row.id} className="min-w-0">
+                  <Tooltip label={text} wide align="start" className="max-w-full">
+                    <span className="block truncate">{text}</span>
+                  </Tooltip>
+                </li>
+              );
+            })}
           </ul>
         )}
         <div className="mt-4 flex justify-end gap-2">

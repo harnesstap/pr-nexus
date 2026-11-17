@@ -11,8 +11,12 @@ interface Props {
   detail?: string;
   /** One line each under the label, e.g. everyone in an avatar stack. */
   lines?: string[];
-  /** Keyboard shortcut shown after the label. */
+  /** Keyboard shortcut shown after the label, or on the detail line when `shortcutOn` is `"detail"`. */
   shortcut?: string;
+  /** Puts the shortcut chip beside the label, or on the detail line under it. */
+  shortcutOn?: "label" | "detail";
+  /** Lets a long label wrap. About 420px, for a full pull request title. */
+  wide?: boolean;
   /** Where the bubble goes relative to the control. */
   side?: "top" | "bottom";
   /** Pins the bubble to one edge instead of centering it. */
@@ -63,7 +67,18 @@ export function placeBubble(
  * disabled button inside still gets its tooltip. Use this instead of the HTML `title`
  * attribute, which shows the OS tooltip (a lint rule enforces it).
  */
-export function Tooltip({ label, detail, lines, shortcut, side = "bottom", align = "center", className = "", children }: Props) {
+export function Tooltip({
+  label,
+  detail,
+  lines,
+  shortcut,
+  shortcutOn = "label",
+  wide = false,
+  side = "bottom",
+  align = "center",
+  className = "",
+  children,
+}: Props) {
   const id = useId();
   const [open, setOpen] = useState(false);
   const anchor = useRef<HTMLSpanElement>(null);
@@ -161,13 +176,13 @@ export function Tooltip({ label, detail, lines, shortcut, side = "bottom", align
             role="tooltip"
             data-side={side}
             style={{ position: "fixed", ...position }}
-            className="pointer-events-none z-[1000] block w-max max-w-72 rounded-md border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-left text-xs font-normal normal-case tracking-normal break-words whitespace-normal text-slate-200 shadow-lg"
+            className={`pointer-events-none z-[1000] block w-max rounded-md border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-left text-xs font-normal normal-case tracking-normal break-words whitespace-normal text-slate-200 shadow-lg ${wide ? "max-w-[420px]" : "max-w-72"}`}
           >
-            <Body label={label} detail={detail} lines={lines} shortcut={shortcut} />
+            <Body label={label} detail={detail} lines={lines} shortcut={shortcut} shortcutOn={shortcutOn} />
           </span>
         ) : (
           <span id={id} role="tooltip" hidden>
-            <Body label={label} detail={detail} lines={lines} shortcut={shortcut} />
+            <Body label={label} detail={detail} lines={lines} shortcut={shortcut} shortcutOn={shortcutOn} />
           </span>
         ),
         document.body,
@@ -176,12 +191,21 @@ export function Tooltip({ label, detail, lines, shortcut, side = "bottom", align
   );
 }
 
-function Body({ label, detail, lines, shortcut }: Pick<Props, "label" | "detail" | "lines" | "shortcut">) {
+function Body({ label, detail, lines, shortcut, shortcutOn = "label" }: Pick<Props, "label" | "detail" | "lines" | "shortcut" | "shortcutOn">) {
+  const chip = shortcut ? <kbd className="ml-2 rounded border border-slate-600 px-1 font-mono text-[10px] text-slate-300">{shortcut}</kbd> : null;
+  const chipOnDetail = shortcutOn === "detail" && Boolean(detail);
   return (
     <>
-      <span className="font-medium text-slate-100">{label}</span>
-      {shortcut && <kbd className="ml-2 rounded border border-slate-600 px-1 font-mono text-[10px] text-slate-300">{shortcut}</kbd>}
-      {detail && <span className="mt-0.5 block text-slate-400">{detail}</span>}
+      <span className="font-medium text-slate-100">
+        {label}
+        {!chipOnDetail && chip}
+      </span>
+      {detail && (
+        <span className="mt-0.5 block text-slate-400">
+          {detail}
+          {chipOnDetail && chip}
+        </span>
+      )}
       {lines?.map((line, index) => (
         <span key={index} className="mt-0.5 block text-slate-300">
           {line}

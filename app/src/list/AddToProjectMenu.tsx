@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import type { ProjectDto } from "../api";
 import { PlusIcon } from "../icons";
+import { Tooltip } from "../Tooltip";
 import { plainText } from "../textInput";
 import { renameError } from "./model";
 
@@ -98,7 +99,9 @@ export function AddToProjectMenu({ projects, count, onPick, onCreate, onClose }:
               onClick={() => onPick(project.id)}
             >
               <span aria-hidden="true" className="h-2 w-2 shrink-0 rounded-sm" style={{ background: project.color }} />
-              <span className="truncate">{project.name}</span>
+              <Tooltip label={project.name} wide align="start" className="min-w-0 flex-1">
+                <span className="block truncate">{project.name}</span>
+              </Tooltip>
             </button>
           ))}
         </div>
