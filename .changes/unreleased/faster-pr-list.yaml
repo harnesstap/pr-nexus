@@ -1,3 +1,0 @@
-kind: Changed
-body: List polls reuse built rows, and the bot-comment count is stored with the overview instead of parsed on every read.
-time: 2026-11-17T07:30:00Z
