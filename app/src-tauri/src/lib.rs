@@ -176,6 +176,7 @@ pub fn run() {
             mapping_file::read_mapping_file,
             commands::finish_onboarding,
             commands::sync_now,
+            commands::set_sync_hint,
             commands::activate_reviews,
             commands::load_more_reviews,
             commands::search_reviews,

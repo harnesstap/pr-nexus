@@ -1103,6 +1103,13 @@ export interface ReviewStatsView {
   partial: boolean;
 }
 
+/** The view on screen. `pr_ids` are local ids, first visible first. */
+export interface SyncHint {
+  view_key: string;
+  query: string;
+  pr_ids: number[];
+}
+
 export interface Api {
   bootstrap(): Promise<Bootstrap>;
   /** Never waits on the keychain; poll it while the state is `waiting` or `timed_out`. */
@@ -1174,10 +1181,13 @@ export interface Api {
   /** Native open dialog filtered to .csv (with All files); null when cancelled. */
   pickMappingFile(): Promise<MappingFile | null>;
   finish(): Promise<SyncStatus>;
-  syncNow(): Promise<SyncStatus>;
+  /** `hint` is the view on screen, so that sync reads those pull requests first. */
+  syncNow(hint?: SyncHint): Promise<SyncStatus>;
   syncStatus(): Promise<SyncStatus>;
   /** Re-read every open pull request instead of only what changed (§6). */
-  fullResync(): Promise<SyncStatus>;
+  fullResync(hint?: SyncHint): Promise<SyncStatus>;
+  /** Remembers the view on screen for a scheduled sync. */
+  setSyncHint?(hint: SyncHint): Promise<void>;
   /** Starts the review-request sync of this session; returns at once (§6). */
   activateReviews?(): Promise<SyncStatus>;
   /** Reads the next window of review requests in the background. */
@@ -1383,9 +1393,10 @@ export const tauriApi: Api = {
     return path ? invoke<MappingFile>("read_mapping_file", { path }) : null;
   },
   finish: () => invoke("finish_onboarding"),
-  syncNow: () => invoke("sync_now"),
+  syncNow: (hint) => invoke("sync_now", { hint: hint ?? null }),
   syncStatus: () => invoke("sync_status"),
-  fullResync: () => invoke("full_resync"),
+  fullResync: (hint) => invoke("full_resync", { hint: hint ?? null }),
+  setSyncHint: (hint) => invoke("set_sync_hint", { hint }),
   activateReviews: () => invoke("activate_reviews"),
   loadMoreReviews: () => invoke("load_more_reviews"),
   searchReviews: (terms) => invoke("search_reviews", { terms }),

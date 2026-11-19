@@ -8,7 +8,10 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
 use crate::bots::{self, BotReviews, CommentNote};
-use crate::domain::{PrId, PrState, PullRequest};
+use crate::domain::{
+    Assignee, ChecksState, MergeStateStatus, Mergeable, PrId, PrState, PullRequest,
+    RequestedReviewer, ReviewDecision, TeamRef,
+};
 use crate::error::{CoreError, ProviderError};
 use crate::providers::{PrStatus, VcsProvider};
 use crate::store::Store;
@@ -185,6 +188,15 @@ pub struct PrOverview {
     /// `None` on overviews cached before the queue was read.
     #[serde(default)]
     pub merge_queue: Option<crate::merge_queue::MergeQueueSnapshot>,
+    /// RFC 3339 `updatedAt`. Empty on overviews cached before it was fetched.
+    #[serde(default)]
+    pub updated_at: String,
+    /// Unresolved review threads. Zero when this overview did not count them.
+    #[serde(default)]
+    pub unresolved_threads: u32,
+    /// Review threads in total.
+    #[serde(default)]
+    pub total_threads: u32,
     /// RFC 3339; when the provider answered.
     pub fetched_at: String,
 }
@@ -231,7 +243,133 @@ pub fn refresh(
     if let Some(queue) = &overview.merge_queue {
         store.set_merge_queue(pr.id, queue)?;
     }
+    if let Some(mut stored) = store.get_pull_request(pr.id)? {
+        let before = stored.clone();
+        apply_to_pull_request(&mut stored, &overview);
+        if stored != before {
+            store.update_pull_request_detail(&stored)?;
+        }
+        let fetched = chrono::DateTime::parse_from_rfc3339(&overview.fetched_at)
+            .map(|value| value.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now());
+        store.set_detail_fetched_at(stored.id, fetched)?;
+    }
     Ok(overview)
+}
+
+/// Copies the fields the list row shows from a live overview onto `pr`.
+/// A merged pull request stays merged. Empty checks leave the stored rollup.
+pub fn apply_to_pull_request(pr: &mut PullRequest, overview: &PrOverview) {
+    if pr.state != PrState::Merged
+        && let Ok(state) = overview.state.parse::<PrState>()
+    {
+        pr.state = state;
+    }
+    pr.is_draft = overview.is_draft;
+    if !overview.head_ref.is_empty() {
+        pr.head_ref = overview.head_ref.clone();
+    }
+    if !overview.base_ref.is_empty() {
+        pr.base_ref = overview.base_ref.clone();
+    }
+    if !overview.head_sha.is_empty() {
+        pr.head_sha = overview.head_sha.clone();
+    }
+    match overview.review_decision.as_deref() {
+        None => pr.review_decision = None,
+        Some(text) => {
+            if let Ok(decision) = text.parse::<ReviewDecision>() {
+                pr.review_decision = Some(decision);
+            }
+        }
+    }
+    if let Some(checks) = checks_of(overview) {
+        pr.checks = checks;
+    }
+    if let Ok(mergeable) = overview.mergeable.parse::<Mergeable>() {
+        pr.mergeable = mergeable;
+    }
+    if let Ok(merge_state) = overview.merge_state.parse::<MergeStateStatus>() {
+        pr.merge_state = merge_state;
+    }
+    pr.unresolved_threads = overview.unresolved_threads;
+    pr.total_threads = overview.total_threads;
+    pr.requested_reviewers = pending_of(overview);
+    pr.assignees = overview
+        .assignees
+        .iter()
+        .filter(|person| person.kind == PersonKind::User)
+        .map(|person| Assignee {
+            login: person.login.clone(),
+            name: person.name.clone(),
+        })
+        .collect();
+    if let Ok(at) = chrono::DateTime::parse_from_rfc3339(&overview.updated_at) {
+        let at = at.with_timezone(&Utc);
+        if at > pr.updated_at {
+            pr.updated_at = at;
+        }
+        if at > pr.last_activity_at {
+            pr.last_activity_at = at;
+        }
+    }
+}
+
+fn checks_of(overview: &PrOverview) -> Option<ChecksState> {
+    if overview.checks.is_empty() {
+        return None;
+    }
+    let mut failed = false;
+    let mut pending = false;
+    let mut passed = false;
+    for check in &overview.checks {
+        match check.state {
+            CheckState::Failed => failed = true,
+            CheckState::Pending => pending = true,
+            CheckState::Passed => passed = true,
+            CheckState::Skipped => {}
+        }
+    }
+    if failed {
+        Some(ChecksState::Failure)
+    } else if pending {
+        Some(ChecksState::Pending)
+    } else if passed {
+        Some(ChecksState::Success)
+    } else {
+        None
+    }
+}
+
+fn pending_of(overview: &PrOverview) -> Vec<RequestedReviewer> {
+    overview
+        .reviewers
+        .iter()
+        .filter(|seat| seat.state == ReviewState::Pending)
+        .map(|seat| {
+            let reviewer = match seat.person.kind {
+                PersonKind::Team => {
+                    let (org, slug) = seat
+                        .person
+                        .login
+                        .split_once('/')
+                        .unwrap_or((seat.person.login.as_str(), ""));
+                    crate::domain::Reviewer::Team(TeamRef {
+                        org: org.to_owned(),
+                        slug: slug.to_owned(),
+                    })
+                }
+                PersonKind::User | PersonKind::Bot => crate::domain::Reviewer::User {
+                    login: seat.person.login.clone(),
+                },
+            };
+            RequestedReviewer {
+                reviewer,
+                name: seat.person.name.clone(),
+                avatar_url: seat.person.avatar_url.clone(),
+            }
+        })
+        .collect()
 }
 
 /// Turns auto-merge on with `method`, or off with `None`, then refreshes.
@@ -419,5 +557,229 @@ mod tests {
         assert_eq!(value["kind"], "team");
         assert_eq!(value["login"], "acme/web");
         assert_eq!(value["state"], "pending");
+    }
+
+    #[test]
+    fn a_live_overview_updates_the_stored_list_row_and_bumps_revision() {
+        use crate::domain::Reviewer as DomainReviewer;
+        use crate::domain::{
+            Account, AccountId, AccountKind, AuthMode, ChecksState, Involvement, MergeStateStatus,
+            Mergeable, PrId, ProviderRef, RepoRef, Repository, ReviewDecision, TeamRef,
+        };
+        use crate::error::ProviderError;
+        use crate::providers::VcsProvider;
+        use crate::store::Store;
+        use chrono::TimeZone;
+
+        let at = Utc.with_ymd_and_hms(2026, 10, 26, 12, 0, 0).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("detail.db")).unwrap();
+        let account = store
+            .insert_account(Account {
+                id: AccountId(0),
+                kind: AccountKind::GitHub,
+                display_name: "ada".into(),
+                host: "github.com".into(),
+                external_id: "U_ada".into(),
+                slack_workspace: None,
+                login: "ada".into(),
+                auth_mode: AuthMode::GhCli,
+                keychain_key: None,
+                created_at: at,
+            })
+            .unwrap();
+        let repo = store
+            .insert_repository(Repository {
+                id: 0,
+                account_id: account.id,
+                owner: "acme".into(),
+                name: "widgets".into(),
+                node_id: None,
+                default_branch: Some("main".into()),
+                archived: false,
+            })
+            .unwrap();
+        let saved = store
+            .upsert_pull_request(
+                repo.id,
+                PullRequest {
+                    id: PrId(0),
+                    remote: ProviderRef {
+                        account: account.id,
+                        id: "PR_acme_7".into(),
+                    },
+                    repo: RepoRef {
+                        host: "github.com".into(),
+                        owner: "acme".into(),
+                        name: "widgets".into(),
+                    },
+                    number: 7,
+                    title: "Add address autocomplete".into(),
+                    url: "https://github.com/acme/widgets/pull/7".into(),
+                    author_login: "ada".into(),
+                    body: String::new(),
+                    state: PrState::Open,
+                    is_draft: true,
+                    head_ref: "feature/479".into(),
+                    base_ref: "main".into(),
+                    head_sha: "old".into(),
+                    labels: Vec::new(),
+                    review_decision: Some(ReviewDecision::ReviewRequired),
+                    checks: ChecksState::Pending,
+                    mergeable: Mergeable::Conflicting,
+                    merge_state: MergeStateStatus::Dirty,
+                    requested_reviewers: vec![RequestedReviewer::bare(DomainReviewer::User {
+                        login: "sam".into(),
+                    })],
+                    assignees: Vec::new(),
+                    unresolved_threads: 3,
+                    total_threads: 4,
+                    involvement: Involvement::AUTHOR,
+                    created_at: at,
+                    updated_at: at,
+                    last_activity_at: at,
+                    synced_at: at,
+                    hidden: false,
+                },
+            )
+            .unwrap();
+        let before = store.revision();
+        let overview = PrOverview {
+            state: "open".into(),
+            is_draft: false,
+            base_ref: "main".into(),
+            head_ref: "feature/479".into(),
+            head_sha: "new".into(),
+            base_sha: "base".into(),
+            head_owner: "acme".into(),
+            mergeable: "mergeable".into(),
+            merge_state: "clean".into(),
+            review_decision: Some("approved".into()),
+            issue_comments: 1,
+            review_comments: 1,
+            checks: vec![CheckItem {
+                name: "build".into(),
+                state: CheckState::Passed,
+                url: None,
+                required: true,
+            }],
+            checks_total: 1,
+            approvals: 1,
+            required_approvals: Some(1),
+            reviewers: vec![Reviewer {
+                person: Person {
+                    kind: PersonKind::User,
+                    login: "kim".into(),
+                    name: Some("Kim Lee".into()),
+                    avatar_url: None,
+                },
+                state: ReviewState::Approved,
+            }],
+            author: None,
+            assignees: vec![Person {
+                kind: PersonKind::User,
+                login: "ada".into(),
+                name: None,
+                avatar_url: None,
+            }],
+            commenters: Vec::new(),
+            feedback: Vec::new(),
+            bot_reviews: crate::bots::BotReviews::default(),
+            viewer: ViewerAccess {
+                login: "ada".into(),
+                permission: Some("write".into()),
+                can_merge_as_admin: false,
+                can_enable_auto_merge: true,
+                can_disable_auto_merge: false,
+                can_close: Some(true),
+            },
+            merge_settings: MergeSettings {
+                auto_merge_allowed: true,
+                squash: true,
+                merge: true,
+                rebase: true,
+            },
+            auto_merge: None,
+            merge_queue: None,
+            updated_at: "2026-10-26T16:00:00Z".into(),
+            unresolved_threads: 0,
+            total_threads: 1,
+            fetched_at: "2026-10-26T18:00:00Z".into(),
+        };
+        struct Only(PrOverview);
+        impl VcsProvider for Only {
+            fn kind(&self) -> crate::domain::VcsKind {
+                crate::domain::VcsKind::GitHub
+            }
+            fn viewer(&self) -> Result<crate::providers::VcsUser, ProviderError> {
+                Err(unsupported())
+            }
+            fn search_pull_requests(
+                &self,
+                _: &crate::providers::PrQuery,
+            ) -> Result<Vec<crate::providers::SyncedPullRequest>, ProviderError> {
+                Err(unsupported())
+            }
+            fn refresh_pull_requests(
+                &self,
+                _: &[ProviderRef],
+            ) -> Result<Vec<crate::providers::SyncedPullRequest>, ProviderError> {
+                Err(unsupported())
+            }
+            fn pull_request_status(
+                &self,
+                _: &[ProviderRef],
+            ) -> Result<Vec<crate::providers::PrStatus>, ProviderError> {
+                Err(unsupported())
+            }
+            fn ownership_probe(
+                &self,
+                _: &PullRequest,
+            ) -> Result<crate::providers::OwnershipProbe, ProviderError> {
+                Err(unsupported())
+            }
+            fn ownership_inputs(
+                &self,
+                _: &PullRequest,
+                _: &crate::providers::OwnershipProbe,
+            ) -> Result<crate::providers::OwnershipInputs, ProviderError> {
+                Err(unsupported())
+            }
+            fn team_members(
+                &self,
+                _: &TeamRef,
+            ) -> Result<crate::providers::TeamMembers, ProviderError> {
+                Err(unsupported())
+            }
+            fn rate_limit(&self) -> Result<crate::providers::RateBudget, ProviderError> {
+                Err(unsupported())
+            }
+            fn request_team_review(
+                &self,
+                _: &PullRequest,
+                _: &[TeamRef],
+            ) -> Result<(), ProviderError> {
+                Err(unsupported())
+            }
+            fn pull_request_overview(&self, _: &PullRequest) -> Result<PrOverview, ProviderError> {
+                Ok(self.0.clone())
+            }
+        }
+        refresh(&store, &Only(overview), &saved).unwrap();
+        let row = store.get_pull_request(saved.id).unwrap().unwrap();
+        assert!(store.revision() > before);
+        assert!(!row.is_draft);
+        assert_eq!(row.review_decision, Some(ReviewDecision::Approved));
+        assert_eq!(row.checks, ChecksState::Success);
+        assert_eq!(row.mergeable, Mergeable::Mergeable);
+        assert_eq!(row.merge_state, MergeStateStatus::Clean);
+        assert_eq!(row.head_sha, "new");
+        assert!(row.requested_reviewers.is_empty());
+        assert_eq!(row.unresolved_threads, 0);
+        assert_eq!(row.total_threads, 1);
+        assert_eq!(row.assignees.len(), 1);
+        assert_eq!(row.assignees[0].login, "ada");
+        assert!(row.updated_at > at);
+        assert!(store.detail_fetched_at(saved.id).unwrap().is_some());
     }
 }

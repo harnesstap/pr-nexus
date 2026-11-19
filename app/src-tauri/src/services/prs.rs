@@ -140,8 +140,9 @@ fn schedule_owner_refresh(state: &Arc<AppState>, id: i64) {
             let pr = stored_pr(&state, PrId(id))?;
             load_detail(&state, &pr, false)
         })();
-        if let Err(err) = refresh {
-            tracing::debug!(pr = id, %err, "owner refresh failed");
+        match refresh {
+            Ok(_) => crate::state::note_list_changed(&state),
+            Err(err) => tracing::debug!(pr = id, %err, "owner refresh failed"),
         }
         state
             .owner_refresh

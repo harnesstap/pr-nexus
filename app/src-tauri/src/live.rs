@@ -190,6 +190,12 @@ fn step(state: &AppState, poller: &mut LivePoller, client: &mut Option<Client>) 
     };
     let focused = state.focused.load(Ordering::Relaxed);
     let now = Utc::now();
+    let priority_ids = state
+        .sync_hint
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remote_ids
+        .clone();
     let input = LiveInput {
         store: &state.store,
         provider: &known.github,
@@ -197,6 +203,7 @@ fn step(state: &AppState, poller: &mut LivePoller, client: &mut Option<Client>) 
         enabled: true,
         focused,
         now,
+        priority_ids: &priority_ids,
     };
     match poller.tick(&input) {
         Ok(tick) => {

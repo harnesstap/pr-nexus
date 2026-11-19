@@ -2,7 +2,8 @@
 // README screenshot. Usage, from app/: bun run screenshot
 // `bun run screenshot -- --detail <path>` opens #479's detail panel and saves
 // that view to <path> instead; `--draft <path>` opens draft #488, which has
-// no Slack request yet.
+// no Slack request yet. `--agree <path>` opens #479 after a detail refresh
+// so the list row and the panel show the same review, checks, and merge state.
 // `--width <px>` sets the viewport width (default 1440); `--out <path>` saves the
 // list view somewhere other than the README asset. `--tooltips <dir>` hovers a
 // few controls and saves tooltip-*.png crops showing the app tooltip open.
@@ -46,6 +47,11 @@ import { createServer } from "vite";
 const appDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const tooltipsFlag = process.argv.indexOf("--tooltips");
 const tooltipsDir = tooltipsFlag === -1 ? null : resolve(process.argv[tooltipsFlag + 1] ?? "");
+const agreeFlag = process.argv.indexOf("--agree");
+const agreeOut = agreeFlag === -1 ? null : process.argv[agreeFlag + 1];
+if (agreeFlag !== -1 && !agreeOut) {
+  throw new Error("--agree needs an output path");
+}
 const detailFlag = process.argv.indexOf("--detail");
 const draftFlag = process.argv.indexOf("--draft");
 const draftOut = draftFlag === -1 ? null : process.argv[draftFlag + 1];
@@ -71,7 +77,7 @@ const branchDir = branchFlag === -1 ? null : process.argv[branchFlag + 1];
 if (branchFlag !== -1 && !branchDir) {
   throw new Error("--branch needs an output directory");
 }
-const out = resolve(detailOut ?? listOut ?? resolve(appDir, "../docs/assets/screenshot-list.png"));
+const out = resolve(agreeOut ?? detailOut ?? listOut ?? resolve(appDir, "../docs/assets/screenshot-list.png"));
 const scenesFlag = process.argv.indexOf("--scenes");
 const scenesDir = scenesFlag === -1 ? null : process.argv[scenesFlag + 1];
 if (scenesFlag !== -1 && !scenesDir) {
@@ -640,6 +646,11 @@ try {
       globalThis.__repoScene = true;
     });
   }
+  if (agreeOut) {
+    await page.addInitScript(() => {
+      globalThis.__agreeDetail = true;
+    });
+  }
   await page.goto(url);
   await page.getByRole("group", { name: "Quick filters" }).waitFor();
   if (repoFilterDir) {
@@ -656,6 +667,20 @@ try {
     await branchShots(page, resolve(branchDir));
   } else if (closePrDir) {
     await closePrShots(page, resolve(closePrDir));
+  } else if (agreeOut) {
+    await page
+      .getByRole("button", { name: rowButton("Add address autocomplete to checkout") })
+      .first()
+      .click();
+    const panel = page.getByTestId("detail-panel");
+    await panel.getByText("You can merge").waitFor();
+    await panel.getByLabel("Approvals: 1/1, Approved").waitFor();
+    await page.waitForFunction(() => {
+      const button = [...globalThis.document.querySelectorAll("button")].find(
+        (el) => el.textContent?.includes("Add address autocomplete to checkout") && !el.getAttribute("aria-label")?.startsWith("Star"),
+      );
+      return Boolean(button) && !button.textContent.includes("Waiting");
+    });
   } else if (detailOut) {
     await page
       .getByRole("button", {

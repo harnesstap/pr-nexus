@@ -12,6 +12,7 @@ import {
   boot,
   branchFixtures,
   detail,
+  detailRowId,
   draftOverview,
   draftRowId,
   jiraBaseUrl,
@@ -37,6 +38,7 @@ const branchFor = (id: unknown) => branchFixtures[Number(id)]?.branch ?? branchF
  * (`app/scripts/readme-screenshot.mjs`). Commands not listed return null.
  */
 const stamp = () => new Date().toISOString();
+let agreed = false;
 let nextLink = 100;
 
 /** Mirrors the backend: a browse URL keeps its key, a bare key links once a base URL is set. */
@@ -195,6 +197,39 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   // the cache. A later read must not put a draft flag back onto a PR that
   // was just marked ready.
   pr_overview: (args) => {
+    const agree =
+      (window as { __agreeDetail?: boolean }).__agreeDetail &&
+      args.id === detailRowId &&
+      (args.refresh === true || agreed);
+    if (agree) {
+      if (!agreed) {
+        agreed = true;
+        const row = rows.find((item) => item.id === detailRowId);
+        if (row) {
+          row.checks = "success";
+          row.conflicts = false;
+          row.review_decision = "approved";
+          row.pending_reviewers = [];
+          row.reviewers_requested = false;
+          row.is_draft = false;
+          row.updated_at = new Date().toISOString();
+        }
+        boot.sync.revision += 1;
+        void emit(DATA_CHANGED_EVENT);
+      }
+      return {
+        ...mergeableOverview,
+        head_ref: "feature/479",
+        approvals: 1,
+        required_approvals: 1,
+        review_decision: "approved",
+        merge_state: "clean",
+        mergeable: "mergeable",
+        is_draft: false,
+        reviewers: mergeableOverview.reviewers.slice(0, 1),
+        fetched_at: "2026-11-19T12:00:00.000Z",
+      };
+    }
     const row = rows.find((item) => item.id === args.id);
     return { ...overviewFor(args.id), ...(row ? { is_draft: row.is_draft } : {}), fetched_at: new Date().toISOString() };
   },
@@ -215,7 +250,10 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
       };
     });
   },
-  pr_branch_status: (args) => branchFor(args.id),
+  pr_branch_status: (args) =>
+    (window as { __agreeDetail?: boolean }).__agreeDetail && args.id === detailRowId
+      ? { ...branchFor(args.id), state: "up_to_date", behind_by: 0 }
+      : branchFor(args.id),
   update_pr_branch: (args) => ({ overview: { ...baseOverviewFor(args.id), fetched_at: new Date().toISOString() }, branch: branchFixtures[1].branch }),
   load_preferences: () => ({
     review_requester: "Ada Park",
@@ -376,6 +414,19 @@ function draftWarnings(row: ListRow): PrWarning[] {
   return row.state === "open" && row.is_draft
     ? [{ kind: "draft", pr_id: row.id, number: row.number, message: `#${row.number} is still a draft. Reviewers may skip it until it's marked ready.` }]
     : [];
+}
+
+// `--agree` starts #479 stale so a detail refresh can bring the row in line.
+if ((window as { __agreeDetail?: boolean }).__agreeDetail) {
+  const row = rows.find((item) => item.id === detailRowId);
+  if (row) {
+    row.checks = "failure";
+    row.conflicts = true;
+    row.review_decision = "review_required";
+    row.slack = null;
+    row.is_draft = false;
+    row.created_at = new Date(Date.now() - 69 * 60 * 60 * 1000).toISOString();
+  }
 }
 
 // `--slack-draft` scenes turn extra rows into drafts before the app loads.

@@ -176,6 +176,7 @@ pub(crate) fn parse(body: &Value, fetched_at: String) -> Result<PrOverview, Prov
         })
         .sum::<u64>() as u32;
 
+    let (unresolved_threads, total_threads) = thread_counts(node);
     let reviewers = reviewers(node);
     let approvals = reviewers
         .iter()
@@ -243,8 +244,23 @@ pub(crate) fn parse(body: &Value, fetched_at: String) -> Result<PrOverview, Prov
         },
         auto_merge,
         merge_queue: super::merge_queue::snapshot_from_node(node),
+        updated_at: opt_str(node.get("updatedAt")).unwrap_or_default(),
+        unresolved_threads,
+        total_threads,
         fetched_at,
     })
+}
+
+fn thread_counts(node: &Value) -> (u32, u32) {
+    let total = node
+        .pointer("/reviewThreads/totalCount")
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as u32;
+    let unresolved = nodes(node.get("reviewThreads"))
+        .iter()
+        .filter(|thread| thread.get("isResolved").and_then(Value::as_bool) == Some(false))
+        .count() as u32;
+    (unresolved, total)
 }
 
 /// Latest review per person, then outstanding requests. A re-requested

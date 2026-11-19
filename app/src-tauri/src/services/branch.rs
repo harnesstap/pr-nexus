@@ -14,9 +14,11 @@ use crate::state::AppState;
 /// compare unless the head and base SHAs are already cached.
 pub fn branch_status(state: &AppState, id: i64) -> Result<BranchStatus, AppError> {
     let pr = stored_pr(state, PrId(id))?;
-    with_vcs(state, |provider| {
+    let status = with_vcs(state, |provider| {
         branch::status(&state.store, provider, &state.branch_cache, &pr)
-    })
+    })?;
+    crate::state::note_list_changed(state);
+    Ok(status)
 }
 
 /// The Branch card from the cached overview (the detail panel refreshes the
@@ -68,5 +70,6 @@ pub fn update_branch(state: &AppState, id: i64, method: &str) -> Result<BranchUp
     })?;
     let extra = pr_nexus_core::settings::bot_logins(&state.store)?;
     update.overview = overview::for_viewer(update.overview, &extra);
+    crate::state::note_list_changed(state);
     Ok(update)
 }
