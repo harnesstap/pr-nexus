@@ -279,3 +279,157 @@ test("new view is prefilled from the open parent, and edit shows the parent", ()
   expect(screen.getByRole("combobox", { name: "Parent" })).toHaveValue("to_review");
   expect(screen.getByText(`Shows ${REVIEW_QUERY} team-review-requested:acme/web-platform`)).toBeInTheDocument();
 });
+
+function dragTransfer() {
+  const store: Record<string, string> = {};
+  return {
+    setData(type: string, value: string) {
+      store[type] = value;
+    },
+    getData(type: string) {
+      return store[type] ?? "";
+    },
+    setDragImage() {
+      return undefined;
+    },
+    effectAllowed: "move",
+    dropEffect: "move",
+    types: ["application/x-pr-nexus-view"],
+  };
+}
+
+test("defaults are not draggable and Bumps due is not a drop target", () => {
+  render(<Harness initial={tree} />);
+  expect(screen.getByRole("group", { name: "My PRs" })).toHaveAttribute("draggable", "false");
+  expect(screen.getByRole("group", { name: "To review" })).toHaveAttribute("draggable", "false");
+  expect(screen.getByRole("group", { name: "Bumps due, 2 due" })).toHaveAttribute("draggable", "false");
+  expect(screen.getByRole("group", { name: "Drafts" })).toHaveAttribute("draggable", "true");
+  openMenu("My PRs");
+  expect(screen.queryByRole("menuitem", { name: "Move to" })).not.toBeInTheDocument();
+});
+
+test("dragging a child onto the other parent highlights it and confirms only when the rule changes", async () => {
+  render(<Harness initial={tree} />);
+  const transfer = dragTransfer();
+  fireEvent.dragStart(screen.getByRole("group", { name: "Web platform" }), { dataTransfer: transfer, clientX: 30, clientY: 90 });
+  const target = screen.getByRole("group", { name: "My PRs" });
+  fireEvent.dragOver(target, { dataTransfer: transfer, clientX: 40, clientY: 48 });
+  expect(target).toHaveAttribute("data-drop-target", "active");
+  expect(screen.getByTestId("view-drag-ghost")).toHaveTextContent("Web platform");
+  fireEvent.dragOver(screen.getByRole("group", { name: "Bumps due, 2 due" }), { dataTransfer: transfer, clientX: 40, clientY: 200 });
+  expect(screen.getByRole("group", { name: "Bumps due, 2 due" })).not.toHaveAttribute("data-drop-target");
+  fireEvent.drop(target, { dataTransfer: transfer, clientX: 40, clientY: 48 });
+  const dialog = await screen.findByRole("dialog", { name: "Move view" });
+  expect(dialog).toHaveTextContent("Under My PRs it will also need author:@me. Move anyway?");
+  expect(dialog).not.toHaveTextContent("→");
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(screen.queryByRole("dialog", { name: "Move view" })).not.toBeInTheDocument();
+  expect(viewNames()).toEqual(["My PRs", "Drafts", "To review", "Web platform", "Payments", "Bumps due"]);
+
+  fireEvent.dragStart(screen.getByRole("group", { name: "Web platform" }), { dataTransfer: transfer, clientX: 30, clientY: 90 });
+  fireEvent.drop(screen.getByRole("group", { name: "My PRs" }), { dataTransfer: transfer, clientX: 40, clientY: 48 });
+  fireEvent.click(within(await screen.findByRole("dialog", { name: "Move view" })).getByRole("button", { name: "Move" }));
+  expect(viewNames()).toEqual(["My PRs", "Drafts", "Web platform", "To review", "Payments", "Bumps due"]);
+  openMenu("Web platform");
+  fireEvent.click(screen.getByRole("menuitem", { name: "Edit filters" }));
+  expect(screen.getByRole("combobox", { name: "Parent" })).toHaveValue("mine");
+  expect(screen.getByRole("textbox", { name: "Query" })).toHaveValue("review-requested:@me team-review-requested:acme/web-platform");
+});
+
+test("a drag that keeps the same pull requests moves without asking", () => {
+  const initial = [
+    ...tree,
+    { key: "custom:4", name: "Bugs", query: `${REVIEW_QUERY} label:bug`, builtin: false, sort_order: 6 },
+  ];
+  render(<Harness initial={initial} />);
+  const transfer = dragTransfer();
+  const bugs = screen.getByRole("group", { name: "Bugs" });
+  fireEvent.dragStart(bugs, { dataTransfer: transfer, clientX: 20, clientY: 220 });
+  const target = screen.getByRole("group", { name: "To review" });
+  fireEvent.dragOver(target, { dataTransfer: transfer, clientX: 40, clientY: 120 });
+  fireEvent.drop(target, { dataTransfer: transfer, clientX: 40, clientY: 120 });
+  expect(screen.queryByRole("dialog", { name: "Move view" })).not.toBeInTheDocument();
+  expect(viewNames()).toEqual(["My PRs", "Drafts", "To review", "Web platform", "Payments", "Bugs", "Bumps due"]);
+  openMenu("Bugs");
+  fireEvent.click(screen.getByRole("menuitem", { name: "Edit filters" }));
+  expect(screen.getByRole("combobox", { name: "Parent" })).toHaveValue("to_review");
+  expect(screen.getByRole("textbox", { name: "Query" })).toHaveValue("label:bug");
+});
+
+test("Move to uses the same confirm, and counts appear when a local count is returned", async () => {
+  render(
+    <SidebarViews
+      views={tree}
+      current="mine"
+      counts={{}}
+      onSelect={() => undefined}
+      onChange={() => undefined}
+      countMove={() => Promise.resolve({ before: 4, after: 1 })}
+    />,
+  );
+  openMenu("Drafts");
+  fireEvent.click(screen.getByRole("menuitem", { name: "Move to" }));
+  const submenu = screen.getByRole("menu", { name: "Move to" });
+  expect(within(submenu).getByRole("menuitem", { name: "My PRs" })).toBeDisabled();
+  fireEvent.click(within(submenu).getByRole("menuitem", { name: "To review" }));
+  const dialog = await screen.findByRole("dialog", { name: "Move view" });
+  expect(dialog).toHaveTextContent("Under To review it will also need review-requested:@me (4 → 1 PRs). Move anyway?");
+});
+
+test("Move to top level stores the full rule and the keyboard opens the submenu", () => {
+  function Tree() {
+    const [views, setViews] = useState(tree);
+    return <SidebarViews views={views} current="mine" counts={{}} onSelect={() => undefined} onChange={setViews} />;
+  }
+  render(<Tree />);
+  openMenu("Drafts");
+  const menu = screen.getByRole("menu", { name: "Actions for Drafts" });
+  fireEvent.keyDown(menu, { key: "ArrowDown" });
+  fireEvent.keyDown(menu, { key: "ArrowDown" });
+  fireEvent.keyDown(menu, { key: "ArrowDown" });
+  expect(within(menu).getByRole("menuitem", { name: "Move to" })).toHaveFocus();
+  fireEvent.keyDown(menu, { key: "ArrowRight" });
+  const submenu = screen.getByRole("menu", { name: "Move to" });
+  expect(within(submenu).getByRole("menuitem", { name: "To review" })).toHaveFocus();
+  fireEvent.click(within(submenu).getByRole("menuitem", { name: "Top level" }));
+  expect(screen.queryByRole("dialog", { name: "Move view" })).not.toBeInTheDocument();
+  expect(viewNames()).toEqual(["My PRs", "To review", "Web platform", "Payments", "Bumps due", "Drafts"]);
+  openMenu("Drafts");
+  fireEvent.click(screen.getByRole("menuitem", { name: "Edit filters" }));
+  expect(screen.getByRole("combobox", { name: "Parent" })).toHaveValue("");
+  expect(screen.getByRole("textbox", { name: "Query" })).toHaveValue(`${MINE_QUERY} is:draft`);
+});
+
+test("dropping a child on the top-level zone clears its parent", () => {
+  function Tree() {
+    const [views, setViews] = useState(tree);
+    return <SidebarViews views={views} current="mine" counts={{}} onSelect={() => undefined} onChange={setViews} />;
+  }
+  render(<Tree />);
+  const transfer = dragTransfer();
+  fireEvent.dragStart(screen.getByRole("group", { name: "Drafts" }), { dataTransfer: transfer });
+  const zone = document.querySelector('[data-drop-zone="top"]');
+  if (!(zone instanceof HTMLElement)) {
+    throw new Error("no top-level drop zone");
+  }
+  fireEvent.dragOver(zone, { dataTransfer: transfer });
+  expect(zone).toHaveAttribute("data-drop-target", "active");
+  fireEvent.drop(zone, { dataTransfer: transfer });
+  expect(screen.queryByRole("dialog", { name: "Move view" })).not.toBeInTheDocument();
+  expect(viewNames()).toEqual(["My PRs", "To review", "Web platform", "Payments", "Bumps due", "Drafts"]);
+});
+
+test("dropping a sibling reorders that level", () => {
+  function Tree() {
+    const [views, setViews] = useState(tree);
+    return <SidebarViews views={views} current="to_review" counts={{}} onSelect={() => undefined} onChange={setViews} />;
+  }
+  render(<Tree />);
+  const transfer = dragTransfer();
+  fireEvent.dragStart(screen.getByRole("group", { name: "Payments" }), { dataTransfer: transfer });
+  const before = screen.getByRole("group", { name: "Web platform" });
+  fireEvent.dragOver(before, { dataTransfer: transfer });
+  fireEvent.drop(before, { dataTransfer: transfer });
+  expect(screen.queryByRole("dialog", { name: "Move view" })).not.toBeInTheDocument();
+  expect(viewNames()).toEqual(["My PRs", "Drafts", "To review", "Payments", "Web platform", "Bumps due"]);
+});

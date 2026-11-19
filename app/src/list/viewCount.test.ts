@@ -3,7 +3,7 @@ import type { ProjectDto } from "../api";
 import { AUTHOR, REVIEW_REQUESTED, defaultView } from "./model";
 import { pageFromRows, type PageRequest, type SearchRow } from "./paging";
 import { BUMP_QUERY, MINE_QUERY, REVIEW_QUERY } from "./viewRule";
-import { countPlan, formatViewCount, loadViewCounts, type RemoteFetch } from "./viewCount";
+import { countPlan, formatViewCount, loadViewCounts, localRuleCounts, type RemoteFetch } from "./viewCount";
 
 const now = new Date("2026-10-26T12:00:00Z");
 
@@ -104,6 +104,15 @@ test("a merged query counts finished rows and an invalid query counts nothing", 
   );
   expect(counts["custom:3"]).toBe(1);
   expect(counts["custom:4"]).toBe(0);
+});
+
+test("a parent move counts two local rules and skips one GitHub has to answer", async () => {
+  const requests: PageRequest[] = [];
+  const list = listing(requests);
+  expect(await localRuleCounts(MINE_QUERY, REVIEW_QUERY, [], list, now)).toEqual({ before: 2, after: 2 });
+  expect(requests).toHaveLength(2);
+  expect(await localRuleCounts("label:bug", REVIEW_QUERY, [], list, now)).toBeNull();
+  expect(requests).toHaveLength(2);
 });
 
 test("the bump queue uses the due count and does not list", async () => {

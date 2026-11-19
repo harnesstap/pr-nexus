@@ -77,6 +77,59 @@ export function analyzeViewRule(raw: string): AnalyzedRule {
   };
 }
 
+/**
+ * Rule text with qualifier tokens that `parentRule` already contains removed.
+ * Free text stays, in its original place. An unfinished quote is returned unchanged.
+ */
+export function withoutSharedQualifiers(rule: string, parentRule: string): string {
+  const parent = analyzeViewRule(parentRule);
+  const tokens = scan(rule);
+  if (parent.invalid || tokens === null) {
+    return rule.trim();
+  }
+  const drop = new Set(parent.qualifiers.map(qualifierKey));
+  return tokens
+    .filter((token) => token.key === null || !drop.has(qualifierKey({ negated: token.negated, key: token.key, value: token.value })))
+    .map((token) => (token.key === null ? token.value : renderQualifier(token)))
+    .join(" ");
+}
+
+/**
+ * Qualifiers in `parentRule` that `rule` does not already require and that
+ * change which pull requests match. `is:open` and `state:open` are omitted
+ * when the rule does not already show merged or closed rows, matching the
+ * open list. `is:pr` never narrows the list.
+ */
+export function unmetQualifiers(rule: string, parentRule: string): string[] {
+  const parent = analyzeViewRule(parentRule);
+  const current = analyzeViewRule(rule);
+  if (parent.invalid || current.invalid) {
+    return [];
+  }
+  const have = new Set(current.qualifiers.map(qualifierKey));
+  return parent.qualifiers
+    .filter((token) => !have.has(qualifierKey(token)) && restrictsList(token, current))
+    .map((token) => renderQualifier({ negated: token.negated, key: token.key, value: token.value }));
+}
+
+function qualifierKey(token: { negated: boolean; key: string; value: string }): string {
+  return `${token.negated ? "!" : ""}${token.key}:${token.value.toLowerCase()}`;
+}
+
+function restrictsList(token: ViewQualifier, current: AnalyzedRule): boolean {
+  if (token.negated) {
+    return true;
+  }
+  const value = token.value.toLowerCase();
+  if (token.key === "is" && value === "pr") {
+    return false;
+  }
+  if ((token.key === "is" || token.key === "state") && value === "open") {
+    return current.showsFinished;
+  }
+  return true;
+}
+
 /** The bump queue screen: the default rule, nothing else. */
 export function isBumpQueueQuery(raw: string): boolean {
   const rule = analyzeViewRule(raw);

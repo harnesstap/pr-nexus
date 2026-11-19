@@ -36,7 +36,7 @@ import { OPEN_SIDEBAR, normalizeCollapse } from "./sidebarCollapse";
 import { defaultCatalog, effectiveQuery, newViewDraft, normalizeCatalog, type SidebarView } from "./viewCatalog";
 import { analyzeViewRule, isBumpQueueQuery } from "./viewRule";
 import { loadProjectCounts } from "./projectCount";
-import { knownTotal, loadViewCounts, type RemoteFetch } from "./viewCount";
+import { knownTotal, loadViewCounts, localRuleCounts, type RemoteFetch } from "./viewCount";
 import { DEFAULT_REVIEW_SLA, type ReviewSla } from "./sla";
 import { loadStandupRows, standupRecap } from "./standup";
 import { sidebarProjects } from "./projects";
@@ -1042,6 +1042,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
           fill={collapse.projects}
           onSelect={setViewKey}
           onChange={setCatalog}
+          countMove={(before, after) => localRuleCounts(before, after, dueIds, (request) => api.listPage(request), new Date())}
           onDuplicateState={(from, to) => {
             const live = views[from];
             if (live && loaded === from) {
