@@ -20,6 +20,7 @@ pub const REVIEW_QUERY: &str = "is:open review-requested:@me";
 pub const BUMP_QUERY: &str = "is:open author:@me bump:due";
 
 const CATALOG_KEY: &str = "sidebar.views";
+const COLLAPSE_KEY: &str = "sidebar.collapse";
 const NAME_MAX: usize = 80;
 const QUERY_MAX: usize = 1024;
 
@@ -41,6 +42,8 @@ pub struct Analyzed {
 }
 
 /// One saved sidebar view. Built-in keys are `mine`, `to_review`, and `bumps_due`.
+/// `parent` is `mine` or `to_review` for a custom view nested under that default.
+/// Older catalogs omit it; those views stay at the top level.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SidebarView {
     pub key: String,
@@ -48,6 +51,20 @@ pub struct SidebarView {
     pub query: String,
     pub builtin: bool,
     pub sort_order: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
+}
+
+/// Which sidebar sections and parent views are collapsed. Missing fields stay open.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct SidebarCollapse {
+    #[serde(default)]
+    pub views: bool,
+    #[serde(default)]
+    pub projects: bool,
+    /// `mine` and `to_review` whose children are hidden.
+    #[serde(default)]
+    pub parents: Vec<String>,
 }
 
 pub fn analyze(raw: &str) -> Analyzed {
@@ -279,6 +296,44 @@ pub fn save_views(store: &Store, views: Vec<SidebarView>) -> Result<Vec<SidebarV
     Ok(stored)
 }
 
+/// Collapsed sidebar sections. A missing or broken value is everything open.
+pub fn load_collapse(store: &Store) -> Result<SidebarCollapse, CoreError> {
+    let Some(entry) = store.get_setting(COLLAPSE_KEY.to_owned())? else {
+        return Ok(SidebarCollapse::default());
+    };
+    let parsed: SidebarCollapse = serde_json::from_str(&entry.value_json).unwrap_or_default();
+    Ok(normalize_collapse(parsed))
+}
+
+/// Stores which sections and parent views are collapsed. Unknown parent keys are dropped.
+pub fn save_collapse(
+    store: &Store,
+    collapse: SidebarCollapse,
+) -> Result<SidebarCollapse, CoreError> {
+    let stored = normalize_collapse(collapse);
+    let value_json = serde_json::to_string(&stored)
+        .map_err(|err| CoreError::Store(format!("encode {COLLAPSE_KEY}: {err}")))?;
+    store.put_setting(SettingEntry {
+        key: COLLAPSE_KEY.to_owned(),
+        value_json,
+    })?;
+    Ok(stored)
+}
+
+fn normalize_collapse(collapse: SidebarCollapse) -> SidebarCollapse {
+    let mut parents = Vec::new();
+    for key in collapse.parents {
+        if (key == "mine" || key == "to_review") && !parents.contains(&key) {
+            parents.push(key);
+        }
+    }
+    SidebarCollapse {
+        views: collapse.views,
+        projects: collapse.projects,
+        parents,
+    }
+}
+
 fn builtin(key: &str, name: &str, query: &str, sort_order: i32) -> SidebarView {
     SidebarView {
         key: key.to_owned(),
@@ -286,6 +341,15 @@ fn builtin(key: &str, name: &str, query: &str, sort_order: i32) -> SidebarView {
         query: query.to_owned(),
         builtin: true,
         sort_order,
+        parent: None,
+    }
+}
+
+fn parent_key(parent: &Option<String>) -> Option<String> {
+    match parent.as_deref() {
+        Some("mine") => Some("mine".to_owned()),
+        Some("to_review") => Some("to_review".to_owned()),
+        _ => None,
     }
 }
 
@@ -405,6 +469,7 @@ fn repair(input: Vec<SidebarView>) -> Vec<SidebarView> {
             query,
             builtin: true,
             sort_order: i32::try_from(index).unwrap_or(0),
+            parent: None,
         });
     }
     for (offset, view) in customs.into_iter().enumerate() {
@@ -425,6 +490,7 @@ fn repair(input: Vec<SidebarView>) -> Vec<SidebarView> {
             query,
             builtin: false,
             sort_order: i32::try_from(out.len()).unwrap_or(0),
+            parent: parent_key(&view.parent),
         });
     }
     out
@@ -477,6 +543,7 @@ fn validate(input: Vec<SidebarView>) -> Result<Vec<SidebarView>, CoreError> {
             query,
             builtin: true,
             sort_order: i32::try_from(index).unwrap_or(0),
+            parent: None,
         });
     }
     for view in customs {
@@ -493,6 +560,7 @@ fn validate(input: Vec<SidebarView>) -> Result<Vec<SidebarView>, CoreError> {
             query: require_query(&view.query)?,
             builtin: false,
             sort_order: i32::try_from(out.len()).unwrap_or(0),
+            parent: parent_key(&view.parent),
         });
     }
     Ok(out)
@@ -645,10 +713,12 @@ mod tests {
             query: REVIEW_QUERY.to_owned(),
             builtin: false,
             sort_order: 9,
+            parent: Some("to_review".to_owned()),
         });
         let saved = save_views(&store, views.clone()).unwrap();
         assert_eq!(saved[0].name, "Mine");
         assert_eq!(saved[3].key, "custom:1");
+        assert_eq!(saved[3].parent.as_deref(), Some("to_review"));
 
         let mut dropped = saved.clone();
         dropped.retain(|view| view.key != "to_review");
@@ -683,7 +753,56 @@ mod tests {
         let loaded = load_views(&store).unwrap();
         assert_eq!(loaded.len(), 4);
         assert_eq!(loaded[3].name, "Drafts");
+        assert_eq!(loaded[3].parent, None);
         assert_eq!(loaded[0].query, MINE_QUERY);
+    }
+
+    #[test]
+    fn a_parent_is_kept_only_for_my_prs_and_to_review() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("pr-nexus.db")).unwrap();
+        store
+            .put_setting(SettingEntry {
+                key: CATALOG_KEY.to_owned(),
+                value_json: r#"[{"key":"custom:1","name":"Drafts","query":"is:draft","builtin":false,"sort_order":3,"parent":"mine"},{"key":"custom:2","name":"Elsewhere","query":"is:open","builtin":false,"sort_order":4,"parent":"bumps_due"}]"#.to_owned(),
+            })
+            .unwrap();
+        let loaded = load_views(&store).unwrap();
+        assert_eq!(
+            loaded
+                .iter()
+                .find(|view| view.key == "custom:1")
+                .unwrap()
+                .parent
+                .as_deref(),
+            Some("mine")
+        );
+        assert_eq!(
+            loaded
+                .iter()
+                .find(|view| view.key == "custom:2")
+                .unwrap()
+                .parent,
+            None
+        );
+
+        let saved = save_collapse(
+            &store,
+            SidebarCollapse {
+                views: true,
+                projects: false,
+                parents: vec!["mine".into(), "bumps_due".into(), "mine".into()],
+            },
+        )
+        .unwrap();
+        assert!(saved.views);
+        assert!(!saved.projects);
+        assert_eq!(saved.parents, vec!["mine".to_owned()]);
+        assert_eq!(load_collapse(&store).unwrap(), saved);
+        assert_eq!(
+            load_collapse(&Store::open(dir.path().join("other.db")).unwrap()).unwrap(),
+            SidebarCollapse::default()
+        );
     }
 
     #[test]
@@ -697,6 +816,7 @@ mod tests {
             query: "is:open".to_owned(),
             builtin: false,
             sort_order: 3,
+            parent: None,
         });
         assert!(
             save_views(&store, views)
@@ -712,6 +832,7 @@ mod tests {
             query: "label:\"bug".to_owned(),
             builtin: false,
             sort_order: 3,
+            parent: None,
         });
         assert!(
             save_views(&store, views)

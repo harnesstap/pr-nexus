@@ -32,6 +32,9 @@
 // the list, the add confirmation, the bulk dialog, and a narrow list.
 // `--views <dir>` saves custom views (views-*.png): the sidebar at rest,
 // one row hovered, and the … menu open.
+// `--sidebar-tree <dir>` saves parent views and collapsible section headers
+// (sidebar-tree.png, sidebar-new-view.png, sidebar-edit-parent.png,
+// sidebar-views-collapsed.png, sidebar-projects-collapsed.png).
 // `--close-pr <dir>` saves Close PR (close-*.png): the detail menu, the
 // confirmation with a comment, the bulk confirmation, and the narrow bar menu.
 // `--settings-nav <dir>` saves the settings rail (settings-nav-*.png): Slack,
@@ -107,6 +110,11 @@ const githubQueryFlag = process.argv.indexOf("--github-query");
 const githubQueryDir = githubQueryFlag === -1 ? null : process.argv[githubQueryFlag + 1];
 if (githubQueryFlag !== -1 && !githubQueryDir) {
   throw new Error("--github-query needs an output directory");
+}
+const sidebarTreeFlag = process.argv.indexOf("--sidebar-tree");
+const sidebarTreeDir = sidebarTreeFlag === -1 ? null : process.argv[sidebarTreeFlag + 1];
+if (sidebarTreeFlag !== -1 && !sidebarTreeDir) {
+  throw new Error("--sidebar-tree needs an output directory");
 }
 const peopleFiltersFlag = process.argv.indexOf("--people-filters");
 const peopleFiltersDir = peopleFiltersFlag === -1 ? null : process.argv[peopleFiltersFlag + 1];
@@ -570,6 +578,12 @@ async function reviewOpenShots(browser, dir) {
 let browser;
 try {
   browser = await chromium.launch(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: "chrome" });
+  if (sidebarTreeDir) {
+    await sidebarTreeShots(browser, resolve(sidebarTreeDir));
+    await browser.close();
+    await vite.close();
+    process.exit(0);
+  }
   if (viewsDir) {
     await viewShots(browser, resolve(viewsDir));
     await browser.close();
@@ -988,6 +1002,65 @@ async function expectBusy(block, busy) {
   if ((value === "true") !== busy) {
     throw new Error(`Refresh aria-busy is ${value}, expected ${busy}`);
   }
+}
+
+async function sidebarTreeShots(browser, dir) {
+  mkdirSync(dir, { recursive: true });
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2, colorScheme: "dark" });
+  page.on("pageerror", (err) => console.error("page error:", err.message));
+  await page.addInitScript(() => {
+    globalThis.__sidebarTree = true;
+  });
+  await page.goto(url);
+  await page.getByRole("button", { name: "Drafts", exact: true }).waitFor();
+  await page.mouse.move(900, 40);
+  const clip = { x: 0, y: 0, width: 320, height: 640 };
+  await page.screenshot({ path: resolve(dir, "sidebar-tree.png"), clip });
+
+  await page.getByRole("button", { name: "To review", exact: true }).click();
+  const search = page.getByRole("textbox", { name: "Search" });
+  await search.fill("team-review-requested:acme/web-platform");
+  await page.getByRole("button", { name: "New view" }).click();
+  await page.getByRole("combobox", { name: "Parent" }).waitFor();
+  await page.getByText("Shows is:open review-requested:@me team-review-requested:acme/web-platform").waitFor();
+  const dialog = page.getByRole("dialog", { name: "New view" });
+  const box = await dialog.boundingBox();
+  await page.screenshot({
+    path: resolve(dir, "sidebar-new-view.png"),
+    clip: { x: Math.max(0, (box?.x ?? 0) - 24), y: Math.max(0, (box?.y ?? 0) - 24), width: Math.ceil((box?.width ?? 480) + 48), height: Math.ceil((box?.height ?? 360) + 48) },
+  });
+  await page.keyboard.press("Escape");
+
+  const platform = page.getByRole("button", { name: "Web platform", exact: true });
+  await platform.hover();
+  await platform.locator("xpath=..").getByRole("button", { name: "View menu" }).click();
+  await page.getByRole("menuitem", { name: "Edit filters" }).click();
+  await page.getByRole("dialog", { name: "Edit filters" }).waitFor();
+  await page.getByText("Shows is:open review-requested:@me team-review-requested:acme/web-platform").waitFor();
+  const edit = page.getByRole("dialog", { name: "Edit filters" });
+  const editBox = await edit.boundingBox();
+  await page.screenshot({
+    path: resolve(dir, "sidebar-edit-parent.png"),
+    clip: {
+      x: Math.max(0, (editBox?.x ?? 0) - 24),
+      y: Math.max(0, (editBox?.y ?? 0) - 24),
+      width: Math.ceil((editBox?.width ?? 480) + 48),
+      height: Math.ceil((editBox?.height ?? 360) + 48),
+    },
+  });
+  await page.keyboard.press("Escape");
+  await page.mouse.move(900, 40);
+
+  await page.getByRole("button", { name: "Views", exact: true }).click();
+  await page.getByRole("button", { name: "Views", exact: true }).waitFor();
+  await page.screenshot({ path: resolve(dir, "sidebar-views-collapsed.png"), clip });
+  await page.getByRole("button", { name: "Views", exact: true }).click();
+  await page.getByRole("button", { name: "Drafts", exact: true }).waitFor();
+  await page.getByRole("button", { name: "Projects", exact: true }).click();
+  await page.getByRole("button", { name: "Projects", exact: true }).waitFor();
+  await page.screenshot({ path: resolve(dir, "sidebar-projects-collapsed.png"), clip: { x: 0, y: 0, width: 320, height: 900 } });
+  console.log("wrote sidebar tree shots");
+  await page.close();
 }
 
 async function viewShots(browser, dir) {

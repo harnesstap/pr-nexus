@@ -93,6 +93,18 @@ export function listedCount(open: number, finished: number): number {
   return open + finished;
 }
 
+/** Sum of known counts. Unknown (null) hides the hint rather than under-counting. */
+export function knownTotal(counts: readonly (number | null | undefined)[]): string | null {
+  let sum = 0;
+  for (const count of counts) {
+    if (count == null) {
+      return null;
+    }
+    sum += count;
+  }
+  return formatViewCount(sum);
+}
+
 /** Blank at zero. `99+` above {@link VIEW_COUNT_CAP}. */
 export function formatViewCount(count: number): string | null {
   if (count <= 0) {

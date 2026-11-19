@@ -1,19 +1,24 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { createPortal } from "react-dom";
-import { ClockIcon, HomeIcon, ListIcon, PlusIcon, SlackLogo } from "../icons";
+import { ChevronDownIcon, ChevronRightIcon, ClockIcon, HomeIcon, ListIcon, PlusIcon, SlackLogo } from "../icons";
 import { plainText } from "../textInput";
 import { Tooltip } from "../Tooltip";
 import { CountSlot, opensRowMenu } from "./CountBadge";
 import { SearchField } from "./SearchField";
-import { formatViewCount, sidebarCountLabel } from "./viewCount";
+import { SectionHeader } from "./SectionHeader";
+import { formatViewCount, knownTotal, sidebarCountLabel } from "./viewCount";
 import {
   builtinKey,
   defaultCatalog,
   duplicateOf,
+  joinRules,
   nextCustomKey,
   normalizeCatalog,
+  orderedViews,
+  parentKey,
   viewNameError,
   viewQueryError,
+  type ParentKey,
   type SidebarView,
 } from "./viewCatalog";
 
@@ -26,10 +31,20 @@ interface Props {
   onChange: (views: SidebarView[]) => void;
   /** Copies the source view's saved Sort, Group, and Filter onto the new key. */
   onDuplicateState?: (from: string, to: string) => void;
+  /** The Views section is folded. The rows stay in the catalog, so shortcuts can still open them. */
+  collapsed?: boolean;
+  onToggleCollapsed?: () => void;
+  /** Parent keys whose children are hidden. */
+  collapsedParents?: readonly string[];
+  onToggleParent?: (key: string) => void;
+  /** Captured when New view opens. Duplicate does not use it. */
+  createDraft?: { parent: ParentKey | null; query: string };
+  /** The section fills leftover sidebar space and scrolls its own list. */
+  fill?: boolean;
 }
 
 type Dialog =
-  | { kind: "create" }
+  | { kind: "create"; parent: ParentKey | null; query: string }
   | { kind: "edit"; view: SidebarView }
   | { kind: "rename"; view: SidebarView }
   | { kind: "delete"; view: SidebarView };
@@ -45,7 +60,20 @@ interface MenuState {
  * Default and custom sidebar views. The … menu and a right-click share one
  * menu. Built-in views reset instead of deleting.
  */
-export function SidebarViews({ views, current, counts, onSelect, onChange, onDuplicateState }: Props) {
+export function SidebarViews({
+  views,
+  current,
+  counts,
+  onSelect,
+  onChange,
+  onDuplicateState,
+  collapsed = false,
+  onToggleCollapsed,
+  collapsedParents = [],
+  onToggleParent,
+  createDraft = { parent: null, query: "" },
+  fill = false,
+}: Props) {
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const anchors = useRef(new Map<string, HTMLButtonElement>());
@@ -63,48 +91,99 @@ export function SidebarViews({ views, current, counts, onSelect, onChange, onDup
   }
 
   const active = views.find((view) => view.key === menu?.key) ?? null;
+  const rows = orderedViews(views);
+  const hiddenParent = new Set(collapsedParents);
 
   return (
-    <section aria-labelledby="views-heading" className="flex flex-col px-2 text-sm">
-      <div className="flex items-center justify-between px-2 pb-1">
-        <h2 id="views-heading" className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-slate-500">
-          <ListIcon size={14} />
-          Views
-        </h2>
-        <Tooltip label="New view" detail="Save a name and a query" align="end">
-          <button
-            type="button"
-            aria-label="New view"
-            className="rounded p-0.5 text-slate-500 hover:bg-slate-800 hover:text-slate-200"
-            onClick={() => {
-              setMenu(null);
-              setDialog({ kind: "create" });
-            }}
-          >
-            <PlusIcon />
-          </button>
-        </Tooltip>
-      </div>
-      <nav aria-label="Views" className="flex flex-col gap-0.5">
-        {views.map((view) => (
-          <ViewRow
-            key={view.key}
-            view={view}
-            selected={current === view.key}
-            count={counts[view.key] ?? null}
-            menuOpen={menu?.key === view.key}
-            onSelect={() => onSelect(view.key)}
-            onMenu={(x, y, anchor) => openMenu(view.key, x, y, anchor)}
-            register={(node) => {
-              if (node) {
-                anchors.current.set(view.key, node);
-              } else {
-                anchors.current.delete(view.key);
-              }
-            }}
-          />
-        ))}
-      </nav>
+    <section aria-labelledby="views-heading" className={`flex flex-col px-2 text-sm ${fill && !collapsed ? "min-h-0 flex-1" : ""}`}>
+      <SectionHeader
+        id="views-heading"
+        icon={<ListIcon size={14} />}
+        label="Views"
+        collapsed={collapsed}
+        hint={knownTotal(views.map((view) => counts[view.key] ?? null))}
+        onToggle={() => onToggleCollapsed?.()}
+        controls={
+          <Tooltip label="New view" detail="Save a name and a query" align="end">
+            <button
+              type="button"
+              aria-label="New view"
+              className="rounded p-0.5 text-slate-500 hover:bg-slate-800 hover:text-slate-200"
+              onClick={() => {
+                setMenu(null);
+                setDialog({ kind: "create", parent: createDraft.parent, query: createDraft.query });
+              }}
+            >
+              <PlusIcon />
+            </button>
+          </Tooltip>
+        }
+      />
+      {!collapsed && (
+        <nav aria-label="Views" className={`flex flex-col gap-0.5 ${fill ? "min-h-0 overflow-auto" : ""}`}>
+          {rows
+            .filter((view) => view.builtin || !parentKey(view.parent))
+            .map((view) => {
+            const children = views.filter((item) => !item.builtin && parentKey(item.parent) === view.key);
+            const folded = hiddenParent.has(view.key);
+            return (
+              <div key={view.key}>
+                <ViewRow
+                  view={view}
+                  selected={current === view.key}
+                  count={counts[view.key] ?? null}
+                  menuOpen={menu?.key === view.key}
+                  child={false}
+                  canFold={children.length > 0}
+                  folded={folded}
+                  onFold={() => onToggleParent?.(view.key)}
+                  onSelect={() => onSelect(view.key)}
+                  onMenu={(x, y, anchor) => openMenu(view.key, x, y, anchor)}
+                  register={(node) => {
+                    if (node) {
+                      anchors.current.set(view.key, node);
+                    } else {
+                      anchors.current.delete(view.key);
+                    }
+                  }}
+                />
+                {children.length > 0 && !folded && (
+                  <div data-connector="" className="relative">
+                    {children.map((child, index) => (
+                      <div key={child.key} className="relative ml-4 pl-2">
+                        <span
+                          aria-hidden="true"
+                          className={`absolute left-0 w-px bg-slate-700 ${index === children.length - 1 ? "top-0 h-1/2" : "inset-y-0"}`}
+                        />
+                        <span aria-hidden="true" className="absolute left-0 top-1/2 h-px w-2 bg-slate-700" />
+                        <ViewRow
+                          view={child}
+                          selected={current === child.key}
+                          count={counts[child.key] ?? null}
+                          menuOpen={menu?.key === child.key}
+                          child
+                          canFold={false}
+                          folded={false}
+                          onFold={() => undefined}
+                          onSelect={() => onSelect(child.key)}
+                          onMenu={(x, y, anchor) => openMenu(child.key, x, y, anchor)}
+                          register={(node) => {
+                            if (node) {
+                              anchors.current.set(child.key, node);
+                            } else {
+                              anchors.current.delete(child.key);
+                            }
+                          }}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </nav>
+      )}
       {menu && active && (
         <ViewMenu
           view={active}
@@ -154,6 +233,10 @@ function ViewRow({
   selected,
   count,
   menuOpen,
+  child,
+  canFold,
+  folded,
+  onFold,
   onSelect,
   onMenu,
   register,
@@ -162,6 +245,10 @@ function ViewRow({
   selected: boolean;
   count: number | null;
   menuOpen: boolean;
+  child: boolean;
+  canFold: boolean;
+  folded: boolean;
+  onFold: () => void;
   onSelect: () => void;
   onMenu: (x: number, y: number, anchor: HTMLElement | null) => void;
   register: (node: HTMLButtonElement | null) => void;
@@ -180,11 +267,22 @@ function ViewRow({
         onMenu(event.clientX, event.clientY, null);
       }}
     >
+      {canFold && (
+        <button
+          type="button"
+          aria-expanded={!folded}
+          aria-label={`${folded ? "Expand" : "Collapse"} ${view.name}`}
+          className="mr-0.5 grid h-6 w-4 shrink-0 place-items-center rounded text-slate-500 hover:bg-slate-800 hover:text-slate-200"
+          onClick={onFold}
+        >
+          {folded ? <ChevronRightIcon size={14} /> : <ChevronDownIcon size={14} />}
+        </button>
+      )}
       <button
         type="button"
         aria-current={selected ? "page" : undefined}
         aria-describedby={described ? badgeId : undefined}
-        className={`flex min-w-0 flex-1 items-center gap-2 rounded-md py-1.5 pl-2 pr-11 text-left ${tone}`}
+        className={`flex min-w-0 flex-1 items-center gap-2 rounded-md py-1.5 pr-11 text-left ${canFold || child ? "pl-1" : "pl-2"} ${tone}`}
         onClick={onSelect}
         onKeyDown={(event) => {
           if (opensRowMenu(event)) {
@@ -369,10 +467,16 @@ function ViewDialog({
   const queryRef = useRef<HTMLInputElement>(null);
   const editing = dialog.kind === "create" ? null : dialog.view;
   const [name, setName] = useState(dialog.kind === "create" ? "" : dialog.view.name);
-  const [query, setQuery] = useState(dialog.kind === "edit" || dialog.kind === "create" ? (dialog.kind === "create" ? "" : dialog.view.query) : "");
+  const [query, setQuery] = useState(dialog.kind === "create" ? dialog.query : dialog.kind === "edit" ? dialog.view.query : "");
+  const [parent, setParent] = useState<ParentKey | "">(
+    dialog.kind === "create" ? (dialog.parent ?? "") : dialog.kind === "edit" ? (parentKey(dialog.view.parent) ?? "") : "",
+  );
   const [error, setError] = useState<string | null>(null);
   const showQuery = dialog.kind === "create" || dialog.kind === "edit";
   const showName = dialog.kind !== "edit" && dialog.kind !== "delete";
+  const showParent = dialog.kind === "create" || (dialog.kind === "edit" && !dialog.view.builtin);
+  const parentQuery = parent === "" ? "" : (views.find((view) => view.key === parent)?.query ?? "");
+  const preview = parent === "" ? "" : joinRules(parentQuery, query);
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
@@ -405,17 +509,29 @@ function ViewDialog({
       setError(queryError);
       return;
     }
+    const nextParent = parent === "" ? null : parent;
     if (dialog.kind === "create") {
       onSave(
         normalizeCatalog([
           ...views,
-          { key: nextCustomKey(views), name: nextName.trim(), query: nextQuery.trim(), builtin: false, sort_order: views.length },
+          {
+            key: nextCustomKey(views),
+            name: nextName.trim(),
+            query: nextQuery.trim(),
+            builtin: false,
+            sort_order: views.length,
+            parent: nextParent,
+          },
         ]),
       );
       return;
     }
     onSave(
-      normalizeCatalog(views.map((view) => (view.key === dialog.view.key ? { ...view, name: nextName.trim(), query: nextQuery.trim() } : view))),
+      normalizeCatalog(
+        views.map((view) =>
+          view.key === dialog.view.key ? { ...view, name: nextName.trim(), query: nextQuery.trim(), parent: view.builtin ? null : nextParent } : view,
+        ),
+      ),
     );
   }
 
@@ -454,10 +570,30 @@ function ViewDialog({
                 />
               </label>
             )}
+            {showParent && (
+              <label className="flex flex-col gap-1 text-xs text-slate-400">
+                Parent
+                <select
+                  aria-label="Parent"
+                  value={parent}
+                  className="h-8 rounded-md border border-slate-700 bg-slate-950 px-2 text-sm text-slate-100"
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    setParent(value === "mine" || value === "to_review" ? value : "");
+                    setError(null);
+                  }}
+                >
+                  <option value="">None</option>
+                  <option value="mine">{views.find((view) => view.key === "mine")?.name ?? "My PRs"}</option>
+                  <option value="to_review">{views.find((view) => view.key === "to_review")?.name ?? "To review"}</option>
+                </select>
+              </label>
+            )}
             {showQuery && (
               <div className="flex flex-col gap-1">
                 <span className="text-xs text-slate-400">Query</span>
                 <SearchField layout="dialog" label="Query" value={query} onChange={(value) => { setQuery(value); setError(null); }} inputRef={queryRef} />
+                {preview !== "" && <p className="text-xs text-slate-500">Shows {preview}</p>}
               </div>
             )}
           </div>

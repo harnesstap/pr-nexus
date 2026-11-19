@@ -209,6 +209,8 @@ pub fn run() {
             commands::save_view_state,
             commands::list_sidebar_views,
             commands::save_sidebar_views,
+            commands::sidebar_collapse,
+            commands::save_sidebar_collapse,
             commands::open_external,
             commands::pr_detail,
             commands::review_teams,

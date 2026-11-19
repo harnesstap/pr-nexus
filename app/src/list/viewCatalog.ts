@@ -5,12 +5,17 @@
  */
 import { BUMP_QUERY, MINE_QUERY, REVIEW_QUERY, VIEW_NAME_MAX, VIEW_QUERY_MAX, analyzeViewRule } from "./viewRule";
 
+/** My PRs and To review can parent a custom view. Bumps due cannot. */
+export type ParentKey = "mine" | "to_review";
+
 export interface SidebarView {
   key: string;
   name: string;
   query: string;
   builtin: boolean;
   sort_order: number;
+  /** Set only on a custom view. One level: a child is never a parent. */
+  parent?: ParentKey | null;
 }
 
 export function defaultCatalog(): SidebarView[] {
@@ -57,6 +62,7 @@ export function normalizeCatalog(saved: readonly SidebarView[] | null | undefine
       query: analyzeViewRule(query).invalid ? "" : query,
       builtin: false,
       sort_order: out.length,
+      parent: parentKey(view.parent),
     });
   }
   return out;
@@ -108,7 +114,77 @@ export function duplicateOf(views: readonly SidebarView[], source: SidebarView):
     query: source.query,
     builtin: false,
     sort_order: views.length,
+    parent: parentKey(source.parent),
   };
+}
+
+/** `mine` or `to_review`, or null when the stored parent is missing or not allowed. */
+export function parentKey(value: string | null | undefined): ParentKey | null {
+  return value === "mine" || value === "to_review" ? value : null;
+}
+
+/** Parent rule and the view's own rule, ANDed. A view with no parent is its own query. */
+export function effectiveQuery(view: SidebarView, views: readonly SidebarView[]): string {
+  const parent = view.builtin ? null : parentKey(view.parent);
+  if (!parent) {
+    return view.query.trim();
+  }
+  const base = views.find((item) => item.key === parent)?.query.trim() ?? "";
+  return joinRules(base, view.query);
+}
+
+/**
+ * Sidebar order: each child sits under its parent. Top-level custom views
+ * stay after the three defaults, in their saved order.
+ */
+export function orderedViews(views: readonly SidebarView[]): SidebarView[] {
+  const children = (key: ParentKey) => views.filter((view) => !view.builtin && parentKey(view.parent) === key);
+  const top = views.filter((view) => !view.builtin && parentKey(view.parent) === null);
+  const byKey = (key: string) => views.find((view) => view.key === key) ?? null;
+  return [byKey("mine"), ...children("mine"), byKey("to_review"), ...children("to_review"), byKey("bumps_due"), ...top].filter(
+    (view): view is SidebarView => view !== null,
+  );
+}
+
+/**
+ * What New view starts from. A view opened under My PRs or To review (or one
+ * of their children) keeps that parent and stores only the extra rule. Anywhere
+ * else, the field is the whole effective filter. Duplicate does not use this.
+ */
+export function newViewDraft(views: readonly SidebarView[], activeKey: string, search: string): { parent: ParentKey | null; query: string } {
+  const active = views.find((view) => view.key === activeKey) ?? null;
+  const parent = active ? (active.builtin ? parentKey(active.key) : parentKey(active.parent)) : null;
+  const base = active ? effectiveQuery(active, views) : "";
+  const extra = withoutTokens(search, base);
+  if (!parent) {
+    return { parent: null, query: joinRules(base, extra) };
+  }
+  const own = active && !active.builtin ? active.query.trim() : "";
+  return { parent, query: joinRules(own, extra) };
+}
+
+/** Search text that is not already part of the view rule. */
+function withoutTokens(search: string, base: string): string {
+  const skip = new Set(base.trim().toLowerCase().split(/\s+/u).filter((part) => part !== ""));
+  return search
+    .trim()
+    .split(/\s+/u)
+    .filter((part) => part !== "" && !skip.has(part.toLowerCase()))
+    .join(" ");
+}
+
+/** Joins two rules, dropping tokens the base already has. */
+export function joinRules(base: string, extra: string): string {
+  const have = new Set(base.trim().toLowerCase().split(/\s+/u).filter((part) => part !== ""));
+  let out = base.trim();
+  for (const part of extra.trim().split(/\s+/u)) {
+    if (part === "" || have.has(part.toLowerCase())) {
+      continue;
+    }
+    out = out === "" ? part : `${out} ${part}`;
+    have.add(part.toLowerCase());
+  }
+  return out;
 }
 
 function cleanName(raw: string): string {

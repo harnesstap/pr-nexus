@@ -1908,6 +1908,34 @@ pub async fn save_sidebar_views(
     .await
 }
 
+#[tauri::command]
+pub async fn sidebar_collapse(
+    app: State<'_, std::sync::Arc<AppState>>,
+) -> Result<pr_nexus_core::view_rule::SidebarCollapse, AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        Ok(pr_nexus_core::view_rule::load_collapse(&state.store)?)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn save_sidebar_collapse(
+    app: State<'_, std::sync::Arc<AppState>>,
+    collapse: pr_nexus_core::view_rule::SidebarCollapse,
+) -> Result<pr_nexus_core::view_rule::SidebarCollapse, AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        Ok(pr_nexus_core::view_rule::save_collapse(
+            &state.store,
+            collapse,
+        )?)
+    })
+    .await
+}
+
 pub(crate) fn indicator(
     request: pr_nexus_core::domain::ReviewRequest,
     workspaces: &[pr_nexus_core::review::route::Workspace],

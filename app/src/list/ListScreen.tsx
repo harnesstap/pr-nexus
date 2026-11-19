@@ -30,11 +30,13 @@ import { copyText } from "./markdown";
 import { PrList, type ListActions } from "./PrList";
 import { githubQueryOf, searchFieldValue } from "./searchText";
 import { DeleteProjectDialog, ProjectMenu, ProjectRow } from "./SidebarProjects";
+import { SectionHeader } from "./SectionHeader";
 import { SidebarViews } from "./SidebarViews";
-import { defaultCatalog, normalizeCatalog, type SidebarView } from "./viewCatalog";
+import { OPEN_SIDEBAR, normalizeCollapse } from "./sidebarCollapse";
+import { defaultCatalog, effectiveQuery, newViewDraft, normalizeCatalog, type SidebarView } from "./viewCatalog";
 import { analyzeViewRule, isBumpQueueQuery } from "./viewRule";
 import { loadProjectCounts } from "./projectCount";
-import { loadViewCounts, type RemoteFetch } from "./viewCount";
+import { knownTotal, loadViewCounts, type RemoteFetch } from "./viewCount";
 import { DEFAULT_REVIEW_SLA, type ReviewSla } from "./sla";
 import { loadStandupRows, standupRecap } from "./standup";
 import { sidebarProjects } from "./projects";
@@ -94,6 +96,8 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
   const [viewKey, setViewKey] = useState(startView);
   const [catalog, setCatalog] = useState<SidebarView[]>(defaultCatalog);
   const skipCatalogSave = useRef(Boolean(api.listSidebarViews));
+  const [collapse, setCollapse] = useState(OPEN_SIDEBAR);
+  const skipCollapseSave = useRef(true);
   const [dueCount, setDueCount] = useState(0);
   const [dueIds, setDueIds] = useState<number[]>([]);
   const [counts, setCounts] = useState<Record<string, number | null>>({});
@@ -191,7 +195,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
   const fallbackView = useRef(defaultView());
   const view = views[viewKey] ?? fallbackView.current;
   const sidebarView = catalog.find((item) => item.key === viewKey) ?? null;
-  const sidebarQuery = sidebarView?.query ?? "";
+  const sidebarQuery = sidebarView ? effectiveQuery(sidebarView, catalog) : "";
   const shownIds = useRef<number[]>([]);
   const publishHint = useCallback(
     (ids: number[]) => {
@@ -566,7 +570,8 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
       return;
     }
     let cancel = false;
-    void loadViewCounts(catalog, dueCount, dueIds, remotes, (request) => api.listPage(request), new Date()).then(
+    const counted = catalog.map((view) => ({ ...view, query: effectiveQuery(view, catalog) }));
+    void loadViewCounts(counted, dueCount, dueIds, remotes, (request) => api.listPage(request), new Date()).then(
       (next) => {
         if (!cancel) {
           setCounts(next);
@@ -644,6 +649,40 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
     }, 200);
     return () => window.clearTimeout(timer);
   }, [api, catalog, catalogJson]);
+
+  useEffect(() => {
+    if (!api.sidebarCollapse) {
+      return;
+    }
+    let cancel = false;
+    void api.sidebarCollapse().then(
+      (saved) => {
+        if (!cancel) {
+          skipCollapseSave.current = true;
+          setCollapse(normalizeCollapse(saved));
+        }
+      },
+      () => undefined,
+    );
+    return () => {
+      cancel = true;
+    };
+  }, [api]);
+
+  const collapseJson = JSON.stringify(collapse);
+  useEffect(() => {
+    if (!api.saveSidebarCollapse) {
+      return;
+    }
+    if (skipCollapseSave.current) {
+      skipCollapseSave.current = false;
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void api.saveSidebarCollapse?.(collapse);
+    }, 200);
+    return () => window.clearTimeout(timer);
+  }, [api, collapse, collapseJson]);
 
   useEffect(() => {
     let cancel = false;
@@ -981,7 +1020,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
 
   return (
     <div className="flex h-screen bg-slate-950 text-slate-100">
-      <aside className="flex w-60 shrink-0 flex-col border-r border-slate-800 bg-slate-950">
+      <aside className="flex min-h-0 w-60 shrink-0 flex-col overflow-hidden border-r border-slate-800 bg-slate-950">
         <p className="flex items-center gap-2 px-4 py-4 text-base font-semibold">
           <LogoIcon size={20} className="text-violet-400" />
           PR Nexus
@@ -990,6 +1029,17 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
           views={catalog}
           current={viewKey}
           counts={counts}
+          collapsed={collapse.views}
+          onToggleCollapsed={() => setCollapse((current) => ({ ...current, views: !current.views }))}
+          collapsedParents={collapse.parents}
+          onToggleParent={(key) =>
+            setCollapse((current) => ({
+              ...current,
+              parents: current.parents.includes(key) ? current.parents.filter((item) => item !== key) : [...current.parents, key],
+            }))
+          }
+          createDraft={newViewDraft(catalog, viewKey, searchFieldValue(view.filters))}
+          fill={collapse.projects}
           onSelect={setViewKey}
           onChange={setCatalog}
           onDuplicateState={(from, to) => {
@@ -1007,24 +1057,31 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
             });
           }}
         />
-        <section aria-labelledby="projects-heading" className="mt-4 flex min-h-0 flex-1 flex-col px-2 text-sm">
-          <div className="flex items-center justify-between px-2 pb-1">
-            <h2 id="projects-heading" className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-slate-500">
-              <FolderIcon size={14} />
-              Projects
-            </h2>
-            <Tooltip label="New project" detail="Group related PRs, for example by feature or initiative" align="end">
-              <button
-                type="button"
-                aria-label="New project"
-                className="rounded p-0.5 text-slate-500 hover:bg-slate-800 hover:text-slate-200"
-                onClick={() => setDraft({ name: "", error: null, withSelection: selection.length > 0 })}
-              >
-                <PlusIcon />
-              </button>
-            </Tooltip>
-          </div>
-          <div className="flex min-h-0 min-w-0 flex-col gap-0.5 overflow-auto">
+        <section
+          aria-labelledby="projects-heading"
+          className={`mt-4 flex flex-col px-2 text-sm ${collapse.projects ? "" : "min-h-0 flex-1"}`}
+        >
+          <SectionHeader
+            id="projects-heading"
+            icon={<FolderIcon size={14} />}
+            label="Projects"
+            collapsed={collapse.projects}
+            hint={knownTotal(activeProjects.map((project) => projectCounts[project.id] ?? null))}
+            onToggle={() => setCollapse((current) => ({ ...current, projects: !current.projects }))}
+            controls={
+              <Tooltip label="New project" detail="Group related PRs, for example by feature or initiative" align="end">
+                <button
+                  type="button"
+                  aria-label="New project"
+                  className="rounded p-0.5 text-slate-500 hover:bg-slate-800 hover:text-slate-200"
+                  onClick={() => setDraft({ name: "", error: null, withSelection: selection.length > 0 })}
+                >
+                  <PlusIcon />
+                </button>
+              </Tooltip>
+            }
+          />
+          {!collapse.projects && <div className="flex min-h-0 min-w-0 flex-col gap-0.5 overflow-auto">
             {activeProjects.map((project) => (
               <ProjectRow
                 key={project.id}
@@ -1040,7 +1097,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
                 onDropPrs={(ids) => void linkPrs(project.id, ids)}
               />
             ))}
-          </div>
+          </div>}
           {projectMenu && menuProject && (
             <ProjectMenu
               name={menuProject.name}
@@ -1098,7 +1155,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
               )}
             </form>
           ) : (
-            activeProjects.length === 0 && (
+            !collapse.projects && activeProjects.length === 0 && (
               <div className="mx-1 mt-1 rounded-md border border-dashed border-slate-800 px-3 py-3 text-xs text-slate-500">
                 <p>No projects yet. Group related PRs, for example by feature or initiative.</p>
                 <button
@@ -1444,6 +1501,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
         <GlobalCommands
           api={api}
           projects={projects}
+          views={catalog}
           actions={listActions}
           listShown={viewKey !== "settings"}
           onView={setViewKey}

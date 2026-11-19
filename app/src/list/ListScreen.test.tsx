@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { expect, test, vi } from "vitest";
-import type { Api, Bootstrap, ProjectDto, ReviewTarget } from "../api";
+import type { Api, Bootstrap, ProjectDto, ReviewTarget, SyncHint } from "../api";
 import type { SearchRow } from "./paging";
 import { ListScreen } from "./ListScreen";
 import { memoryProjectApi } from "../memoryProjects";
@@ -229,6 +229,7 @@ test("sidebar projects are alphabetical and stay that way after create and renam
   const names = () =>
     within(region)
       .getAllByRole("button")
+      .filter((button) => !button.hasAttribute("aria-expanded"))
       .map((button) => button.textContent)
       .filter((name) => name && name !== "");
   await waitFor(() => expect(names()).toEqual(["Alpha", "beta 2", "beta 10", "zeta"]));
@@ -518,6 +519,24 @@ test("To review still searches GitHub for free text and does not replace the lis
   fireEvent.change(input, { target: { value: "passkeys" } });
   await waitFor(() => expect(searchReviews).toHaveBeenCalledWith("passkeys"));
   expect(searchGithubQuery).not.toHaveBeenCalled();
+});
+
+test("a child view publishes the parent rule and its own rule as the sync hint", async () => {
+  const setSyncHint = vi.fn<(hint: SyncHint) => Promise<void>>(() => Promise.resolve());
+  const fake = api([]);
+  fake.listSidebarViews = () =>
+    Promise.resolve([
+      { key: "mine", name: "My PRs", query: "is:open author:@me", builtin: true, sort_order: 0 },
+      { key: "to_review", name: "To review", query: "is:open review-requested:@me", builtin: true, sort_order: 1 },
+      { key: "bumps_due", name: "Bumps due", query: "is:open author:@me bump:due", builtin: true, sort_order: 2 },
+      { key: "custom:1", name: "Drafts", query: "is:draft", builtin: false, sort_order: 3, parent: "to_review" },
+    ]);
+  render(<ListScreen api={{ ...fake, setSyncHint }} boot={boot} onBoot={() => undefined} />);
+  fireEvent.click(await screen.findByRole("button", { name: "Drafts" }));
+  await waitFor(() => {
+    const hints = setSyncHint.mock.calls.map((call) => call[0]);
+    expect(hints).toContainEqual({ view_key: "custom:1", query: "is:open review-requested:@me is:draft", pr_ids: [] });
+  });
 });
 
 test("My PRs never searches GitHub with its filters", async () => {

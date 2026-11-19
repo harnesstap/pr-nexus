@@ -3,7 +3,7 @@ import { useState } from "react";
 import { expect, test } from "vitest";
 import { SidebarViews } from "./SidebarViews";
 import { defaultCatalog, type SidebarView } from "./viewCatalog";
-import { MINE_QUERY } from "./viewRule";
+import { MINE_QUERY, REVIEW_QUERY } from "./viewRule";
 
 function Harness({ initial = defaultCatalog() }: { initial?: SidebarView[] }) {
   const [views, setViews] = useState(initial);
@@ -176,4 +176,106 @@ test("reset restores the default query", () => {
   openMenu("My PRs");
   fireEvent.click(screen.getByRole("menuitem", { name: "Edit filters" }));
   expect(screen.getByRole("textbox", { name: "Query" })).toHaveValue(MINE_QUERY);
+});
+
+const tree: SidebarView[] = [
+  ...defaultCatalog(),
+  { key: "custom:1", name: "Drafts", query: "is:draft", builtin: false, sort_order: 3, parent: "mine" },
+  { key: "custom:2", name: "Web platform", query: "team-review-requested:acme/web-platform", builtin: false, sort_order: 4, parent: "to_review" },
+  { key: "custom:3", name: "Payments", query: "team-review-requested:acme/payments", builtin: false, sort_order: 5, parent: "to_review" },
+];
+
+function viewNames(): string[] {
+  return within(screen.getByRole("navigation", { name: "Views" }))
+    .getAllByRole("button")
+    .map((button) => button.textContent?.trim() ?? "")
+    .filter((name) => name !== "");
+}
+
+test("children sit under their parent, and the parent chevron hides them", () => {
+  function Tree() {
+    const [parents, setParents] = useState<string[]>([]);
+    return (
+      <SidebarViews
+        views={tree}
+        current="to_review"
+        counts={{}}
+        collapsedParents={parents}
+        onToggleParent={(key) => setParents((current) => (current.includes(key) ? current.filter((item) => item !== key) : [...current, key]))}
+        onSelect={() => undefined}
+        onChange={() => undefined}
+      />
+    );
+  }
+  render(<Tree />);
+  expect(viewNames()).toEqual(["My PRs", "Drafts", "To review", "Web platform", "Payments", "Bumps due"]);
+  expect(document.querySelectorAll("[data-connector]")).toHaveLength(2);
+  const fold = screen.getByRole("button", { name: "Collapse To review" });
+  expect(fold).toHaveAttribute("aria-expanded", "true");
+  fireEvent.click(fold);
+  expect(screen.getByRole("button", { name: "Expand To review" })).toHaveAttribute("aria-expanded", "false");
+  expect(viewNames()).toEqual(["My PRs", "Drafts", "To review", "Bumps due"]);
+  expect(screen.getByRole("button", { name: "To review" })).toBeInTheDocument();
+});
+
+test("the section header toggles without the new-view button, and the choice is kept", () => {
+  function Sections() {
+    const [collapsed, setCollapsed] = useState(false);
+    const stored = JSON.stringify({ views: collapsed, projects: false, parents: [] });
+    return (
+      <>
+        <SidebarViews
+          views={defaultCatalog()}
+          current="mine"
+          counts={{ mine: 2, to_review: 1, bumps_due: 0 }}
+          collapsed={collapsed}
+          onToggleCollapsed={() => setCollapsed((current) => !current)}
+          onSelect={() => undefined}
+          onChange={() => undefined}
+        />
+        <button type="button" onClick={() => setCollapsed(JSON.parse(stored).views)}>
+          Reload
+        </button>
+      </>
+    );
+  }
+  render(<Sections />);
+  const header = screen.getByRole("button", { name: "Views" });
+  expect(header).toHaveAttribute("aria-expanded", "true");
+  fireEvent.click(screen.getByRole("button", { name: "New view" }));
+  expect(header).toHaveAttribute("aria-expanded", "true");
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  fireEvent.keyDown(header, { key: "Enter" });
+  expect(header).toHaveAttribute("aria-expanded", "false");
+  expect(screen.queryByRole("navigation", { name: "Views" })).not.toBeInTheDocument();
+  expect(header).toHaveTextContent("3");
+  fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+  expect(screen.getByRole("button", { name: "Views" })).toHaveAttribute("aria-expanded", "false");
+  fireEvent.keyDown(screen.getByRole("button", { name: "Views" }), { key: " " });
+  expect(screen.getByRole("navigation", { name: "Views" })).toBeInTheDocument();
+});
+
+test("new view is prefilled from the open parent, and edit shows the parent", () => {
+  render(
+    <SidebarViews
+      views={tree}
+      current="to_review"
+      counts={{}}
+      createDraft={{ parent: "to_review", query: "is:draft" }}
+      onSelect={() => undefined}
+      onChange={() => undefined}
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "New view" }));
+  expect(screen.getByRole("combobox", { name: "Parent" })).toHaveValue("to_review");
+  expect(screen.getByRole("textbox", { name: "Query" })).toHaveValue("is:draft");
+  expect(screen.getByText(`Shows ${REVIEW_QUERY} is:draft`)).toBeInTheDocument();
+  fireEvent.change(screen.getByRole("combobox", { name: "Parent" }), { target: { value: "mine" } });
+  expect(screen.getByText(`Shows ${MINE_QUERY} is:draft`)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+  openMenu("Web platform");
+  fireEvent.click(screen.getByRole("menuitem", { name: "Edit filters" }));
+  expect(screen.getByRole("combobox", { name: "Parent" })).toHaveValue("to_review");
+  expect(screen.getByText(`Shows ${REVIEW_QUERY} team-review-requested:acme/web-platform`)).toBeInTheDocument();
 });
