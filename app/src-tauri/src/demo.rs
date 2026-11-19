@@ -379,6 +379,9 @@ impl DemoProvider {
             },
             auto_merge: None,
             merge_queue: None,
+            updated_at: pr.updated_at.to_rfc3339(),
+            unresolved_threads: pr.unresolved_threads,
+            total_threads: pr.total_threads,
             fetched_at: Utc::now().to_rfc3339(),
         }
     }

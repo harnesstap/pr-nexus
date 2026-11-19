@@ -63,13 +63,13 @@ const OVERVIEW: &str = r#"{"data":{
     "mergeCommitAllowed":false,
     "rebaseMergeAllowed":true,
     "pullRequest":{
-      "state":"OPEN","isDraft":false,"baseRefName":"main","headRefName":"latch",
+      "state":"OPEN","updatedAt":"2026-10-26T12:00:00Z","isDraft":false,"baseRefName":"main","headRefName":"latch",
       "headRefOid":"h1","baseRefOid":"b1","headRepositoryOwner":{"login":"alice"},
       "mergeable":"MERGEABLE","mergeStateStatus":"BLOCKED","reviewDecision":"REVIEW_REQUIRED",
       "viewerCanMergeAsAdmin":false,"viewerCanEnableAutoMerge":true,"viewerCanDisableAutoMerge":false,"viewerCanClose":true,
       "autoMergeRequest":null,
       "comments":{"totalCount":3},
-      "reviewThreads":{"nodes":[{"comments":{"totalCount":2}},{"comments":{"totalCount":1}}]},
+      "reviewThreads":{"totalCount":2,"nodes":[{"isResolved":false,"comments":{"totalCount":2}},{"isResolved":true,"comments":{"totalCount":1}}]},
       "author":{"__typename":"User","login":"alice","name":"Alice","avatarUrl":"https://example.test/a"},
       "assignees":{"nodes":[
         {"login":"bob","name":"","avatarUrl":"https://example.test/b"}
@@ -199,6 +199,11 @@ fn overview_reads_checks_comments_people_and_merge_rights() {
     assert_eq!(overview.merge_state, "blocked");
     assert_eq!(overview.mergeable, "mergeable");
     assert_eq!(overview.review_decision.as_deref(), Some("review_required"));
+    assert_eq!(overview.updated_at, "2026-10-26T12:00:00Z");
+    assert_eq!(
+        (overview.unresolved_threads, overview.total_threads),
+        (1, 2)
+    );
     assert_eq!((overview.issue_comments, overview.review_comments), (3, 3));
     assert_eq!(overview.checks_total, 3);
     let states: Vec<_> = overview.checks.iter().map(|check| check.state).collect();

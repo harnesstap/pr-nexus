@@ -117,6 +117,8 @@ interface Props {
   onCreateProjectWithPrs: (name: string, prIds: number[]) => Promise<void>;
   /** The current view's selection, for the sidebar's "Add N selected PRs". */
   onSelectionChange?: (prIds: number[]) => void;
+  /** Loaded rows in on-screen order, so a sync can read them first. */
+  onShownIds?: (prIds: number[]) => void;
   /** Opens the detail panel for one row. */
   onDetails: (row: ListRow) => void;
   /** The PR the detail panel shows; moving the focus then switches it. */
@@ -239,6 +241,7 @@ export function PrList({
   onLinkPrs,
   onCreateProjectWithPrs,
   onSelectionChange,
+  onShownIds,
   onDetails,
   detailId = null,
   onRequestReview,
@@ -356,6 +359,26 @@ export function PrList({
   );
   const currentProject = projectIdOf(viewKey);
   const flat = useMemo(() => sections.flatMap((section) => section.rows.map((row) => ({ section, row }))), [sections]);
+  const shownIds = useMemo(() => {
+    const ids: number[] = [];
+    const seen = new Set<number>();
+    for (const item of flat) {
+      if (seen.has(item.row.id)) {
+        continue;
+      }
+      seen.add(item.row.id);
+      ids.push(item.row.id);
+    }
+    return ids;
+  }, [flat]);
+  const shownKey = shownIds.join(",");
+  const onShownIdsRef = useRef(onShownIds);
+  useEffect(() => {
+    onShownIdsRef.current = onShownIds;
+  }, [onShownIds]);
+  useEffect(() => {
+    onShownIdsRef.current?.(shownIds);
+  }, [shownKey, shownIds]);
   const indexOf = useMemo(() => {
     const map = new Map<string, number>();
     flat.forEach((item, index) => {

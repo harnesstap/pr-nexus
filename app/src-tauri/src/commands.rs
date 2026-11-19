@@ -903,10 +903,16 @@ pub async fn finish_onboarding(
 }
 
 #[tauri::command]
-pub async fn sync_now(app: State<'_, std::sync::Arc<AppState>>) -> Result<SyncDto, AppError> {
+pub async fn sync_now(
+    app: State<'_, std::sync::Arc<AppState>>,
+    hint: Option<state::SyncHintInput>,
+) -> Result<SyncDto, AppError> {
     let app = blocking::Handle::new(&app);
     blocking::run(move || {
         let state = app.inner().as_ref();
+        if let Some(hint) = hint.as_ref() {
+            state::note_sync_hint(state, hint);
+        }
         let _ = state::run_sync(state, SyncKind::Manual);
         Ok(sync_dto(state))
     })
@@ -917,14 +923,34 @@ pub async fn sync_now(app: State<'_, std::sync::Arc<AppState>>) -> Result<SyncDt
 /// incremental sync is already running this waits for it, then runs the
 /// full one.
 #[tauri::command]
-pub async fn full_resync(app: State<'_, std::sync::Arc<AppState>>) -> Result<SyncDto, AppError> {
+pub async fn full_resync(
+    app: State<'_, std::sync::Arc<AppState>>,
+    hint: Option<state::SyncHintInput>,
+) -> Result<SyncDto, AppError> {
     let app = blocking::Handle::new(&app);
     blocking::run(move || {
         let state = app.inner().as_ref();
+        if let Some(hint) = hint.as_ref() {
+            state::note_sync_hint(state, hint);
+        }
         if let Ok(None) = state::run_sync(state, SyncKind::Full) {
             let _ = state::run_sync(state, SyncKind::Full);
         }
         Ok(sync_dto(state))
+    })
+    .await
+}
+
+/// Remembers the view on screen so a scheduled sync starts with those pull requests.
+#[tauri::command]
+pub async fn set_sync_hint(
+    app: State<'_, std::sync::Arc<AppState>>,
+    hint: state::SyncHintInput,
+) -> Result<(), AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        state::note_sync_hint(app.inner().as_ref(), &hint);
+        Ok(())
     })
     .await
 }
@@ -1547,6 +1573,7 @@ pub async fn pr_overview(
         let overview = with_vcs(state, |provider| {
             overview::refresh(&state.store, provider, &pr)
         })?;
+        state::note_list_changed(state);
         Ok(Some(present_overview(state, overview)?))
     })
     .await
@@ -1574,6 +1601,7 @@ pub async fn set_auto_merge(
         let overview = with_vcs(state, |provider| {
             overview::set_auto_merge(&state.store, provider, &pr, method)
         })?;
+        state::note_list_changed(state);
         present_overview(state, overview)
     })
     .await
@@ -1593,9 +1621,11 @@ pub async fn close_pull_requests(
     let app = blocking::Handle::new(&app);
     blocking::run(move || {
         let state = app.inner().as_ref();
-        with_vcs(state, |provider| {
+        let reports = with_vcs(state, |provider| {
             pr_nexus_core::close::close_pull_requests(&state.store, provider, &ids, &comment)
-        })
+        })?;
+        state::note_list_changed(state);
+        Ok(reports)
     })
     .await
 }
@@ -1611,9 +1641,11 @@ pub async fn enqueue_pull_request(
     blocking::run(move || {
         let state = app.inner().as_ref();
         let pr = stored_pr(state, PrId(id))?;
-        with_vcs(state, |provider| {
+        let overview = with_vcs(state, |provider| {
             pr_nexus_core::merge_queue::enqueue(&state.store, provider, &pr)
-        })
+        })?;
+        state::note_list_changed(state);
+        Ok(overview)
     })
     .await
 }
@@ -1629,9 +1661,11 @@ pub async fn dequeue_pull_request(
     blocking::run(move || {
         let state = app.inner().as_ref();
         let pr = stored_pr(state, PrId(id))?;
-        with_vcs(state, |provider| {
+        let overview = with_vcs(state, |provider| {
             pr_nexus_core::merge_queue::dequeue(&state.store, provider, &pr)
-        })
+        })?;
+        state::note_list_changed(state);
+        Ok(overview)
     })
     .await
 }
@@ -1648,9 +1682,11 @@ pub async fn enqueue_pull_requests(
     let app = blocking::Handle::new(&app);
     blocking::run(move || {
         let state = app.inner().as_ref();
-        with_vcs(state, |provider| {
+        let reports = with_vcs(state, |provider| {
             pr_nexus_core::merge_queue::enqueue_pull_requests(&state.store, provider, &ids)
-        })
+        })?;
+        state::note_list_changed(state);
+        Ok(reports)
     })
     .await
 }
@@ -1672,6 +1708,7 @@ pub async fn merge_pr(
         let overview = with_vcs(state, |provider| {
             overview::merge(&state.store, provider, &pr, method)
         })?;
+        state::note_list_changed(state);
         present_overview(state, overview)
     })
     .await
@@ -1728,6 +1765,7 @@ pub async fn set_pr_draft(
         })?;
         // The next Slack preview must recompute readiness from the updated row.
         crate::slack::lock(&state.owners).remove(&id);
+        state::note_list_changed(state);
         present_overview(state, overview)
     })
     .await

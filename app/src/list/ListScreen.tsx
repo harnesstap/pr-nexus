@@ -192,6 +192,24 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
   const view = views[viewKey] ?? fallbackView.current;
   const sidebarView = catalog.find((item) => item.key === viewKey) ?? null;
   const sidebarQuery = sidebarView?.query ?? "";
+  const shownIds = useRef<number[]>([]);
+  const publishHint = useCallback(
+    (ids: number[]) => {
+      void api.setSyncHint?.({ view_key: viewKey, query: sidebarQuery, pr_ids: ids });
+    },
+    [api, viewKey, sidebarQuery],
+  );
+  useEffect(() => {
+    shownIds.current = [];
+    publishHint([]);
+  }, [publishHint]);
+  const onShownIds = useCallback(
+    (ids: number[]) => {
+      shownIds.current = ids;
+      publishHint(ids);
+    },
+    [publishHint],
+  );
   const ruleInfo = analyzeViewRule(sidebarQuery);
   const toolbarGithub = githubQueryOf(view.filters);
   // A toolbar qualifier replaces membership, as it did before view rules.
@@ -809,7 +827,8 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
     setError(null);
     setSync({ ...sync, phase: "syncing", message: "Syncing…" });
     try {
-      const status = await (full ? api.fullResync() : api.syncNow());
+      const hint = { view_key: viewKey, query: sidebarQuery, pr_ids: shownIds.current };
+      const status = await (full ? api.fullResync(hint) : api.syncNow(hint));
       setSync(status);
       await reload();
       onBoot(await api.bootstrap());
@@ -1264,6 +1283,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
                 onLinkPrs={(projectId, ids) => void linkPrs(projectId, ids)}
                 onCreateProjectWithPrs={createProjectWithPrs}
                 onSelectionChange={setSelection}
+                onShownIds={onShownIds}
                 detailId={detailRow?.id ?? null}
                 onDetails={openDetail}
                 onMarkRead={(ids) => void markRead(ids, "Marked as read")}

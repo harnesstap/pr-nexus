@@ -1418,6 +1418,88 @@ test("Reset filters in the empty state clears a menu filter", async () => {
   expect(screen.queryByText(/match your filters/)).not.toBeInTheDocument();
 });
 
+test("a stored detail refresh re-renders the row with the new review and checks", async () => {
+  const prior = globalThis.ResizeObserver;
+  class SilentObserver {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  globalThis.ResizeObserver = SilentObserver as unknown as typeof ResizeObserver;
+  const stale = row({
+    id: 1,
+    number: 42,
+    title: "Latch the cache",
+    checks: "failure",
+    review_decision: "review_required",
+    pending_reviewers: [{ kind: "user", login: "sam", name: "Sam", avatar_url: null }],
+    conflicts: true,
+    created_at: "2026-10-23T15:00:00Z",
+  });
+  const fresh = row({
+    id: 1,
+    number: 42,
+    title: "Latch the cache",
+    checks: "success",
+    review_decision: "approved",
+    pending_reviewers: [],
+    conflicts: false,
+    created_at: "2026-10-23T15:00:00Z",
+  });
+  const rowsRef = { current: [stale] };
+  function DetailHarness({ version }: { version: number }) {
+    const [view, setView] = useState(defaultView());
+    const loadPage = useCallback(
+      (request: PageRequest) => Promise.resolve(pageFromRows(rowsRef.current, [auth], request)),
+      [],
+    );
+    return (
+      <PrList
+        loadPage={loadPage}
+        version={version}
+        projects={[auth]}
+        viewKey="mine"
+        view={view}
+        onViewChange={setView}
+        onShowView={() => undefined}
+        now={now}
+        onOpen={() => undefined}
+        onRename={() => Promise.resolve()}
+        onArchive={() => undefined}
+        onDelete={() => undefined}
+        onEditProject={() => undefined}
+        onLinkPrs={() => undefined}
+        onCreateProjectWithPrs={() => Promise.resolve()}
+        onDetails={() => undefined}
+        onRequestReview={() => undefined}
+        onBulkReview={() => undefined}
+      />
+    );
+  }
+  try {
+    prRowRenderCountRef.current = 0;
+    const shown = await show(<DetailHarness version={0} />);
+    expect(screen.getByText("Latch the cache")).toBeInTheDocument();
+    expect(screen.getByText(/Waiting/)).toBeInTheDocument();
+    expect(screen.getByText("Failing")).toBeInTheDocument();
+    const rendered = prRowRenderCountRef.current;
+    expect(rendered).toBeGreaterThan(0);
+    rowsRef.current = [fresh];
+    shown.rerender(<DetailHarness version={1} />);
+    await settle();
+    expect(prRowRenderCountRef.current).toBeGreaterThan(rendered);
+    expect(screen.queryByText(/Waiting/)).not.toBeInTheDocument();
+    expect(screen.getByText("Passing")).toBeInTheDocument();
+    expect(screen.queryByText("Failing")).not.toBeInTheDocument();
+  } finally {
+    if (prior) {
+      globalThis.ResizeObserver = prior;
+    } else {
+      Reflect.deleteProperty(globalThis, "ResizeObserver");
+    }
+  }
+});
+
 test("the search field suggests qualifiers and inserts the chosen one", async () => {
   await show(<Harness rows={rows} />);
   const input = screen.getByRole("textbox", { name: "Search" }) as HTMLInputElement;
