@@ -548,6 +548,7 @@ mod tests {
             mergeable: Mergeable::Mergeable,
             merge_state: MergeStateStatus::Clean,
             requested_reviewers: Vec::new(),
+            assignees: Vec::new(),
             unresolved_threads: 1,
             total_threads: 2,
             involvement: Involvement::AUTHOR | Involvement::REVIEW_REQUESTED,

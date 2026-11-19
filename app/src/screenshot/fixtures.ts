@@ -69,6 +69,8 @@ const people: Record<string, PendingReviewer> = {
   noor: { kind: "user", login: "noor", name: "Noor Haddad", avatar_url: avatar("NH", 140) },
   theo: { kind: "user", login: "theo", name: "Theo Martin", avatar_url: avatar("TM", 30) },
   web: { kind: "team", login: "acme/web", name: "Web", avatar_url: null },
+  platform: { kind: "team", login: "acme/web-platform", name: "Web platform", avatar_url: null },
+  payments: { kind: "team", login: "acme/payments", name: "Payments", avatar_url: null },
   identity: { kind: "team", login: "acme/identity", name: "Identity", avatar_url: null },
   mobile: { kind: "team", login: "acme/mobile", name: "Mobile", avatar_url: null },
 };
@@ -96,6 +98,7 @@ function row(partial: Partial<SearchRow> & Pick<SearchRow, "id" | "number" | "ti
     readiness_notes: [],
     conflicts: false,
     pending_reviewers: [],
+    assignees: [],
     slack: null,
     starred: false,
     unread: false,
@@ -120,7 +123,9 @@ export const rows: SearchRow[] = [
   }),
   row({
     id: 2,
-    pending_reviewers: asked("kim", "sam", "web"),
+    pending_reviewers: asked("kim", "sam", "web", "platform"),
+    assignees: [{ login: "ada", name: "Ada" }],
+    involvement: 3,
     number: 479,
     title: "Add address autocomplete to checkout",
     repo: "acme/storefront",
@@ -145,6 +150,9 @@ export const rows: SearchRow[] = [
   row({
     id: 5,
     number: 77,
+    pending_reviewers: asked("payments"),
+    assignees: [{ login: "sam", name: "Sam" }],
+    involvement: 3,
     title: "Register passkeys from account settings",
     repo: "acme/auth-service",
     project_ids: [2],

@@ -63,6 +63,12 @@ export interface RemoteReviewFilter {
   draft: boolean | null;
   review: "approved" | "changes_requested" | "required" | null;
   ci: "success" | "failure" | "pending" | null;
+  /** Pending reviewer teams, `org/slug`. */
+  teams: string[];
+  /** Assignee logins, including `@me`. */
+  assignees: string[];
+  /** `no:assignee`. With assignees set, the remote query sends neither. */
+  unassigned: boolean;
 }
 
 /** A GitHub pull-request query. `ok` is false when the sentence in `message` explains why it did not run. */
@@ -593,6 +599,8 @@ export interface ListRow {
   reviewers_requested: boolean;
   /** Who still has to review: users first, then teams, each by login. */
   pending_reviewers: PendingReviewer[];
+  /** Users assigned on GitHub. Absent on older payloads. */
+  assignees?: { login: string; name: string }[];
   slack: {
     requested_at: string;
     last_bumped_at: string | null;

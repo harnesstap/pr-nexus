@@ -31,6 +31,7 @@ const QUALIFIERS: readonly { key: string; hint: string; values?: readonly string
   { key: "archived", hint: "true or false", values: ["true", "false"] },
   { key: "author", hint: "login or @me", values: ["@me"] },
   { key: "review-requested", hint: "login or @me", values: ["@me"] },
+  { key: "team-review-requested", hint: "org/team" },
   { key: "assignee", hint: "login or @me", values: ["@me"] },
   { key: "involves", hint: "login or @me", values: ["@me"] },
   { key: "reviewed-by", hint: "login or @me", values: ["@me"] },
@@ -65,9 +66,81 @@ export function searchFieldValue(filters: { search: string; github: string }): s
   return filters.search !== "" ? filters.search : filters.github;
 }
 
-/** Qualifier tokens from the search field. Empty means the usual list, with no GitHub search. */
+/**
+ * Qualifiers that replace view membership. Menu-owned tokens (`org:`,
+ * `is:draft`, `review:`, `status:`, `team-review-requested:`, `assignee:`,
+ * `no:assignee`) are applied as filters instead, so they do not replace
+ * Mine or To review.
+ */
 export function githubQueryOf(filters: { search: string; github: string }): string {
-  return splitSearch(searchFieldValue(filters)).github.trim();
+  return membershipQuery(searchFieldValue(filters)).trim();
+}
+
+/** Qualifier tokens from the field, minus the ones the filter menu owns. */
+export function membershipQuery(raw: string): string {
+  return scanTokens(raw)
+    .filter((token) => isQualifier(token.text) && !isPopoverQualifier(token.text))
+    .map((token) => token.text)
+    .join(" ");
+}
+
+export interface ScannedQualifier {
+  start: number;
+  end: number;
+  text: string;
+  negated: boolean;
+  key: string;
+  value: string;
+}
+
+/** Qualifier tokens with their place in the field. Free text is left out. */
+export function scannedQualifiers(raw: string): ScannedQualifier[] {
+  const out: ScannedQualifier[] = [];
+  for (const token of scanTokens(raw)) {
+    if (!isQualifier(token.text)) {
+      continue;
+    }
+    const negated = token.text.startsWith("-") && token.text.length > 1;
+    const body = negated ? token.text.slice(1) : token.text;
+    const colon = colonOutsideQuotes(body);
+    if (colon === null) {
+      continue;
+    }
+    out.push({
+      start: token.start,
+      end: token.end,
+      text: token.text,
+      negated,
+      key: body.slice(0, colon).toLowerCase(),
+      value: body.slice(colon + 1),
+    });
+  }
+  return out;
+}
+
+/** A positive menu qualifier. Negated tokens stay in the membership query. */
+export function isPopoverQualifier(text: string): boolean {
+  const parsed = scannedQualifiers(text)[0];
+  if (!parsed || parsed.negated || parsed.text !== text || parsed.value === "") {
+    return false;
+  }
+  const value = parsed.value.toLowerCase();
+  switch (parsed.key) {
+    case "org":
+    case "team-review-requested":
+    case "assignee":
+      return true;
+    case "is":
+      return value === "draft";
+    case "review":
+      return value === "approved" || value === "changes_requested" || value === "required" || value === "none";
+    case "status":
+      return value === "success" || value === "failure" || value === "pending";
+    case "no":
+      return value === "assignee";
+    default:
+      return false;
+  }
 }
 
 /** A non-negated `sort:` qualifier. Other qualifiers leave the menu's Sort in charge. */
@@ -99,7 +172,7 @@ export function splitSearch(raw: string): SplitSearch {
 }
 
 /** Completions for the token under the caret. Empty when the token is not the start of a qualifier. */
-export function suggestionsFor(token: string): Suggestion[] {
+export function suggestionsFor(token: string, extra?: { teams?: readonly string[]; assignees?: readonly string[] }): Suggestion[] {
   const negated = token.startsWith("-") && token.length > 1 && !/\s/u.test(token.slice(1, 2));
   const body = negated ? token.slice(1) : token;
   const sign = negated ? "-" : "";
@@ -116,17 +189,30 @@ export function suggestionsFor(token: string): Suggestion[] {
   const key = body.slice(0, colon).toLowerCase();
   const typed = body.slice(colon + 1);
   const item = QUALIFIERS.find((entry) => entry.key === key);
-  if (!item?.values) {
+  const values = valueChoices(key, item?.values ?? [], extra);
+  if (values.length === 0) {
     return [];
   }
-  return item.values
+  return values
     .filter((value) => value.toLowerCase().startsWith(typed.toLowerCase()) && value.toLowerCase() !== typed.toLowerCase())
     .slice(0, 6)
     .map((value) => ({
-      insert: `${sign}${item.key}:${value} `,
-      label: `${sign}${item.key}:${value}`,
+      insert: `${sign}${key}:${value} `,
+      label: `${sign}${key}:${value}`,
       hint: "",
     }));
+}
+
+function valueChoices(key: string, values: readonly string[], extra: { teams?: readonly string[]; assignees?: readonly string[] } | undefined): string[] {
+  const more = key === "team-review-requested" ? (extra?.teams ?? []) : key === "assignee" ? (extra?.assignees ?? []) : [];
+  const out = [...values];
+  for (const value of more) {
+    const trimmed = value.trim();
+    if (trimmed !== "" && !out.some((item) => item.toLowerCase() === trimmed.toLowerCase())) {
+      out.push(trimmed);
+    }
+  }
+  return out;
 }
 
 /** The token containing `caret`, or null when the caret sits on whitespace. */

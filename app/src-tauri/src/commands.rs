@@ -252,11 +252,22 @@ pub struct ListRow {
     pub reviewers_requested: bool,
     /// Who still has to review, in display order (see [`pending_reviewers`]).
     pub pending_reviewers: Vec<PendingReviewerDto>,
+    /// Users assigned on GitHub. Empty until a sync that asked for them.
+    #[serde(default)]
+    pub assignees: Vec<AssigneeDto>,
     pub slack: Option<SlackIndicator>,
     /// Bot comments and reviews seen the last time this pull request's
     /// detail was loaded. `0` until then: the list sync does not fetch them.
     #[serde(default)]
     pub bot_comments: u32,
+}
+
+/// A user assigned to the pull request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AssigneeDto {
+    pub login: String,
+    /// Display name, or empty when GitHub did not return one.
+    pub name: String,
 }
 
 /// One pending review request as the list row shows it.
@@ -1961,6 +1972,14 @@ fn to_item(
             merge_queue: facts.merge_queues.get(&pr.id).cloned(),
             reviewers_requested: !pr.requested_reviewers.is_empty(),
             pending_reviewers: pending_reviewers(&pr.requested_reviewers),
+            assignees: pr
+                .assignees
+                .iter()
+                .map(|person| AssigneeDto {
+                    login: person.login.clone(),
+                    name: person.name.clone().unwrap_or_default(),
+                })
+                .collect(),
             slack: request.map(|request| indicator(request, workspaces)),
             bot_comments: 0,
         },
@@ -2091,6 +2110,7 @@ mod tests {
             tz_offset_minutes: 0,
             view_rule: String::new(),
             due_ids: Vec::new(),
+            viewer_login: String::new(),
         }
     }
 

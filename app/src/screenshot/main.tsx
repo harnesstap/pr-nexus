@@ -136,6 +136,10 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     return { ...boot, slack_client_id: "111.222", slack_workspaces: sceneWorkspaces() };
   },
   sync_status: () => boot.sync,
+  activate_reviews: () => boot.sync,
+  load_more_reviews: () => boot.sync,
+  search_reviews: () => boot.sync,
+  filter_reviews: () => boot.sync,
   list_projects: () => projects,
   list_page: (args) => pageFromRows(rows, projects, args.request as PageRequest),
   load_view_state: () => {

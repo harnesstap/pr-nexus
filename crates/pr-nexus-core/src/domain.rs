@@ -326,6 +326,13 @@ pub struct RequestedReviewer {
     pub avatar_url: Option<String>,
 }
 
+/// A user assigned to a pull request. GitHub assignees are users, never teams.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Assignee {
+    pub login: String,
+    pub name: Option<String>,
+}
+
 impl RequestedReviewer {
     /// A request with no name or avatar (tests, older rows).
     pub fn bare(reviewer: Reviewer) -> Self {
@@ -362,6 +369,9 @@ pub struct PullRequest {
     pub mergeable: Mergeable,
     pub merge_state: MergeStateStatus,
     pub requested_reviewers: Vec<RequestedReviewer>,
+    /// Users assigned on GitHub. Empty from a document that did not ask
+    /// (issue search) is kept by the search merge; a list sync replaces it.
+    pub assignees: Vec<Assignee>,
     pub unresolved_threads: u32,
     pub total_threads: u32,
     pub involvement: Involvement,

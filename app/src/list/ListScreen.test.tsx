@@ -478,10 +478,18 @@ test("To review filters with a GitHub qualifier search GitHub, debounced, with t
   render(<ListScreen api={{ ...fake, loadViewState, activateReviews, filterReviews, loadMoreReviews }} boot={boot} onBoot={() => {}} />);
   fireEvent.click(await screen.findByRole("button", { name: /To review/ }));
   await waitFor(() => expect(filterReviews).toHaveBeenCalledTimes(1), { timeout: 3_000 });
-  expect(filterReviews).toHaveBeenCalledWith({ orgs: [], repos: [], draft: null, review: null, ci: "failure" }, false);
+  expect(filterReviews).toHaveBeenCalledWith(
+    { orgs: [], repos: [], draft: null, review: null, ci: "failure", teams: [], assignees: [], unassigned: false },
+    false,
+  );
   expect(await screen.findByText(/40 of 57 loaded/)).toBeInTheDocument();
   fireEvent.click(await screen.findByRole("button", { name: "Load more review requests" }));
-  await waitFor(() => expect(filterReviews).toHaveBeenLastCalledWith({ orgs: [], repos: [], draft: null, review: null, ci: "failure" }, true));
+  await waitFor(() =>
+    expect(filterReviews).toHaveBeenLastCalledWith(
+      { orgs: [], repos: [], draft: null, review: null, ci: "failure", teams: [], assignees: [], unassigned: false },
+      true,
+    ),
+  );
   expect(loadMoreReviews).not.toHaveBeenCalled();
 });
 

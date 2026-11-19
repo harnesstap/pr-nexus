@@ -23,6 +23,8 @@
 // when two selected drafts are CI-blocked and only one of those checks clears.
 // `--github-query <dir>` saves the GitHub query field (github-query-*.png):
 // matching rows, a rejected query, and the same list at 720px.
+// `--people-filters <dir>` saves the reviewer-team and assignee menus, then
+// the list after those menus write qualifiers into the search field.
 // `--update <dir>` saves the sidebar's update indicator (update-*.png): none,
 // the icon for a newer release, and its popover for a release and a dev build.
 // `--merge-queue <dir>` saves the merge queue preview (merge-queue-*.png):
@@ -99,6 +101,11 @@ const githubQueryFlag = process.argv.indexOf("--github-query");
 const githubQueryDir = githubQueryFlag === -1 ? null : process.argv[githubQueryFlag + 1];
 if (githubQueryFlag !== -1 && !githubQueryDir) {
   throw new Error("--github-query needs an output directory");
+}
+const peopleFiltersFlag = process.argv.indexOf("--people-filters");
+const peopleFiltersDir = peopleFiltersFlag === -1 ? null : process.argv[peopleFiltersFlag + 1];
+if (peopleFiltersFlag !== -1 && !peopleFiltersDir) {
+  throw new Error("--people-filters needs an output directory");
 }
 const filterBarFlag = process.argv.indexOf("--filter-bar");
 const filterBarDir = filterBarFlag === -1 ? null : process.argv[filterBarFlag + 1];
@@ -423,6 +430,42 @@ async function githubQueryShots(browser, dir) {
   await shoot("results", "github-query-narrow.png", 720);
 }
 
+/** Reviewer team and assignee filters, and the qualifiers they write into the field. */
+async function peopleFilterShots(browser, dir) {
+  mkdirSync(dir, { recursive: true });
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2, colorScheme: "dark" });
+  page.on("pageerror", (err) => console.error("page error:", err.message));
+  await page.goto(url);
+  await page.getByRole("button", { name: /To review/ }).click();
+  await page.getByRole("button", { name: "Filter menu" }).click();
+  await page.getByRole("button", { name: /^Reviewer team/ }).click();
+  await page.getByRole("checkbox", { name: /acme\/web-platform/ }).waitFor();
+  await page.mouse.move(8, 8);
+  await page.screenshot({ path: resolve(dir, "filters-team-menu.png") });
+  await page.getByRole("button", { name: /^Assignee/ }).click();
+  await page.getByRole("checkbox", { name: /^Me \(/ }).waitFor();
+  await page.mouse.move(8, 8);
+  await page.screenshot({ path: resolve(dir, "filters-assignee-menu.png") });
+  await page.getByRole("button", { name: /^Reviewer team/ }).click();
+  await page.getByRole("checkbox", { name: /acme\/web-platform/ }).click();
+  await page.getByRole("button", { name: /^Assignee/ }).click();
+  await page.getByRole("checkbox", { name: /^Me \(/ }).click();
+  await page.keyboard.press("Escape");
+  await page.getByRole("textbox", { name: "Search" }).waitFor();
+  await page.waitForFunction(() => {
+    const field = globalThis.document.querySelector('[aria-label="Search"]');
+    return (
+      field instanceof globalThis.HTMLInputElement &&
+      field.value.includes("team-review-requested:acme/web-platform") &&
+      field.value.includes("assignee:@me")
+    );
+  });
+  await page.getByRole("article", { name: /Add address autocomplete/ }).waitFor();
+  await page.screenshot({ path: resolve(dir, "filters-team-list.png") });
+  console.log("wrote people filter shots");
+  await page.close();
+}
+
 /** The one search field, with the filter menu open on Sort. */
 async function filterBarShots(browser, dir) {
   mkdirSync(dir, { recursive: true });
@@ -559,6 +602,12 @@ try {
   }
   if (githubQueryDir) {
     await githubQueryShots(browser, resolve(githubQueryDir));
+    await browser.close();
+    await vite.close();
+    process.exit(0);
+  }
+  if (peopleFiltersDir) {
+    await peopleFilterShots(browser, resolve(peopleFiltersDir));
     await browser.close();
     await vite.close();
     process.exit(0);

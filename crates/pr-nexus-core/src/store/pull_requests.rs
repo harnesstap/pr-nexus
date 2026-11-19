@@ -1,11 +1,11 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::domain::{
-    AccountId, Involvement, PR_BODY_MAX_BYTES, PrId, PrState, ProviderRef, PullRequest, RepoRef,
-    Repository, RequestedReviewer, Reviewer, TeamRef,
+    AccountId, Assignee, Involvement, PR_BODY_MAX_BYTES, PrId, PrState, ProviderRef, PullRequest,
+    RepoRef, Repository, RequestedReviewer, Reviewer, TeamRef,
 };
 use crate::error::CoreError;
 use crate::search;
@@ -540,6 +540,20 @@ fn upsert_pull_request(
         .map_err(db)?;
     }
 
+    conn.execute("DELETE FROM pr_assignees WHERE pr_id = ?1", [id])
+        .map_err(db)?;
+    let mut seen_assignees = HashSet::new();
+    for person in &pr.assignees {
+        if !seen_assignees.insert(person.login.to_ascii_lowercase()) {
+            continue;
+        }
+        conn.execute(
+            "INSERT INTO pr_assignees (pr_id, login, name) VALUES (?1, ?2, ?3)",
+            params![id, person.login, person.name],
+        )
+        .map_err(db)?;
+    }
+
     let saved = load_pull_request(conn, PrId(id))?
         .ok_or_else(|| CoreError::Store("upserted pull request disappeared".to_owned()))?;
     // A real reopen clears the close note, so the next close can comment again.
@@ -622,6 +636,27 @@ fn list_for_account(
         let (pr_id, reviewer) = row.map_err(db)?;
         if let Some(&position) = index.get(&pr_id) {
             prs[position].requested_reviewers.push(reviewer);
+        }
+    }
+
+    let mut assignees = conn
+        .prepare(
+            "SELECT g.pr_id, g.login, g.name
+             FROM pr_assignees g
+             JOIN pull_requests pr ON pr.id = g.pr_id
+             JOIN repositories r ON r.id = pr.repo_id
+             WHERE r.account_id = ?1 ORDER BY g.rowid",
+        )
+        .map_err(db)?;
+    let rows = assignees
+        .query_map([account_id.0], |row| {
+            Ok((row.get::<_, i64>("pr_id")?, map_assignee(row)?))
+        })
+        .map_err(db)?;
+    for row in rows {
+        let (pr_id, person) = row.map_err(db)?;
+        if let Some(&position) = index.get(&pr_id) {
+            prs[position].assignees.push(person);
         }
     }
     Ok(prs)
@@ -710,6 +745,15 @@ fn load_pull_request(conn: &Connection, id: PrId) -> Result<Option<PullRequest>,
         .map_err(db)?;
     pr.requested_reviewers = reviewers
         .query_map([id.0], map_reviewer)
+        .map_err(db)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(db)?;
+
+    let mut assignees = conn
+        .prepare("SELECT login, name FROM pr_assignees WHERE pr_id = ?1 ORDER BY rowid")
+        .map_err(db)?;
+    pr.assignees = assignees
+        .query_map([id.0], map_assignee)
         .map_err(db)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(db)?;
@@ -826,6 +870,7 @@ fn map_pull_request_at(row: &rusqlite::Row<'_>, cols: &PrColumns) -> rusqlite::R
         mergeable: parse_enum(row.get(cols.mergeable)?)?,
         merge_state: parse_enum(row.get(cols.merge_state)?)?,
         requested_reviewers: Vec::new(),
+        assignees: Vec::new(),
         unresolved_threads: row.get::<_, i64>(cols.unresolved_threads)? as u32,
         total_threads: row.get::<_, i64>(cols.total_threads)? as u32,
         involvement,
@@ -834,6 +879,13 @@ fn map_pull_request_at(row: &rusqlite::Row<'_>, cols: &PrColumns) -> rusqlite::R
         last_activity_at: ts_col(row.get(cols.last_activity_at)?)?,
         synced_at: ts_col(row.get(cols.synced_at)?)?,
         hidden: parse_bool(row.get(cols.hidden)?),
+    })
+}
+
+fn map_assignee(row: &rusqlite::Row<'_>) -> rusqlite::Result<Assignee> {
+    Ok(Assignee {
+        login: row.get("login")?,
+        name: row.get("name")?,
     })
 }
 

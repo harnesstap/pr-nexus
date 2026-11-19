@@ -108,15 +108,94 @@ pub fn analyze(raw: &str) -> Analyzed {
     }
 }
 
+/// Facts a fully local rule can see. Teams are `org/slug`. Assignees are logins.
+pub struct LocalFacts<'a> {
+    pub involvement: u8,
+    pub state: &'a str,
+    pub is_draft: bool,
+    pub due: bool,
+    pub teams: &'a [String],
+    pub assignees: &'a [String],
+    pub viewer: &'a str,
+}
+
 /// True when a fully local rule keeps this row. Non-local qualifiers are not
-/// expected here; an unknown one does not match.
+/// expected here; an unknown one does not match. Team and assignee facts are
+/// empty, so a rule that names them does not match.
 pub fn matches_local(involvement: u8, state: &str, is_draft: bool, due: bool, raw: &str) -> bool {
+    matches_facts(
+        &LocalFacts {
+            involvement,
+            state,
+            is_draft,
+            due,
+            teams: &[],
+            assignees: &[],
+            viewer: "",
+        },
+        raw,
+    )
+}
+
+/// Like [`matches_local`], with pending reviewer teams and assignees.
+/// Repeated `team-review-requested:` or `assignee:` values match if any one
+/// does. `no:assignee` joins that same group, so a rule with both keeps a row
+/// that is unassigned or assigned to one of the people.
+pub fn matches_facts(facts: &LocalFacts<'_>, raw: &str) -> bool {
     let Ok(tokens) = github_query::scan(raw) else {
         return false;
     };
-    tokens
+    let mut teams = Vec::new();
+    let mut people = Vec::new();
+    let mut unassigned = false;
+    let mut rest = Vec::new();
+    for token in tokens {
+        let key = token.key.as_deref();
+        if !token.negated && key == Some("team-review-requested") && !token.value.is_empty() {
+            teams.push(token);
+        } else if !token.negated && key == Some("assignee") && !token.value.is_empty() {
+            people.push(token);
+        } else if !token.negated
+            && key == Some("no")
+            && token.value.eq_ignore_ascii_case("assignee")
+        {
+            unassigned = true;
+        } else {
+            rest.push(token);
+        }
+    }
+    if !teams.is_empty() && !teams.iter().any(|token| team_matches(facts, &token.value)) {
+        return false;
+    }
+    if (!people.is_empty() || unassigned)
+        && !((unassigned && facts.assignees.is_empty())
+            || people
+                .iter()
+                .any(|token| assignee_matches(facts, &token.value)))
+    {
+        return false;
+    }
+    rest.iter().all(|token| match_token(token, facts, true))
+}
+
+fn team_matches(facts: &LocalFacts<'_>, value: &str) -> bool {
+    facts
+        .teams
         .iter()
-        .all(|token| match_token(token, involvement, state, is_draft, due, true))
+        .any(|team| team.eq_ignore_ascii_case(value))
+}
+
+fn assignee_matches(facts: &LocalFacts<'_>, value: &str) -> bool {
+    let login = if value.eq_ignore_ascii_case("@me") {
+        facts.viewer
+    } else {
+        value
+    };
+    !login.is_empty()
+        && facts
+            .assignees
+            .iter()
+            .any(|have| have.eq_ignore_ascii_case(login))
 }
 
 /// After a GitHub search, only `bump:` still narrows the rows. Other
@@ -129,7 +208,19 @@ pub fn matches_bump_only(due: bool, raw: &str) -> bool {
         if token.key.as_deref() != Some("bump") {
             return true;
         }
-        match_token(token, 0, "open", false, due, false)
+        match_token(
+            token,
+            &LocalFacts {
+                involvement: 0,
+                state: "open",
+                is_draft: false,
+                due,
+                teams: &[],
+                assignees: &[],
+                viewer: "",
+            },
+            false,
+        )
     })
 }
 
@@ -199,6 +290,12 @@ fn builtin(key: &str, name: &str, query: &str, sort_order: i32) -> SidebarView {
 }
 
 fn local_pair(key: &str, value: &str) -> bool {
+    if value.is_empty() {
+        return false;
+    }
+    if key == "team-review-requested" || key == "assignee" {
+        return true;
+    }
     let value = value.to_ascii_lowercase();
     matches!(
         (key, value.as_str()),
@@ -208,6 +305,7 @@ fn local_pair(key: &str, value: &str) -> bool {
             | ("state", "open" | "closed")
             | ("draft", "true" | "false")
             | ("bump", "due")
+            | ("no", "assignee")
     )
 }
 
@@ -225,30 +323,28 @@ fn finished_token(token: &Scanned) -> bool {
     )
 }
 
-fn match_token(
-    token: &Scanned,
-    involvement: u8,
-    state: &str,
-    is_draft: bool,
-    due: bool,
-    strict: bool,
-) -> bool {
+fn match_token(token: &Scanned, facts: &LocalFacts<'_>, strict: bool) -> bool {
     let Some(key) = token.key.as_deref() else {
         return true;
     };
     let value = token.value.to_ascii_lowercase();
-    let open = state.eq_ignore_ascii_case("open");
+    let open = facts.state.eq_ignore_ascii_case("open");
     let positive = match (key, value.as_str()) {
-        ("author", "@me") => involvement & AUTHOR != 0,
-        ("review-requested", "@me") => involvement & REVIEW_REQUESTED != 0,
+        ("author", "@me") => facts.involvement & AUTHOR != 0,
+        ("review-requested", "@me") => facts.involvement & REVIEW_REQUESTED != 0,
         ("is", "open") | ("state", "open") | ("is", "pr") => true,
-        ("is", "closed") => state.eq_ignore_ascii_case("closed"),
-        ("is", "merged") => state.eq_ignore_ascii_case("merged"),
+        ("is", "closed") => facts.state.eq_ignore_ascii_case("closed"),
+        ("is", "merged") => facts.state.eq_ignore_ascii_case("merged"),
         ("state", "closed") => !open,
-        ("is", "draft") | ("draft", "true") => is_draft,
-        ("draft", "false") => !is_draft,
-        ("bump", "due") => due,
+        ("is", "draft") | ("draft", "true") => facts.is_draft,
+        ("draft", "false") => !facts.is_draft,
+        ("bump", "due") => facts.due,
         ("bump", _) => false,
+        ("team-review-requested", _) if !token.value.is_empty() => {
+            team_matches(facts, &token.value)
+        }
+        ("assignee", _) if !token.value.is_empty() => assignee_matches(facts, &token.value),
+        ("no", "assignee") => facts.assignees.is_empty(),
         _ => !strict,
     };
     if token.negated && matches!((key, value.as_str()), ("is", "open") | ("state", "open")) {
@@ -623,5 +719,83 @@ mod tests {
                 .to_string()
                 .contains("quote")
         );
+    }
+
+    fn facts<'a>(teams: &'a [String], assignees: &'a [String], viewer: &'a str) -> LocalFacts<'a> {
+        LocalFacts {
+            involvement: REVIEW_REQUESTED,
+            state: "open",
+            is_draft: false,
+            due: false,
+            teams,
+            assignees,
+            viewer,
+        }
+    }
+
+    #[test]
+    fn team_and_assignee_rules_stay_local_and_match_any_of_each() {
+        let rule = "is:open team-review-requested:acme/web-platform team-review-requested:acme/payments assignee:@me no:assignee";
+        let analyzed = analyze(rule);
+        assert!(analyzed.fully_local);
+        assert!(analyzed.github.is_empty());
+        let web = "acme/web-platform".to_owned();
+        let pay = "acme/payments".to_owned();
+        let ada = "ada".to_owned();
+        let sam = "sam".to_owned();
+        assert!(matches_facts(
+            &facts(std::slice::from_ref(&web), &[], "ada"),
+            rule
+        ));
+        assert!(matches_facts(
+            &facts(
+                std::slice::from_ref(&pay),
+                std::slice::from_ref(&ada),
+                "ada"
+            ),
+            rule
+        ));
+        assert!(!matches_facts(
+            &facts(
+                std::slice::from_ref(&sam),
+                std::slice::from_ref(&sam),
+                "ada"
+            ),
+            rule
+        ));
+        let only_team = "is:open team-review-requested:acme/web-platform";
+        assert!(matches_facts(
+            &facts(
+                std::slice::from_ref(&web),
+                std::slice::from_ref(&sam),
+                "ada"
+            ),
+            only_team
+        ));
+        assert!(!matches_facts(
+            &facts(
+                std::slice::from_ref(&pay),
+                std::slice::from_ref(&ada),
+                "ada"
+            ),
+            only_team
+        ));
+        assert!(matches_facts(
+            &facts(&[], std::slice::from_ref(&ada), "ada"),
+            "assignee:@me"
+        ));
+        assert!(!matches_facts(
+            &facts(&[], std::slice::from_ref(&sam), "ada"),
+            "assignee:@me"
+        ));
+        assert!(matches_facts(&facts(&[], &[], "ada"), "no:assignee"));
+        assert!(!matches_facts(
+            &facts(&[], std::slice::from_ref(&ada), "ada"),
+            "no:assignee"
+        ));
+        assert!(!matches_facts(
+            &facts(&[web], &[], "ada"),
+            "-team-review-requested:acme/web-platform"
+        ));
     }
 }
