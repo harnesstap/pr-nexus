@@ -451,6 +451,7 @@ pub(crate) mod tests {
                     mergeable: Mergeable::Mergeable,
                     merge_state: MergeStateStatus::Clean,
                     requested_reviewers: vec![],
+                    assignees: Vec::new(),
                     unresolved_threads: 0,
                     total_threads: 0,
                     involvement: Involvement::AUTHOR,

@@ -29,6 +29,8 @@ test("free text alone is not a GitHub query", () => {
   expect(githubQueryOf({ search: "passkeys", github: "" })).toBe("");
   expect(githubQueryOf({ search: "", github: "author:me" })).toBe("author:me");
   expect(githubQueryOf({ search: "author:me passkeys", github: "author:me" })).toBe("author:me");
+  expect(githubQueryOf({ search: "is:draft review:approved author:ada", github: "" })).toBe("author:ada");
+  expect(githubQueryOf({ search: "-org:acme org:acme", github: "" })).toBe("-org:acme");
 });
 
 test("suggestions follow the qualifier being typed", () => {

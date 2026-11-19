@@ -272,9 +272,10 @@ fn save_hits(state: &AppState, hits: &[Held]) -> Result<Vec<i64>, AppError> {
     Ok(ids)
 }
 
-/// Keeps review status, labels, reviewers, and involvement when the search
-/// document does not carry them. State, title, and the other identity fields
-/// come from the search.
+/// Keeps review status, labels, reviewers, assignees, and involvement when the
+/// search document does not carry them. State, title, and the other identity
+/// fields come from the search. An empty assignee or reviewer list is "the
+/// document did not ask", so it keeps what is stored. A non-empty list replaces.
 fn merge_hit(existing: Option<PullRequest>, mut incoming: PullRequest) -> PullRequest {
     let Some(kept) = existing else {
         return incoming;
@@ -312,6 +313,9 @@ fn merge_hit(existing: Option<PullRequest>, mut incoming: PullRequest) -> PullRe
     }
     if incoming.requested_reviewers.is_empty() {
         incoming.requested_reviewers = kept.requested_reviewers;
+    }
+    if incoming.assignees.is_empty() {
+        incoming.assignees = kept.assignees;
     }
     incoming.hidden = kept.hidden;
     incoming
@@ -399,7 +403,8 @@ fn fail(message: &str) -> GithubQueryDto {
 mod tests {
     use chrono::TimeZone;
     use pr_nexus_core::domain::{
-        AccountKind, AuthMode, Involvement, PrId, PrState, ProviderRef, RepoRef, ReviewDecision,
+        AccountKind, Assignee, AuthMode, Involvement, PrId, PrState, ProviderRef, RepoRef,
+        ReviewDecision,
     };
 
     use super::*;
@@ -573,6 +578,10 @@ mod tests {
                     mergeable: Mergeable::Mergeable,
                     merge_state: MergeStateStatus::Clean,
                     requested_reviewers: Vec::new(),
+                    assignees: vec![Assignee {
+                        login: "ada".into(),
+                        name: Some("Ada".into()),
+                    }],
                     unresolved_threads: 2,
                     total_threads: 4,
                     involvement: Involvement::AUTHOR,
@@ -596,6 +605,18 @@ mod tests {
         assert_eq!(kept.labels, vec!["bug".to_owned()]);
         assert_eq!(kept.head_ref, "topic");
         assert_eq!(kept.unresolved_threads, 2);
+        assert_eq!(kept.assignees.len(), 1);
+        assert_eq!(kept.assignees[0].login, "ada");
+        let mut incoming = hit(&saved, "PR_node", PrState::Open, 7, "Reassigned")
+            .synced
+            .pull_request;
+        incoming.assignees = vec![Assignee {
+            login: "sam".into(),
+            name: None,
+        }];
+        let replaced = merge_hit(Some(kept), incoming);
+        assert_eq!(replaced.assignees.len(), 1);
+        assert_eq!(replaced.assignees[0].login, "sam");
         let repos = state.store.list_repositories(saved.id).unwrap();
         assert_eq!(repos.len(), 1);
         assert_eq!(repos[0].node_id.as_deref(), Some("R_widgets"));
@@ -642,6 +663,7 @@ mod tests {
                     mergeable: Mergeable::Unknown,
                     merge_state: MergeStateStatus::Unknown,
                     requested_reviewers: Vec::new(),
+                    assignees: Vec::new(),
                     unresolved_threads: 0,
                     total_threads: 0,
                     involvement: Involvement::empty(),

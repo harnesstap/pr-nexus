@@ -2,13 +2,14 @@ use chrono::{DateTime, Utc};
 use rusqlite::params;
 
 use crate::domain::{
-    Account, AccountId, AccountKind, AuthMode, ChatThreadCacheEntry, ChecksState, CloseReason,
-    DiscoveryOutcome, DiscoveryRun, Involvement, LinkSource, MappingLayer, MergeStateStatus,
-    Mergeable, OwnershipCacheEntry, PrId, PrProjectLink, PrState, Project, ProjectId, ProjectRule,
-    ProviderRef, PullRequest, ReplacedLink, RepoRef, Repository, RequestSource, RequestStatus,
-    RequestedReviewer, ReviewDecision, ReviewMessage, ReviewMessageKind, ReviewMessageOrigin,
-    ReviewMessagePr, ReviewRequest, Reviewer, RuleKind, SendAttempt, SendOutcome, SettingEntry,
-    SlackChannel, SyncStateEntry, TeamChannelMapping, TeamMembersCacheEntry, TeamRef, ViewState,
+    Account, AccountId, AccountKind, Assignee, AuthMode, ChatThreadCacheEntry, ChecksState,
+    CloseReason, DiscoveryOutcome, DiscoveryRun, Involvement, LinkSource, MappingLayer,
+    MergeStateStatus, Mergeable, OwnershipCacheEntry, PrId, PrProjectLink, PrState, Project,
+    ProjectId, ProjectRule, ProviderRef, PullRequest, ReplacedLink, RepoRef, Repository,
+    RequestSource, RequestStatus, RequestedReviewer, ReviewDecision, ReviewMessage,
+    ReviewMessageKind, ReviewMessageOrigin, ReviewMessagePr, ReviewRequest, Reviewer, RuleKind,
+    SendAttempt, SendOutcome, SettingEntry, SlackChannel, SyncStateEntry, TeamChannelMapping,
+    TeamMembersCacheEntry, TeamRef, ViewState,
 };
 
 use super::{Store, db};
@@ -115,6 +116,10 @@ fn sample_pr(account: &Account, node_id: &str, state: PrState) -> PullRequest {
                 slug: "team-a".to_owned(),
             })),
         ],
+        assignees: vec![Assignee {
+            login: "ada".to_owned(),
+            name: Some("Ada".to_owned()),
+        }],
         unresolved_threads: 1,
         total_threads: 3,
         involvement: Involvement::AUTHOR | Involvement::REVIEW_REQUESTED,
@@ -212,6 +217,7 @@ fn enums_round_trip_and_unknown_values_fail() {
         assert_eq!(loaded.repo.owner, "acme");
         assert_eq!(loaded.labels, vec!["bug".to_owned()]);
         assert_eq!(loaded.requested_reviewers, pr.requested_reviewers);
+        assert_eq!(loaded.assignees, pr.assignees);
         assert_eq!(loaded.involvement, pr.involvement);
     }
 
@@ -816,7 +822,7 @@ fn upgrading_from_version_3_rebuilds_search_text_with_the_new_fold() {
                     params![],
                 )
                 .map_err(db)?;
-                // Undo 0006-0008 and 0010-0013 so the upgrade replays them from version 3.
+                // Undo 0006-0008 and 0010-0014 so the upgrade replays them from version 3.
                 conn.execute_batch(
                     "UPDATE accounts SET slack_workspace_unique_v1 = slack_workspace;
                      ALTER TABLE accounts DROP COLUMN slack_workspace;
@@ -830,6 +836,7 @@ fn upgrading_from_version_3_rebuilds_search_text_with_the_new_fold() {
                      DROP TABLE pr_close_notes;
                      DROP TABLE pr_attention;
                      DROP TABLE pr_merge_queue;
+                     DROP TABLE pr_assignees;
                      ALTER TABLE pr_overview_cache DROP COLUMN bot_comment_count;",
                 )
                 .map_err(db)?;

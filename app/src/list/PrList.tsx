@@ -41,6 +41,7 @@ import {
   type Grouping,
   type Ordering,
   type ReviewFilter,
+  type Filters,
   type SavedView,
   type Section,
   type ShowFlags,
@@ -52,7 +53,8 @@ import { setDragBadge } from "./dragBadge";
 import { pageIds, selectionCountText, summaryText, type Elsewhere, type PageDto, type PageEntry, type PageRequest, type PageSection } from "./paging";
 import { usePagedList, type PageParams } from "./usePagedList";
 import { plainText } from "../textInput";
-import { githubQueryOf, searchFieldValue, sortLocksOrder, splitSearch } from "./searchText";
+import { applyFilterChange, omitRuleQualifiers } from "./filterQuery";
+import { githubQueryOf, membershipQuery, searchFieldValue, sortLocksOrder, splitSearch } from "./searchText";
 import { queueChip } from "../detail/mergeQueue";
 import { commentsText, compactSlack, rowPills, staleCue, viewEmptyState, type RowPill, type StaleCue } from "./rowCues";
 import { ClockProvider, RelativeTime, useNow } from "./clock";
@@ -92,6 +94,8 @@ interface Props {
   viewKey: string;
   /** The sidebar view's saved query. Empty for project views. */
   viewRule?: string;
+  /** GitHub login for the Me assignee filter. */
+  viewerLogin?: string;
   /** Pull requests whose bump is due. `bump:due` reads these. */
   dueIds?: number[];
   /** Saved names for sidebar views, so a rename shows in the title. */
@@ -220,6 +224,7 @@ export function PrList({
   projects,
   viewKey,
   viewRule = "",
+  viewerLogin = "",
   dueIds,
   viewTitles,
   view,
@@ -299,6 +304,13 @@ export function PrList({
     onViewChange(withSearch(view, value));
   }
 
+  useEffect(() => {
+    const next = omitRuleQualifiers(view.filters.search, viewRule);
+    if (next !== view.filters.search) {
+      onViewChange({ ...view, filters: { ...view.filters, search: next, github: membershipQuery(next) } });
+    }
+  }, [onViewChange, view, viewRule]);
+
   const collapsedKeys = useMemo(
     () =>
       Object.keys(collapsed)
@@ -321,8 +333,9 @@ export function PrList({
       review_sla_working_days: sla.workingDays,
       view_rule: viewRule,
       due_ids: dueIds,
+      viewer_login: viewerLogin,
     }),
-    [viewKey, view.grouping, view.ordering, view.direction, view.filters, debounced, collapsedKeys, githubIds, githubAnyState, sla.hours, sla.workingDays, viewRule, dueIds],
+    [viewKey, view.grouping, view.ordering, view.direction, view.filters, debounced, collapsedKeys, githubIds, githubAnyState, sla.hours, sla.workingDays, viewRule, dueIds, viewerLogin],
   );
   const list = usePagedList(loadPage, params, version, now);
   // To review also asks GitHub for matches past the loaded window.
@@ -751,8 +764,28 @@ export function PrList({
           />
           {/* Search, the filter button and More travel together so a wrap cannot leave the funnel on top of the field. */}
           <div className="flex min-w-52 flex-1 basis-52 items-center gap-2">
-            <SearchField value={field} onChange={setSearch} searching={searching || githubSearching} inputRef={searchRef} />
-            <FilterMenu view={view} orgs={page?.orgs ?? []} menu={menu} setMenu={setMenu} onViewChange={onViewChange} fromQuery={queryOrders} />
+            <SearchField
+              value={field}
+              onChange={setSearch}
+              searching={searching || githubSearching}
+              inputRef={searchRef}
+              teams={page?.teams.map((team) => team.slug) ?? []}
+              assignees={page?.assignees.map((person) => person.login) ?? []}
+            />
+            <FilterMenu
+              view={view}
+              orgs={page?.orgs ?? []}
+              teams={page?.teams ?? []}
+              noTeam={page?.no_team ?? 0}
+              assignees={page?.assignees ?? []}
+              unassigned={page?.unassigned ?? 0}
+              viewerLogin={viewerLogin}
+              viewRule={viewRule}
+              menu={menu}
+              setMenu={setMenu}
+              onViewChange={onViewChange}
+              fromQuery={queryOrders}
+            />
             {viewKey === "mine" && (
               <div ref={standupMenuRef} className="relative shrink-0">
                 <Tooltip label="More" detail="Copy a stand-up recap of your pull requests" align="end">
@@ -1747,6 +1780,12 @@ function TriCheckbox({ label, state, onToggle }: { label: string; state: CheckSt
 function FilterMenu({
   view,
   orgs,
+  teams,
+  noTeam,
+  assignees,
+  unassigned,
+  viewerLogin,
+  viewRule,
   menu,
   setMenu,
   onViewChange,
@@ -1754,6 +1793,12 @@ function FilterMenu({
 }: {
   view: SavedView;
   orgs: OrgCount[];
+  teams: PageDto["teams"];
+  noTeam: number;
+  assignees: PageDto["assignees"];
+  unassigned: number;
+  viewerLogin: string;
+  viewRule: string;
   menu: string | null;
   setMenu: (menu: string | null) => void;
   onViewChange: (view: SavedView) => void;
@@ -1799,7 +1844,10 @@ function FilterMenu({
         </button>
       </Tooltip>
       {menu && (
-        <div role="menu" className="absolute right-0 z-20 mt-1 w-64 max-w-[100cqw] rounded border border-slate-700 bg-slate-900 p-2 text-sm">
+        <div
+          role="menu"
+          className={`absolute right-0 z-20 mt-1 max-w-[100cqw] rounded border border-slate-700 bg-slate-900 p-2 text-sm ${menu === "team" || menu === "assignee" ? "w-80" : "w-64"}`}
+        >
           <MenuRow label="Grouping" value={labelOf(GROUPINGS, view.grouping)} onClick={() => setMenu(menu === "grouping" ? "root" : "grouping")} />
           {menu === "grouping" && (
             <ChoiceList
@@ -1836,7 +1884,19 @@ function FilterMenu({
               Reset
             </button>
           </div>
-          <FilterChoices view={view} orgs={orgs} menu={menu} setMenu={setMenu} onViewChange={onViewChange} />
+          <FilterChoices
+            view={view}
+            orgs={orgs}
+            teams={teams}
+            noTeam={noTeam}
+            assignees={assignees}
+            unassigned={unassigned}
+            viewerLogin={viewerLogin}
+            viewRule={viewRule}
+            menu={menu}
+            setMenu={setMenu}
+            onViewChange={onViewChange}
+          />
         </div>
       )}
     </div>
@@ -1901,19 +1961,46 @@ function ShowList({ view, onViewChange }: { view: SavedView; onViewChange: (view
   );
 }
 
+const NO_TEAM = "__no_team__";
+const UNASSIGNED = "__unassigned__";
+
+function writeFilters(view: SavedView, patch: Partial<Filters>, viewRule: string): SavedView {
+  const next = { ...view.filters, ...patch };
+  const search = applyFilterChange(view.filters.search, view.filters, next, viewRule);
+  return { ...view, filters: { ...next, search, github: membershipQuery(search) } };
+}
+
 function FilterChoices({
   view,
   orgs,
+  teams,
+  noTeam,
+  assignees,
+  unassigned,
+  viewerLogin,
+  viewRule,
   menu,
   setMenu,
   onViewChange,
 }: {
   view: SavedView;
   orgs: OrgCount[];
+  teams: PageDto["teams"];
+  noTeam: number;
+  assignees: PageDto["assignees"];
+  unassigned: number;
+  viewerLogin: string;
+  viewRule: string;
   menu: string;
   setMenu: (menu: string | null) => void;
   onViewChange: (view: SavedView) => void;
 }) {
+  const apply = (patch: Partial<Filters>) => onViewChange(writeFilters(view, patch, viewRule));
+  const viewer = viewerLogin.toLowerCase();
+  const me = assignees.find((person) => person.login.toLowerCase() === viewer);
+  const otherAssignees = assignees.filter((person) => person.login.toLowerCase() !== viewer);
+  const teamCount = view.filters.teams.length + (view.filters.no_team ? 1 : 0);
+  const assigneeCount = view.filters.assignees.length + (view.filters.unassigned ? 1 : 0);
   return (
     <div>
       <MenuRow label="Org" value={String(view.filters.orgs.length || "")} onClick={() => setMenu(menu === "org" ? "root" : "org")} />
@@ -1921,7 +2008,7 @@ function FilterChoices({
         <ToggleList
           options={orgs.map((org) => ({ id: org.name, label: `${org.name} (${org.count})` }))}
           selected={view.filters.orgs}
-          onToggle={(org) => onViewChange({ ...view, filters: { ...view.filters, orgs: toggleValue(view.filters.orgs, org) } })}
+          onToggle={(org) => apply({ orgs: toggleValue(view.filters.orgs, org) })}
         />
       )}
       <MenuRow label="Status / draft" value="" onClick={() => setMenu(menu === "status" ? "root" : "status")} />
@@ -1929,7 +2016,7 @@ function FilterChoices({
         <ToggleList
           options={(["ready", "unknown", "blocked", "draft"] as StatusFilter[]).map((id) => ({ id, label: id }))}
           selected={view.filters.statuses}
-          onToggle={(id) => onViewChange({ ...view, filters: { ...view.filters, statuses: toggleValue(view.filters.statuses, id) } })}
+          onToggle={(id) => apply({ statuses: toggleValue(view.filters.statuses, id) })}
         />
       )}
       <MenuRow label="Review decision" value="" onClick={() => setMenu(menu === "review" ? "root" : "review")} />
@@ -1937,7 +2024,48 @@ function FilterChoices({
         <ToggleList
           options={(["approved", "changes_requested", "review_required", "none"] as ReviewFilter[]).map((id) => ({ id, label: id }))}
           selected={view.filters.reviews}
-          onToggle={(id) => onViewChange({ ...view, filters: { ...view.filters, reviews: toggleValue(view.filters.reviews, id) } })}
+          onToggle={(id) => apply({ reviews: toggleValue(view.filters.reviews, id) })}
+        />
+      )}
+      <MenuRow label="Reviewer team" value={String(teamCount || "")} onClick={() => setMenu(menu === "team" ? "root" : "team")} />
+      {menu === "team" && (
+        <SearchableChoices
+          options={[
+            { id: NO_TEAM, label: `No team (${noTeam})` },
+            ...teams.map((team) => ({
+              id: team.slug,
+              label: team.name ? `${team.name} · ${team.slug} (${team.count})` : `${team.slug} (${team.count})`,
+            })),
+          ]}
+          selected={[...view.filters.teams, ...(view.filters.no_team ? [NO_TEAM] : [])]}
+          onToggle={(id) => {
+            if (id === NO_TEAM) {
+              apply({ no_team: !view.filters.no_team });
+              return;
+            }
+            apply({ teams: toggleValue(view.filters.teams, id) });
+          }}
+        />
+      )}
+      <MenuRow label="Assignee" value={String(assigneeCount || "")} onClick={() => setMenu(menu === "assignee" ? "root" : "assignee")} />
+      {menu === "assignee" && (
+        <SearchableChoices
+          options={[
+            { id: "@me", label: `Me (${me?.count ?? 0})` },
+            { id: UNASSIGNED, label: `Unassigned (${unassigned})` },
+            ...otherAssignees.map((person) => ({
+              id: person.login,
+              label: person.name ? `${person.name} · ${person.login} (${person.count})` : `${person.login} (${person.count})`,
+            })),
+          ]}
+          selected={[...view.filters.assignees, ...(view.filters.unassigned ? [UNASSIGNED] : [])]}
+          onToggle={(id) => {
+            if (id === UNASSIGNED) {
+              apply({ unassigned: !view.filters.unassigned });
+              return;
+            }
+            apply({ assignees: toggleValue(view.filters.assignees, id) });
+          }}
         />
       )}
       <MenuRow label="CI" value="" onClick={() => setMenu(menu === "ci" ? "root" : "ci")} />
@@ -1945,7 +2073,7 @@ function FilterChoices({
         <ToggleList
           options={(["passing", "failing", "pending", "none"] as CiFilter[]).map((id) => ({ id, label: id }))}
           selected={view.filters.ci}
-          onToggle={(id) => onViewChange({ ...view, filters: { ...view.filters, ci: toggleValue(view.filters.ci, id) } })}
+          onToggle={(id) => apply({ ci: toggleValue(view.filters.ci, id) })}
         />
       )}
       <MenuRow label="Slack request" value="" onClick={() => setMenu(menu === "slack" ? "root" : "slack")} />
@@ -1993,6 +2121,43 @@ function ToggleList<T extends string>({
           {option.label}
         </label>
       ))}
+    </div>
+  );
+}
+
+function SearchableChoices({
+  options,
+  selected,
+  onToggle,
+}: {
+  options: { id: string; label: string }[];
+  selected: readonly string[];
+  onToggle: (id: string) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const needle = query.trim().toLowerCase();
+  const shown = needle === "" ? options : options.filter((option) => option.label.toLowerCase().includes(needle));
+  return (
+    <div className="ml-2 border-l border-slate-800 pl-2">
+      {options.length > 8 && (
+        <input
+          {...plainText}
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Find"
+          aria-label="Find"
+          className="mb-1 w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs"
+        />
+      )}
+      {shown.map((option) => (
+        <label key={option.id} className="flex items-center gap-2 py-0.5">
+          <input type="checkbox" className="shrink-0" checked={selected.includes(option.id)} onChange={() => onToggle(option.id)} />
+          <Tooltip label={option.label} className="min-w-0 flex-1">
+            <span className="block w-full truncate">{option.label}</span>
+          </Tooltip>
+        </label>
+      ))}
+      {shown.length === 0 && <p className="px-1 py-0.5 text-xs text-slate-500">No matches</p>}
     </div>
   );
 }

@@ -40,6 +40,7 @@ fn pr(id: i64, repo: (&str, &str), head_ref: &str, title: &str, labels: &[&str])
         mergeable: Mergeable::Mergeable,
         merge_state: MergeStateStatus::Clean,
         requested_reviewers: Vec::new(),
+        assignees: Vec::new(),
         unresolved_threads: 0,
         total_threads: 0,
         involvement: Involvement::AUTHOR,

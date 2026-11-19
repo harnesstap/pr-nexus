@@ -59,6 +59,18 @@ pub struct FiltersDto {
     /// Free text is the page's `query` and never lands here.
     #[serde(default)]
     pub github: String,
+    /// Pending reviewer teams, `org/slug`. Any one match keeps the row.
+    #[serde(default)]
+    pub teams: Vec<String>,
+    /// No pending team reviewer. ORs with [`Self::teams`].
+    #[serde(default)]
+    pub no_team: bool,
+    /// Assignee logins. `@me` is resolved to the viewer before matching.
+    #[serde(default)]
+    pub assignees: Vec<String>,
+    /// No assignee. ORs with [`Self::assignees`].
+    #[serde(default)]
+    pub unassigned: bool,
 }
 
 impl FiltersDto {
@@ -75,6 +87,10 @@ impl FiltersDto {
             || self.snoozed
             || self.quick.is_some()
             || !self.github.trim().is_empty()
+            || !self.teams.is_empty()
+            || self.no_team
+            || !self.assignees.is_empty()
+            || self.unassigned
     }
 }
 
@@ -120,6 +136,9 @@ pub struct PageRequest {
     /// Pull requests whose bump is due. `bump:due` reads this and is not sent to GitHub.
     #[serde(default)]
     pub due_ids: Vec<i64>,
+    /// GitHub login for `assignee:@me`. Empty leaves `@me` unmatched.
+    #[serde(default)]
+    pub viewer_login: String,
 }
 
 fn default_review_sla_hours() -> i64 {
@@ -197,6 +216,21 @@ pub struct ViewCount {
     pub count: usize,
 }
 
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct TeamChoice {
+    /// `org/slug`.
+    pub slug: String,
+    pub name: String,
+    pub count: usize,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct AssigneeChoice {
+    pub login: String,
+    pub name: String,
+    pub count: usize,
+}
+
 #[derive(Debug, Serialize)]
 pub struct PageDto {
     pub entries: Vec<PageEntry>,
@@ -206,6 +240,14 @@ pub struct PageDto {
     pub in_view: usize,
     pub orgs: Vec<OrgCount>,
     pub repos: Vec<OrgCount>,
+    /// Reviewer teams in this view, ignoring the team filter itself.
+    pub teams: Vec<TeamChoice>,
+    /// Rows in that same set with no pending team reviewer.
+    pub no_team: usize,
+    /// Assignees in this view, ignoring the assignee filter itself.
+    pub assignees: Vec<AssigneeChoice>,
+    /// Rows in that same set with nobody assigned.
+    pub unassigned: usize,
     pub quick: QuickCounts,
     /// Unread rows in this snooze scope after the other filters, including the quick filter.
     pub attention: usize,
@@ -248,7 +290,8 @@ pub fn page(
     request: &PageRequest,
     search: Option<&HashSet<i64>>,
 ) -> PageDto {
-    let filters = &request.filters;
+    let resolved = resolve_viewer(&request.filters, &request.viewer_login);
+    let filters = &resolved;
     let now_ms = request.now.timestamp_millis();
     let live = displayed(projects, filters);
     let live_ids: HashSet<i64> = live.iter().map(|project| project.id).collect();
@@ -414,6 +457,7 @@ pub fn page(
     for item in items {
         *orgs.entry(item.row.owner.as_str()).or_default() += 1;
     }
+    let people = people_choices(&scoped, filters, search, now_ms);
 
     PageDto {
         entries,
@@ -438,6 +482,10 @@ pub fn page(
             })
             .collect(),
         repos: repo_choices(&scoped, filters, search, now_ms),
+        teams: people.teams,
+        no_team: people.no_team,
+        assignees: people.assignees,
+        unassigned: people.unassigned,
         quick,
         attention: attention_count(&scoped, filters, search, now_ms),
         snoozed_count: snoozed_count(&viewed, filters, search, now_ms),
@@ -589,11 +637,27 @@ fn in_membership(
         return false;
     }
     if rule.fully_local {
-        return view_rule::matches_local(
-            row.involvement,
-            &row.state,
-            row.is_draft,
-            due.contains(&row.id),
+        let teams: Vec<String> = row
+            .pending_reviewers
+            .iter()
+            .filter(|reviewer| reviewer.kind == "team")
+            .map(|reviewer| reviewer.login.clone())
+            .collect();
+        let assignees: Vec<String> = row
+            .assignees
+            .iter()
+            .map(|person| person.login.clone())
+            .collect();
+        return view_rule::matches_facts(
+            &view_rule::LocalFacts {
+                involvement: row.involvement,
+                state: &row.state,
+                is_draft: row.is_draft,
+                due: due.contains(&row.id),
+                teams: &teams,
+                assignees: &assignees,
+                viewer: &request.viewer_login,
+            },
             &request.view_rule,
         );
     }
@@ -794,7 +858,162 @@ fn passes_menu(item: &Item, filters: &FiltersDto, now_ms: i64) -> bool {
             return false;
         }
     }
+    let team_on = !filters.teams.is_empty() || filters.no_team;
+    if team_on {
+        let pending = pending_teams(row);
+        let named = filters
+            .teams
+            .iter()
+            .any(|team| pending.iter().any(|have| have.eq_ignore_ascii_case(team)));
+        let none = filters.no_team && pending.is_empty();
+        if !named && !none {
+            return false;
+        }
+    }
+    let assignee_on = !filters.assignees.is_empty() || filters.unassigned;
+    if assignee_on {
+        let named = filters.assignees.iter().any(|login| {
+            row.assignees
+                .iter()
+                .any(|person| person.login.eq_ignore_ascii_case(login))
+        });
+        let none = filters.unassigned && row.assignees.is_empty();
+        if !named && !none {
+            return false;
+        }
+    }
     true
+}
+
+fn pending_teams(row: &ListRow) -> Vec<&str> {
+    row.pending_reviewers
+        .iter()
+        .filter(|reviewer| reviewer.kind == "team")
+        .map(|reviewer| reviewer.login.as_str())
+        .collect()
+}
+
+fn resolve_viewer(filters: &FiltersDto, viewer: &str) -> FiltersDto {
+    let mut filters = filters.clone();
+    for login in &mut filters.assignees {
+        if login.eq_ignore_ascii_case("@me") {
+            *login = viewer.to_owned();
+        }
+    }
+    filters
+}
+
+struct PeopleChoices {
+    teams: Vec<TeamChoice>,
+    no_team: usize,
+    assignees: Vec<AssigneeChoice>,
+    unassigned: usize,
+}
+
+/// Team and assignee counts ignore their own filter and apply the rest.
+fn people_choices(
+    scoped: &[&Item],
+    filters: &FiltersDto,
+    search: Option<&HashSet<i64>>,
+    now_ms: i64,
+) -> PeopleChoices {
+    let mut team_filters = filters.clone();
+    team_filters.teams.clear();
+    team_filters.no_team = false;
+    let mut assignee_filters = filters.clone();
+    assignee_filters.assignees.clear();
+    assignee_filters.unassigned = false;
+    let passes = |item: &&Item, menu: &FiltersDto| {
+        passes_menu(item, menu, now_ms)
+            && search.is_none_or(|ids| ids.contains(&item.row.id))
+            && filters
+                .quick
+                .as_deref()
+                .is_none_or(|quick| quick_matches(&item.row, quick))
+    };
+
+    let mut team_counts: BTreeMap<String, (String, String, usize)> = BTreeMap::new();
+    let mut no_team = 0usize;
+    for item in scoped {
+        if !passes(item, &team_filters) {
+            continue;
+        }
+        let mut saw = false;
+        for reviewer in &item.row.pending_reviewers {
+            if reviewer.kind != "team" {
+                continue;
+            }
+            saw = true;
+            let key = reviewer.login.to_ascii_lowercase();
+            team_counts
+                .entry(key)
+                .and_modify(|(_, name, count)| {
+                    *count += 1;
+                    if name.is_empty()
+                        && let Some(next) = &reviewer.name
+                    {
+                        *name = next.clone();
+                    }
+                })
+                .or_insert((
+                    reviewer.login.clone(),
+                    reviewer.name.clone().unwrap_or_default(),
+                    1,
+                ));
+        }
+        if !saw {
+            no_team += 1;
+        }
+    }
+    for team in &filters.teams {
+        team_counts
+            .entry(team.to_ascii_lowercase())
+            .or_insert((team.clone(), String::new(), 0));
+    }
+
+    let mut assignee_counts: BTreeMap<String, (String, String, usize)> = BTreeMap::new();
+    let mut unassigned = 0usize;
+    for item in scoped {
+        if !passes(item, &assignee_filters) {
+            continue;
+        }
+        if item.row.assignees.is_empty() {
+            unassigned += 1;
+        }
+        for person in &item.row.assignees {
+            let key = person.login.to_ascii_lowercase();
+            assignee_counts
+                .entry(key)
+                .and_modify(|(_, name, count)| {
+                    *count += 1;
+                    if name.is_empty() {
+                        *name = person.name.clone();
+                    }
+                })
+                .or_insert((person.login.clone(), person.name.clone(), 1));
+        }
+    }
+    for login in &filters.assignees {
+        if login.eq_ignore_ascii_case("@me") || login.is_empty() {
+            continue;
+        }
+        assignee_counts
+            .entry(login.to_ascii_lowercase())
+            .or_insert((login.clone(), String::new(), 0));
+    }
+
+    PeopleChoices {
+        teams: team_counts
+            .into_values()
+            .map(|(slug, name, count)| TeamChoice { slug, name, count })
+            .collect(),
+        no_team,
+        assignees: assignee_counts
+            .into_values()
+            .map(|(login, name, count)| AssigneeChoice { login, name, count })
+            .collect(),
+        unassigned,
+    }
 }
 
 pub(crate) fn status_matches(row: &ListRow, status: &str) -> bool {
@@ -1391,6 +1610,7 @@ mod tests {
                 merge_queue: None,
                 reviewers_requested: false,
                 pending_reviewers: Vec::new(),
+                assignees: Vec::new(),
                 slack: None,
                 bot_comments: 0,
             },
@@ -1434,7 +1654,96 @@ mod tests {
             tz_offset_minutes: 0,
             view_rule: String::new(),
             due_ids: Vec::new(),
+            viewer_login: String::new(),
         }
+    }
+
+    fn team(login: &str, name: &str) -> crate::commands::PendingReviewerDto {
+        crate::commands::PendingReviewerDto {
+            kind: "team",
+            login: login.into(),
+            name: Some(name.into()),
+            avatar_url: None,
+        }
+    }
+
+    fn assignee(login: &str) -> crate::commands::AssigneeDto {
+        crate::commands::AssigneeDto {
+            login: login.into(),
+            name: login.into(),
+        }
+    }
+
+    #[test]
+    fn team_and_assignee_filters_match_any_selected_value() {
+        let mut web = item(1, &[], 1);
+        web.row.pending_reviewers = vec![team("acme/web-platform", "Web platform")];
+        web.row.assignees = vec![assignee("ada")];
+        let mut payments = item(2, &[], 2);
+        payments.row.pending_reviewers = vec![team("acme/payments", "Payments")];
+        let lone = item(3, &[], 3);
+        let items = vec![web, payments, lone];
+
+        let mut request = request("repository");
+        request.filters.teams = vec!["acme/web-platform".into()];
+        let shown = page(&items, &[], &request, None);
+        let ids = |shown: &PageDto| -> Vec<i64> {
+            shown
+                .entries
+                .iter()
+                .filter_map(|entry| entry.row.as_ref().map(|row| row.id))
+                .collect()
+        };
+        assert_eq!(ids(&shown), vec![1]);
+        assert_eq!(shown.no_team, 1);
+        assert_eq!(shown.teams.len(), 2);
+
+        request.filters.teams.clear();
+        request.filters.no_team = true;
+        request.filters.assignees = vec!["@me".into()];
+        request.viewer_login = "ada".into();
+        let shown = page(&items, &[], &request, None);
+        assert!(ids(&shown).is_empty());
+
+        request.filters.no_team = false;
+        let shown = page(&items, &[], &request, None);
+        assert_eq!(ids(&shown), vec![1]);
+        assert_eq!(shown.unassigned, 2);
+
+        request.filters.assignees.clear();
+        request.filters.unassigned = true;
+        request.filters.teams = vec!["acme/payments".into(), "acme/missing".into()];
+        let shown = page(&items, &[], &request, None);
+        assert_eq!(ids(&shown), vec![2]);
+        assert!(
+            shown
+                .teams
+                .iter()
+                .any(|choice| choice.slug == "acme/missing" && choice.count == 0)
+        );
+    }
+
+    #[test]
+    fn a_local_team_rule_keeps_only_that_pending_team() {
+        let mut web = item(1, &[], 1);
+        web.row.pending_reviewers = vec![team("acme/web-platform", "Web platform")];
+        web.row.involvement = REVIEW_REQUESTED;
+        let mut other = item(2, &[], 2);
+        other.row.pending_reviewers = vec![team("acme/payments", "Payments")];
+        other.row.involvement = REVIEW_REQUESTED;
+        let mut request = request("repository");
+        request.view_rule = "is:open team-review-requested:acme/web-platform".into();
+        let shown = page(&items_of(web, other), &[], &request, None);
+        let ids: Vec<i64> = shown
+            .entries
+            .iter()
+            .filter_map(|entry| entry.row.as_ref().map(|row| row.id))
+            .collect();
+        assert_eq!(ids, vec![1]);
+    }
+
+    fn items_of(left: Item, right: Item) -> Vec<Item> {
+        vec![left, right]
     }
 
     #[test]

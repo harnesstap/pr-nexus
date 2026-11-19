@@ -265,6 +265,7 @@ fn hit_from_item(item: &Value, account: AccountId, host: &str) -> Option<IssueHi
                 mergeable: Mergeable::Unknown,
                 merge_state: MergeStateStatus::Unknown,
                 requested_reviewers: Vec::new(),
+                assignees: Vec::new(),
                 unresolved_threads: 0,
                 total_threads: 0,
                 involvement: Involvement::empty(),

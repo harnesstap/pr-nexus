@@ -62,6 +62,11 @@ pub fn page_for(
     let found = search_ids(state, &projects, &combined)?;
     let sla = settings::review_sla(&state.store)?;
     let mut request = request.clone();
+    if request.viewer_login.trim().is_empty()
+        && let Some(account) = state::github_account(&state.store)?
+    {
+        request.viewer_login = account.login;
+    }
     request.due_ids = crate::services::bumps::list_due(state, Utc::now())?
         .into_iter()
         .map(|item| item.pr_id)

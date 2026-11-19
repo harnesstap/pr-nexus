@@ -271,6 +271,7 @@ fn seed() -> (tempfile::TempDir, Store, PullRequest) {
         mergeable: Mergeable::Mergeable,
         merge_state: MergeStateStatus::Clean,
         requested_reviewers: Vec::new(),
+        assignees: Vec::new(),
         unresolved_threads: 0,
         total_threads: 0,
         involvement: Involvement::AUTHOR,

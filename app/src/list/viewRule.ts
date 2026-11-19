@@ -87,16 +87,62 @@ export function isBumpQueueQuery(raw: string): boolean {
   return rule.qualifiers.every((token) => !token.negated) && seen.join(" ") === "author:@me bump:due is:open";
 }
 
-export function matchesLocalRule(
-  row: { involvement: number; state: string; is_draft: boolean },
-  due: boolean,
-  raw: string,
-): boolean {
+export interface RuleRow {
+  involvement: number;
+  state: string;
+  is_draft: boolean;
+  pending_reviewers?: readonly { kind: string; login: string }[];
+  assignees?: readonly { login: string }[];
+}
+
+interface Facts {
+  involvement: number;
+  state: string;
+  isDraft: boolean;
+  due: boolean;
+  teams: readonly string[];
+  assignees: readonly string[];
+  viewer: string;
+}
+
+export function matchesLocalRule(row: RuleRow, due: boolean, raw: string, viewer = ""): boolean {
+  return matchesFacts(
+    {
+      involvement: row.involvement,
+      state: row.state,
+      isDraft: row.is_draft,
+      due,
+      teams: (row.pending_reviewers ?? []).filter((reviewer) => reviewer.kind === "team").map((reviewer) => reviewer.login),
+      assignees: (row.assignees ?? []).map((person) => person.login),
+      viewer,
+    },
+    raw,
+  );
+}
+
+/** Repeated team or assignee qualifiers match if any one does. `no:assignee` joins the assignee group. */
+function matchesFacts(facts: Facts, raw: string): boolean {
   const tokens = scan(raw);
   if (tokens === null) {
     return false;
   }
-  return tokens.every((token) => matchToken(token, row.involvement, row.state, row.is_draft, due, true));
+  const teams = tokens.filter((token) => !token.negated && token.key === "team-review-requested" && token.value !== "");
+  const people = tokens.filter((token) => !token.negated && token.key === "assignee" && token.value !== "");
+  const unassigned = tokens.some((token) => !token.negated && token.key === "no" && token.value.toLowerCase() === "assignee");
+  if (teams.length > 0 && !teams.some((token) => facts.teams.some((team) => team.toLowerCase() === token.value.toLowerCase()))) {
+    return false;
+  }
+  const personHit = people.some((token) => assigneeHit(facts, token.value));
+  if ((people.length > 0 || unassigned) && !(personHit || (unassigned && facts.assignees.length === 0))) {
+    return false;
+  }
+  const rest = tokens.filter((token) => !teams.includes(token) && !people.includes(token) && !(unassigned && !token.negated && token.key === "no" && token.value.toLowerCase() === "assignee"));
+  return rest.every((token) => matchToken(token, facts, true));
+}
+
+function assigneeHit(facts: Facts, value: string): boolean {
+  const login = value.toLowerCase() === "@me" ? facts.viewer : value;
+  return login !== "" && facts.assignees.some((have) => have.toLowerCase() === login.toLowerCase());
 }
 
 export function matchesBumpOnly(due: boolean, raw: string): boolean {
@@ -104,7 +150,8 @@ export function matchesBumpOnly(due: boolean, raw: string): boolean {
   if (tokens === null) {
     return false;
   }
-  return tokens.every((token) => token.key !== "bump" || matchToken(token, 0, "open", false, due, false));
+  const facts: Facts = { involvement: 0, state: "open", isDraft: false, due, teams: [], assignees: [], viewer: "" };
+  return tokens.every((token) => token.key !== "bump" || matchToken(token, facts, false));
 }
 
 export function unfinishedQuote(raw: string): boolean {
@@ -112,6 +159,12 @@ export function unfinishedQuote(raw: string): boolean {
 }
 
 function localPair(key: string, value: string): boolean {
+  if (value === "") {
+    return false;
+  }
+  if (key === "team-review-requested" || key === "assignee") {
+    return true;
+  }
   const folded = value.toLowerCase();
   return (
     (key === "author" && folded === "@me") ||
@@ -119,7 +172,8 @@ function localPair(key: string, value: string): boolean {
     (key === "is" && (folded === "open" || folded === "closed" || folded === "merged" || folded === "draft" || folded === "pr")) ||
     (key === "state" && (folded === "open" || folded === "closed")) ||
     (key === "draft" && (folded === "true" || folded === "false")) ||
-    (key === "bump" && folded === "due")
+    (key === "bump" && folded === "due") ||
+    (key === "no" && folded === "assignee")
   );
 }
 
@@ -134,29 +188,29 @@ function finished(token: Token): boolean {
   return (token.key === "is" && (value === "closed" || value === "merged")) || (token.key === "state" && value === "closed");
 }
 
-function matchToken(token: Token, involvement: number, state: string, isDraft: boolean, due: boolean, strict: boolean): boolean {
+function matchToken(token: Token, facts: Facts, strict: boolean): boolean {
   if (token.key === null) {
     return true;
   }
   const value = token.value.toLowerCase();
-  const open = state.toLowerCase() === "open";
+  const open = facts.state.toLowerCase() === "open";
   let positive: boolean;
   switch (token.key) {
     case "author":
-      positive = value === "@me" ? (involvement & AUTHOR) !== 0 : !strict;
+      positive = value === "@me" ? (facts.involvement & AUTHOR) !== 0 : !strict;
       break;
     case "review-requested":
-      positive = value === "@me" ? (involvement & REVIEW_REQUESTED) !== 0 : !strict;
+      positive = value === "@me" ? (facts.involvement & REVIEW_REQUESTED) !== 0 : !strict;
       break;
     case "is":
       if (value === "open" || value === "pr") {
         positive = true;
       } else if (value === "closed") {
-        positive = state.toLowerCase() === "closed";
+        positive = facts.state.toLowerCase() === "closed";
       } else if (value === "merged") {
-        positive = state.toLowerCase() === "merged";
+        positive = facts.state.toLowerCase() === "merged";
       } else if (value === "draft") {
-        positive = isDraft;
+        positive = facts.isDraft;
       } else {
         positive = !strict;
       }
@@ -172,15 +226,24 @@ function matchToken(token: Token, involvement: number, state: string, isDraft: b
       break;
     case "draft":
       if (value === "true") {
-        positive = isDraft;
+        positive = facts.isDraft;
       } else if (value === "false") {
-        positive = !isDraft;
+        positive = !facts.isDraft;
       } else {
         positive = !strict;
       }
       break;
     case "bump":
-      positive = value === "due" ? due : false;
+      positive = value === "due" ? facts.due : false;
+      break;
+    case "team-review-requested":
+      positive = token.value !== "" && facts.teams.some((team) => team.toLowerCase() === token.value.toLowerCase());
+      break;
+    case "assignee":
+      positive = token.value !== "" ? assigneeHit(facts, token.value) : !strict;
+      break;
+    case "no":
+      positive = value === "assignee" ? facts.assignees.length === 0 : !strict;
       break;
     default:
       positive = !strict;

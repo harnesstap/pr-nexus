@@ -51,7 +51,7 @@ export const REMOTE_FILTER_DEBOUNCE_MS = 400;
 export const GITHUB_QUERY_DEBOUNCE_MS = 400;
 const GITHUB_QUERY_PAGE = 100;
 const GITHUB_QUERY_CAP = 1000;
-const NO_REMOTE_FILTER: RemoteReviewFilter = { orgs: [], repos: [], draft: null, review: null, ci: null };
+const NO_REMOTE_FILTER: RemoteReviewFilter = { orgs: [], repos: [], draft: null, review: null, ci: null, teams: [], assignees: [], unassigned: false };
 import { DetailPanel } from "../detail/DetailPanel";
 import { ProjectDialog } from "./ProjectDialog";
 import { AccountsSettings } from "../settings/AccountsSettings";
@@ -1242,6 +1242,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
                 projects={projects}
                 viewKey={viewKey}
                 viewRule={sidebarQuery}
+                viewerLogin={boot.github_login ?? ""}
                 dueIds={dueIds}
                 viewTitles={viewTitles}
                 view={view}

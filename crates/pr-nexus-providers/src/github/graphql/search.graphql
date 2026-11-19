@@ -72,4 +72,10 @@ fragment PrListFields on PullRequest {
       }
     }
   }
+  assignees(first: 20) {
+    nodes {
+      login
+      name
+    }
+  }
 }

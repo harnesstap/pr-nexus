@@ -6,7 +6,7 @@ use pr_nexus_core::domain::{
     MergeStateStatus, Mergeable, PrId, PrState, Project, ProjectId, ProviderRef, RepoRef,
     RequestSource, RequestStatus, ReviewDecision, ReviewRequest, ReviewRequestId,
 };
-use pr_nexus_core::domain::{PullRequest, TeamRef, VcsKind};
+use pr_nexus_core::domain::{Assignee, PullRequest, RequestedReviewer, Reviewer, TeamRef, VcsKind};
 use pr_nexus_core::error::ProviderError;
 use pr_nexus_core::onboarding::{self, OnboardingState};
 use pr_nexus_core::providers::{
@@ -18,6 +18,34 @@ use pr_nexus_core::settings;
 use pr_nexus_core::store::Store;
 
 use crate::error::AppError;
+
+fn demo_reviewers(number: u64) -> Vec<RequestedReviewer> {
+    let team = |slug: &str| {
+        RequestedReviewer::bare(Reviewer::Team(TeamRef {
+            org: "acme".into(),
+            slug: slug.into(),
+        }))
+    };
+    match number {
+        1 | 2 => vec![team("web-platform")],
+        4 => vec![team("payments")],
+        _ => Vec::new(),
+    }
+}
+
+fn demo_assignees(number: u64) -> Vec<Assignee> {
+    match number {
+        1 => vec![Assignee {
+            login: "ada".into(),
+            name: Some("Ada".into()),
+        }],
+        2 => vec![Assignee {
+            login: "sam".into(),
+            name: Some("Sam".into()),
+        }],
+        _ => Vec::new(),
+    }
+}
 
 pub fn seed_if_empty(store: &Store) -> Result<(), AppError> {
     if !store.list_accounts()?.is_empty() {
@@ -136,7 +164,8 @@ pub fn seed_if_empty(store: &Store) -> Result<(), AppError> {
                 } else {
                     MergeStateStatus::Clean
                 },
-                requested_reviewers: Vec::new(),
+                requested_reviewers: demo_reviewers(number),
+                assignees: demo_assignees(number),
                 unresolved_threads: 0,
                 total_threads: 1,
                 involvement,
