@@ -113,6 +113,22 @@ function sceneWorkspaces() {
   });
 }
 
+function sidebarTree(): boolean {
+  return (globalThis as { __sidebarTree?: boolean }).__sidebarTree === true;
+}
+
+/** One child under My PRs and two under To review, for the sidebar screenshots. */
+function treeViews() {
+  return [
+    { key: "mine", name: "My PRs", query: "is:open author:@me", builtin: true, sort_order: 0 },
+    { key: "custom:1", name: "Drafts", query: "is:draft", builtin: false, sort_order: 3, parent: "mine" },
+    { key: "to_review", name: "To review", query: "is:open review-requested:@me", builtin: true, sort_order: 1 },
+    { key: "custom:2", name: "Web platform", query: "team-review-requested:acme/web-platform", builtin: false, sort_order: 4, parent: "to_review" },
+    { key: "custom:3", name: "Payments", query: "team-review-requested:acme/payments", builtin: false, sort_order: 5, parent: "to_review" },
+    { key: "bumps_due", name: "Bumps due", query: "is:open author:@me bump:due", builtin: true, sort_order: 2 },
+  ];
+}
+
 const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   mcp_settings: () => mcp.mcpSettings(),
   mcp_tools: () => mcp.mcpTools(),
@@ -143,6 +159,10 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   search_reviews: () => boot.sync,
   filter_reviews: () => boot.sync,
   list_projects: () => projects,
+  list_sidebar_views: () => (sidebarTree() ? treeViews() : null),
+  save_sidebar_views: (args) => (sidebarTree() ? args.views : null),
+  sidebar_collapse: () => ({ views: false, projects: false, parents: [] }),
+  save_sidebar_collapse: (args) => args.collapse,
   list_page: (args) => pageFromRows(rows, projects, args.request as PageRequest),
   load_view_state: () => {
     const scene = (window as { __githubScene?: string }).__githubScene;

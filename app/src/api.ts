@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { PageDto, PageRequest } from "./list/paging";
+import type { SidebarCollapse } from "./list/sidebarCollapse";
 import type { SidebarView } from "./list/viewCatalog";
 import type { StackPlace } from "./list/stack";
 
@@ -1251,6 +1252,9 @@ export interface Api {
   listSidebarViews?(): Promise<SidebarView[]>;
   /** Stores the catalog and returns it repaired (built-ins restored, names unique). */
   saveSidebarViews?(views: SidebarView[]): Promise<SidebarView[]>;
+  /** Which sidebar sections and parent views are collapsed. Missing means all open. */
+  sidebarCollapse?(): Promise<SidebarCollapse>;
+  saveSidebarCollapse?(collapse: SidebarCollapse): Promise<SidebarCollapse>;
   openExternal(url: string): Promise<void>;
   prDetail(id: number): Promise<PrDetail>;
   /** Stored owners for the review dialog. Never calls GitHub. Absent in fakes that still use `prDetail`. */
@@ -1436,6 +1440,8 @@ export const tauriApi: Api = {
   saveViewState: (viewKey, stateJson) => invoke("save_view_state", { viewKey, stateJson }),
   listSidebarViews: () => invoke("list_sidebar_views"),
   saveSidebarViews: (views) => invoke("save_sidebar_views", { views }),
+  sidebarCollapse: () => invoke("sidebar_collapse"),
+  saveSidebarCollapse: (collapse) => invoke("save_sidebar_collapse", { collapse }),
   openExternal: (url) => invoke("open_external", { url }),
   prDetail: (id) => invoke("pr_detail", { id }),
   reviewTeams: (id) => invoke("review_teams", { id }),
