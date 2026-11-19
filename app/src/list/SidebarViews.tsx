@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { createPortal } from "react-dom";
 import { ChevronDownIcon, ChevronRightIcon, ClockIcon, HomeIcon, ListIcon, PlusIcon, SlackLogo } from "../icons";
 import { plainText } from "../textInput";
@@ -21,6 +21,7 @@ import {
   type ParentKey,
   type SidebarView,
 } from "./viewCatalog";
+import { applyViewMove, moveConfirmMessage, planViewMove, VIEW_DRAG_MIME, type ViewMove } from "./viewMove";
 
 interface Props {
   views: readonly SidebarView[];
@@ -41,6 +42,11 @@ interface Props {
   createDraft?: { parent: ParentKey | null; query: string };
   /** The section fills leftover sidebar space and scrolls its own list. */
   fill?: boolean;
+  /**
+   * Local counts for the rule before and after a move. Null when either rule
+   * needs GitHub; the confirm then names the added qualifiers without numbers.
+   */
+  countMove?: (before: string, after: string) => Promise<{ before: number; after: number } | null>;
 }
 
 type Dialog =
@@ -54,6 +60,25 @@ interface MenuState {
   x: number;
   y: number;
   anchor: HTMLElement | null;
+}
+
+interface ConfirmState {
+  move: ViewMove;
+  before: string | null;
+  counts: { before: number; after: number } | null;
+  x: number;
+  y: number;
+}
+
+interface RowDrag {
+  enabled: boolean;
+  dragging: boolean;
+  active: boolean;
+  onStart: (event: ReactDragEvent<HTMLElement>) => void;
+  onEnd: () => void;
+  onOver: (event: ReactDragEvent<HTMLElement>) => void;
+  onLeave: (event: ReactDragEvent<HTMLElement>) => void;
+  onDrop: (event: ReactDragEvent<HTMLElement>) => void;
 }
 
 /**
@@ -73,10 +98,16 @@ export function SidebarViews({
   onToggleParent,
   createDraft = { parent: null, query: "" },
   fill = false,
+  countMove,
 }: Props) {
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [dialog, setDialog] = useState<Dialog | null>(null);
+  const [drag, setDrag] = useState<{ key: string; x: number; y: number } | null>(null);
+  const [over, setOver] = useState<string | null>(null);
+  const [confirm, setConfirm] = useState<ConfirmState | null>(null);
   const anchors = useRef(new Map<string, HTMLButtonElement>());
+  const dragging = useRef<string | null>(null);
+  const commitId = useRef(0);
 
   function openMenu(key: string, x: number, y: number, anchor: HTMLElement | null) {
     setMenu({ key, x, y, anchor });
@@ -88,6 +119,121 @@ export function SidebarViews({
     if (restore) {
       anchor?.focus();
     }
+  }
+
+  function parentLabel(key: ParentKey): string {
+    return views.find((view) => view.key === key)?.name ?? (key === "mine" ? "My PRs" : "To review");
+  }
+
+  function finish(move: ViewMove, before: string | null) {
+    onChange(applyViewMove(views, move.key, move.parent, move.query, before));
+    if (move.parent && collapsedParents.includes(move.parent)) {
+      onToggleParent?.(move.parent);
+    }
+  }
+
+  async function commit(move: ViewMove, before: string | null, x: number, y: number) {
+    if (!move.needsConfirm || move.parent === null) {
+      finish(move, before);
+      return;
+    }
+    const token = commitId.current + 1;
+    commitId.current = token;
+    let counts: { before: number; after: number } | null = null;
+    if (countMove) {
+      try {
+        counts = await countMove(move.beforeQuery, move.afterQuery);
+      } catch {
+        counts = null;
+      }
+    }
+    if (commitId.current !== token) {
+      return;
+    }
+    setConfirm({ move, before, counts, x, y });
+  }
+
+  function requestMove(key: string, parent: ParentKey | null, before: string | null, x: number, y: number) {
+    const move = planViewMove(views, key, parent, before);
+    if (!move) {
+      return;
+    }
+    void commit(move, before, x, y);
+  }
+
+  function carriesView(event: ReactDragEvent<HTMLElement>): boolean {
+    if (dragging.current) {
+      return true;
+    }
+    return Array.from(event.dataTransfer.types).includes(VIEW_DRAG_MIME);
+  }
+
+  function startDrag(view: SidebarView, event: ReactDragEvent<HTMLElement>) {
+    if (view.builtin) {
+      event.preventDefault();
+      return;
+    }
+    dragging.current = view.key;
+    event.dataTransfer.setData(VIEW_DRAG_MIME, view.key);
+    event.dataTransfer.setData("text/plain", view.name);
+    event.dataTransfer.effectAllowed = "move";
+    hideNativeDragImage(event.dataTransfer);
+    setDrag({ key: view.key, x: event.clientX, y: event.clientY });
+  }
+
+  function endDrag() {
+    dragging.current = null;
+    setDrag(null);
+    setOver(null);
+  }
+
+  function hoverDrop(event: ReactDragEvent<HTMLElement>, id: string) {
+    if (!carriesView(event)) {
+      return;
+    }
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    setOver(id);
+    setDrag((current) => (current ? { ...current, x: event.clientX, y: event.clientY } : current));
+  }
+
+  function leaveDrop(event: ReactDragEvent<HTMLElement>, id: string) {
+    if (event.currentTarget.contains(event.relatedTarget as Node | null)) {
+      return;
+    }
+    setOver((current) => (current === id ? null : current));
+  }
+
+  function dropOn(parent: ParentKey | null, before: string | null, event: ReactDragEvent<HTMLElement>) {
+    if (!carriesView(event)) {
+      return;
+    }
+    event.preventDefault();
+    const key = dragging.current || event.dataTransfer.getData(VIEW_DRAG_MIME);
+    const point = { x: event.clientX, y: event.clientY };
+    endDrag();
+    if (key) {
+      requestMove(key, parent, before, point.x, point.y);
+    }
+  }
+
+  function rowDrag(view: SidebarView, slot: "parent" | "child" | "top"): RowDrag | null {
+    if (slot === "parent" && parentKey(view.key) === null) {
+      return null;
+    }
+    const id = slot === "parent" ? `parent:${view.key}` : `before:${view.key}`;
+    const parent = slot === "parent" ? parentKey(view.key) : slot === "top" ? null : parentKey(view.parent);
+    const before = slot === "parent" ? null : view.key;
+    return {
+      enabled: !view.builtin,
+      dragging: drag?.key === view.key,
+      active: over === id && drag?.key !== view.key,
+      onStart: (event) => startDrag(view, event),
+      onEnd: endDrag,
+      onOver: (event) => hoverDrop(event, id),
+      onLeave: (event) => leaveDrop(event, id),
+      onDrop: (event) => dropOn(parent, before, event),
+    };
   }
 
   const active = views.find((view) => view.key === menu?.key) ?? null;
@@ -126,6 +272,7 @@ export function SidebarViews({
             .map((view) => {
             const children = views.filter((item) => !item.builtin && parentKey(item.parent) === view.key);
             const folded = hiddenParent.has(view.key);
+            const slot = view.builtin ? "parent" : "top";
             return (
               <div key={view.key}>
                 <ViewRow
@@ -136,6 +283,7 @@ export function SidebarViews({
                   child={false}
                   canFold={children.length > 0}
                   folded={folded}
+                  drag={rowDrag(view, slot)}
                   onFold={() => onToggleParent?.(view.key)}
                   onSelect={() => onSelect(view.key)}
                   onMenu={(x, y, anchor) => openMenu(view.key, x, y, anchor)}
@@ -164,6 +312,7 @@ export function SidebarViews({
                           child
                           canFold={false}
                           folded={false}
+                          drag={rowDrag(child, "child")}
                           onFold={() => undefined}
                           onSelect={() => onSelect(child.key)}
                           onMenu={(x, y, anchor) => openMenu(child.key, x, y, anchor)}
@@ -182,11 +331,35 @@ export function SidebarViews({
               </div>
             );
           })}
+          {drag && (
+            <div
+              data-drop-zone="top"
+              data-drop-target={over === "top" ? "active" : undefined}
+              className={`rounded-md text-xs text-slate-300 ${over === "top" ? "bg-violet-500/20 px-2 py-1.5 ring-1 ring-inset ring-violet-400" : "h-6"}`}
+              onDragOver={(event) => hoverDrop(event, "top")}
+              onDragLeave={(event) => leaveDrop(event, "top")}
+              onDrop={(event) => dropOn(null, null, event)}
+            >
+              {over === "top" ? "Top level" : ""}
+            </div>
+          )}
         </nav>
       )}
+      {drag &&
+        createPortal(
+          <div
+            data-testid="view-drag-ghost"
+            className="pointer-events-none fixed z-50 cursor-grabbing rounded-md bg-slate-800 px-2 py-1 text-sm text-slate-100 shadow-lg ring-1 ring-violet-400"
+            style={{ left: drag.x + 12, top: drag.y + 8 }}
+          >
+            {views.find((view) => view.key === drag.key)?.name}
+          </div>,
+          document.body,
+        )}
       {menu && active && (
         <ViewMenu
           view={active}
+          views={views}
           x={menu.x}
           y={menu.y}
           onClose={closeMenu}
@@ -198,12 +371,25 @@ export function SidebarViews({
             onDuplicateState?.(active.key, copy.key);
           }}
           onDelete={() => setDialog({ kind: "delete", view: active })}
+          onMove={(parent) => requestMove(active.key, parent, null, menu.x, menu.y)}
           onReset={() => {
             const fallback = defaultCatalog().find((item) => item.key === active.key);
             if (!fallback) {
               return;
             }
             onChange(views.map((item) => (item.key === active.key ? { ...item, name: fallback.name, query: fallback.query } : item)));
+          }}
+        />
+      )}
+      {confirm && confirm.move.parent && (
+        <MoveConfirm
+          message={moveConfirmMessage(parentLabel(confirm.move.parent), confirm.move.added, confirm.counts)}
+          x={confirm.x}
+          y={confirm.y}
+          onCancel={() => setConfirm(null)}
+          onMove={() => {
+            finish(confirm.move, confirm.before);
+            setConfirm(null);
           }}
         />
       )}
@@ -236,6 +422,7 @@ function ViewRow({
   child,
   canFold,
   folded,
+  drag,
   onFold,
   onSelect,
   onMenu,
@@ -248,24 +435,38 @@ function ViewRow({
   child: boolean;
   canFold: boolean;
   folded: boolean;
+  drag: RowDrag | null;
   onFold: () => void;
   onSelect: () => void;
   onMenu: (x: number, y: number, anchor: HTMLElement | null) => void;
   register: (node: HTMLButtonElement | null) => void;
 }) {
   const badgeId = useId();
-  const tone = selected ? "bg-slate-800 text-white" : "text-slate-300 hover:bg-slate-900";
+  const tone = drag?.active
+    ? "bg-violet-500/20 text-white ring-1 ring-inset ring-violet-400"
+    : selected
+      ? "bg-slate-800 text-white"
+      : "text-slate-300 hover:bg-slate-900";
   const label = sidebarCountLabel(view.name, count, view.key === "bumps_due");
   const described = count != null && formatViewCount(count) != null;
   return (
     <div
       role="group"
       aria-label={label}
-      className="group relative flex items-center"
+      data-view-key={view.key}
+      data-drop-target={drag?.active ? "active" : undefined}
+      data-dragging={drag?.dragging ? "true" : undefined}
+      draggable={drag?.enabled ?? false}
+      className={`group relative flex items-center ${drag?.enabled ? "cursor-grab" : ""} ${drag?.dragging ? "opacity-40" : ""}`}
       onContextMenu={(event) => {
         event.preventDefault();
         onMenu(event.clientX, event.clientY, null);
       }}
+      onDragStart={drag?.enabled ? drag.onStart : undefined}
+      onDragEnd={drag?.enabled ? drag.onEnd : undefined}
+      onDragOver={drag ? drag.onOver : undefined}
+      onDragLeave={drag ? drag.onLeave : undefined}
+      onDrop={drag ? drag.onDrop : undefined}
     >
       {canFold && (
         <button
@@ -280,9 +481,19 @@ function ViewRow({
       )}
       <button
         type="button"
+        draggable={drag?.enabled ?? false}
         aria-current={selected ? "page" : undefined}
         aria-describedby={described ? badgeId : undefined}
-        className={`flex min-w-0 flex-1 items-center gap-2 rounded-md py-1.5 pr-11 text-left ${canFold || child ? "pl-1" : "pl-2"} ${tone}`}
+        className={`flex min-w-0 flex-1 items-center gap-2 rounded-md py-1.5 pr-11 text-left ${canFold || child ? "pl-1" : "pl-2"} ${tone} ${drag?.enabled ? "cursor-grab active:cursor-grabbing" : ""}`}
+        onDragStart={
+          drag?.enabled
+            ? (event) => {
+                event.stopPropagation();
+                drag.onStart(event);
+              }
+            : undefined
+        }
+        onDragEnd={drag?.enabled ? drag.onEnd : undefined}
         onClick={onSelect}
         onKeyDown={(event) => {
           if (opensRowMenu(event)) {
@@ -327,6 +538,7 @@ const ITEM = "flex w-full items-center rounded px-2 py-1.5 text-left text-sm tex
 
 function ViewMenu({
   view,
+  views,
   x,
   y,
   onClose,
@@ -334,9 +546,11 @@ function ViewMenu({
   onEdit,
   onDuplicate,
   onDelete,
+  onMove,
   onReset,
 }: {
   view: SidebarView;
+  views: readonly SidebarView[];
   x: number;
   y: number;
   onClose: (restore: boolean) => void;
@@ -344,11 +558,15 @@ function ViewMenu({
   onEdit: () => void;
   onDuplicate: () => void;
   onDelete: () => void;
+  onMove: (parent: ParentKey | null) => void;
   onReset: () => void;
 }) {
   const menu = useRef<HTMLDivElement>(null);
   const closeRef = useRef(onClose);
+  const focusSubmenu = useRef(false);
   const [box, setBox] = useState({ left: x, top: y });
+  const [moveOpen, setMoveOpen] = useState(false);
+  const here = parentKey(view.parent);
 
   useEffect(() => {
     closeRef.current = onClose;
@@ -364,6 +582,14 @@ function ViewMenu({
     const top = y + rect.height > window.innerHeight - 8 ? Math.max(8, y - rect.height) : y;
     setBox({ left, top });
   }, [x, y]);
+
+  useEffect(() => {
+    if (!moveOpen || !focusSubmenu.current) {
+      return;
+    }
+    focusSubmenu.current = false;
+    menu.current?.querySelector<HTMLButtonElement>('[data-submenu="move"] button:not(:disabled)')?.focus();
+  }, [moveOpen]);
 
   useEffect(() => {
     const items = menu.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]');
@@ -388,7 +614,21 @@ function ViewMenu({
   }, []);
 
   function onMenuKey(event: ReactKeyboardEvent) {
-    const items = [...(menu.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') ?? [])];
+    const submenu = menu.current?.querySelector('[data-submenu="move"]');
+    const inSubmenu = submenu?.contains(document.activeElement) ?? false;
+    if (event.key === "ArrowRight" && !inSubmenu && (document.activeElement as HTMLElement | null)?.dataset.move === "true") {
+      event.preventDefault();
+      focusSubmenu.current = true;
+      setMoveOpen(true);
+      return;
+    }
+    if (event.key === "ArrowLeft" && inSubmenu) {
+      event.preventDefault();
+      setMoveOpen(false);
+      menu.current?.querySelector<HTMLButtonElement>("[data-move]")?.focus();
+      return;
+    }
+    const items = [...(menu.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') ?? [])].filter((item) => !item.disabled);
     const index = items.indexOf(document.activeElement as HTMLButtonElement);
     const move = (next: number) => {
       event.preventDefault();
@@ -438,6 +678,30 @@ function ViewMenu({
       <button type="button" role="menuitem" tabIndex={-1} className={ITEM} onClick={() => pick(onDuplicate)}>
         Duplicate
       </button>
+      {!view.builtin && (
+        <div className="relative" onMouseLeave={() => setMoveOpen(false)}>
+          <button
+            type="button"
+            role="menuitem"
+            tabIndex={-1}
+            data-move="true"
+            aria-haspopup="menu"
+            aria-expanded={moveOpen}
+            className={ITEM}
+            onMouseEnter={() => setMoveOpen(true)}
+            onClick={() => setMoveOpen(true)}
+          >
+            Move to
+          </button>
+          {moveOpen && (
+            <div role="menu" aria-label="Move to" data-submenu="move" className="absolute left-[calc(100%-6px)] top-0 z-10 w-36 rounded-lg border border-slate-700 bg-slate-900 p-1 shadow-xl">
+              <MoveDestination label={views.find((item) => item.key === "mine")?.name ?? "My PRs"} current={here === "mine"} onPick={() => pick(() => onMove("mine"))} />
+              <MoveDestination label={views.find((item) => item.key === "to_review")?.name ?? "To review"} current={here === "to_review"} onPick={() => pick(() => onMove("to_review"))} />
+              <MoveDestination label="Top level" current={here === null} onPick={() => pick(() => onMove(null))} />
+            </div>
+          )}
+        </div>
+      )}
       {view.builtin ? (
         <button type="button" role="menuitem" tabIndex={-1} className={ITEM} onClick={() => pick(onReset)}>
           Reset to default
@@ -619,6 +883,105 @@ function ViewDialog({
     </div>,
     document.body,
   );
+}
+
+function MoveDestination({ label, current, onPick }: { label: string; current: boolean; onPick: () => void }) {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      tabIndex={-1}
+      disabled={current}
+      className={`${ITEM} disabled:cursor-default disabled:text-slate-500 disabled:hover:bg-transparent`}
+      onClick={onPick}
+    >
+      {label}
+    </button>
+  );
+}
+
+function MoveConfirm({
+  message,
+  x,
+  y,
+  onCancel,
+  onMove,
+}: {
+  message: string;
+  x: number;
+  y: number;
+  onCancel: () => void;
+  onMove: () => void;
+}) {
+  const panel = useRef<HTMLDivElement>(null);
+  const [box, setBox] = useState({ left: x, top: y });
+
+  useLayoutEffect(() => {
+    const node = panel.current;
+    if (!node) {
+      return;
+    }
+    const rect = node.getBoundingClientRect();
+    const left = Math.max(8, Math.min(x, window.innerWidth - rect.width - 8));
+    const top = y + 8 + rect.height > window.innerHeight - 8 ? Math.max(8, y - rect.height - 8) : y + 8;
+    setBox({ left, top });
+  }, [x, y, message]);
+
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onCancel();
+      }
+    }
+    function onPointer(event: MouseEvent) {
+      if (!panel.current?.contains(event.target as Node)) {
+        onCancel();
+      }
+    }
+    document.addEventListener("keydown", onKey);
+    document.addEventListener("mousedown", onPointer);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("mousedown", onPointer);
+    };
+  }, [onCancel]);
+
+  return createPortal(
+    <div
+      ref={panel}
+      role="dialog"
+      aria-label="Move view"
+      style={{ left: box.left, top: box.top }}
+      className="fixed z-50 w-64 rounded-lg border border-slate-700 bg-slate-900 p-3 text-sm text-slate-200 shadow-xl"
+    >
+      <p>{message}</p>
+      <div className="mt-3 flex justify-end gap-2">
+        <button type="button" className="rounded border border-slate-700 px-3 py-1.5 text-sm hover:bg-slate-800" onClick={onCancel}>
+          Cancel
+        </button>
+        <button type="button" className="rounded bg-violet-500 px-3 py-1.5 text-sm text-white" onClick={onMove}>
+          Move
+        </button>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+/** Replaces the browser's row snapshot. A label follows the pointer instead. */
+function hideNativeDragImage(dataTransfer: DataTransfer) {
+  if (typeof dataTransfer.setDragImage !== "function") {
+    return;
+  }
+  try {
+    const blank = document.createElement("canvas");
+    blank.width = 1;
+    blank.height = 1;
+    dataTransfer.setDragImage(blank, 0, 0);
+  } catch {
+    // A drag that is not a real browser session has no image to replace.
+  }
 }
 
 function dialogTitle(dialog: Dialog): string {

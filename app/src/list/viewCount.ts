@@ -93,6 +93,37 @@ export function listedCount(open: number, finished: number): number {
   return open + finished;
 }
 
+/**
+ * Counts for a parent move. Both rules have to be decidable from synced rows;
+ * a qualifier GitHub has to answer is not cheap, and the caller shows the
+ * added qualifiers without numbers.
+ */
+export async function localRuleCounts(
+  before: string,
+  after: string,
+  dueIds: readonly number[],
+  listPage: (request: PageRequest) => Promise<CountPage>,
+  now: Date,
+): Promise<{ before: number; after: number } | null> {
+  const left = analyzeViewRule(before);
+  const right = analyzeViewRule(after);
+  if (left.invalid || right.invalid || !left.fullyLocal || !right.fullyLocal) {
+    return null;
+  }
+  try {
+    const [beforePage, afterPage] = await Promise.all([
+      listPage(countRequest("custom:1", before, dueIds, null, true, now)),
+      listPage(countRequest("custom:1", after, dueIds, null, true, now)),
+    ]);
+    return {
+      before: listedCount(beforePage.summary.open, beforePage.summary.finished),
+      after: listedCount(afterPage.summary.open, afterPage.summary.finished),
+    };
+  } catch {
+    return null;
+  }
+}
+
 /** Sum of known counts. Unknown (null) hides the hint rather than under-counting. */
 export function knownTotal(counts: readonly (number | null | undefined)[]): string | null {
   let sum = 0;

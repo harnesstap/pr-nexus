@@ -35,6 +35,8 @@
 // `--sidebar-tree <dir>` saves parent views and collapsible section headers
 // (sidebar-tree.png, sidebar-new-view.png, sidebar-edit-parent.png,
 // sidebar-views-collapsed.png, sidebar-projects-collapsed.png).
+// `--view-drag <dir>` saves dragging a view onto a parent, the confirm,
+// the tree after the move, and the Move to submenu.
 // `--close-pr <dir>` saves Close PR (close-*.png): the detail menu, the
 // confirmation with a comment, the bulk confirmation, and the narrow bar menu.
 // `--settings-nav <dir>` saves the settings rail (settings-nav-*.png): Slack,
@@ -115,6 +117,11 @@ const sidebarTreeFlag = process.argv.indexOf("--sidebar-tree");
 const sidebarTreeDir = sidebarTreeFlag === -1 ? null : process.argv[sidebarTreeFlag + 1];
 if (sidebarTreeFlag !== -1 && !sidebarTreeDir) {
   throw new Error("--sidebar-tree needs an output directory");
+}
+const viewDragFlag = process.argv.indexOf("--view-drag");
+const viewDragDir = viewDragFlag === -1 ? null : process.argv[viewDragFlag + 1];
+if (viewDragFlag !== -1 && !viewDragDir) {
+  throw new Error("--view-drag needs an output directory");
 }
 const peopleFiltersFlag = process.argv.indexOf("--people-filters");
 const peopleFiltersDir = peopleFiltersFlag === -1 ? null : process.argv[peopleFiltersFlag + 1];
@@ -580,6 +587,12 @@ try {
   browser = await chromium.launch(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: "chrome" });
   if (sidebarTreeDir) {
     await sidebarTreeShots(browser, resolve(sidebarTreeDir));
+    await browser.close();
+    await vite.close();
+    process.exit(0);
+  }
+  if (viewDragDir) {
+    await viewDragShots(browser, resolve(viewDragDir));
     await browser.close();
     await vite.close();
     process.exit(0);
@@ -1060,6 +1073,76 @@ async function sidebarTreeShots(browser, dir) {
   await page.getByRole("button", { name: "Projects", exact: true }).waitFor();
   await page.screenshot({ path: resolve(dir, "sidebar-projects-collapsed.png"), clip: { x: 0, y: 0, width: 320, height: 900 } });
   console.log("wrote sidebar tree shots");
+  await page.close();
+}
+
+async function viewDragShots(browser, dir) {
+  mkdirSync(dir, { recursive: true });
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2, colorScheme: "dark" });
+  page.on("pageerror", (err) => console.error("page error:", err.message));
+  await page.addInitScript(() => {
+    globalThis.__sidebarTree = true;
+  });
+  await page.goto(url);
+  await page.getByRole("button", { name: "Drafts", exact: true }).waitFor();
+  await page.mouse.move(900, 40);
+
+  const source = page.locator('[data-view-key="custom:1"]');
+  const target = page.locator('[data-view-key="to_review"]');
+  const sourceBox = await source.boundingBox();
+  const targetBox = await target.boundingBox();
+  if (!sourceBox || !targetBox) {
+    throw new Error("missing drag rows");
+  }
+  const from = { x: sourceBox.x + 28, y: sourceBox.y + sourceBox.height / 2 };
+  const to = { x: targetBox.x + targetBox.width / 2, y: targetBox.y + targetBox.height / 2 };
+  await page.mouse.move(from.x, from.y);
+  await page.mouse.down();
+  await page.mouse.move(to.x, to.y, { steps: 16 });
+  await page.locator('[data-view-key="to_review"][data-drop-target="active"]').waitFor();
+  await page.getByTestId("view-drag-ghost").waitFor();
+  const side = { x: 0, y: 0, width: 360, height: 560 };
+  await page.screenshot({ path: resolve(dir, "view-drag-over.png"), clip: side });
+  console.log("wrote view-drag-over.png");
+  await page.mouse.up();
+  const dialog = page.getByRole("dialog", { name: "Move view" });
+  await dialog.waitFor();
+  await dialog.getByText("review-requested:@me").waitFor();
+  const box = await dialog.boundingBox();
+  await page.screenshot({
+    path: resolve(dir, "view-drag-confirm.png"),
+    clip: {
+      x: 0,
+      y: 0,
+      width: Math.max(420, Math.ceil((box?.x ?? 0) + (box?.width ?? 280) + 24)),
+      height: Math.max(560, Math.ceil((box?.y ?? 0) + (box?.height ?? 120) + 24)),
+    },
+  });
+  console.log("wrote view-drag-confirm.png");
+  await dialog.getByRole("button", { name: "Move" }).click();
+  await dialog.waitFor({ state: "detached" });
+  const drafts = page.getByRole("button", { name: "Drafts", exact: true });
+  await drafts.waitFor();
+  await page.mouse.move(900, 40);
+  await page.screenshot({ path: resolve(dir, "view-drag-tree.png"), clip: side });
+  console.log("wrote view-drag-tree.png");
+
+  await page.getByRole("button", { name: "Payments", exact: true }).hover();
+  await page.locator('[data-view-key="custom:3"]').getByRole("button", { name: "View menu" }).click();
+  await page.getByRole("menuitem", { name: "Move to" }).hover();
+  await page.getByRole("menu", { name: "Move to" }).waitFor();
+  const menu = page.getByRole("menu", { name: "Actions for Payments" });
+  const menuBox = await menu.boundingBox();
+  const subBox = await page.getByRole("menu", { name: "Move to" }).boundingBox();
+  const top = Math.max(0, Math.min(menuBox?.y ?? 0, subBox?.y ?? 0) - 56);
+  const right = Math.max((menuBox?.x ?? 0) + (menuBox?.width ?? 0), (subBox?.x ?? 0) + (subBox?.width ?? 0)) + 24;
+  const bottom = Math.max((menuBox?.y ?? 0) + (menuBox?.height ?? 0), (subBox?.y ?? 0) + (subBox?.height ?? 0)) + 24;
+  const left = 0;
+  await page.screenshot({
+    path: resolve(dir, "view-drag-menu.png"),
+    clip: { x: left, y: top, width: Math.ceil(right - left), height: Math.ceil(bottom - top) },
+  });
+  console.log("wrote view-drag-menu.png");
   await page.close();
 }
 
