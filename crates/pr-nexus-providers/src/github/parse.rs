@@ -116,7 +116,8 @@ pub(crate) fn parse_budget(body: &Value) -> Option<RateBudget> {
     })
 }
 
-pub(crate) fn graphql_failure(body: &Value) -> Option<ProviderError> {
+/// `reset_at` is when a RATE_LIMITED answer may be retried.
+pub(crate) fn graphql_failure(body: &Value, reset_at: DateTime<Utc>) -> Option<ProviderError> {
     let errors = body.get("errors")?.as_array()?;
     if errors.is_empty() || only_missing_nodes(body, errors) {
         return None;
@@ -138,7 +139,7 @@ pub(crate) fn graphql_failure(body: &Value) -> Option<ProviderError> {
     });
     if rate {
         return Some(ProviderError::RateLimited {
-            reset_at: Utc::now(),
+            reset_at,
             secondary: false,
         });
     }

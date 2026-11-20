@@ -84,6 +84,7 @@ pub(crate) fn fetch(
     let scopes = header("x-oauth-scopes");
     let retry = header("retry-after");
     let sso = header("x-github-sso");
+    let spent = http::primary_spent(response.headers());
     let has_next = header("link").is_some_and(|link| link.contains("rel=\"next\""));
     if status == 304 {
         return Ok(NotificationsPage::NotModified { poll_interval });
@@ -94,6 +95,7 @@ pub(crate) fn fetch(
             status,
             retry.as_deref(),
             sso.as_deref(),
+            spent,
             &body,
             chrono::Utc::now(),
         );

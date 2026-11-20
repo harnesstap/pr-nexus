@@ -50,10 +50,29 @@ impl Drop for Permit<'_> {
     }
 }
 
+/// `x-ratelimit-reset`, the end of the primary rate limit window.
+pub(crate) fn rate_reset(headers: &reqwest::header::HeaderMap) -> Option<DateTime<Utc>> {
+    let secs = headers.get("x-ratelimit-reset")?.to_str().ok()?.trim();
+    DateTime::from_timestamp(secs.parse().ok()?, 0)
+}
+
+/// The primary limit is spent (`x-ratelimit-remaining: 0`): when it resets.
+pub(crate) fn primary_spent(headers: &reqwest::header::HeaderMap) -> Option<DateTime<Utc>> {
+    let remaining = headers.get("x-ratelimit-remaining")?.to_str().ok()?;
+    if remaining.trim() == "0" {
+        rate_reset(headers)
+    } else {
+        None
+    }
+}
+
+/// `spent` is [`primary_spent`]: a 403 or 429 then is the primary limit,
+/// not a secondary one, and lasts until the reset GitHub named.
 pub(crate) fn classify(
     status: u16,
     retry_after: Option<&str>,
     sso: Option<&str>,
+    spent: Option<DateTime<Utc>>,
     body: &str,
     now: DateTime<Utc>,
 ) -> ProviderError {
@@ -66,6 +85,13 @@ pub(crate) fn classify(
     if status == 403 || status == 429 {
         if let Some(url) = sso_url(sso.unwrap_or("")) {
             return ProviderError::Forbidden(format!("sso: {url}"));
+        }
+        // GitHub's order: `retry-after` first, then a spent primary limit.
+        if let Some(reset_at) = spent.filter(|_| retry_after.is_none()) {
+            return ProviderError::RateLimited {
+                reset_at,
+                secondary: false,
+            };
         }
         if status == 429 || looks_secondary(body) || retry_after.is_some() {
             let secs = retry_after
@@ -216,13 +242,21 @@ mod tests {
     #[test]
     fn maps_auth_sso_secondary_and_not_found() {
         assert!(matches!(
-            classify(401, None, None, r#"{"message":"Bad credentials"}"#, now()),
+            classify(
+                401,
+                None,
+                None,
+                None,
+                r#"{"message":"Bad credentials"}"#,
+                now()
+            ),
             ProviderError::Unauthorized(_)
         ));
         match classify(
             403,
             None,
             Some("required; url=https://github.com/orgs/acme/sso?authorization_request=1"),
+            None,
             "{}",
             now(),
         ) {
@@ -234,6 +268,7 @@ mod tests {
         match classify(
             403,
             Some("30"),
+            None,
             None,
             r#"{"message":"You have exceeded a secondary rate limit."}"#,
             now(),
@@ -253,14 +288,14 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert!(matches!(
-            classify(404, None, None, r#"{"message":"Not Found"}"#, now()),
+            classify(404, None, None, None, r#"{"message":"Not Found"}"#, now()),
             ProviderError::NotFound(_)
         ));
     }
 
     #[test]
     fn gateway_pages_and_timeouts_count_as_timeouts() {
-        let gateway = classify(502, None, None, "<html>502 Bad Gateway</html>", now());
+        let gateway = classify(502, None, None, None, "<html>502 Bad Gateway</html>", now());
         match &gateway {
             ProviderError::Api { code, message } => {
                 assert_eq!(code, "502");
@@ -269,7 +304,7 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert!(is_timeout(&gateway));
-        assert!(is_timeout(&classify(504, None, None, "", now())));
+        assert!(is_timeout(&classify(504, None, None, None, "", now())));
         assert!(is_timeout(&ProviderError::Network(
             "error sending request: operation timed out".into()
         )));
@@ -277,7 +312,7 @@ mod tests {
             code: "graphql".into(),
             message: "Something went wrong while executing your query. This may be the result of a timeout".into(),
         }));
-        assert!(!is_timeout(&classify(500, None, None, "{}", now())));
+        assert!(!is_timeout(&classify(500, None, None, None, "{}", now())));
         assert!(!is_timeout(&ProviderError::Api {
             code: "graphql".into(),
             message: "Field 'nope' doesn't exist".into(),

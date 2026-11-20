@@ -97,6 +97,7 @@ impl GithubClient {
             .get("x-github-sso")
             .and_then(|value| value.to_str().ok())
             .map(str::to_owned);
+        let spent = http::primary_spent(response.headers());
         let body = response.text().map_err(http::network)?;
         if status == 422 {
             return Err(ProviderError::Api {
@@ -109,6 +110,7 @@ impl GithubClient {
                 status,
                 retry.as_deref(),
                 sso.as_deref(),
+                spent,
                 &body,
                 Utc::now(),
             ));

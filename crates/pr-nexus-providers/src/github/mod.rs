@@ -194,12 +194,15 @@ impl GithubClient {
             .get("x-github-sso")
             .and_then(|value| value.to_str().ok())
             .map(str::to_owned);
+        let spent = http::primary_spent(response.headers());
+        let reset = http::rate_reset(response.headers());
         let body = response.text().map_err(http::network)?;
         if !(200..300).contains(&status) {
             let err = http::classify(
                 status,
                 retry.as_deref(),
                 sso.as_deref(),
+                spent,
                 &body,
                 chrono::Utc::now(),
             );
@@ -211,7 +214,20 @@ impl GithubClient {
         if let Some(budget) = parse::parse_budget(&value) {
             *self.budget.lock().expect("rate budget") = Some(budget);
         }
-        if let Some(err) = parse::graphql_failure(&value) {
+        // A RATE_LIMITED answer has no rateLimit field: the header, else
+        // the last known budget, says when the limit resets.
+        let now = chrono::Utc::now();
+        let reset_at = reset
+            .or_else(|| {
+                self.budget
+                    .lock()
+                    .expect("rate budget")
+                    .as_ref()
+                    .map(|budget| budget.reset_at)
+                    .filter(|at| *at > now)
+            })
+            .unwrap_or(now);
+        if let Some(err) = parse::graphql_failure(&value, reset_at) {
             self.note_auth(&err);
             return Err(err);
         }
@@ -313,12 +329,14 @@ impl GithubClient {
             .get("x-github-sso")
             .and_then(|value| value.to_str().ok())
             .map(str::to_owned);
+        let spent = http::primary_spent(response.headers());
         let body = response.text().map_err(http::network)?;
         if !(200..300).contains(&status) {
             let err = http::classify(
                 status,
                 retry.as_deref(),
                 sso.as_deref(),
+                spent,
                 &body,
                 chrono::Utc::now(),
             );
