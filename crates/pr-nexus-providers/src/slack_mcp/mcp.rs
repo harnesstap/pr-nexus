@@ -175,7 +175,9 @@ impl SessionInner {
                         err,
                         rmcp::ServiceError::TransportClosed | rmcp::ServiceError::TransportSend(_)
                     );
-                    if transport && attempt == 0 && !is_auth_text(&text) {
+                    // Slack may have posted before the connection broke, so a
+                    // send is never resent; `post` looks for it instead.
+                    if transport && attempt == 0 && tool != SEND_MESSAGE && !is_auth_text(&text) {
                         self.reconnect(generation).await?;
                         continue;
                     }
@@ -587,7 +589,20 @@ impl ChatProvider for SlackMcpChatProvider {
 
     fn post(&self, message: &OutgoingMessage<'_>) -> Result<PostedMessage, ProviderError> {
         self.throttle(message.channel_id);
-        let output = self.caller.call(SEND_MESSAGE, send_arguments(message))?;
+        let output = match self.caller.call(SEND_MESSAGE, send_arguments(message)) {
+            Ok(output) => output,
+            // The connection broke or timed out, maybe after Slack posted.
+            // Look for the message; when it is not found the send stays
+            // failed, since it may well not have gone out.
+            Err(ProviderError::Network(text)) => {
+                return self.recover(message).ok_or_else(|| {
+                    ProviderError::Network(format!(
+                        "{text}. The message may have been posted; check the channel before retrying."
+                    ))
+                });
+            }
+            Err(err) => return Err(err),
+        };
         if output.is_error {
             return Err(schema::map_error(SEND_MESSAGE, &output.text, None));
         }
@@ -688,6 +703,8 @@ mod tests {
         calls: Mutex<Vec<(String, JsonObject)>>,
         reply: ToolOutput,
         read: Option<ToolOutput>,
+        /// The send fails as a lost connection would.
+        send_lost: bool,
     }
 
     impl ToolCaller for Arc<Fake> {
@@ -701,6 +718,9 @@ mod tests {
                     .read
                     .clone()
                     .ok_or_else(|| ProviderError::Network("offline".into()));
+            }
+            if self.send_lost {
+                return Err(ProviderError::Network(format!("{tool}: Transport closed")));
             }
             Ok(self.reply.clone())
         }
@@ -718,6 +738,7 @@ mod tests {
             calls: Mutex::new(Vec::new()),
             reply,
             read,
+            send_lost: false,
         });
         let user = ChatUser {
             id: "U0ME".into(),
@@ -904,6 +925,48 @@ mod tests {
         let calls = fake.calls.lock().unwrap();
         assert_eq!(calls[1].0, READ_CHANNEL);
         assert_eq!(calls[1].1["channel_id"], json!("D0123456789"));
+    }
+
+    fn lost_send(read: Option<ToolOutput>) -> (SlackMcpChatProvider, Arc<Fake>) {
+        let fake = Arc::new(Fake {
+            calls: Mutex::new(Vec::new()),
+            reply: text("unused"),
+            read,
+            send_lost: true,
+        });
+        let user = ChatUser {
+            id: "U0ME".into(),
+            name: "me".into(),
+        };
+        let slack = SlackMcpChatProvider::new(Box::new(fake.clone()), AccountId(7), user);
+        (slack, fake)
+    }
+
+    #[test]
+    fn a_lost_send_is_found_in_the_channel_or_stays_failed() {
+        let read = text(
+            r#"{"messages":"=== Message from me (U0ME) at now === \nMessage TS: 1700000000.000200\nReview <https:\/\/github.com\/acme\/web\/pull\/1|github.com\/acme\/web\/pull\/1>"}"#,
+        );
+        let (slack, fake) = lost_send(Some(read));
+        let posted = slack
+            .post(&dm("Review [web#1](https://github.com/acme/web/pull/1)"))
+            .unwrap();
+        assert_eq!(posted.ts, "1700000000.000200");
+        let tools: Vec<_> = fake
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|c| c.0.clone())
+            .collect();
+        assert_eq!(tools, vec![SEND_MESSAGE, READ_CHANNEL]);
+
+        let (slack, _) = lost_send(None);
+        let err = slack.post(&dm("hello")).unwrap_err();
+        assert!(
+            matches!(&err, ProviderError::Network(text) if text.contains("may have been posted")),
+            "{err:?}"
+        );
     }
 
     #[test]

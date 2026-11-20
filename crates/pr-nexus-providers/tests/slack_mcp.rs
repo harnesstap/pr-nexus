@@ -667,7 +667,11 @@ async fn mcp_response(stats: &PaceStats, session: &str, body: &[u8]) -> Vec<u8> 
     let value: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
     let id = value.get("id").cloned();
     let method = value["method"].as_str().unwrap_or("");
-    note(stats, format!("POST /mcp {method} session={session}"));
+    let tool = value["params"]["name"].as_str().unwrap_or("");
+    note(
+        stats,
+        format!("POST /mcp {method} {tool} session={session}"),
+    );
     if id.is_none() {
         return status_response(202, "Accepted", session);
     }
@@ -851,6 +855,31 @@ fn concurrent_calls_overlap_on_one_session() {
         1,
         "one session\n{log}"
     );
+}
+
+#[test]
+fn a_send_that_lost_its_connection_is_not_sent_again() {
+    // The first session answers 500 to every call: Slack may have posted
+    // before the error, so a resend could post the message twice.
+    let server = pace_server(true);
+    let slack = signed_in(&server);
+    let err = slack
+        .post(&OutgoingMessage {
+            channel_id: "C0TEAM",
+            text: "Review https://github.com/acme/web/pull/1",
+            thread_ts: None,
+            reply_broadcast: false,
+            unfurl_app_links: true,
+        })
+        .unwrap_err();
+    let log = server.stats.log.lock().unwrap().join("\n");
+    let sends = log.matches("tools/call slack_send_message").count();
+    assert_eq!(sends, 1, "{err:?}\n{log}");
+    assert!(
+        log.contains("tools/call slack_read_channel"),
+        "looked for the message before giving up\n{log}"
+    );
+    assert!(err.to_string().contains("may have been posted"), "{err:?}");
 }
 
 #[test]
