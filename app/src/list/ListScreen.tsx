@@ -606,7 +606,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
         .then((rows) => {
           const row = rows.find((item) => item.id === request.prId);
           if (row) {
-            setDetailRow(row);
+            openDetailRef.current(row);
           }
         })
         .catch(() => undefined);
