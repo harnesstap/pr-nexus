@@ -122,6 +122,16 @@ pub(crate) fn is_timeout(err: &ProviderError) -> bool {
     }
 }
 
+/// A failed send or body read. reqwest's text does not say "timed out", so
+/// a client timeout is named here for [`is_timeout`].
+pub(crate) fn network(err: reqwest::Error) -> ProviderError {
+    if err.is_timeout() {
+        ProviderError::Network(format!("timed out: {err}"))
+    } else {
+        ProviderError::Network(err.to_string())
+    }
+}
+
 /// The error a page reports once every retry timed out: it names the query
 /// and says GitHub timed out, keeping the last status as the code.
 pub(crate) fn timed_out(
@@ -180,6 +190,27 @@ mod tests {
         DateTime::parse_from_rfc3339("2026-10-26T00:00:00Z")
             .unwrap()
             .with_timezone(&Utc)
+    }
+
+    #[test]
+    fn a_client_timeout_counts_as_a_timeout() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let server = runtime.block_on(wiremock::MockServer::start());
+        runtime.block_on(
+            wiremock::Mock::given(wiremock::matchers::any())
+                .respond_with(
+                    wiremock::ResponseTemplate::new(200)
+                        .set_delay(std::time::Duration::from_secs(2)),
+                )
+                .mount(&server),
+        );
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_millis(100))
+            .build()
+            .unwrap();
+        // reqwest's text for a timeout is only "error sending request for url".
+        let err = client.get(server.uri()).send().unwrap_err();
+        assert!(is_timeout(&network(err)));
     }
 
     #[test]

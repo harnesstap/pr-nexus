@@ -85,7 +85,7 @@ impl GithubClient {
             .bearer_auth(&self.token)
             .header("Accept", "application/vnd.github+json")
             .send()
-            .map_err(|err| ProviderError::Network(err.to_string()))?;
+            .map_err(http::network)?;
         let status = response.status().as_u16();
         let retry = response
             .headers()
@@ -97,9 +97,7 @@ impl GithubClient {
             .get("x-github-sso")
             .and_then(|value| value.to_str().ok())
             .map(str::to_owned);
-        let body = response
-            .text()
-            .map_err(|err| ProviderError::Network(err.to_string()))?;
+        let body = response.text().map_err(http::network)?;
         if status == 422 {
             return Err(ProviderError::Api {
                 code: "422".into(),
