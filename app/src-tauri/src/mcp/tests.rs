@@ -3,6 +3,7 @@
 //! here leaves 127.0.0.1.
 
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
@@ -33,8 +34,12 @@ struct Harness {
 }
 
 async fn harness() -> Harness {
+    harness_with(true).await
+}
+
+async fn harness_with(demo: bool) -> Harness {
     let dir = tempfile::tempdir().unwrap();
-    let state = Arc::new(AppState::for_tests(&dir.path().join("test.db"), true));
+    let state = Arc::new(AppState::for_tests(&dir.path().join("test.db"), demo));
     crate::demo::seed_if_empty(&state.store).unwrap();
     let audit = Arc::new(Recorder::default());
     let control = Arc::new(McpControl::with_audit(state.clone(), audit.clone(), None).unwrap());
@@ -1477,6 +1482,26 @@ async fn slack_reads_are_off_by_default_then_audited_without_text() {
     let text = format!("{rows:?}");
     assert!(text.contains("slack:C0ACME0001"), "{text}");
     assert!(!text.contains("secret plans"), "{text}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn list_prs_on_another_profile_runs_its_review_sync() {
+    // Demo states never sync reviews, so both profiles are real ones. With no
+    // GitHub account the other profile's pass ends in an error; what matters
+    // is that it runs at all, since that profile has no scheduler to wake.
+    let h = harness_with(false).await;
+    let (labs, _) = h.state.profiles.create("Labs", &[]).unwrap();
+    let session = h.session().await;
+    let listed = h
+        .call(&session, "list_prs", json!({"profile": labs.id}))
+        .await;
+    assert_ne!(listed["isError"], true, "{listed}");
+    let other = super::profiles::resolve(&h.state, Some(&labs.id)).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while other.sync.lock().unwrap().reviews.state == "loading" && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_ne!(other.sync.lock().unwrap().reviews.state, "loading");
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -279,6 +279,12 @@ impl ServerHandler for NexusMcp {
             }))
             .into());
         }
+        if spec.name == "list_prs" {
+            // The first read starts the lazy review sync (§6) on its own
+            // thread, as the window does. Waking the scheduler would not do:
+            // a profile other than the active one has none.
+            crate::commands::start_reviews(&state);
+        }
         let handler = spec.handler;
         let input = arguments.clone();
         let caller = super::slack::session::Caller {

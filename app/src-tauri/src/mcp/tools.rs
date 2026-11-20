@@ -308,11 +308,8 @@ fn get_project(state: &AppState, arguments: JsonObject) -> Result<Value, AppErro
 fn list_prs(state: &AppState, arguments: JsonObject) -> Result<Value, AppError> {
     let filter: PrFilter = parse(arguments)?;
     check_limit(filter.limit)?;
-    // Review requests sync lazily (§6): the first read asks for them and
-    // answers from what is stored, flagged partial, instead of waiting.
-    if crate::state::activate_reviews(state) {
-        crate::live::request_sync(state);
-    }
+    // Review requests sync lazily (§6): the server starts them before this
+    // runs, and this answers from what is stored, flagged partial.
     if filter.more_reviews == Some(true) {
         crate::state::load_more_reviews(state)?;
     }
