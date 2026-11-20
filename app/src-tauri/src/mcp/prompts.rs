@@ -8,6 +8,7 @@ use pr_nexus_core::bots::NoteKind;
 use pr_nexus_core::domain::{self, PrState, PullRequest, Reviewer};
 use pr_nexus_core::overview::{self, CheckState, PrOverview, ReviewState};
 use pr_nexus_core::ownership::CachedOwnership;
+use pr_nexus_core::pr_link;
 use rmcp::model::{GetPromptResult, Prompt, PromptArgument, PromptMessage, Role};
 use serde_json::{Map, Value};
 
@@ -391,27 +392,10 @@ fn resolve(state: &AppState, text: &str) -> Result<PullRequest, AppError> {
         })
 }
 
-/// `https://github.com/o/r/pull/12` or `o/r#12`.
+/// `https://github.com/o/r/pull/12` (with any `/files`, query or fragment)
+/// or `o/r#12`: the same parser as a link pasted into the list search.
 fn parse_pr(text: &str) -> Option<(String, String, u64)> {
-    if let Some((repo, number)) = text.split_once('#') {
-        let (owner, name) = repo.split_once('/')?;
-        return Some((owner.to_owned(), name.to_owned(), number.parse().ok()?));
-    }
-    let path = text.split_once("://").map_or(text, |(_, rest)| rest);
-    let mut parts = path
-        .split(['/', '?', '#'])
-        .filter(|part| !part.is_empty())
-        .skip(1);
-    let owner = parts.next()?;
-    let name = parts.next()?;
-    if parts.next()? != "pull" {
-        return None;
-    }
-    Some((
-        owner.to_owned(),
-        name.to_owned(),
-        parts.next()?.parse().ok()?,
-    ))
+    pr_link::parse(text).map(|link| (link.owner, link.name, link.number))
 }
 
 fn required_string(arguments: Option<&Map<String, Value>>, key: &str) -> Result<String, AppError> {
@@ -496,5 +480,14 @@ mod tests {
             Some(("acme".into(), "widgets".into(), 4))
         );
         assert!(parse_pr("not a pr").is_none());
+        assert_eq!(
+            parse_pr("https://github.com/acme/widgets/pull/12#discussion_r1"),
+            Some(("acme".into(), "widgets".into(), 12))
+        );
+        assert_eq!(
+            parse_pr("https://github.com/acme/widgets/pull/12/files?w=1"),
+            Some(("acme".into(), "widgets".into(), 12))
+        );
+        assert!(parse_pr("https://gitlab.com/acme/widgets/pull/12").is_none());
     }
 }
