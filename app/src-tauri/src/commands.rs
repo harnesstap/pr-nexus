@@ -2134,9 +2134,14 @@ fn reqwest_client() -> Result<reqwest::blocking::Client, AppError> {
 }
 
 #[tauri::command]
-pub async fn open_external(app: tauri::AppHandle, url: String) -> Result<(), AppError> {
+pub async fn open_external(
+    app: tauri::AppHandle,
+    state: State<'_, std::sync::Arc<AppState>>,
+    url: String,
+) -> Result<(), AppError> {
+    let state = blocking::Handle::new(&state);
     blocking::run(move || {
-        if !external_url_allowed(&url) {
+        if !external_url_allowed(&url) && !stored_jira_link(state.inner().as_ref(), &url)? {
             return Err(AppError::new("validation", "That link cannot be opened"));
         }
         app.opener()
@@ -2144,6 +2149,22 @@ pub async fn open_external(app: tauri::AppHandle, url: String) -> Result<(), App
             .map_err(|err| AppError::new("network", err.to_string()))
     })
     .await
+}
+
+/// `url` is exactly the link a project's JIRA chip opens (§8), so a JIRA
+/// host the user saved opens, and no other host does.
+fn stored_jira_link(state: &AppState, url: &str) -> Result<bool, AppError> {
+    let lower = url.to_ascii_lowercase();
+    if !(lower.starts_with("https://") || lower.starts_with("http://")) {
+        return Ok(false);
+    }
+    let base = settings::jira_base_url(&state.store)?;
+    Ok(state
+        .store
+        .all_jira_links()?
+        .values()
+        .flatten()
+        .any(|link| pr_nexus_core::jira::href(&link.key, &link.url, &base).as_deref() == Some(url)))
 }
 
 /// GitHub, Slack web (`*.slack.com`, by parsed host) and the Slack app scheme.
@@ -2481,6 +2502,33 @@ mod tests {
         eprintln!(
             "list_page 500 cold {cold_ms:.2} ms, cached {warm_ms:.2} ms; bot counts parse {parse_ms:.2} ms, stored {stored_ms:.2} ms"
         );
+    }
+
+    #[test]
+    fn a_stored_jira_link_opens_and_other_hosts_do_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::for_tests(&dir.path().join("pr-nexus.db"), true);
+        let project = projects::create_project(&state, "Rollout".into()).unwrap();
+        settings::put_json(
+            &state.store,
+            settings::JIRA_BASE_URL,
+            "https://acme-labs.atlassian.net",
+        )
+        .unwrap();
+        for text in ["ACME-123", "https://tracker.example/browse/OPS-7"] {
+            let input = crate::services::project_info::JiraLinkInput {
+                text: Some(text.into()),
+                key: String::new(),
+                url: String::new(),
+            };
+            crate::services::project_info::add_jira_link(&state, project.id, input).unwrap();
+        }
+        let opens = |url: &str| stored_jira_link(&state, url).unwrap();
+        assert!(opens("https://acme-labs.atlassian.net/browse/ACME-123"));
+        assert!(opens("https://tracker.example/browse/OPS-7"));
+        assert!(!opens("https://acme-labs.atlassian.net/browse/ACME-999"));
+        assert!(!opens("https://evil.example/browse/ACME-123"));
+        assert!(!opens("javascript:alert(1)"));
     }
 
     #[test]
