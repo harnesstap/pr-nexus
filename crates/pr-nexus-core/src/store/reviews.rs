@@ -176,6 +176,40 @@ impl Store {
         })
     }
 
+    /// §7.4: closes every active request on these finished pull requests in
+    /// one write and returns how many closed. A request that is already
+    /// closed (a merge from the detail panel, say) is left alone.
+    pub fn close_active_requests(
+        &self,
+        prs: Vec<(PrId, CloseReason)>,
+        at: DateTime<Utc>,
+    ) -> Result<usize, CoreError> {
+        if prs.is_empty() {
+            return Ok(0);
+        }
+        let at = format_ts(at);
+        self.write(move |conn| {
+            let tx = conn.transaction().map_err(db)?;
+            let mut closed = 0;
+            {
+                let mut stmt = tx
+                    .prepare(
+                        "UPDATE review_requests
+                         SET status = 'closed', close_reason = ?1, closed_at = ?2
+                         WHERE pr_id = ?3 AND status = 'active'",
+                    )
+                    .map_err(db)?;
+                for (pr, reason) in &prs {
+                    closed += stmt
+                        .execute(params![reason.as_str(), at, pr.0])
+                        .map_err(db)?;
+                }
+            }
+            tx.commit().map_err(db)?;
+            Ok(closed)
+        })
+    }
+
     /// §7.4: a bump only moves `last_bumped_at` and `bump_count` on the
     /// active row. It never creates a row.
     pub fn record_bump(

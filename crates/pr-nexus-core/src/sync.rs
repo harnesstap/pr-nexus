@@ -13,7 +13,7 @@ use chrono::{DateTime, Duration, Utc};
 
 use crate::domain::{
     AccountId, AccountKind, ChecksState, CloseReason, Involvement, Mergeable, PrState, ProviderRef,
-    PullRequest, Repository, RequestStatus,
+    PullRequest, Repository,
 };
 use crate::error::CoreError;
 use crate::providers::{
@@ -1042,8 +1042,12 @@ fn sync_bucket(
         .filter(|pr| owned_by(pr, bucket))
         .cloned()
         .collect();
+    let finished = rows
+        .iter()
+        .filter_map(|pr| finished_reason(pr.state).map(|reason| (pr.id, reason)))
+        .collect();
+    store.close_active_requests(finished, now)?;
     for pr in rows {
-        close_requests_of_finished(store, &pr, now)?;
         let out_of_scope = !in_scope(&pr.repo.owner, scope);
         let expired = should_hide_closed(pr.state, pr.updated_at, now, keep_days);
         let next = out_of_scope || expired;
@@ -1135,17 +1139,18 @@ pub(crate) fn close_requests_of_finished(
     pr: &PullRequest,
     now: DateTime<Utc>,
 ) -> Result<(), CoreError> {
-    let reason = match pr.state {
-        PrState::Open => return Ok(()),
-        PrState::Merged => CloseReason::PrMerged,
-        PrState::Closed => CloseReason::PrClosed,
-    };
-    for request in store.list_review_requests(pr.id)? {
-        if request.status == RequestStatus::Active {
-            store.close_review_request(request.id, reason, now)?;
-        }
+    if let Some(reason) = finished_reason(pr.state) {
+        store.close_active_requests(vec![(pr.id, reason)], now)?;
     }
     Ok(())
+}
+
+fn finished_reason(state: PrState) -> Option<CloseReason> {
+    match state {
+        PrState::Open => None,
+        PrState::Merged => Some(CloseReason::PrMerged),
+        PrState::Closed => Some(CloseReason::PrClosed),
+    }
 }
 
 fn remember_org(orgs: &mut Vec<String>, owner: &str, viewer: &str) {
@@ -1396,6 +1401,7 @@ mod tests {
     use super::*;
     use crate::domain::{
         Account, AuthMode, ChecksState, Involvement, MergeStateStatus, Mergeable, RepoRef,
+        RequestStatus,
     };
     use crate::error::ProviderError;
     use chrono::TimeZone;
