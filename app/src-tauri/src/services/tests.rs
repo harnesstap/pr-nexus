@@ -1524,6 +1524,74 @@ fn second_preview_makes_no_network_calls() {
     assert_eq!(slack.posts.lock().unwrap()[0].0, "C0ACME0002");
 }
 
+/// Sending one card (the MCP `request_reviews` path) re-resolves only that
+/// card's pull requests, and the narrowed request still plans the card the
+/// preview fingerprinted.
+#[test]
+fn card_send_resolves_only_its_own_prs() {
+    let fx = fixture("card-owners");
+    let state = &fx.state;
+    connect_fake_workspace(state);
+    let slack = Arc::new(FakeSlack::default());
+    let github = Arc::new(CountingGithub::default());
+    let mut pr_ids = Vec::new();
+    let mut teams: Vec<String> = Vec::new();
+    for item in prs::list_prs(
+        state,
+        &PrFilter {
+            state: Some(PrStateFilter::Open),
+            ..PrFilter::default()
+        },
+    )
+    .unwrap()
+    .items
+    {
+        let Ok(detail) = prs::pr_detail(state, item.row.id) else {
+            continue;
+        };
+        let team = detail
+            .mandatory_teams
+            .first()
+            .or(detail.candidate_teams.first());
+        if let Some(team) = team
+            && !teams.contains(team)
+        {
+            teams.push(team.clone());
+            map_team(
+                state,
+                team,
+                &format!("C0ACME1{:03}", teams.len()),
+                "reviews",
+            );
+        }
+        pr_ids.push(item.row.id);
+    }
+    cold_caches(state);
+    let request: BulkRequest =
+        serde_json::from_value(serde_json::json!({ "pr_ids": pr_ids })).unwrap();
+    let preview = bulk::preview_with(state, &slack, &github, &request).unwrap();
+    let resolved = probes(&github);
+    assert!(preview.cards.len() > 1, "needs several channels");
+    for card in &preview.cards {
+        let narrowed = bulk::card_request(&request, card);
+        assert!(narrowed.pr_ids.len() < resolved, "{narrowed:?}");
+        let before = probes(&github);
+        let result = bulk::send_with_vcs(
+            state,
+            &slack,
+            &github,
+            &narrowed,
+            std::slice::from_ref(&card.fingerprint),
+        )
+        .unwrap();
+        assert!(
+            result.results.iter().any(|r| r.outcome == "sent"),
+            "the narrowed plan kept the fingerprint"
+        );
+        assert_eq!(probes(&github) - before, narrowed.pr_ids.len());
+    }
+}
+
 /// With `cached_names` the preview never waits on Slack: unknown names
 /// keep the stored one and `names_pending` asks for a live pass, which
 /// renames the card to what Slack says for the id.
