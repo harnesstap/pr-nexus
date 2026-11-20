@@ -1,0 +1,3 @@
+kind: Fixed
+body: Switching profiles no longer waits for a running To review filter search on GitHub to finish.
+time: 2026-11-20T12:00:00Z

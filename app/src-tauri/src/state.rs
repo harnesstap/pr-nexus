@@ -765,8 +765,9 @@ fn progress_writer<'a>(
     let generation = state.profiles.generation();
     move |progress| {
         if state.profiles.generation() != generation {
-            // A profile switch: stop here. `settle` and `review_pass`
-            // catch the unwind; `resume_unwind` skips the panic hook.
+            // A profile switch: stop here. `settle`, `review_pass` and
+            // `filter_reviews` catch the unwind; `resume_unwind` skips the
+            // panic hook.
             std::panic::resume_unwind(Box::new(crate::profiles::Cancelled));
         }
         let key = (progress.bucket, std::mem::discriminant(&progress.stage));
@@ -1110,6 +1111,9 @@ pub fn filter_reviews(
     let plan = sync::BucketPlan::review_filter(filter.clone(), window);
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let client = github_client(state)?;
+        // No progress line of its own (the header says "Searching GitHub…"),
+        // but a profile switch stops it like any other pass.
+        let mut on_progress = progress_writer(state, |_, _| {});
         let report = sync::sync_buckets(
             &state.store,
             &client.1,
@@ -1118,7 +1122,7 @@ pub fn filter_reviews(
             Utc::now(),
             std::slice::from_ref(&plan),
             &current_hint(state),
-            &mut |_| {},
+            &mut on_progress,
         )?;
         after_pass(
             state,
