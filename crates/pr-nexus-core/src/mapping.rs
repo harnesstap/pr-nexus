@@ -559,6 +559,8 @@ fn merge_user(
     if !incoming.slack_team_id.is_empty() {
         row.slack_team_id = Some(incoming.slack_team_id.clone());
     }
+    // §7.5: import always writes disabled=0, so it re-enables a hidden team.
+    row.disabled = false;
     row.updated_at = now;
     row
 }
@@ -1130,5 +1132,33 @@ acme,team-b,Team B,team-b-reviews,C0123456789,
 
         apply_import(&store, &incoming[..1], ImportMode::Merge, now()).unwrap();
         assert_eq!(store.list_mappings().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn merge_import_re_enables_a_hidden_team() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("nexus.sqlite")).unwrap();
+        store
+            .upsert_mapping(stored(
+                MappingLayer::User,
+                "acme",
+                "team-a",
+                "",
+                "acme",
+                "",
+                "",
+                true,
+            ))
+            .unwrap();
+        let incoming = parse_csv(
+            "github_org,github_team_slug,slack_channel_id\nacme,team-a,C0123456789\n",
+            Some("acme"),
+        )
+        .unwrap();
+        apply_import(&store, &incoming, ImportMode::Merge, now()).unwrap();
+        let rows = store.list_mappings().unwrap();
+        let hit = lookup_mapping(&rows, "acme", "team-a", "").expect("import writes disabled=0");
+        assert!(!hit.disabled);
+        assert_eq!(hit.slack_channel_id, "C0123456789");
     }
 }
