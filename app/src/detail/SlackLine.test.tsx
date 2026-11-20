@@ -116,3 +116,13 @@ test("disabled Bump says requested before any bump and last bump after one", asy
   expect(await screen.findByRole("button", { name: /^Bump$/ })).toBeDisabled();
   expect(screen.getByText(/\(last bump 18m ago\)/)).toBeTruthy();
 });
+
+test("a list reload after a send shows the new request instead of the empty state", async () => {
+  let threads: ContextThread[] = [];
+  const reload = { prSlackContext: () => Promise.resolve(threads) } as unknown as Api;
+  const { rerender } = render(<SlackLine api={reload} prId={1} version={0} onOpen={() => undefined} onRequest={() => undefined} />);
+  expect(await screen.findByRole("button", { name: /Request review on Slack/ })).toBeInTheDocument();
+  threads = [thread];
+  rerender(<SlackLine api={reload} prId={1} version={1} onOpen={() => undefined} onRequest={() => undefined} />);
+  expect(await screen.findByRole("button", { name: /Bump/ })).toBeInTheDocument();
+});
