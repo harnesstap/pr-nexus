@@ -1,0 +1,3 @@
+kind: Fixed
+body: After a pull request's detail was opened while CI was pending, a later sync now shows finished checks instead of keeping the row on pending.
+time: 2026-11-20T14:50:00Z
