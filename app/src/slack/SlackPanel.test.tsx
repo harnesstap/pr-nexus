@@ -247,3 +247,50 @@ test("opening Slack settings refreshes a check older than 5 minutes and skips a 
   renderAt(new Date(Date.now() - 6 * 60 * 1000).toISOString());
   await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
 });
+
+test("a workspace switched off while sign-in waits stays off when sign-in ends", async () => {
+  const added: SlackWorkspace = { ...acme, id: 3, team_name: "Beta", domain: "beta", team_id: "T0BETA0001", priority: 1 };
+  let stored = [{ ...acme }];
+  let finish: () => void = () => undefined;
+  const reported: SlackWorkspace[][] = [];
+  const api = {
+    saveSlack: () => Promise.resolve(),
+    slackConnect: () =>
+      new Promise<SlackWorkspace>((resolve) => {
+        finish = () => {
+          stored = [...stored, added];
+          resolve(added);
+        };
+      }),
+    slackWorkspaces: () => Promise.resolve(stored),
+    slackSetWorkspaceEnabled: (teamId: string, enabled: boolean) => {
+      stored = stored.map((item) => (item.team_id === teamId ? { ...item, enabled } : item));
+      return Promise.resolve(stored);
+    },
+  } as unknown as Api;
+  function Harness() {
+    const [workspaces, setWorkspaces] = useState([acme]);
+    return (
+      <SlackPanel
+        api={api}
+        fields={{ clientId: "1.2", clientSecret: "", redirectUri: "" }}
+        onFieldsChange={() => undefined}
+        secretSaved
+        workspaces={workspaces}
+        onWorkspacesChange={(next) => {
+          reported.push(next);
+          setWorkspaces(next);
+        }}
+      />
+    );
+  }
+  render(<Harness />);
+  fireEvent.click(screen.getByRole("button", { name: "Add another workspace" }));
+  fireEvent.click(screen.getByRole("switch", { name: "Use Acme" }));
+  await waitFor(() => expect(screen.getByRole("switch", { name: "Use Acme" })).not.toBeChecked());
+  await act(async () => finish());
+  expect(await screen.findByText("Connected to Beta.")).toBeInTheDocument();
+  expect(screen.getByRole("switch", { name: "Use Acme" })).not.toBeChecked();
+  expect(screen.getByRole("switch", { name: "Use Beta" })).toBeChecked();
+  expect(reported.at(-1)?.find((item) => item.team_id === acme.team_id)?.enabled).toBe(false);
+});

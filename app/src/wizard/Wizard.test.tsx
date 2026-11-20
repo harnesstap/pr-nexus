@@ -195,6 +195,7 @@ test("the Slack step saves a custom redirect, connects in the browser, then allo
           new Promise((resolve) => {
             release = () => resolve({ id: 3, team_name: "Acme Corp", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false, team_id: "T0ACME0002", enabled: true, priority: 1 });
           }),
+        slackWorkspaces: () => Promise.resolve([{ id: 3, team_name: "Acme Corp", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false, team_id: "T0ACME0002", enabled: true, priority: 1 }]),
       })}
       boot={{ ...boot, resume_step: "connect_chat" }}
       onFinished={() => undefined}

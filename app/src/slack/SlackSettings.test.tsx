@@ -68,6 +68,7 @@ test("a workspace whose token is gone shows needs sign-in and reconnects in plac
     {
       saveSlack: () => Promise.resolve(),
       slackConnect: () => Promise.resolve({ ...stale, signed_in: true, needs_sign_in: false }),
+      slackWorkspaces: () => Promise.resolve([{ ...stale, signed_in: true, needs_sign_in: false }]),
     } as unknown as Partial<Api>,
     { slack_workspaces: [stale] },
   );
