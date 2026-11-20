@@ -679,6 +679,9 @@ fn sync_once(state: &AppState, kind: SyncKind) -> Result<sync::SyncReport, AppEr
             ..sync::SyncReport::default()
         });
     }
+    // A profile switch during the reviews-first pass unwinds it, but its
+    // error is swallowed below; the My PRs pass must not start after it.
+    let generation = state.profiles.generation();
     // The view on screen goes first when its bucket is one this sync
     // would run anyway. Reviews stay lazy: a hint never starts that pass.
     let reviews_first = current_hint(state).lead == Some(SearchBucket::ReviewRequested)
@@ -697,6 +700,9 @@ fn sync_once(state: &AppState, kind: SyncKind) -> Result<sync::SyncReport, AppEr
         let review_kind = if known { kind } else { SyncKind::Full };
         include_reviews =
             review_pass(state, review_kind, sync::BucketPlan::reviews(Some(window))).is_ok();
+        if state.profiles.generation() != generation {
+            return Err(unwound(&crate::profiles::Cancelled));
+        }
     }
     // My PRs: search, status pass and code owners. The sync phase ends
     // with them, so the header stops saying "Syncing".
@@ -1659,6 +1665,30 @@ mod tests {
         drop(status);
         state.sync.lock().unwrap().reviews.window = 3 * sync::REVIEW_WINDOW;
         assert!(!grow_reviews(&state), "the window holds them all");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+
+    /// Regression: a switch during the reviews-first pass went on into a
+    /// whole My PRs pass that could not be cancelled, with the gate held.
+    #[test]
+    fn a_profile_switch_during_the_reviews_pass_stops_the_sync() {
+        let (mut state, path) = demo_state("switch");
+        state.demo = false;
+        state.reviews_active.store(true, Ordering::Relaxed);
+        let state = Arc::new(state);
+        let mut hint = state.sync_hint.lock().unwrap();
+        hint.lead = Some(SearchBucket::ReviewRequested);
+        let sync = {
+            let state = Arc::clone(&state);
+            thread::spawn(move || run_sync(&state, SyncKind::Manual))
+        };
+        // The sync has read the generation and waits on the hint.
+        thread::sleep(Duration::from_millis(100));
+        state.profiles.bump();
+        drop(hint);
+        let err = sync.join().unwrap().unwrap_err();
+        assert_eq!(err.kind, "cancelled", "{err}");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
