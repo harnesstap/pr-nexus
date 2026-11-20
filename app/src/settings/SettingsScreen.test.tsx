@@ -288,6 +288,27 @@ test("Mappings: a saved name that is not the id's channel is flagged, not rewrit
   expect(screen.getByRole("combobox", { name: "Slack channel" })).toBeInTheDocument();
 });
 
+test("Mappings: picking another workspace drops the old team id", async () => {
+  const saved: MappingEntry["row"][] = [];
+  const pinned = entry({ slug: "web" });
+  pinned.row.slack_team_id = "T0ACME0001";
+  const api = fakeSettingsApi({
+    listMappings: () => Promise.resolve([pinned]),
+    slackWorkspaces: () => Promise.resolve([acme, widgets]),
+    saveMapping: (row) => {
+      saved.push(row);
+      return Promise.resolve();
+    },
+  }) as Api;
+  render(<Harness api={api} start="mappings" />);
+  fireEvent.click(await screen.findByRole("button", { name: "Edit acme/web" }));
+  fireEvent.change(screen.getByRole("combobox", { name: "Slack workspace" }), { target: { value: "widgets" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(saved).toHaveLength(1));
+  expect(saved[0]?.slack_workspace).toBe("widgets");
+  expect(saved[0]?.slack_team_id).toBeUndefined();
+});
+
 test("Import: Apply stays disabled until a preview of the same CSV, and the diff lists changes", async () => {
   const applied: string[] = [];
   const api = fakeSettingsApi({

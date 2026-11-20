@@ -1,0 +1,3 @@
+kind: Fixed
+body: Moving a team mapping to another Slack workspace, in Settings or by merge import, drops the old workspace's team id so requests go to the new workspace.
+time: 2026-11-20T09:05:00Z

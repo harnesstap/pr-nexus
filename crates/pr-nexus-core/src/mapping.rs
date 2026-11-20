@@ -563,6 +563,10 @@ fn merge_user(
         row.slack_channel_id = incoming.slack_channel_id.clone();
     }
     if !incoming.slack_workspace.is_empty() {
+        // Routing prefers the team id, so a new domain drops the old team's.
+        if incoming.slack_workspace != row.slack_workspace {
+            row.slack_team_id = None;
+        }
         row.slack_workspace = incoming.slack_workspace.clone();
     }
     if !incoming.slack_team_id.is_empty() {
@@ -1191,5 +1195,46 @@ acme,team-b,Team B,team-b-reviews,C0123456789,
         let hit = lookup_mapping(&rows, "acme", "team-a", "").expect("import writes disabled=0");
         assert!(!hit.disabled);
         assert_eq!(hit.slack_channel_id, "C0123456789");
+    }
+
+    #[test]
+    fn merge_import_to_another_workspace_drops_the_old_team_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("nexus.sqlite")).unwrap();
+        let mut pinned = stored(
+            MappingLayer::User,
+            "acme",
+            "team-a",
+            "",
+            "acme",
+            "C0123456789",
+            "team-reviews",
+            false,
+        );
+        pinned.slack_team_id = Some("T0ACME0001".into());
+        store.upsert_mapping(pinned).unwrap();
+        let incoming = parse_csv(
+            "github_org,github_team_slug,slack_channel_id,slack_workspace\n\
+             acme,team-a,C0BETA0001,beta\n",
+            None,
+        )
+        .unwrap();
+        apply_import(&store, &incoming, ImportMode::Merge, now()).unwrap();
+        let rows = store.list_mappings().unwrap();
+        let hit = lookup_mapping(&rows, "acme", "team-a", "").unwrap();
+        assert_eq!(hit.slack_workspace, "beta");
+        assert_eq!(
+            hit.slack_team_id, None,
+            "the acme team id would still route"
+        );
+
+        // Same workspace, no team id: the pinned team stays.
+        let mut pinned = hit.clone();
+        pinned.slack_team_id = Some("T0BETA0001".into());
+        store.upsert_mapping(pinned).unwrap();
+        apply_import(&store, &incoming, ImportMode::Merge, now()).unwrap();
+        let rows = store.list_mappings().unwrap();
+        let hit = lookup_mapping(&rows, "acme", "team-a", "").unwrap();
+        assert_eq!(hit.slack_team_id.as_deref(), Some("T0BETA0001"));
     }
 }
