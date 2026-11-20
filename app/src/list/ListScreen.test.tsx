@@ -539,6 +539,24 @@ test("a child view publishes the parent rule and its own rule as the sync hint",
   });
 });
 
+test("deleting the open view returns to its parent instead of an empty rule", async () => {
+  const fake = api([]);
+  fake.listSidebarViews = () =>
+    Promise.resolve([
+      { key: "mine", name: "My PRs", query: "is:open author:@me", builtin: true, sort_order: 0 },
+      { key: "to_review", name: "To review", query: "is:open review-requested:@me", builtin: true, sort_order: 1 },
+      { key: "bumps_due", name: "Bumps due", query: "is:open author:@me bump:due", builtin: true, sort_order: 2 },
+      { key: "custom:1", name: "Drafts", query: "is:draft", builtin: false, sort_order: 3, parent: "to_review" },
+    ]);
+  render(<ListScreen api={fake} boot={boot} onBoot={() => undefined} />);
+  fireEvent.click(await screen.findByRole("button", { name: "Drafts" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Drafts" })).toHaveAttribute("aria-current", "page"));
+  fireEvent.contextMenu(screen.getByRole("button", { name: "Drafts" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
+  fireEvent.click(within(screen.getByRole("dialog", { name: "Delete view" })).getByRole("button", { name: "Delete" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "To review" })).toHaveAttribute("aria-current", "page"));
+});
+
 test("a pull request URL opens a pull request from another view", async () => {
   const authored = pr(7, "Add passkeys");
   const review = pr(124, "Review the latch");
