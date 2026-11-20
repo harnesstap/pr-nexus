@@ -610,15 +610,6 @@ fn plan_request(
         }
         None => None,
     };
-    let eligible = |pr: &PullRequest| -> Result<(), String> {
-        if pr.state != PrState::Open {
-            return Err("Not open".into());
-        }
-        if !pr.involvement.contains(Involvement::AUTHOR) {
-            return Err("Not authored by you".into());
-        }
-        Ok(())
-    };
     // Every GitHub lookup up front, in parallel; the rest is local.
     let to_resolve: Vec<PullRequest> = if override_target.is_some() {
         Vec::new()
@@ -1220,7 +1211,18 @@ pub(crate) fn fill_open_request(
     Ok(())
 }
 
-fn blocked_reasons(readiness: Readiness) -> Option<String> {
+/// A PR the app may post about: open and authored by you.
+pub(crate) fn eligible(pr: &PullRequest) -> Result<(), String> {
+    if pr.state != PrState::Open {
+        return Err("Not open".into());
+    }
+    if !pr.involvement.contains(Involvement::AUTHOR) {
+        return Err("Not authored by you".into());
+    }
+    Ok(())
+}
+
+pub(crate) fn blocked_reasons(readiness: Readiness) -> Option<String> {
     match readiness {
         Readiness::Blocked { reasons } => slack_skip_detail(&reasons),
         Readiness::Ready { .. } | Readiness::Unknown { .. } => None,

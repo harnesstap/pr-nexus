@@ -8,6 +8,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use pr_nexus_core::domain::PullRequest;
 use pr_nexus_core::error::{CoreError, ProviderError};
+use pr_nexus_core::ownership;
 use pr_nexus_core::providers::ChatProvider;
 use pr_nexus_core::review::lifecycle::{self, Action, Target};
 use pr_nexus_core::review::route::{self, Workspace};
@@ -15,7 +16,7 @@ use pr_nexus_core::settings;
 
 use crate::commands::{SlackIndicator, indicator};
 use crate::error::AppError;
-use crate::services::bulk::fill_open_request;
+use crate::services::bulk::{self, fill_open_request};
 use crate::slack::{
     ReviewPreview, ReviewTarget, any_usable, chat_for, labeled, load_pr, mark_rejected,
     pr_warnings, request_key, signed_in_account, slack_error, to_core, validate_target,
@@ -116,6 +117,7 @@ pub fn send(
     note: Option<&str>,
 ) -> Result<SlackIndicator, AppError> {
     let pr = load_pr(&state.store, pr_id)?;
+    recheck(state, &pr)?;
     let mut target = validate_target(target)?;
     fill_open_request(state, &pr, &mut target)?;
     let target = crate::slack::resolve_target(state, chats, target);
@@ -158,6 +160,33 @@ pub fn send(
         }
     };
     Ok(indicator(request, &route::workspaces(&state.store)?))
+}
+
+/// §7.8: the PR as stored now (sync may have moved it since the preview)
+/// must pass the same checks as a bulk send: open, yours, and not blocked.
+fn recheck(state: &AppState, pr: &PullRequest) -> Result<(), AppError> {
+    let reason = match bulk::eligible(pr) {
+        Err(reason) => Some(reason),
+        Ok(()) => {
+            let flag = settings::blocked_review_required_is_ready(&state.store)?;
+            bulk::blocked_reasons(ownership::cached_readiness(&state.store, pr, flag)?).map(
+                |reasons| {
+                    if reasons.is_empty() {
+                        "Blocked".to_owned()
+                    } else {
+                        format!("Blocked: {reasons}")
+                    }
+                },
+            )
+        }
+    };
+    match reason {
+        Some(reason) => Err(AppError::new(
+            "conflict",
+            format!("{reason}. Nothing was sent."),
+        )),
+        None => Ok(()),
+    }
 }
 
 /// The request or bump `target` would get now.
