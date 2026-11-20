@@ -38,6 +38,8 @@ export function usePagedList(loadPage: (request: PageRequest) => Promise<PageDto
   const [attempt, setAttempt] = useState(0);
   const seq = useRef(0);
   const loaded = useRef(0);
+  // The shown page's next_cursor; a next page read from any other cursor is stale.
+  const cursorRef = useRef<string | null>(null);
   const nowRef = useRef(now);
   useEffect(() => {
     nowRef.current = now;
@@ -69,6 +71,7 @@ export function usePagedList(loadPage: (request: PageRequest) => Promise<PageDto
         const { entries: rows, ...rest } = next;
         loaded.current = rows.length;
         setEntries(rows);
+        cursorRef.current = rest.next_cursor;
         setPage(rest);
         setError(null);
         setMoreFrom(null);
@@ -94,7 +97,7 @@ export function usePagedList(loadPage: (request: PageRequest) => Promise<PageDto
     const done = () => setMoreFrom((current) => (current === cursor ? null : current));
     loadPage(request(cursor, PAGE_SIZE))
       .then((next) => {
-        if (mine !== seq.current) {
+        if (mine !== seq.current || cursorRef.current !== cursor) {
           done();
           return;
         }
@@ -104,6 +107,7 @@ export function usePagedList(loadPage: (request: PageRequest) => Promise<PageDto
           loaded.current = merged.length;
           return merged;
         });
+        cursorRef.current = rest.next_cursor;
         setPage(rest);
         done();
       })
