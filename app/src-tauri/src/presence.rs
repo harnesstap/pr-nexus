@@ -303,6 +303,12 @@ fn quit(app: &AppHandle) {
     app.exit(0);
 }
 
+/// A notification's pull request id belongs to the profile that posted it:
+/// after a switch it would name another profile's pull request.
+pub fn forget_clicks() {
+    OPEN.lock().unwrap_or_else(PoisonError::into_inner).clear();
+}
+
 fn ensure_clicks(app: &AppHandle) {
     if LISTENING.swap(true, Ordering::SeqCst) {
         return;
@@ -329,26 +335,30 @@ fn ensure_clicks(app: &AppHandle) {
     }
 }
 
-fn show_one(app: &AppHandle, notice: &Notice) {
+/// Keeps where a notification's click goes, and returns its id.
+fn remember_click(view: &str, pr_id: Option<i64>) -> i32 {
     let mut id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     if id <= 0 {
         id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     }
+    let mut open = OPEN.lock().unwrap_or_else(PoisonError::into_inner);
+    if open.len() > 40
+        && let Some(oldest) = open.keys().copied().min()
     {
-        let mut open = OPEN.lock().unwrap_or_else(PoisonError::into_inner);
-        if open.len() > 40
-            && let Some(oldest) = open.keys().copied().min()
-        {
-            open.remove(&oldest);
-        }
-        open.insert(
-            id,
-            OpenTarget {
-                view: notice.view.to_owned(),
-                pr_id: notice.pr_id,
-            },
-        );
+        open.remove(&oldest);
     }
+    open.insert(
+        id,
+        OpenTarget {
+            view: view.to_owned(),
+            pr_id,
+        },
+    );
+    id
+}
+
+fn show_one(app: &AppHandle, notice: &Notice) {
+    let id = remember_click(notice.view, notice.pr_id);
     let shown = app
         .notification()
         .builder()
@@ -407,4 +417,26 @@ pub async fn request_notification_permission(app: AppHandle) -> Result<String, A
         Err(_) => "prompt",
     };
     Ok(name.to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_profile_switch_drops_notification_click_targets() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::for_tests(&dir.path().join("pr-nexus.db"), true);
+        let id = remember_click("mine", Some(4));
+        // pr_id 4 is a row of this profile's database, not of the next one.
+        state
+            .switch_profile(pr_nexus_core::profiles::DEFAULT_ID)
+            .unwrap();
+        assert!(
+            !OPEN
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .contains_key(&id)
+        );
+    }
 }

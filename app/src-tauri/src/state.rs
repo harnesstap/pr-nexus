@@ -340,6 +340,7 @@ impl AppState {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .reset();
+        crate::presence::forget_clicks();
         crate::presence::refresh_counts(self);
         {
             let mut status = lock_status(self);
