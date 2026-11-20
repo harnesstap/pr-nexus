@@ -157,6 +157,19 @@ test("a search reports matches in other views, behind filters, and among closed 
   expect(all.elsewhere).toEqual({ views: [{ view_key: "to_review", count: 1 }], filtered: 0, finished: 0 });
 });
 
+test("a custom view counts only its own matches behind filters and among closed rows", () => {
+  const rows = [
+    row({ id: 1, title: "Tune the floor", repo: "acme/service-ssp" }),
+    row({ id: 2, title: "Drop the old floor", repo: "acme/service-ssp", state: "merged" }),
+    row({ id: 3, title: "Floor in a draft", repo: "acme/service-ssp", is_draft: true }),
+  ];
+  const view = defaultView();
+  view.filters.statuses = ["ready"];
+  const page = pageFromRows(rows, [], request("custom:floors", view, "service-ssp", { github_ids: [1] }));
+  expect(pageIds(page.sections)).toEqual([1]);
+  expect(page.elsewhere).toMatchObject({ filtered: 0, finished: 0 });
+});
+
 test("menu filters combine and reset clears only filters", () => {
   const projects = [auth, { ...billing, archived: true }];
   const rows = [

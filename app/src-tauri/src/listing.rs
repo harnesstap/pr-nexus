@@ -339,21 +339,24 @@ pub fn page(
         .as_ref()
         .filter(|query| !query.exact)
         .map(PrLinkQuery::link);
+    let member = |row: &ListRow| {
+        in_membership(
+            row,
+            request,
+            project_view,
+            &github,
+            &due,
+            &rule,
+            toolbar_github,
+        )
+    };
     let viewed: Vec<&Item> = items
         .iter()
         .filter(|item| {
             if let Some(link) = &exact {
                 return link.matches(&item.row.owner, &item.row.repo, item.row.number);
             }
-            in_membership(
-                &item.row,
-                request,
-                project_view,
-                &github,
-                &due,
-                &rule,
-                toolbar_github,
-            ) && scope_row(&item.row, &live_ids, filters, any_state)
+            member(&item.row) && scope_row(&item.row, &live_ids, filters, any_state)
         })
         .collect();
     let scoped: Vec<&Item> = if exact.is_some() {
@@ -388,7 +391,7 @@ pub fn page(
             elsewhere(
                 items,
                 &request.view_key,
-                project_view,
+                &member,
                 &live_ids,
                 filters,
                 now_ms,
@@ -736,10 +739,11 @@ fn in_view(row: &ListRow, view_key: &str, project: Option<i64>) -> bool {
 /// Nav views that list rows by involvement, in sidebar order.
 const NAV_VIEWS: [&str; 2] = ["mine", "to_review"];
 
+/// `member` is the view's own membership, the same test the page uses.
 fn elsewhere(
     items: &[Item],
     view_key: &str,
-    project_view: Option<i64>,
+    member: &dyn Fn(&ListRow) -> bool,
     live_ids: &HashSet<i64>,
     filters: &FiltersDto,
     now_ms: i64,
@@ -772,7 +776,7 @@ fn elsewhere(
     let here: Vec<&Item> = found
         .iter()
         .copied()
-        .filter(|item| in_view(&item.row, view_key, project_view))
+        .filter(|item| member(&item.row))
         .filter(|item| in_attention(&item.row, filters))
         .collect();
     let filtered = here
@@ -2371,6 +2375,22 @@ mod tests {
         let with_closed = page(&items, &[], &request, Some(&all)).elsewhere.unwrap();
         assert_eq!(with_closed.finished, 0);
         assert!(page(&items, &[], &request, None).elsewhere.is_none());
+    }
+
+    #[test]
+    fn elsewhere_in_a_custom_view_counts_only_its_own_rows() {
+        let mut items = quick_fixture();
+        items[1].row.state = "closed".into();
+        let all: HashSet<i64> = items.iter().map(|item| item.row.id).collect();
+        let mut request = request("repository");
+        request.view_key = "custom:1".into();
+        request.github_ids = Some(vec![4]);
+        request.filters.orgs = vec!["acme".into()];
+        let searched = page(&items, &[], &request, Some(&all));
+        assert_eq!(ids(&searched), vec![4]);
+        let elsewhere = searched.elsewhere.unwrap();
+        assert_eq!(elsewhere.filtered, 0);
+        assert_eq!(elsewhere.finished, 0);
     }
 
     #[test]
