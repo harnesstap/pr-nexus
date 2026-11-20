@@ -206,21 +206,23 @@ pub fn plan_import(
     diff
 }
 
+/// The dry run for `apply_import`: rows are resolved the same way first.
+pub fn preview_import(
+    store: &Store,
+    incoming: &[CsvRow],
+    mode: ImportMode,
+) -> Result<ImportDiff, CoreError> {
+    let resolved = resolve_rows(store, incoming)?;
+    Ok(plan_import(&store.list_mappings()?, &resolved, mode))
+}
+
 pub fn apply_import(
     store: &Store,
     incoming: &[CsvRow],
     mode: ImportMode,
     now: DateTime<Utc>,
 ) -> Result<(), CoreError> {
-    let accounts = store.list_accounts()?;
-    let resolved: Vec<CsvRow> = incoming
-        .iter()
-        .cloned()
-        .map(|mut row| {
-            resolve_workspace(&mut row, &accounts);
-            row
-        })
-        .collect();
+    let resolved = resolve_rows(store, incoming)?;
     let incoming = resolved.as_slice();
     match mode {
         ImportMode::Replace => {
@@ -532,6 +534,11 @@ fn field_changes(
             current.slack_workspace.as_str(),
             incoming.slack_workspace.as_str(),
         ),
+        (
+            "slack_team_id",
+            current.slack_team_id.as_deref().unwrap_or_default(),
+            incoming.slack_team_id.as_str(),
+        ),
     ];
     pairs
         .into_iter()
@@ -545,6 +552,18 @@ fn field_changes(
             after: after.to_string(),
         })
         .collect()
+}
+
+fn resolve_rows(store: &Store, incoming: &[CsvRow]) -> Result<Vec<CsvRow>, CoreError> {
+    let accounts = store.list_accounts()?;
+    Ok(incoming
+        .iter()
+        .cloned()
+        .map(|mut row| {
+            resolve_workspace(&mut row, &accounts);
+            row
+        })
+        .collect())
 }
 
 fn merge_user(
@@ -706,6 +725,7 @@ fn valid_channel_id(id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::{Account, AccountId, AccountKind, AuthMode};
     use chrono::TimeZone;
 
     fn now() -> DateTime<Utc> {
@@ -1263,5 +1283,44 @@ acme,team-b,Team B,team-b-reviews,C0123456789,
         )
         .unwrap();
         assert_eq!(rows[0].slack_channel_id, "C0123456789");
+    }
+
+    #[test]
+    fn preview_resolves_team_ids_like_apply_and_compares_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("nexus.sqlite")).unwrap();
+        store
+            .upsert_account(Account {
+                id: AccountId(0),
+                kind: AccountKind::Slack,
+                display_name: "Acme".into(),
+                host: "acme.slack.com".into(),
+                external_id: "T0ACME0001:U0001".into(),
+                slack_workspace: Some("acme".into()),
+                login: "ada".into(),
+                auth_mode: AuthMode::SlackMcpOauth,
+                keychain_key: Some("k".into()),
+                created_at: now(),
+            })
+            .unwrap();
+        let csv = "github_org,github_team_slug,slack_channel_id,slack_workspace\n\
+                   acme,team-a,C0123456789,T0ACME0001\n";
+        let rows = parse_csv(csv, None).unwrap();
+        apply_import(&store, &rows, ImportMode::Replace, now()).unwrap();
+        // The same file again changes nothing.
+        let diff = preview_import(&store, &rows, ImportMode::Replace).unwrap();
+        assert!(diff.changed.is_empty(), "{:?}", diff.changed);
+        assert_eq!(diff.unchanged.len(), 1);
+
+        // Another team on the same domain is a change.
+        let other = parse_csv(
+            "github_org,github_team_slug,slack_channel_id,slack_workspace,slack_team_id\n\
+             acme,team-a,C0123456789,acme,T0ACME0002\n",
+            None,
+        )
+        .unwrap();
+        let diff = preview_import(&store, &other, ImportMode::Replace).unwrap();
+        assert_eq!(diff.changed.len(), 1);
+        assert_eq!(diff.changed[0].changes[0].field, "slack_team_id");
     }
 }
