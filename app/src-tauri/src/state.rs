@@ -695,7 +695,8 @@ fn sync_once(state: &AppState, kind: SyncKind) -> Result<sync::SyncReport, AppEr
         )?;
         after_pass(state, &client.1, client.0, &report, SearchBucket::Mine)?;
         Ok::<_, AppError>(report)
-    })?;
+    })
+    .inspect_err(|err| reviews_skipped(state, &err.message))?;
     // Then review requests, once this session asked for them (§6), unless
     // they already ran because they were the view on screen.
     if !reviews_first && !report.paused && state.reviews_active.load(Ordering::Relaxed) {
@@ -711,11 +712,24 @@ fn sync_once(state: &AppState, kind: SyncKind) -> Result<sync::SyncReport, AppEr
     // A paused pass can be partial, so it only refreshes the badge. The
     // first successful pass of a launch is the baseline and stays quiet.
     if report.paused {
+        reviews_skipped(state, &report.message);
         crate::presence::refresh_counts(state);
     } else {
         crate::presence::note_sync(state, include_reviews);
     }
     Ok(report)
+}
+
+/// Ends a "loading" review state this sync will not resolve: the My PRs
+/// pass failed or paused, so the review pass did not run. Without it an
+/// MCP `list_prs` that asked for reviews left the To review tab loading.
+fn reviews_skipped(state: &AppState, why: &str) {
+    let mut status = lock_status(state);
+    if status.reviews.state == "loading" {
+        status.reviews.state = "error".into();
+        status.reviews.message = format!("Review sync failed · {why}");
+        status.revision += 1;
+    }
 }
 
 /// The GitHub account id and a client for it. The client is the one already
@@ -1478,6 +1492,21 @@ mod tests {
             progress(reviews, false, Searching, 4, 4),
             "Syncing reviews… 4 updated"
         );
+    }
+
+    /// Regression: a sync whose My PRs pass failed skipped the review pass
+    /// and left reviews "loading" for good.
+    #[test]
+    fn a_failed_sync_does_not_leave_reviews_loading() {
+        let (mut state, path) = demo_state("stuck");
+        state.demo = false;
+        assert!(activate_reviews(&state));
+        assert!(run_sync(&state, SyncKind::Manual).is_err());
+        let status = state.sync.lock().unwrap();
+        assert_eq!(status.reviews.state, "error");
+        assert!(status.reviews.message.contains("Connect GitHub"));
+        drop(status);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[test]
