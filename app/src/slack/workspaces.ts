@@ -32,7 +32,8 @@ export function targetWorkspaceName(target: { workspace: string; workspace_name?
 export function workspaceLabel(workspace: SlackWorkspace): string {
   const host = `${workspace.domain}.slack.com`;
   const name = workspace.team_name && workspace.team_name !== workspace.domain ? `${workspace.team_name} (${host})` : host;
-  return workspace.needs_sign_in ? `${name} · needs sign-in` : name;
+  // `!signed_in` also covers a removed workspace kept for history (no grant).
+  return workspace.needs_sign_in || !workspace.signed_in ? `${name} · needs sign-in` : name;
 }
 
 /**

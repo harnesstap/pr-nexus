@@ -58,6 +58,8 @@ test("labels show name and host, and flag an expired sign-in", () => {
   expect(workspaceLabel(ws(1, "acme"))).toBe("Acme (acme.slack.com)");
   expect(workspaceLabel(ws(1, "acme", { needs_sign_in: true, team_id: "T0ACME0002", enabled: true, priority: 1, signed_in: false }))).toBe("Acme (acme.slack.com) · needs sign-in");
   expect(workspaceLabel(ws(1, "acme", { team_name: "" }))).toBe("acme.slack.com");
+  // A removed workspace kept for history has no grant at all.
+  expect(workspaceLabel(ws(1, "acme", { signed_in: false, needs_sign_in: false }))).toBe("Acme (acme.slack.com) · needs sign-in");
 });
 
 test("hosts and URLs reduce to the stored domain", () => {
