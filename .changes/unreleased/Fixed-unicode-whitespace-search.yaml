@@ -1,0 +1,3 @@
+kind: Fixed
+body: A non-breaking space (Option+Space) in a custom view rule or the list search now separates words, as it already did for the GitHub query, instead of leaving the view empty or dropping search words.
+time: 2026-11-20T09:10:00Z

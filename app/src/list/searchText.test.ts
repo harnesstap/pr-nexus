@@ -63,3 +63,9 @@ test("suggestions follow the qualifier being typed", () => {
   expect(suggestionsFor("passkeys")).toEqual([]);
   expect(suggestionsFor("")).toEqual([]);
 });
+
+test("a non-breaking space separates search words like the Rust parser", () => {
+  const parts = splitSearch("author:@me passkeys　fix");
+  expect(parts.github).toBe("author:@me");
+  expect(parts.text).toBe("passkeys fix");
+});

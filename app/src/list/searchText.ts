@@ -453,6 +453,7 @@ function colonOutsideQuotes(raw: string): number | null {
   return null;
 }
 
+/** Rust's `char::is_whitespace`: the Unicode White_Space set, so a non-breaking space splits words. */
 function isSpace(ch: string): boolean {
-  return ch === " " || ch === "\t" || ch === "\n" || ch === "\r" || ch === "\f";
+  return /\p{White_Space}/u.test(ch);
 }

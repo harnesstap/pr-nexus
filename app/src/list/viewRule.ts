@@ -318,8 +318,8 @@ function renderQualifier(token: Token): string {
 function scan(input: string): Token[] | null {
   const out: Token[] = [];
   let rest = input;
-  while (rest.trimStart() !== "") {
-    rest = rest.trimStart();
+  while (skipSpace(rest) !== "") {
+    rest = skipSpace(rest);
     let negated = false;
     let body = rest;
     if (body.startsWith("-") && body.length > 1 && !isSpace(body[1] ?? "")) {
@@ -408,6 +408,11 @@ function colonOutsideQuotes(raw: string): number | null {
   return null;
 }
 
+/** Rust's `char::is_whitespace`: the Unicode White_Space set, so a non-breaking space splits tokens. */
 function isSpace(ch: string): boolean {
-  return ch === " " || ch === "\t" || ch === "\n" || ch === "\r" || ch === "\f";
+  return /\p{White_Space}/u.test(ch);
+}
+
+function skipSpace(input: string): string {
+  return input.replace(/^\p{White_Space}+/u, "");
 }

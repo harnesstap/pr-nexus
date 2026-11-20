@@ -112,3 +112,11 @@ test("team and assignee rules stay local and match any selected value", () => {
     matchesLocalRule({ involvement: REVIEW_REQUESTED, state: "open", is_draft: false, assignees: [{ login: "ada" }] }, false, "assignee:@me", "ada"),
   ).toBe(true);
 });
+
+test("a non-breaking space separates view rule tokens like the Rust parser", () => {
+  const rule = analyzeViewRule("assignee:@me label:bug");
+  expect(rule.fullyLocal).toBe(false);
+  expect(rule.github).toBe(analyzeViewRule("assignee:@me label:bug").github);
+  // U+0085 is whitespace in Rust but not for String.trimStart.
+  expect(analyzeViewRule("assignee:@me\u0085label:bug").github).toBe(rule.github);
+});
