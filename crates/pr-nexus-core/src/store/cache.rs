@@ -366,6 +366,30 @@ impl Store {
         })
     }
 
+    /// Drops the saved state of every custom view not in `keep`, so a view
+    /// created later under a freed key starts clean.
+    pub fn delete_custom_view_states_except(&self, keep: Vec<String>) -> Result<(), CoreError> {
+        self.write(move |conn| {
+            let stale: Vec<String> = {
+                let mut stmt = conn
+                    .prepare("SELECT view_key FROM view_state WHERE view_key LIKE 'custom:%'")
+                    .map_err(db)?;
+                stmt.query_map([], |row| row.get::<_, String>(0))
+                    .map_err(db)?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(db)?
+                    .into_iter()
+                    .filter(|key| !keep.contains(key))
+                    .collect()
+            };
+            for key in stale {
+                conn.execute("DELETE FROM view_state WHERE view_key = ?1", [key])
+                    .map_err(db)?;
+            }
+            Ok(())
+        })
+    }
+
     pub fn get_view_state(&self, view_key: String) -> Result<Option<ViewState>, CoreError> {
         self.read(move |conn| {
             conn.query_row(

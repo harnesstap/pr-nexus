@@ -1,0 +1,3 @@
+kind: Fixed
+body: A new custom view no longer opens with the search, sort and filters of a view deleted before it.
+time: 2026-11-20T16:40:00Z
