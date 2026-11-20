@@ -67,10 +67,13 @@ pub fn page_for(
     {
         request.viewer_login = account.login;
     }
-    request.due_ids = crate::services::bumps::list_due(state, Utc::now())?
-        .into_iter()
-        .map(|item| item.pr_id)
-        .collect();
+    // Only a `bump:` view rule reads due ids, and finding them reads every PR.
+    if request.view_rule.to_ascii_lowercase().contains("bump:") {
+        request.due_ids = crate::services::bumps::list_due(state, Utc::now())?
+            .into_iter()
+            .map(|item| item.pr_id)
+            .collect();
+    }
     request.review_sla_hours = sla.hours;
     request.review_sla_working_days = sla.working_days;
     request.tz_offset_minutes = local_offset_east_minutes();
