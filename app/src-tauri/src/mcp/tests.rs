@@ -831,6 +831,7 @@ async fn one_slack_send_tool_can_be_off_while_the_category_is_on() {
     h.control
         .update(McpSettings {
             enabled: true,
+            slack_reads: true,
             slack_sends: true,
             disabled_tools: vec!["slack_send_message".into()],
             ..McpSettings::default()
