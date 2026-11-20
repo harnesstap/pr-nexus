@@ -1,0 +1,3 @@
+kind: Fixed
+body: A live update for an old closed pull request no longer brings it back into Archived and closed until the next sync.
+time: 2026-11-20T14:30:00Z

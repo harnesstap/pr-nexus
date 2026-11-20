@@ -1023,6 +1023,47 @@ mod tests {
     }
 
     #[test]
+    fn an_old_closed_pull_request_read_by_live_stays_hidden() {
+        let (_dir, store, account) = open_store();
+        let mut known = pr("acme", 7, "grace", ChecksState::Success);
+        known.pull_request.involvement = Involvement::REVIEW_REQUESTED;
+        seed(&store, account, &known);
+        // The provider's copy has no stored id, like a real fetch.
+        let mut closed = known.clone();
+        closed.pull_request.state = PrState::Closed;
+        closed.pull_request.updated_at = ts(-30 * 86_400);
+        let fake = Fake {
+            pulls: vec![closed],
+            ..Fake::default()
+        };
+        settings::set_live_mark(
+            &store,
+            &LiveMark {
+                last_modified: None,
+                watermark: ts(-60),
+            },
+        )
+        .unwrap();
+        fake.answer(Ok(changed(
+            "B",
+            vec![note(
+                "1",
+                "PullRequest",
+                &pull_url("acme", 7),
+                "state_change",
+                ts(-10),
+            )],
+        )));
+        LivePoller::new()
+            .tick(&input(&store, &fake, account, ts(0)))
+            .unwrap();
+        let rows = store.list_pull_requests_for_account(account).unwrap();
+        let seven = rows.iter().find(|row| row.number == 7).unwrap();
+        assert_eq!(seven.state, PrState::Closed);
+        assert!(seven.hidden, "an expired closed row must stay hidden");
+    }
+
+    #[test]
     fn an_unsupported_token_disables_polling_once_without_retries() {
         let (_dir, store, account) = open_store();
         let fake = Fake::default();
