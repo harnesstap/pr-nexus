@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { Api, SlackProposal } from "../api";
 import { errorMessage } from "../api";
 import { ago } from "../list/model";
+import { every } from "../every";
 
 interface Props {
   api: Pick<Api, "mcpSlackProposals" | "decideMcpSlackProposal">;
@@ -86,8 +87,7 @@ export function SlackProposals({ api, canSend }: Props) {
 
   useEffect(() => {
     load();
-    const timer = setInterval(load, PROPOSALS_POLL_MS);
-    return () => clearInterval(timer);
+    return every(PROPOSALS_POLL_MS, load);
   }, [load]);
 
   function decide(id: number, approve: boolean) {

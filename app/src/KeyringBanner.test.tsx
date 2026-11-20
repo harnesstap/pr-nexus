@@ -71,6 +71,32 @@ test("deny shows the reason with Retry, and Retry waits for the new prompt", asy
   expect(onReady).toHaveBeenCalledTimes(1);
 });
 
+test("a locked keychain shows one banner and Retry", async () => {
+  const locked: KeyringStatus = {
+    state: "denied",
+    message:
+      "Keychain access needed. Tokens stay in memory for this session and are lost when the app quits. Retry to ask again.",
+    can_retry: true,
+    unsaved: true,
+  };
+  const keyringStatus = vi.fn(() => Promise.resolve(locked));
+  render(<KeyringBanner api={{ keyringStatus, keyringRetry: vi.fn() }} initial={locked} pollMs={100} />);
+  expect(screen.getByRole("alert")).toHaveTextContent("Keychain access needed");
+  expect(screen.getByRole("button", { name: "Retry keychain access" })).toBeInTheDocument();
+  await tick(500);
+  expect(keyringStatus).not.toHaveBeenCalled();
+});
+
+test("focus after a denial checks the keychain state once", async () => {
+  const keyringStatus = vi.fn(() => Promise.resolve(ready));
+  render(<KeyringBanner api={{ keyringStatus, keyringRetry: vi.fn() }} initial={denied} pollMs={100} />);
+  expect(keyringStatus).not.toHaveBeenCalled();
+  await act(async () => {
+    window.dispatchEvent(new Event("focus"));
+  });
+  expect(keyringStatus).toHaveBeenCalledTimes(1);
+});
+
 test("without a bootstrap status it asks once and shows nothing when ready", async () => {
   const keyringStatus = vi.fn(() => Promise.resolve(ready));
   const { container } = render(<KeyringBanner api={{ keyringStatus, keyringRetry: vi.fn() }} pollMs={100} />);

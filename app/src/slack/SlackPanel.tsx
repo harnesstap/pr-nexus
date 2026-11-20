@@ -5,6 +5,7 @@ import { ago } from "../list/model";
 import { plainText } from "../textInput";
 import { Switch } from "../Switch";
 import { Tooltip } from "../Tooltip";
+import { every } from "../every";
 
 export const DEFAULT_REDIRECT = "http://127.0.0.1:47821/mcp/oauth/callback";
 
@@ -207,8 +208,7 @@ export function SlackPanel({ api, fields, onFieldsChange, secretSaved, workspace
       return;
     }
     const started = Date.now();
-    const timer = window.setInterval(() => setElapsed(Math.floor((Date.now() - started) / 1000)), 1000);
-    return () => window.clearInterval(timer);
+    return every(1000, () => setElapsed(Math.floor((Date.now() - started) / 1000)));
   }, [connecting]);
 
   async function openManifest() {

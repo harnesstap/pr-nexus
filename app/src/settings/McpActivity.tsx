@@ -4,6 +4,7 @@ import { errorMessage } from "../api";
 import { ago } from "../list/model";
 import { Tooltip } from "../Tooltip";
 import { ReviewStats } from "./ReviewStats";
+import { every } from "../every";
 
 interface Props {
   api: Pick<Api, "mcpActivity" | "clearMcpActivity" | "openExternal" | "reviewStats">;
@@ -109,8 +110,7 @@ function ActivityLog({ api, tabs }: { api: Props["api"]; tabs: ReactNode }) {
 
   useEffect(() => {
     void load();
-    const timer = window.setInterval(() => void load(), ACTIVITY_POLL_MS);
-    return () => window.clearInterval(timer);
+    return every(ACTIVITY_POLL_MS, () => void load());
   }, [load]);
 
   function clear() {

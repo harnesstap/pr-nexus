@@ -1,19 +1,17 @@
 //! One keychain entry, `dev.pr-nexus` / `vault`, holding a JSON map.
 //!
-//! Every keychain call runs on one worker thread, one at a time, so a caller
-//! never blocks the UI on it and the system never shows two prompts at once.
-//! The first read can sit behind a macOS authorization prompt for as long as
-//! the user takes to answer it. That is reported as *waiting*, not as
-//! *unavailable*: secrets saved meanwhile stay in memory and are written to
-//! the keychain as soon as it answers, even after the wait timed out.
-//! Only a real failure (no keychain, access denied, a platform error) puts
-//! the vault in its in-memory fallback. After a failure the vault never calls
-//! the keychain on its own: saving a secret keeps it in memory instead of
-//! asking again, so a Deny is not followed by another prompt. Only
-//! [`Vault::retry`] (or a restart) asks again; what was saved meanwhile is
-//! written once access is granted.
-//! The vault never writes before a successful read, so a failed read cannot
-//! overwrite the stored entry.
+//! Every keychain call runs on one worker thread, and concurrent callers share
+//! the call already in flight. After a successful read the map stays in memory
+//! for the life of the process; later syncs and a wake from sleep do not read
+//! it again. A write or delete updates that map, and [`Vault::retry`] is what
+//! asks the keychain again.
+//!
+//! Background calls disable the macOS prompt (`SecKeychainSetUserInteractionAllowed`).
+//! A locked keychain, or Cancel / Deny, is remembered: queued work is dropped
+//! and nothing calls the keychain until [`Vault::retry`] or the window is
+//! opened ([`Vault::note_focus`]). A prompt the user refused is not shown
+//! again on focus. The vault never writes before a successful read, so a
+//! failed read cannot overwrite the stored entry.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, mpsc};
@@ -35,6 +33,19 @@ pub trait KeyringBackend: Send + Sync + 'static {
     /// The stored JSON, or `None` when there is no entry yet.
     fn read(&self) -> Result<Option<String>, KeyringError>;
     fn write(&self, json: &str) -> Result<(), KeyringError>;
+
+    /// `interactive` is set only for a user action (Retry, or opening the
+    /// window). Background passes use `false`, which on macOS must not show
+    /// a prompt. The default ignores the flag; [`SystemKeyring`] does not.
+    fn read_interactive(&self, interactive: bool) -> Result<Option<String>, KeyringError> {
+        let _ = interactive;
+        self.read()
+    }
+
+    fn write_interactive(&self, json: &str, interactive: bool) -> Result<(), KeyringError> {
+        let _ = interactive;
+        self.write(json)
+    }
 }
 
 /// Why a keychain call failed.
@@ -44,6 +55,9 @@ pub enum KeyringError {
     NoBackend(String),
     /// The user refused access (Deny on the macOS prompt, a dismissed unlock).
     Denied(String),
+    /// The keychain is locked, or UI was not allowed
+    /// (`errSecInteractionNotAllowed`, `errSecNoAccessForItem`).
+    Locked(String),
     /// Anything else the platform reported.
     Other(String),
 }
@@ -115,6 +129,36 @@ struct Inner {
     revision: u64,
     /// The revision the keychain holds.
     saved: u64,
+    /// The next pass may show a prompt. Consumed when that pass starts.
+    allow_prompt: bool,
+    /// The user refused an interactive prompt. Focus will not ask again.
+    refused: bool,
+    /// An interactive call is in progress, so another one must not start.
+    prompt_open: bool,
+    /// The window is focused. Focus prompts only on the rising edge.
+    focused: bool,
+    /// `get` calls blocked on the in-flight read. Tests wait on this.
+    #[cfg(test)]
+    waiters: usize,
+}
+
+impl Inner {
+    fn fresh(phase: Phase, loaded: bool) -> Self {
+        Self {
+            phase,
+            loaded,
+            secrets: BTreeMap::new(),
+            early: BTreeMap::new(),
+            revision: 0,
+            saved: 0,
+            allow_prompt: false,
+            refused: false,
+            prompt_open: false,
+            focused: false,
+            #[cfg(test)]
+            waiters: 0,
+        }
+    }
 }
 
 impl Inner {
@@ -155,32 +199,71 @@ impl Shared {
     }
 
     /// One worker pass: read the entry if it was never read, then write any
-    /// change the keychain does not hold yet.
+    /// change the keychain does not hold yet. A pass that is not a user
+    /// action never shows a prompt. After a failure, a pass that was already
+    /// queued does nothing until [`Vault::retry`] or [`Vault::note_focus`].
     fn sync(&self) {
         let Some(backend) = &self.backend else {
             return;
         };
+        let interactive = {
+            let Ok(mut inner) = self.lock() else {
+                return;
+            };
+            if matches!(inner.phase, Phase::Disabled { .. }) || inner.prompt_open {
+                // A dialog is already up. Dropping the flag here means the
+                // queued request cannot open a second one when this call returns.
+                inner.allow_prompt = false;
+                return;
+            }
+            let interactive = inner.allow_prompt;
+            inner.allow_prompt = false;
+            if matches!(inner.phase, Phase::Failed { .. }) && !interactive {
+                return;
+            }
+            if interactive {
+                inner.refused = false;
+                inner.prompt_open = true;
+                if matches!(inner.phase, Phase::Failed { .. }) {
+                    inner.phase = Phase::Waiting {
+                        since: Instant::now(),
+                    };
+                }
+            }
+            interactive
+        };
         let Ok(loaded) = self.lock().map(|inner| inner.loaded) else {
+            self.clear_prompt();
             return;
         };
         if !loaded {
-            let result = backend.read().and_then(|json| decode(json.as_deref()));
+            let result = backend
+                .read_interactive(interactive)
+                .and_then(|json| decode(json.as_deref()));
             let Ok(mut inner) = self.lock() else {
+                self.clear_prompt();
                 return;
             };
             match result {
                 Ok(mut stored) => {
                     for (key, value) in std::mem::take(&mut inner.early) {
                         match value {
-                            Some(value) => stored.insert(key, value),
-                            None => stored.remove(&key),
-                        };
+                            Some(value) => {
+                                stored.insert(key, value);
+                            }
+                            None => {
+                                stored.remove(&key);
+                            }
+                        }
                     }
                     inner.secrets = stored;
                     inner.loaded = true;
+                    inner.refused = false;
                     inner.phase = Phase::Ready;
                 }
                 Err(error) => {
+                    inner.prompt_open = false;
+                    inner.refused = interactive && matches!(error, KeyringError::Denied(_));
                     inner.phase = Phase::Failed {
                         error,
                         op: Op::Read,
@@ -197,13 +280,16 @@ impl Shared {
         loop {
             let (json, revision) = {
                 let Ok(mut inner) = self.lock() else {
+                    self.clear_prompt();
                     return;
                 };
                 if !inner.unsaved() {
                     // A retry with nothing left to save still ends the wait,
                     // so later changes are written again.
-                    if matches!(inner.phase, Phase::Waiting { .. }) {
+                    if matches!(inner.phase, Phase::Waiting { .. }) || inner.prompt_open {
                         inner.phase = Phase::Ready;
+                        inner.prompt_open = false;
+                        inner.refused = false;
                         drop(inner);
                         self.changed.notify_all();
                     }
@@ -213,29 +299,44 @@ impl Shared {
                     Ok(json) => (json, inner.revision),
                     Err(err) => {
                         drop(inner);
-                        self.fail(KeyringError::Other(format!("encode: {err}")), Op::Write);
+                        self.fail(
+                            KeyringError::Other(format!("encode: {err}")),
+                            Op::Write,
+                            interactive,
+                        );
                         return;
                     }
                 }
             };
-            match backend.write(&json) {
+            match backend.write_interactive(&json, interactive) {
                 Ok(()) => {
                     if let Ok(mut inner) = self.lock() {
                         inner.saved = inner.saved.max(revision);
                         inner.phase = Phase::Ready;
+                        inner.prompt_open = false;
+                        inner.refused = false;
                     }
                     self.changed.notify_all();
                 }
                 Err(error) => {
-                    self.fail(error, Op::Write);
+                    self.fail(error, Op::Write, interactive);
                     return;
                 }
             }
         }
     }
 
-    fn fail(&self, error: KeyringError, op: Op) {
+    fn clear_prompt(&self) {
         if let Ok(mut inner) = self.lock() {
+            inner.prompt_open = false;
+        }
+        self.changed.notify_all();
+    }
+
+    fn fail(&self, error: KeyringError, op: Op, interactive: bool) {
+        if let Ok(mut inner) = self.lock() {
+            inner.prompt_open = false;
+            inner.refused = interactive && matches!(error, KeyringError::Denied(_));
             inner.phase = Phase::Failed { error, op };
         }
         self.changed.notify_all();
@@ -244,6 +345,11 @@ impl Shared {
     /// Blocks while the first read is pending, up to the timeout.
     fn wait_for_read(&self) -> Result<MutexGuard<'_, Inner>, CoreError> {
         let mut inner = self.lock()?;
+        #[cfg(test)]
+        {
+            inner.waiters += 1;
+            self.changed.notify_all();
+        }
         let deadline = Instant::now() + self.timeout;
         while !inner.loaded && matches!(inner.phase, Phase::Waiting { .. }) {
             let now = Instant::now();
@@ -255,6 +361,10 @@ impl Shared {
                 .wait_timeout(inner, deadline - now)
                 .map_err(|_| CoreError::Store("vault lock poisoned".into()))?
                 .0;
+        }
+        #[cfg(test)]
+        {
+            inner.waiters = inner.waiters.saturating_sub(1);
         }
         Ok(inner)
     }
@@ -321,16 +431,12 @@ impl Vault {
     /// counts as *waiting* before it is reported as timed out.
     pub fn with_backend(backend: Box<dyn KeyringBackend>, timeout: Duration) -> Self {
         let shared = Arc::new(Shared {
-            inner: Mutex::new(Inner {
-                phase: Phase::Waiting {
+            inner: Mutex::new(Inner::fresh(
+                Phase::Waiting {
                     since: Instant::now(),
                 },
-                loaded: false,
-                secrets: BTreeMap::new(),
-                early: BTreeMap::new(),
-                revision: 0,
-                saved: 0,
-            }),
+                false,
+            )),
             changed: Condvar::new(),
             backend: Some(backend),
             timeout,
@@ -378,16 +484,12 @@ impl Vault {
     pub fn memory(warning: &str) -> Self {
         Self {
             shared: Arc::new(Shared {
-                inner: Mutex::new(Inner {
-                    phase: Phase::Disabled {
+                inner: Mutex::new(Inner::fresh(
+                    Phase::Disabled {
                         message: warning.to_owned(),
                     },
-                    loaded: true,
-                    secrets: BTreeMap::new(),
-                    early: BTreeMap::new(),
-                    revision: 0,
-                    saved: 0,
-                }),
+                    true,
+                )),
                 changed: Condvar::new(),
                 backend: None,
                 timeout: Duration::ZERO,
@@ -532,18 +634,64 @@ impl Vault {
     }
 
     /// Ask the keychain again: read it if it was never read, then save
-    /// what is only in memory. Does not wait for the answer.
+    /// what is only in memory. Does not wait for the answer. This is a user
+    /// action, so the pass may show one prompt.
     pub fn retry(&self) -> KeyringStatus {
         if self.jobs.is_some()
             && let Ok(mut inner) = self.shared.lock()
             && !matches!(inner.phase, Phase::Ready | Phase::Disabled { .. })
+            && !inner.prompt_open
         {
+            inner.refused = false;
+            inner.allow_prompt = true;
             inner.phase = Phase::Waiting {
                 since: Instant::now(),
             };
         }
         self.kick();
         self.status()
+    }
+
+    /// The window gained or lost focus. Opening it (the rising edge) may
+    /// show one prompt when the keychain was locked and the user has not
+    /// just refused one. A second focus event while the window stays focused
+    /// does not ask again.
+    pub fn note_focus(&self, focused: bool) {
+        if self.jobs.is_none() {
+            return;
+        }
+        let kick = {
+            let Ok(mut inner) = self.shared.lock() else {
+                return;
+            };
+            if !focused {
+                inner.focused = false;
+                return;
+            }
+            let rising = !inner.focused;
+            inner.focused = true;
+            if !rising
+                || inner.refused
+                || inner.prompt_open
+                || matches!(inner.phase, Phase::Ready | Phase::Disabled { .. })
+            {
+                return;
+            }
+            inner.allow_prompt = true;
+            true
+        };
+        if kick {
+            self.kick();
+        }
+    }
+
+    /// Block until `n` [`Vault::get`] calls are waiting on the in-flight read.
+    #[cfg(test)]
+    fn wait_until_getters(&self, n: usize) {
+        let mut inner = self.shared.lock().expect("vault lock");
+        while inner.waiters < n {
+            inner = self.shared.changed.wait(inner).expect("vault lock");
+        }
     }
 
     pub fn warning(&self) -> Option<String> {
@@ -616,6 +764,10 @@ fn failure(error: &KeyringError, op: Op) -> (KeyringState, Option<String>) {
             KeyringState::Denied,
             format!("Keychain access was denied. {LOST} Retry to ask again."),
         ),
+        (KeyringError::Locked(_), _) => (
+            KeyringState::Denied,
+            format!("Keychain access needed. {LOST} Retry to ask again."),
+        ),
         (KeyringError::NoBackend(reason), _) => (
             KeyringState::NoBackend,
             format!("No keychain is available on this system ({reason}). {LOST}"),
@@ -669,22 +821,78 @@ impl KeyringBackend for SystemKeyring {
         let entry = keyring::Entry::new(SERVICE, ACCOUNT).map_err(classify)?;
         entry.set_password(json).map_err(classify)
     }
+
+    fn read_interactive(&self, interactive: bool) -> Result<Option<String>, KeyringError> {
+        let _guard = PromptSuppression::unless(interactive);
+        self.read()
+    }
+
+    fn write_interactive(&self, json: &str, interactive: bool) -> Result<(), KeyringError> {
+        let _guard = PromptSuppression::unless(interactive);
+        self.write(json)
+    }
+}
+
+/// Turns the macOS keychain dialog off for one background call. The flag is
+/// process-wide; the worker is the only caller, so calls do not overlap.
+struct PromptSuppression {
+    #[cfg(target_os = "macos")]
+    restore: bool,
+}
+
+impl PromptSuppression {
+    fn unless(interactive: bool) -> Self {
+        #[cfg(target_os = "macos")]
+        {
+            if interactive {
+                return Self { restore: false };
+            }
+            unsafe {
+                SecKeychainSetUserInteractionAllowed(0);
+            }
+            return Self { restore: true };
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = interactive;
+            Self {}
+        }
+    }
+}
+
+impl Drop for PromptSuppression {
+    fn drop(&mut self) {
+        #[cfg(target_os = "macos")]
+        if self.restore {
+            unsafe {
+                SecKeychainSetUserInteractionAllowed(1);
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[link(name = "Security", kind = "framework")]
+unsafe extern "C" {
+    fn SecKeychainSetUserInteractionAllowed(allowed: u8) -> i32;
 }
 
 fn classify(err: keyring::Error) -> KeyringError {
     let reason = err.to_string();
+    let detail = format!("{err:?}");
     match &err {
         keyring::Error::NoDefaultStore | keyring::Error::NotSupportedByStore(_) => {
             KeyringError::NoBackend(reason)
         }
+        keyring::Error::NoStorageAccess(_) | keyring::Error::PlatformFailure(_)
+            if is_locked(&detail) =>
+        {
+            KeyringError::Locked(reason)
+        }
         // Secret Service reports a dismissed unlock prompt as no access.
-        keyring::Error::NoStorageAccess(_) if is_denial(&format!("{err:?}")) => {
-            KeyringError::Denied(reason)
-        }
+        keyring::Error::NoStorageAccess(_) if is_denial(&detail) => KeyringError::Denied(reason),
         keyring::Error::NoStorageAccess(_) => KeyringError::NoBackend(reason),
-        keyring::Error::PlatformFailure(_) if is_denial(&format!("{err:?}")) => {
-            KeyringError::Denied(reason)
-        }
+        keyring::Error::PlatformFailure(_) if is_denial(&detail) => KeyringError::Denied(reason),
         _ => KeyringError::Other(reason),
     }
 }
@@ -698,8 +906,25 @@ fn is_denial(detail: &str) -> bool {
         .any(|needle| detail.contains(needle))
 }
 
+/// A locked keychain, or a call that was not allowed to show UI.
+/// `errSecInteractionNotAllowed` is -25308, `errSecNoAccessForItem` is -25243.
+fn is_locked(detail: &str) -> bool {
+    let detail = detail.to_ascii_lowercase();
+    [
+        "-25308",
+        "-25243",
+        "interactionnotallowed",
+        "interaction not allowed",
+        "noaccessforitem",
+    ]
+    .iter()
+    .any(|needle| detail.contains(needle))
+}
+
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::*;
 
     /// A scripted keychain. Each call takes the next answer from its queue
@@ -966,6 +1191,11 @@ mod tests {
                 "Keychain access was denied",
             ),
             (
+                KeyringError::Locked("errSecInteractionNotAllowed -25308".into()),
+                KeyringState::Denied,
+                "Keychain access needed",
+            ),
+            (
                 KeyringError::Other("boom".into()),
                 KeyringState::Error,
                 "Could not read the keychain (boom)",
@@ -1067,6 +1297,16 @@ mod tests {
         assert!(!is_denial(
             "Error { code: -25291, message: \"No keychain is available.\" }"
         ));
+        assert!(is_locked("Error { code: -25308 }"));
+        assert!(is_locked(
+            "errSecInteractionNotAllowed: interaction not allowed"
+        ));
+        assert!(is_locked("Error { code: -25243 }"));
+        assert!(is_locked("errSecNoAccessForItem"));
+        assert!(!is_locked("Error { code: -128 }"));
+        assert!(!is_locked("Error { code: -25293 }"));
+        assert!(!is_denial("Error { code: -25308 }"));
+        assert!(!is_denial("Error { code: -25243 }"));
     }
 
     #[test]
@@ -1114,5 +1354,232 @@ mod tests {
         assert_eq!(vault.get("slack:T1:U1").unwrap().as_deref(), Some("xoxp-a"));
         assert_eq!(vault.get("mcp.token").unwrap().as_deref(), Some("global"));
         assert!(vault.remove_profile("default").is_err());
+    }
+
+    struct Count {
+        reads: Arc<AtomicUsize>,
+        writes: Arc<AtomicUsize>,
+        /// How the nth read answers. Missing entries succeed with `json`.
+        answers: Mutex<Vec<Result<(), KeyringError>>>,
+        json: String,
+        entered: Arc<(Mutex<bool>, Condvar)>,
+        release: Arc<(Mutex<bool>, Condvar)>,
+        hold_first: bool,
+    }
+
+    impl Count {
+        fn open(json: &str, hold_first: bool) -> (Self, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+            let reads = Arc::new(AtomicUsize::new(0));
+            let writes = Arc::new(AtomicUsize::new(0));
+            (
+                Self {
+                    reads: Arc::clone(&reads),
+                    writes: Arc::clone(&writes),
+                    answers: Mutex::new(Vec::new()),
+                    json: json.to_owned(),
+                    entered: Arc::new((Mutex::new(false), Condvar::new())),
+                    release: Arc::new((Mutex::new(!hold_first), Condvar::new())),
+                    hold_first,
+                },
+                reads,
+                writes,
+            )
+        }
+    }
+
+    impl KeyringBackend for Count {
+        fn read(&self) -> Result<Option<String>, KeyringError> {
+            let n = self.reads.fetch_add(1, Ordering::SeqCst);
+            if n == 0 && self.hold_first {
+                {
+                    let (lock, cv) = &*self.entered;
+                    *lock.lock().expect("entered") = true;
+                    cv.notify_all();
+                }
+                let (lock, cv) = &*self.release;
+                let mut guard = lock.lock().expect("hold");
+                while !*guard {
+                    guard = cv.wait(guard).expect("hold");
+                }
+            }
+            let answer = self.answers.lock().expect("answers").pop();
+            match answer {
+                Some(Err(err)) => Err(err),
+                _ => Ok(Some(self.json.clone())),
+            }
+        }
+
+        fn write(&self, _json: &str) -> Result<(), KeyringError> {
+            self.writes.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn fifty_concurrent_readers_share_one_keychain_call_then_use_the_cache() {
+        let (backend, reads, _) = Count::open(r#"{"acme":"token"}"#, true);
+        let entered = Arc::clone(&backend.entered);
+        let release = Arc::clone(&backend.release);
+        let vault = Arc::new(Vault::with_backend(Box::new(backend), PROMPT_TIMEOUT));
+        {
+            let (lock, cv) = &*entered;
+            let mut guard = lock.lock().expect("entered");
+            while !*guard {
+                guard = cv.wait(guard).expect("entered");
+            }
+        }
+        let readers: Vec<_> = (0..50)
+            .map(|_| {
+                let vault = Arc::clone(&vault);
+                thread::spawn(move || vault.get("acme").unwrap())
+            })
+            .collect();
+        vault.wait_until_getters(50);
+        {
+            let (lock, cv) = &*release;
+            *lock.lock().expect("hold") = true;
+            cv.notify_all();
+        }
+        for reader in readers {
+            assert_eq!(reader.join().unwrap().as_deref(), Some("token"));
+        }
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+
+        let again: Vec<_> = (0..50)
+            .map(|_| {
+                let vault = Arc::clone(&vault);
+                thread::spawn(move || vault.get("acme").unwrap())
+            })
+            .collect();
+        for reader in again {
+            assert_eq!(reader.join().unwrap().as_deref(), Some("token"));
+        }
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_cancel_stops_background_reads_until_retry() {
+        let (backend, reads, writes) = Count::open(r#"{"acme":"token"}"#, false);
+        backend
+            .answers
+            .lock()
+            .expect("answers")
+            .push(Err(KeyringError::Denied("errSecUserCanceled -128".into())));
+        // `pop` takes the last item, so the denial has to be the only answer
+        // and the startup read has to run before we push a success.
+        let vault = Arc::new(Vault::with_backend(Box::new(backend), PROMPT_TIMEOUT));
+        vault.flush();
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+        assert!(
+            vault
+                .status()
+                .message
+                .unwrap()
+                .contains("Keychain access was denied")
+        );
+
+        let readers: Vec<_> = (0..50)
+            .map(|_| {
+                let vault = Arc::clone(&vault);
+                thread::spawn(move || {
+                    let _ = vault.get("acme").unwrap();
+                    vault.set("slack:T0ACME:U0ACME", "xoxp-acme").unwrap();
+                })
+            })
+            .collect();
+        for reader in readers {
+            reader.join().unwrap();
+        }
+        vault.flush();
+        assert_eq!(reads.load(Ordering::SeqCst), 1, "background reads");
+        assert_eq!(writes.load(Ordering::SeqCst), 0, "background writes");
+
+        // The startup answer was popped. The retry read succeeds.
+        vault.retry();
+        vault.flush();
+        assert_eq!(reads.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            vault.get("acme").unwrap().as_deref(),
+            Some("token"),
+            "a later read is the cached value"
+        );
+        assert_eq!(reads.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn a_locked_keychain_prompts_once_on_focus_and_not_again_after_cancel() {
+        let (backend, reads, writes) = Count::open(r#"{"acme":"token"}"#, false);
+        {
+            let mut answers = backend.answers.lock().expect("answers");
+            // pop() reads from the back: cancel on focus, then the locked startup read.
+            answers.push(Err(KeyringError::Denied("errSecUserCanceled -128".into())));
+            answers.push(Err(KeyringError::Locked(
+                "errSecInteractionNotAllowed -25308".into(),
+            )));
+        }
+        let vault = Arc::new(Vault::with_backend(Box::new(backend), PROMPT_TIMEOUT));
+        vault.flush();
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+        let status = vault.status();
+        assert_eq!(status.state, KeyringState::Denied);
+        assert!(status.can_retry);
+        assert!(status.message.unwrap().contains("Keychain access needed"));
+
+        vault.set("acme", "local").unwrap();
+        vault.flush();
+        assert_eq!(writes.load(Ordering::SeqCst), 0);
+
+        vault.note_focus(true);
+        vault.flush();
+        assert_eq!(
+            reads.load(Ordering::SeqCst),
+            2,
+            "opening the window asks once"
+        );
+        vault.note_focus(true);
+        vault.note_focus(false);
+        vault.note_focus(true);
+        vault.flush();
+        assert_eq!(
+            reads.load(Ordering::SeqCst),
+            2,
+            "a refused prompt is not shown again on focus"
+        );
+        assert_eq!(writes.load(Ordering::SeqCst), 0);
+
+        vault.retry();
+        vault.flush();
+        assert_eq!(reads.load(Ordering::SeqCst), 3);
+        assert_eq!(vault.get("acme").unwrap().as_deref(), Some("local"));
+    }
+
+    #[test]
+    fn queued_retries_while_a_prompt_is_open_do_not_stack() {
+        let (backend, reads, _) = Count::open(r#"{"acme":"token"}"#, true);
+        let entered = Arc::clone(&backend.entered);
+        let release = Arc::clone(&backend.release);
+        let vault = Arc::new(Vault::with_backend(Box::new(backend), PROMPT_TIMEOUT));
+        wait_entered_arc(&entered);
+        for _ in 0..50 {
+            vault.retry();
+        }
+        {
+            let (lock, cv) = &*release;
+            *lock.lock().expect("hold") = true;
+            cv.notify_all();
+        }
+        vault.flush();
+        // The in-flight read, plus at most one coalesced follow-up.
+        let calls = reads.load(Ordering::SeqCst);
+        assert!(calls <= 2, "keychain calls: {calls}");
+        assert!(calls >= 1);
+    }
+
+    fn wait_entered_arc(entered: &(Mutex<bool>, Condvar)) {
+        let (lock, cv) = entered;
+        let mut guard = lock.lock().expect("entered");
+        while !*guard {
+            guard = cv.wait(guard).expect("entered");
+        }
     }
 }

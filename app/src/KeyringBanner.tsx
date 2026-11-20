@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { Api, KeyringState, KeyringStatus } from "./api";
+import { every } from "./every";
 
 /** Keychain states that can still change without the user doing anything. */
 function pending(state: KeyringState): boolean {
@@ -11,6 +12,25 @@ function pending(state: KeyringState): boolean {
     case "denied":
     case "no_backend":
     case "error":
+    case "disabled":
+      return false;
+    default: {
+      const unknown: never = state;
+      return unknown;
+    }
+  }
+}
+
+/** A settled failure can change when the user unlocks and focuses the window. */
+function refreshesOnFocus(state: KeyringState): boolean {
+  switch (state) {
+    case "denied":
+    case "no_backend":
+    case "error":
+      return true;
+    case "waiting":
+    case "timed_out":
+    case "ready":
     case "disabled":
       return false;
     default: {
@@ -61,12 +81,41 @@ export function KeyringBanner({ api, initial, onReady, pollMs = 1000 }: Props) {
     if (state === null) {
       check();
     }
-    const timer = window.setInterval(check, pollMs);
+    const stop = every(pollMs, check);
     return () => {
       cancel = true;
-      window.clearInterval(timer);
+      stop();
     };
   }, [api, state, pollMs]);
+
+  useEffect(() => {
+    if (state === null || !refreshesOnFocus(state)) {
+      return;
+    }
+    let cancel = false;
+    const check = () =>
+      void api
+        .keyringStatus()
+        .then((next) => {
+          if (!cancel) {
+            setStatus(next);
+          }
+        })
+        .catch(() => undefined);
+    const onFocus = () => check();
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") {
+        check();
+      }
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      cancel = true;
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [api, state]);
 
   useEffect(() => {
     if (state === "ready" && blocked.current) {
