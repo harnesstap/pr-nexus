@@ -90,6 +90,13 @@ test("bump:due stays local and other qualifiers go to GitHub", () => {
   expect(matchesLocalRule({ involvement: REVIEW_REQUESTED, state: "open", is_draft: false }, true, BUMP_QUERY)).toBe(false);
 });
 
+test("an inherited is:open is not sent with a finished qualifier", () => {
+  expect(analyzeViewRule("is:open author:@me is:merged label:bug").github).toBe("author:@me is:merged label:bug");
+  expect(analyzeViewRule("state:open author:@me state:closed label:bug").github).toBe("author:@me state:closed label:bug");
+  expect(analyzeViewRule("is:open -is:open label:bug").github).toBe("-is:open label:bug");
+  expect(analyzeViewRule("is:open author:@me label:bug").github).toBe("is:open author:@me label:bug");
+});
+
 test("a view rule's free text narrows the list", () => {
   const rows = [row({ id: 1, title: "Passkeys" }), row({ id: 2, title: "Billing" })];
   expect(ids(rows, "custom:1", { view_rule: "is:open author:@me passkeys" })).toEqual([1]);
