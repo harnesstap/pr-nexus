@@ -130,11 +130,15 @@ pub fn parse_csv(text: &str, default_workspace: Option<&str>) -> Result<Vec<CsvR
     for (index, record) in reader.records().enumerate() {
         let record = record.map_err(|err| CoreError::Validation(format!("mapping csv: {err}")))?;
         let row = row_from_record(&headers, &record, index + 2)?;
-        let key = (row.github_org.clone(), row.team_slug.clone());
+        // GitHub org and team handles are case-insensitive.
+        let key = (
+            row.github_org.to_ascii_lowercase(),
+            row.team_slug.to_ascii_lowercase(),
+        );
         if seen.contains(&key) {
             return Err(CoreError::Validation(format!(
                 "duplicate mapping for {}/{}",
-                key.0, key.1
+                row.github_org, row.team_slug
             )));
         }
         seen.push(key);
@@ -387,14 +391,17 @@ pub fn reset_to_imported(store: &Store, org: &str, slug: &str) -> Result<bool, C
 }
 
 /// User layer wins for `(org, slug)` regardless of workspace. A disabled user
-/// row hides the imported row. Slug is tried first, then an exact team name.
+/// row hides the imported row. Slug is tried first, then the team name. Org,
+/// slug, and name ignore ASCII case, like GitHub handles.
 pub fn lookup_mapping<'a>(
     rows: &'a [TeamChannelMapping],
     org: &str,
     slug: &str,
     team_name: &str,
 ) -> Option<&'a TeamChannelMapping> {
-    match pick_layer(rows, |row| row.github_org == org && row.team_slug == slug) {
+    match pick_layer(rows, |row| {
+        row.github_org.eq_ignore_ascii_case(org) && row.team_slug.eq_ignore_ascii_case(slug)
+    }) {
         LayerPick::Hit(row) => return Some(row),
         LayerPick::Hidden => return None,
         LayerPick::Miss => {}
@@ -403,7 +410,9 @@ pub fn lookup_mapping<'a>(
         return None;
     }
     match pick_layer(rows, |row| {
-        row.github_org == org && !row.team_name.is_empty() && row.team_name == team_name
+        row.github_org.eq_ignore_ascii_case(org)
+            && !row.team_name.is_empty()
+            && row.team_name.eq_ignore_ascii_case(team_name)
     }) {
         LayerPick::Hit(row) => Some(row),
         LayerPick::Hidden | LayerPick::Miss => None,
@@ -799,6 +808,12 @@ acme,team-b,Team B,team-b-reviews,C0123456789,
         .unwrap_err();
         assert!(err.to_string().contains("duplicate"));
         let err = parse_csv(
+            "github_org,github_team_slug\nacme,team-a\nAcme,Team-A\n",
+            Some("acme"),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("duplicate"));
+        let err = parse_csv(
             "github_org,github_team_slug,slack_channel_id\nacme,team-a,D123\n",
             Some("acme"),
         )
@@ -894,6 +909,22 @@ acme,team-b,Team B,team-b-reviews,C0123456789,
                 .team_slug,
             "other-slug"
         );
+    }
+
+    #[test]
+    fn lookup_ignores_the_case_of_org_slug_and_name() {
+        let rows = vec![stored(
+            MappingLayer::Imported,
+            "acme",
+            "team-a",
+            "Team A",
+            "acme",
+            "C0123456789",
+            "team-reviews",
+            false,
+        )];
+        assert!(lookup_mapping(&rows, "Acme", "Team-A", "").is_some());
+        assert!(lookup_mapping(&rows, "ACME", "missing", "team a").is_some());
     }
 
     #[test]
