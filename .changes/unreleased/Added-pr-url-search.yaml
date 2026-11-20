@@ -1,0 +1,3 @@
+kind: Added
+body: Pasting a GitHub pull request URL into search opens that pull request, including one from another view or one fetched from GitHub.
+time: 2026-11-20T09:00:00Z

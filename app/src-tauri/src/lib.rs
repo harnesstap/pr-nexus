@@ -217,6 +217,7 @@ pub fn run() {
             commands::review_owners,
             commands::pr_stack,
             commands::pr_overview,
+            commands::lookup_pull_request,
             commands::set_auto_merge,
             commands::set_pr_draft,
             commands::merge_pr,

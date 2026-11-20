@@ -54,7 +54,7 @@ import { pageIds, selectionCountText, summaryText, type Elsewhere, type PageDto,
 import { usePagedList, type PageParams } from "./usePagedList";
 import { plainText } from "../textInput";
 import { applyFilterChange, omitRuleQualifiers } from "./filterQuery";
-import { githubQueryOf, membershipQuery, searchFieldValue, sortLocksOrder, splitSearch } from "./searchText";
+import { githubQueryOf, linkMatches, membershipQuery, searchFieldValue, sortLocksOrder, splitSearch, type PrLink } from "./searchText";
 import { queueChip } from "../detail/mergeQueue";
 import { commentsText, compactSlack, rowPills, staleCue, viewEmptyState, type RowPill, type StaleCue } from "./rowCues";
 import { ClockProvider, RelativeTime, useNow } from "./clock";
@@ -66,6 +66,16 @@ type ShownSection = Section & { count: number; ids: number[] };
 const LOAD_AHEAD_PX = 600;
 /** Search waits this long after the last keystroke (§8.2). */
 export const SEARCH_DEBOUNCE_MS = 200;
+
+/** The one pull request link in the field, when there is exactly one. */
+function linkQuery(field: string): { text: string; link: { link: PrLink; exact: boolean } | null } {
+  const next = splitSearch(field);
+  const only = next.links.length === 1 ? next.links[0] : undefined;
+  return {
+    text: next.text.trim(),
+    link: only ? { link: only, exact: next.text.trim() === "" && next.github.trim() === "" } : null,
+  };
+}
 
 /** How many times a list row body has rendered. Tests watch this across clock ticks. */
 export const prRowRenderCountRef = { current: 0 };
@@ -121,6 +131,13 @@ interface Props {
   onShownIds?: (prIds: number[]) => void;
   /** Opens the detail panel for one row. */
   onDetails: (row: ListRow) => void;
+  /**
+   * The field is only a pull request link. `row` is that stored pull request,
+   * or null when this view has no such row. Null means the field is not an exact link.
+   */
+  onExactLink?: (report: { link: PrLink; row: ListRow | null } | null) => void;
+  /** Status for an exact link that is not a row in this list (opening, missing, fetched). */
+  linkNote?: string | null;
   /** The PR the detail panel shows; moving the focus then switches it. */
   detailId?: number | null;
   /** Opens the Slack request/bump preview for one row. */
@@ -243,6 +260,8 @@ export function PrList({
   onSelectionChange,
   onShownIds,
   onDetails,
+  onExactLink,
+  linkNote = null,
   detailId = null,
   onRequestReview,
   onToggleStar,
@@ -270,7 +289,8 @@ export function PrList({
 }: Props) {
   const field = searchFieldValue(view.filters);
   const localQuery = splitSearch(field).text;
-  const [debounced, setDebounced] = useState(() => localQuery.trim());
+  const [debounced, setDebounced] = useState(() => linkQuery(field).text);
+  const [debouncedLink, setDebouncedLink] = useState(() => linkQuery(field).link);
   const [selectedByView, setSelectedByView] = useState<Record<string, number[]>>({});
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [menu, setMenu] = useState<string | null>(null);
@@ -299,9 +319,13 @@ export function PrList({
     });
 
   useEffect(() => {
-    const timer = window.setTimeout(() => setDebounced(localQuery.trim()), SEARCH_DEBOUNCE_MS);
+    const timer = window.setTimeout(() => {
+      const next = linkQuery(field);
+      setDebounced(next.text);
+      setDebouncedLink(next.link);
+    }, SEARCH_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
-  }, [localQuery]);
+  }, [field]);
 
   function setSearch(value: string) {
     onViewChange(withSearch(view, value));
@@ -337,8 +361,11 @@ export function PrList({
       view_rule: viewRule,
       due_ids: dueIds,
       viewer_login: viewerLogin,
+      pr_link: debouncedLink
+        ? { owner: debouncedLink.link.owner, name: debouncedLink.link.name, number: debouncedLink.link.number, exact: debouncedLink.exact }
+        : null,
     }),
-    [viewKey, view.grouping, view.ordering, view.direction, view.filters, debounced, collapsedKeys, githubIds, githubAnyState, sla.hours, sla.workingDays, viewRule, dueIds, viewerLogin],
+    [viewKey, view.grouping, view.ordering, view.direction, view.filters, debounced, debouncedLink, collapsedKeys, githubIds, githubAnyState, sla.hours, sla.workingDays, viewRule, dueIds, viewerLogin],
   );
   const list = usePagedList(loadPage, params, version, now);
   // To review also asks GitHub for matches past the loaded window.
@@ -359,6 +386,25 @@ export function PrList({
   );
   const currentProject = projectIdOf(viewKey);
   const flat = useMemo(() => sections.flatMap((section) => section.rows.map((row) => ({ section, row }))), [sections]);
+  const onExactLinkRef = useRef(onExactLink);
+  useEffect(() => {
+    onExactLinkRef.current = onExactLink;
+  }, [onExactLink]);
+  useEffect(() => {
+    const report = onExactLinkRef.current;
+    if (!report) {
+      return;
+    }
+    if (!debouncedLink?.exact) {
+      report(null);
+      return;
+    }
+    if (list.pending || !page) {
+      return;
+    }
+    const match = flat.find((item) => linkMatches(item.row, debouncedLink.link));
+    report({ link: debouncedLink.link, row: match?.row ?? null });
+  }, [debouncedLink, list.pending, page, flat]);
   const shownIds = useMemo(() => {
     const ids: number[] = [];
     const seen = new Set<number>();
@@ -415,12 +461,20 @@ export function PrList({
   const sentinelRef = useRef<HTMLDivElement>(null);
   const sentinelVisible = useRef(false);
   const inView = page?.in_view ?? 0;
-  const searching = localQuery.trim() !== "" && (localQuery.trim() !== debounced || list.pending);
+  const liveLink = linkQuery(field).link;
+  const linkSettling =
+    liveLink?.exact === true &&
+    (debouncedLink?.exact !== true ||
+      list.pending ||
+      liveLink.link.number !== debouncedLink.link.number ||
+      liveLink.link.owner.toLowerCase() !== debouncedLink.link.owner.toLowerCase() ||
+      liveLink.link.name.toLowerCase() !== debouncedLink.link.name.toLowerCase());
+  const searching = (localQuery.trim() !== "" && (localQuery.trim() !== debounced || list.pending)) || linkSettling;
   const { loadMore, hasMore, loadingMore } = list;
   const [narrow, setNarrow] = useState(false);
   // The panel takes most of the width; a narrow window does the same.
   const compact = detailId !== null || narrow;
-  const viewEmpty = page ? viewEmptyState(viewKey, inView, localQuery.trim() !== "", filtersActive(view.filters)) : { kind: "rows" as const };
+  const viewEmpty = page ? viewEmptyState(viewKey, inView, localQuery.trim() !== "" || debouncedLink?.exact === true, filtersActive(view.filters)) : { kind: "rows" as const };
   const showSections = viewEmpty.kind === "rows" || viewEmpty.kind === "empty_project";
 
   useEffect(() => {
@@ -1047,7 +1101,12 @@ export function PrList({
             Searching GitHub…
           </p>
         )}
-        {page && !list.pending && showSections && sections.length === 0 && !githubSearching && githubError === "" && (
+        {page && !list.pending && debouncedLink?.exact && sections.length === 0 && !githubSearching && (
+          <p role="status" className="px-3 py-6 text-sm text-slate-400">
+            {linkNote ?? `Opening ${debouncedLink.link.owner}/${debouncedLink.link.name}#${debouncedLink.link.number}…`}
+          </p>
+        )}
+        {page && !list.pending && showSections && sections.length === 0 && !githubSearching && githubError === "" && !debouncedLink?.exact && (
           <EmptyList
             title={viewTitle(viewKey, projects, viewTitles)}
             inView={inView}

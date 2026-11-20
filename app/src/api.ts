@@ -556,6 +556,12 @@ export interface DevicePrompt {
   interval: number;
 }
 
+/** A search-field pull request link: stored, fetched for the panel, or missing. */
+export type PrLinkHit =
+  | { status: "stored"; row: ListRow }
+  | { status: "opened"; row: ListRow; overview: PrOverview }
+  | { status: "missing"; message: string };
+
 export interface ListRow {
   id: number;
   number: number;
@@ -1263,6 +1269,11 @@ export interface Api {
   reviewOwners?(id: number): Promise<PrDetail>;
   /** The detail panel's cards. `refresh: false` reads only the cache (null when empty). */
   prOverview(id: number, refresh: boolean): Promise<PrOverview | null>;
+  /**
+   * A pull request URL from the search field. Stored rows come back as they are.
+   * Anything else is read for the panel and is not written into the list.
+   */
+  lookupPullRequest?(owner: string, name: string, number: number): Promise<PrLinkHit>;
   /** The stack this pull request belongs to, from stored refs. Null when it is not stacked. */
   prStack?(id: number): Promise<PrStack | null>;
   /** Turns auto-merge on with `method`, or off with null; returns the fresh overview. */
@@ -1447,6 +1458,7 @@ export const tauriApi: Api = {
   reviewTeams: (id) => invoke("review_teams", { id }),
   reviewOwners: (id) => invoke("review_owners", { id }),
   prOverview: (id, refresh) => invoke("pr_overview", { id, refresh }),
+  lookupPullRequest: (owner, name, number) => invoke("lookup_pull_request", { owner, name, number }),
   prStack: (id) => invoke("pr_stack", { id }),
   setAutoMerge: (id, method) => invoke("set_auto_merge", { id, method }),
   setPrDraft: (id, draft) => invoke("set_pr_draft", { id, draft }),

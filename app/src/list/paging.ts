@@ -19,7 +19,7 @@ import {
   type Ordering,
   type QuickFilter,
 } from "./model";
-import { sortLocksOrder } from "./searchText";
+import { linkMatches, sortLocksOrder } from "./searchText";
 import { analyzeViewRule, matchesBumpOnly, matchesLocalRule } from "./viewRule";
 
 /** Rows per `list_page` call. Bigger pages mean fewer round trips while scrolling. */
@@ -64,6 +64,11 @@ export interface PageRequest {
   due_ids?: number[];
   /** GitHub login for `assignee:@me`. */
   viewer_login?: string;
+  /**
+   * A pull request URL or `owner/repo#n` from the search field.
+   * `exact` means the field is only that link, so the view rule does not apply.
+   */
+  pr_link?: { owner: string; name: string; number: number; exact: boolean } | null;
 }
 
 /** A section header (`row` null) or a row inside `section`. */
@@ -222,13 +227,17 @@ export function pageFromRows(rows: readonly SearchRow[], projects: readonly Proj
   const toolbarGithub = request.filters.github.trim() !== "";
   const anyState = request.github_any_state === true || (!toolbarGithub && rule.showsFinished);
   const due = new Set(request.due_ids ?? []);
-  const nav = rows.filter((row) => inMembership(row, request, githubIds, due, rule, toolbarGithub));
-  const viewed = nav.filter((row) => scopeRow(row, projects, filters, anyState));
-  const scoped = viewed.filter((row) => inAttention(row, filters));
-  const terms = normalizeSearch(`${request.query} ${rule.text}`).split(/\s+/).filter((term) => term.length > 0);
-  const matched = scoped.filter((row) => passesMenu(row, filters, now) && matchesTerms(row, projects, terms));
+  const link = request.pr_link ?? null;
+  const exact = link?.exact === true;
+  const nav = exact ? rows.filter((row) => link !== null && linkMatches(row, link)) : rows.filter((row) => inMembership(row, request, githubIds, due, rule, toolbarGithub));
+  const viewed = exact ? nav : nav.filter((row) => scopeRow(row, projects, filters, anyState));
+  const scoped = exact ? viewed : viewed.filter((row) => inAttention(row, filters));
+  const terms = exact ? [] : normalizeSearch(`${request.query} ${rule.text}`).split(/\s+/).filter((term) => term.length > 0);
+  const matched = exact
+    ? scoped
+    : scoped.filter((row) => passesMenu(row, filters, now) && matchesTerms(row, projects, terms) && (link === null || linkMatches(row, link)));
   const quick = Object.fromEntries(QUICK_FILTERS.map((key) => [key, matched.filter((row) => quickMatches(row, key)).length])) as Record<QuickFilter, number>;
-  const shown = filters.quick ? matched.filter((row) => quickMatches(row, filters.quick as QuickFilter)) : matched;
+  const shown = !exact && filters.quick ? matched.filter((row) => quickMatches(row, filters.quick as QuickFilter)) : matched;
 
   const live = displayed(projects, filters);
   const liveIds = new Set(live.map((project) => project.id));
@@ -260,7 +269,7 @@ export function pageFromRows(rows: readonly SearchRow[], projects: readonly Proj
       },
     });
   });
-  const keepEmpty = keptEmpty(live, request.view_key, filters, terms.length > 0);
+  const keepEmpty = keptEmpty(live, request.view_key, filters, terms.length > 0 || exact);
   const marks = stackMarks(rows);
   const groups = group(ordered, live, request, keepEmpty, marks);
   const collapsed = new Set(request.collapsed);
@@ -301,7 +310,7 @@ export function pageFromRows(rows: readonly SearchRow[], projects: readonly Proj
     quick,
     attention: attentionCount(scoped, filters, projects, terms, now),
     snoozed_count: snoozedCount(viewed, filters, projects, terms, now),
-    elsewhere: terms.length > 0 ? elsewhereFor(rows, projects, request, terms, now) : null,
+    elsewhere: !exact && terms.length > 0 ? elsewhereFor(rows, projects, request, terms, now) : null,
   };
 }
 

@@ -1,6 +1,6 @@
 import { createPortal } from "react-dom";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import type { Api, Bootstrap, ListRow, PrDetail, ProjectDto, RemoteReviewFilter, ReplacedLinkDto } from "../api";
+import type { Api, Bootstrap, ListRow, PrDetail, PrOverview, ProjectDto, RemoteReviewFilter, ReplacedLinkDto } from "../api";
 import { CloseDialog, type CloseTarget } from "../detail/CloseDialog";
 import { MergeQueueDialog } from "../detail/MergeQueueDialog";
 import { errorMessage } from "../api";
@@ -28,7 +28,7 @@ import {
 } from "./model";
 import { copyText } from "./markdown";
 import { PrList, type ListActions } from "./PrList";
-import { githubQueryOf, searchFieldValue } from "./searchText";
+import { exactPrLink, githubQueryOf, searchFieldValue, type PrLink } from "./searchText";
 import { DeleteProjectDialog, ProjectMenu, ProjectRow } from "./SidebarProjects";
 import { SectionHeader } from "./SectionHeader";
 import { SidebarViews } from "./SidebarViews";
@@ -137,6 +137,15 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
   const [flash, setFlash] = useState<number | null>(null);
   const [editingProject, setEditingProject] = useState<number | null>(null);
   const [detailRow, setDetailRow] = useState<ListRow | null>(null);
+  const [linkNote, setLinkNote] = useState<string | null>(null);
+  const [linkOverview, setLinkOverview] = useState<PrOverview | null>(null);
+  const detailRef = useRef<ListRow | null>(null);
+  detailRef.current = detailRow;
+  /** The panel from before a pull request link took over. `undefined` means the field is not a link. */
+  const linkSnap = useRef<ListRow | null | undefined>(undefined);
+  const linkAsked = useRef("");
+  const linkGen = useRef(0);
+  const openDetailRef = useRef<(row: ListRow) => void>(() => undefined);
   const [reviewRow, setReviewRow] = useState<ListRow | null>(null);
   const [panelDetail, setPanelDetail] = useState<PrDetail | null>(null);
   const panelDetailRef = useRef<PrDetail | null>(null);
@@ -194,6 +203,102 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
   const [bulkSummary, setBulkSummary] = useState<string | null>(null);
   const fallbackView = useRef(defaultView());
   const view = views[viewKey] ?? fallbackView.current;
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  const endLink = useCallback(() => {
+    linkGen.current += 1;
+    linkAsked.current = "";
+    setLinkNote(null);
+    setLinkOverview(null);
+    if (linkSnap.current !== undefined) {
+      const previous = linkSnap.current;
+      linkSnap.current = undefined;
+      setDetailRow(previous);
+    }
+  }, []);
+  const onExactLink = useCallback(
+    (report: { link: PrLink; row: ListRow | null } | null) => {
+      if (!report) {
+        endLink();
+        return;
+      }
+      const live = exactPrLink(searchFieldValue(viewRef.current.filters));
+      if (!live || !sameLink(live, report.link)) {
+        return;
+      }
+      const key = linkKey(live);
+      if (report.row) {
+        if (linkAsked.current === `row:${report.row.id}`) {
+          return;
+        }
+        linkGen.current += 1;
+        linkAsked.current = `row:${report.row.id}`;
+        setLinkNote(null);
+        setLinkOverview(null);
+        if (linkSnap.current === undefined) {
+          linkSnap.current = detailRef.current;
+        }
+        openDetailRef.current(report.row);
+        return;
+      }
+      if (linkAsked.current === `miss:${key}`) {
+        return;
+      }
+      linkAsked.current = `miss:${key}`;
+      if (linkSnap.current === undefined) {
+        linkSnap.current = detailRef.current;
+      }
+      setDetailRow(null);
+      setLinkOverview(null);
+      const label = `${report.link.owner}/${report.link.name}#${report.link.number}`;
+      setLinkNote(`Opening ${label}…`);
+      const lookup = api.lookupPullRequest;
+      if (!lookup) {
+        setLinkNote(`No pull request ${label}, or no access.`);
+        return;
+      }
+      const gen = linkGen.current + 1;
+      linkGen.current = gen;
+      void lookup(report.link.owner, report.link.name, report.link.number)
+        .then((hit) => {
+          if (gen !== linkGen.current) {
+            return;
+          }
+          switch (hit.status) {
+            case "stored":
+              setLinkNote(null);
+              setLinkOverview(null);
+              if (linkSnap.current === undefined) {
+                linkSnap.current = detailRef.current;
+              }
+              openDetailRef.current(hit.row);
+              return;
+            case "opened":
+              setLinkOverview(hit.overview);
+              setLinkNote("Opened from GitHub. Not in your lists.");
+              setDetailRow(hit.row);
+              return;
+            case "missing":
+              setLinkOverview(null);
+              setDetailRow(null);
+              setLinkNote(hit.message);
+              return;
+            default: {
+              const unexpected: never = hit;
+              return unexpected;
+            }
+          }
+        })
+        .catch((err: unknown) => {
+          if (gen !== linkGen.current) {
+            return;
+          }
+          setDetailRow(null);
+          setLinkNote(`Couldn't open that pull request. ${errorMessage(err)}`);
+        });
+    },
+    [api, endLink],
+  );
   const sidebarView = catalog.find((item) => item.key === viewKey) ?? null;
   const sidebarQuery = sidebarView ? effectiveQuery(sidebarView, catalog) : "";
   const shownIds = useRef<number[]>([]);
@@ -800,6 +905,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
       void markRead([row.id], null, row.id);
     }
   }
+  openDetailRef.current = openDetail;
 
   async function markRead(ids: number[], notice: string | null, rollbackId?: number) {
     if (ids.length === 0) {
@@ -1324,7 +1430,12 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
                 viewTitles={viewTitles}
                 view={view}
                 now={now}
-                onViewChange={(next) => setViews((current) => ({ ...current, [viewKey]: next }))}
+                onViewChange={(next) => {
+                  setViews((current) => ({ ...current, [viewKey]: next }));
+                  if (!exactPrLink(searchFieldValue(next.filters))) {
+                    endLink();
+                  }
+                }}
                 onShowView={showViewKeepingSearch}
                 onOpenSettings={() => {
                   setSettingsTab("github");
@@ -1344,6 +1455,8 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
                 onShownIds={onShownIds}
                 detailId={detailRow?.id ?? null}
                 onDetails={openDetail}
+                onExactLink={onExactLink}
+                linkNote={linkNote}
                 onMarkRead={(ids) => void markRead(ids, "Marked as read")}
                 onMarkAllRead={(ids) => void markRead(ids, "Marked all as read")}
                 onSnooze={(ids, choice) => void snoozeRows(ids, choice)}
@@ -1365,20 +1478,22 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
             </div>
             {detailRow && (
               <DetailPanel
-                key={detailRow.id}
+                key={detailRow.id === 0 ? `link-${detailRow.owner}-${detailRow.repo}-${detailRow.number}` : detailRow.id}
                 api={api}
                 row={detailRow}
                 version={version}
+                ephemeral={detailRow.id === 0}
+                previewOverview={detailRow.id === 0 ? linkOverview : null}
                 onClose={closeDetail}
                 onOpen={(url) => void api.openExternal(url)}
-                onRequestReview={() => setReviewRow(detailRow)}
+                onRequestReview={detailRow.id === 0 ? undefined : () => setReviewRow(detailRow)}
                 onNotice={(text) => setNotice({ text })}
                 onDraftChange={changeDraft}
                 onMerged={() => prMerged(detailRow.id)}
                 onQueueChange={() => void reload()}
                 onClosed={forgetOpenPrs}
                 slack={{ mentions: boot.slack_mentions, workspaces: boot.slack_workspaces }}
-                onToggleStar={() => void toggleStar(detailRow)}
+                onToggleStar={detailRow.id === 0 ? undefined : () => void toggleStar(detailRow)}
                 onOpenPr={(id) => {
                   void api.rowsById([id]).then((found) => {
                     const next = found[0];
@@ -1387,8 +1502,8 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
                     }
                   });
                 }}
-                onSnooze={(choice) => void snoozeRows([detailRow.id], choice)}
-                onMute={(muted) => void muteRows([detailRow.id], muted)}
+                onSnooze={detailRow.id === 0 ? undefined : (choice) => void snoozeRows([detailRow.id], choice)}
+                onMute={detailRow.id === 0 ? undefined : (muted) => void muteRows([detailRow.id], muted)}
                 onDetail={(next) => {
                   panelDetailRef.current = next;
                   setPanelDetail(next);
@@ -1535,4 +1650,12 @@ function snoozeNotice(choice: SnoozeChoice): string {
 
 function prCount(count: number): string {
   return `${count} ${count === 1 ? "PR" : "PRs"}`;
+}
+
+function linkKey(link: PrLink | null): string {
+  return link ? `${link.owner.toLowerCase()}/${link.name.toLowerCase()}#${link.number}` : "";
+}
+
+function sameLink(left: PrLink, right: PrLink): boolean {
+  return linkKey(left) === linkKey(right);
 }
