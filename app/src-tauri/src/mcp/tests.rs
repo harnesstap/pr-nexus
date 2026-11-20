@@ -10,6 +10,7 @@ use super::audit::{AuditEvent, AuditSink, Outcome};
 use super::control::{McpControl, ServerState};
 use pr_nexus_core::store::AuditOutcome;
 
+use super::config::{self, SlackSendMode};
 use super::{Capability, McpSettings};
 use crate::state::AppState;
 
@@ -1522,5 +1523,40 @@ async fn tools_take_a_profile_and_default_to_the_active_one() {
         audited
             .iter()
             .any(|e| e.profile.as_deref() == Some(labs.id.as_str()))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn agents_settings_show_and_keep_the_new_profiles_send_policy_after_a_switch() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = Arc::new(AppState::for_tests(&dir.path().join("test.db"), true));
+    let control = McpControl::new(state.clone(), None).unwrap();
+    control
+        .update(McpSettings {
+            slack_send_mode: SlackSendMode::Automatic,
+            ..McpSettings::default()
+        })
+        .await
+        .unwrap();
+    // Creating a profile switches to it; it keeps the default policy.
+    crate::profiles::commands::create(&state, "Second", &[]).unwrap();
+    let stored = config::load(&state.store).unwrap();
+    assert_ne!(stored.slack_send_mode, SlackSendMode::Automatic);
+
+    // What Settings → Agents shows now.
+    let shown = control.current_view().await.unwrap().settings;
+    assert_eq!(shown.slack_send_mode, stored.slack_send_mode);
+    // The UI saves `{ ...view.settings, ...patch }`, e.g. turning Reads off.
+    control
+        .update(McpSettings {
+            reads: false,
+            ..shown
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        config::load(&state.store).unwrap().slack_send_mode,
+        stored.slack_send_mode,
+        "an unrelated save must not change the new profile's send policy"
     );
 }
