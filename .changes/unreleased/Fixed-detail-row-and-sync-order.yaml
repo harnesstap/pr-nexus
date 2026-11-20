@@ -1,3 +1,0 @@
-kind: Fixed
-body: 'Opening a pull request writes its fresh review, checks, and merge state back onto the list row, and sync fetches the view on screen first.'
-time: 2026-11-19T08:35:00Z
