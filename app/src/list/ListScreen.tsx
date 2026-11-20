@@ -48,6 +48,10 @@ import type { PageRequest } from "./paging";
 const SYNC_POLL_MS = 500;
 /** Idle poll that notices scheduled background syncs (§6). */
 const IDLE_POLL_MS = 15_000;
+
+function sameIds(a: readonly number[], b: readonly number[]): boolean {
+  return a.length === b.length && a.every((id, index) => id === b[index]);
+}
 /** Quiet time after a To review filter change before GitHub is searched with it (§6). */
 export const REMOTE_FILTER_DEBOUNCE_MS = 400;
 /** Quiet time after a GitHub query edit before it is sent. */
@@ -652,13 +656,15 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
         if (!cancel) {
           const list = Array.isArray(items) ? items : [];
           setDueCount(list.length);
-          setDueIds(list.map((item) => item.pr_id));
+          const next = list.map((item) => item.pr_id);
+          // The view counts depend on these ids: an equal array would count every view twice.
+          setDueIds((current) => (sameIds(current, next) ? current : next));
         }
       },
       () => {
         if (!cancel) {
           setDueCount(0);
-          setDueIds([]);
+          setDueIds((current) => (current.length === 0 ? current : []));
         }
       },
     );

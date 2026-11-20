@@ -433,6 +433,32 @@ test("a pull request opened from a notification is marked read like a clicked on
   await waitFor(() => expect(fake.markPrsRead).toHaveBeenCalledWith([1]));
 });
 
+test("a list reload counts each sidebar view once", async () => {
+  const fake = api([], [listRow(1, "Migrate login")]);
+  fake.dueBumps = () => Promise.resolve([{ pr_id: 1 } as Awaited<ReturnType<NonNullable<Api["dueBumps"]>>>[number]]);
+  let changed: (() => void) | undefined;
+  fake.onDataChanged = (onChange) => {
+    changed = onChange;
+    return () => undefined;
+  };
+  fake.syncStatus = () => Promise.resolve({ ...boot.sync, revision: 1 });
+  const page = fake.listPage.bind(fake);
+  const requests: string[] = [];
+  fake.listPage = (request) => {
+    // The clock moves between runs; the request is otherwise the same.
+    requests.push(JSON.stringify({ ...request, now: null }));
+    return page(request);
+  };
+  render(<ListScreen api={fake} boot={boot} onBoot={() => undefined} />);
+  await screen.findByText("Migrate login");
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  requests.length = 0;
+  changed?.();
+  await waitFor(() => expect(requests.length).toBeGreaterThan(0));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(requests.length).toBe(new Set(requests).size);
+});
+
 test("the sync details offer a full resync that calls the full command", async () => {
   const fake = api([]);
   const fullResync = vi.fn(() => Promise.resolve({ ...boot.sync, revision: 1 }));

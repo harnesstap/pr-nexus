@@ -1,0 +1,3 @@
+kind: Fixed
+body: A list reload counts each sidebar view once instead of twice.
+time: 2026-11-20T10:30:00Z
