@@ -43,6 +43,12 @@ test("only an explicit sort: qualifier locks the order", () => {
   expect(sortLocksOrder("-sort:updated-desc")).toBe(false);
 });
 
+test("an upper-case Sort: key locks the order like the GitHub query", () => {
+  expect(sortLocksOrder("Sort:created-asc author:octo")).toBe(true);
+  expect(sortLocksOrder("SORT:updated-desc")).toBe(true);
+  expect(sortLocksOrder("-Sort:updated-desc")).toBe(false);
+});
+
 test("free text alone is not a GitHub query", () => {
   expect(githubQueryOf({ search: "passkeys", github: "" })).toBe("");
   expect(githubQueryOf({ search: "", github: "author:me" })).toBe("author:me");

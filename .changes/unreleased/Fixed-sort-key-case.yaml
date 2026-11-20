@@ -1,0 +1,3 @@
+kind: Fixed
+body: An upper-case Sort qualifier in a search or view rule now orders the list as well as the GitHub results.
+time: 2026-11-20T09:20:00Z

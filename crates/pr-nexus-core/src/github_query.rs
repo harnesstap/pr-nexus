@@ -475,7 +475,7 @@ fn is_sort_token(token: &str) -> bool {
     if !is_qualifier_token(token) || token.starts_with('-') {
         return false;
     }
-    colon_outside_quotes(token).is_some_and(|at| at > 0 && &token[..at] == "sort")
+    colon_outside_quotes(token).is_some_and(|at| at > 0 && token[..at].eq_ignore_ascii_case("sort"))
 }
 
 /// `key:value`, with an optional leading `-`. `https://…` is not a qualifier.
@@ -788,6 +788,14 @@ mod tests {
         let plain = prepared("sort:comments");
         assert!(plain.order.as_ref().unwrap().descending);
         assert_eq!(plain.order.as_ref().unwrap().sort, "comments");
+    }
+
+    #[test]
+    fn an_upper_case_sort_key_orders_both_github_and_the_list() {
+        assert!(prepared("Sort:created-asc author:octo").order.is_some());
+        assert!(sets_order("Sort:created-asc author:octo"));
+        assert!(sets_order("SORT:updated-desc"));
+        assert!(!sets_order("-Sort:updated-desc"));
     }
 
     #[test]

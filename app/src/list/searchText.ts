@@ -159,7 +159,7 @@ export function sortLocksOrder(raw: string): boolean {
       continue;
     }
     const colon = colonOutsideQuotes(token.text);
-    if (colon !== null && token.text.slice(0, colon) === "sort") {
+    if (colon !== null && token.text.slice(0, colon).toLowerCase() === "sort") {
       return true;
     }
   }
