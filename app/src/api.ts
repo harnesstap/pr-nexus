@@ -1139,7 +1139,7 @@ export interface Api {
   /** github.com accounts `gh` is signed in to, the active one first. */
   ghAccounts?(): Promise<string[]>;
   startDevice(): Promise<DevicePrompt>;
-  pollDevice(): Promise<{ status: string; login: string | null }>;
+  pollDevice(): Promise<{ status: "pending" | "connected"; login: string | null }>;
   saveOrgs(orgs: string[], includePersonal: boolean): Promise<void>;
   saveSlack(clientId: string, clientSecret: string, redirectUri: string): Promise<void>;
   slackManifestUrl(redirectUri: string): Promise<string>;
