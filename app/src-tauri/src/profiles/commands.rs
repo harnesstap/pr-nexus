@@ -151,10 +151,18 @@ pub fn create_with(
         }
     }
     let (profile, secrets) = state.profiles.create(name, reuse)?;
-    for (source, keys) in secrets {
-        state.vault.copy_between(&source, &profile.id, &keys)?;
+    let ready = secrets
+        .iter()
+        .try_for_each(|(source, keys)| state.vault.copy_between(source, &profile.id, keys))
+        .map_err(AppError::from)
+        .and_then(|()| state.switch_profile(&profile.id));
+    if let Err(err) = ready {
+        // Leave no half-made profile, so the name can be retried.
+        if let Err(cleanup) = delete(state, &profile.id) {
+            tracing::warn!(profile = %profile.id, error = %cleanup.message, "could not remove a half-made profile");
+        }
+        return Err(err);
     }
-    state.switch_profile(&profile.id)?;
     if let Some((external_id, token)) = pinned {
         let account = state
             .store

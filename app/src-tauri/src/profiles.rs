@@ -150,7 +150,8 @@ impl ProfileManager {
     }
 
     /// Adds a profile and copies `reuse` from `sources` into it. Returns the
-    /// profile and, per source, the keychain keys to copy.
+    /// profile and, per source, the keychain keys to copy. A failed copy
+    /// deletes the new profile again, so the name can be retried.
     pub fn create(
         &self,
         name: &str,
@@ -167,19 +168,27 @@ impl ProfileManager {
             registry.profiles.push(profile.clone());
             Ok(profile)
         })?;
-        let target = self.dirs.database(&profile.id);
-        // Create the schema before copying into it.
-        self.store_at(&target)?;
-        let mut secrets = Vec::new();
-        for from in reuse {
-            if from.items.is_empty() {
-                continue;
+        let filled = (|| -> Result<SecretCopies, AppError> {
+            let target = self.dirs.database(&profile.id);
+            // Create the schema before copying into it.
+            self.store_at(&target)?;
+            let mut secrets = Vec::new();
+            for from in reuse {
+                if from.items.is_empty() {
+                    continue;
+                }
+                let source = self.resolve(&from.profile)?;
+                let keys = core::copy_items(&target, &self.dirs.database(&source.id), &from.items)?;
+                secrets.push((source.id, keys));
             }
-            let source = self.resolve(&from.profile)?;
-            let keys = core::copy_items(&target, &self.dirs.database(&source.id), &from.items)?;
-            secrets.push((source.id, keys));
+            Ok(secrets)
+        })();
+        if filled.is_err()
+            && let Err(err) = self.delete(&profile.id)
+        {
+            tracing::warn!(profile = %profile.id, error = %err.message, "could not remove a half-made profile");
         }
-        Ok((profile, secrets))
+        Ok((profile, filled?))
     }
 
     pub fn rename(&self, id: &str, name: &str) -> Result<Profile, AppError> {
@@ -443,6 +452,25 @@ mod tests {
         assert!(err.is_err());
         assert_eq!(commands::list(&state).unwrap().len(), 1);
         assert_eq!(state.profile(), DEFAULT_ID);
+    }
+
+    #[test]
+    fn a_failed_copy_leaves_no_profile_and_the_name_can_be_retried() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(&dir);
+        // The registry entry is saved before the copy, which then fails.
+        let reuse = [ReuseFrom {
+            profile: "no-such-profile".into(),
+            items: ReuseItems {
+                projects: true,
+                ..ReuseItems::default()
+            },
+        }];
+        assert!(commands::create(&state, "Acme Labs", &reuse).is_err());
+        assert_eq!(commands::list(&state).unwrap().len(), 1);
+        assert_eq!(state.profile(), DEFAULT_ID);
+        let created = commands::create(&state, "Acme Labs", &[]).unwrap();
+        assert_eq!(created.name, "Acme Labs");
     }
 
     #[test]

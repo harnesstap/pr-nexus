@@ -1,0 +1,3 @@
+kind: Fixed
+body: Creating a profile that fails while copying settings or secrets no longer leaves a half-made profile behind, so the same name can be tried again.
+time: 2026-11-20T12:30:00Z
