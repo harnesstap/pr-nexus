@@ -482,7 +482,7 @@ fn gh_probe() -> GhStatus {
     let (gh_ready, gh_detail) = if github::github_token_from_env().is_some() {
         (true, "Using PR_NEXUS_GITHUB_TOKEN".to_owned())
     } else {
-        match github::read_gh_token() {
+        match github::read_gh_token_now(None) {
             github::GhProbe::Ready { .. } => (true, "gh is logged in".to_owned()),
             github::GhProbe::Unavailable { reason } => (false, reason),
         }
@@ -664,7 +664,7 @@ pub async fn connect_github(
                 }
             }
         } else if mode == "gh_cli" {
-            match github::read_gh_token() {
+            match github::read_gh_token_now(None) {
                 github::GhProbe::Ready { token } => token,
                 github::GhProbe::Unavailable { reason } => {
                     return Err(AppError::new("unauthorized", reason));

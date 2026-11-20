@@ -264,6 +264,14 @@ pub fn read_gh_token() -> GhProbe {
     read_gh_token_for(None)
 }
 
+/// [`read_gh_token_for`] past the cache, for an explicit user action
+/// (Connect GitHub, the wizard's re-check): the user may have just run
+/// `gh auth switch`. Background reads keep the TTL.
+pub fn read_gh_token_now(login: Option<&str>) -> GhProbe {
+    invalidate_gh_token_cache();
+    read_gh_token_for(login)
+}
+
 /// `gh auth token` for one of the accounts gh knows (`--user <login>`), or
 /// the active one. Never switches gh's active account. A successful read is
 /// reused for [`GH_TOKEN_TTL`].

@@ -25,7 +25,7 @@ pub use notifications::{SCOPE_UNAVAILABLE, TOKEN_TYPE_UNAVAILABLE};
 pub use auth::{
     DevicePoll, DeviceStart, GhProbe, gh_accounts, github_token_from_env,
     invalidate_gh_token_cache, oauth_client_id_from_env, parse_gh_accounts, poll_device_flow,
-    read_gh_token, read_gh_token_for, start_device_flow,
+    read_gh_token, read_gh_token_for, read_gh_token_now, start_device_flow,
 };
 
 use std::sync::atomic::{AtomicBool, Ordering};
