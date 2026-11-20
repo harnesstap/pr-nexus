@@ -1665,7 +1665,7 @@ pub async fn enqueue_pull_request(
             pr_nexus_core::merge_queue::enqueue(&state.store, provider, &pr)
         })?;
         state::note_list_changed(state);
-        Ok(overview)
+        present_overview(state, overview)
     })
     .await
 }
@@ -1685,7 +1685,7 @@ pub async fn dequeue_pull_request(
             pr_nexus_core::merge_queue::dequeue(&state.store, provider, &pr)
         })?;
         state::note_list_changed(state);
-        Ok(overview)
+        present_overview(state, overview)
     })
     .await
 }
