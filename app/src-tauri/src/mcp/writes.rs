@@ -394,7 +394,9 @@ fn remove_jira_link(state: &AppState, arguments: JsonObject) -> Result<Value, Ap
     let Some(link) = found else {
         return Err(AppError::new(
             "not_found",
-            format!("Project {} has no JIRA link {wanted}", args.project_id),
+            // The audit row keeps this message, and §10.1.1 keeps argument
+            // values out of it.
+            format!("Project {} has no such JIRA link", args.project_id),
         ));
     };
     project_info::remove_jira_link(state, link.id)?;
