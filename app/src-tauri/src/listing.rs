@@ -139,6 +139,30 @@ pub struct PageRequest {
     /// GitHub login for `assignee:@me`. Empty leaves `@me` unmatched.
     #[serde(default)]
     pub viewer_login: String,
+    /// A pull request URL or `owner/repo#n` from the search field.
+    /// `exact` ignores the view rule and the open/archived scope.
+    #[serde(default)]
+    pub pr_link: Option<PrLinkQuery>,
+}
+
+/// Repo and number taken from the search field. `exact` is the whole field.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PrLinkQuery {
+    pub owner: String,
+    pub name: String,
+    pub number: u64,
+    #[serde(default)]
+    pub exact: bool,
+}
+
+impl PrLinkQuery {
+    fn link(&self) -> pr_nexus_core::pr_link::PrLink {
+        pr_nexus_core::pr_link::PrLink {
+            owner: self.owner.clone(),
+            name: self.name.clone(),
+            number: self.number,
+        }
+    }
 }
 
 fn default_review_sla_hours() -> i64 {
@@ -305,9 +329,22 @@ pub fn page(
     let toolbar_github = !filters.github.trim().is_empty();
     let any_state = request.github_any_state || (!toolbar_github && rule.shows_finished);
 
+    let exact = request
+        .pr_link
+        .as_ref()
+        .filter(|query| query.exact)
+        .map(PrLinkQuery::link);
+    let narrow = request
+        .pr_link
+        .as_ref()
+        .filter(|query| !query.exact)
+        .map(PrLinkQuery::link);
     let viewed: Vec<&Item> = items
         .iter()
         .filter(|item| {
+            if let Some(link) = &exact {
+                return link.matches(&item.row.owner, &item.row.repo, item.row.number);
+            }
             in_membership(
                 &item.row,
                 request,
@@ -316,42 +353,62 @@ pub fn page(
                 &due,
                 &rule,
                 toolbar_github,
+            ) && scope_row(&item.row, &live_ids, filters, any_state)
+        })
+        .collect();
+    let scoped: Vec<&Item> = if exact.is_some() {
+        viewed.clone()
+    } else {
+        viewed
+            .iter()
+            .copied()
+            .filter(|item| in_attention(&item.row, filters))
+            .collect()
+    };
+    let matched: Vec<&Item> = if exact.is_some() {
+        scoped.clone()
+    } else {
+        scoped
+            .iter()
+            .copied()
+            .filter(|item| passes_menu(item, filters, now_ms))
+            .filter(|item| search.is_none_or(|ids| ids.contains(&item.row.id)))
+            .filter(|item| {
+                narrow.as_ref().is_none_or(|link| {
+                    link.matches(&item.row.owner, &item.row.repo, item.row.number)
+                })
+            })
+            .collect()
+    };
+    let quick = quick_counts(&matched);
+    let elsewhere = if exact.is_some() {
+        None
+    } else {
+        search.map(|ids| {
+            elsewhere(
+                items,
+                &request.view_key,
+                project_view,
+                &live_ids,
+                filters,
+                now_ms,
+                ids,
             )
         })
-        .filter(|item| scope_row(&item.row, &live_ids, filters, any_state))
-        .collect();
-    let scoped: Vec<&Item> = viewed
-        .iter()
-        .copied()
-        .filter(|item| in_attention(&item.row, filters))
-        .collect();
-    let matched: Vec<&Item> = scoped
-        .iter()
-        .copied()
-        .filter(|item| passes_menu(item, filters, now_ms))
-        .filter(|item| search.is_none_or(|ids| ids.contains(&item.row.id)))
-        .collect();
-    let quick = quick_counts(&matched);
-    let elsewhere = search.map(|ids| {
-        elsewhere(
-            items,
-            &request.view_key,
-            project_view,
-            &live_ids,
-            filters,
-            now_ms,
-            ids,
-        )
-    });
-    let mut shown: Vec<&Item> = matched
-        .into_iter()
-        .filter(|item| {
-            filters
-                .quick
-                .as_deref()
-                .is_none_or(|quick| quick_matches(&item.row, quick))
-        })
-        .collect();
+    };
+    let mut shown: Vec<&Item> = if exact.is_some() {
+        matched
+    } else {
+        matched
+            .into_iter()
+            .filter(|item| {
+                filters
+                    .quick
+                    .as_deref()
+                    .is_none_or(|quick| quick_matches(&item.row, quick))
+            })
+            .collect()
+    };
 
     let open = shown.iter().filter(|item| item.row.state == "open").count();
     let summary = PageSummary {
@@ -401,7 +458,7 @@ pub fn page(
     }
 
     let marks = stack_marks(items);
-    let keep_empty: HashSet<i64> = if search.is_some() || filters.active() {
+    let keep_empty: HashSet<i64> = if search.is_some() || filters.active() || exact.is_some() {
         HashSet::new()
     } else if let Some(id) = project_view {
         HashSet::from([id])
@@ -1655,6 +1712,7 @@ mod tests {
             view_rule: String::new(),
             due_ids: Vec::new(),
             viewer_login: String::new(),
+            pr_link: None,
         }
     }
 
@@ -1740,6 +1798,41 @@ mod tests {
             .filter_map(|entry| entry.row.as_ref().map(|row| row.id))
             .collect();
         assert_eq!(ids, vec![1]);
+    }
+
+    #[test]
+    fn an_exact_pull_request_link_ignores_the_view_rule() {
+        let mut mine = item(1, &[], 1);
+        mine.row.owner = "acme".into();
+        mine.row.repo = "acme/widgets".into();
+        mine.row.number = 10;
+        mine.row.involvement = AUTHOR;
+        let mut review = item(2, &[], 2);
+        review.row.owner = "acme".into();
+        review.row.repo = "acme/widgets".into();
+        review.row.number = 332;
+        review.row.involvement = REVIEW_REQUESTED;
+        review.row.state = "open".into();
+        let items = items_of(mine, review);
+        let mut request = request("repository");
+        request.view_key = "mine".into();
+        request.view_rule = pr_nexus_core::view_rule::MINE_QUERY.to_owned();
+        let plain: Vec<i64> = row_ids(&page(&items, &[], &request, None))
+            .into_iter()
+            .flatten()
+            .collect();
+        assert_eq!(plain, vec![1]);
+        request.pr_link = Some(PrLinkQuery {
+            owner: "ACME".into(),
+            name: "Widgets".into(),
+            number: 332,
+            exact: true,
+        });
+        let linked: Vec<i64> = row_ids(&page(&items, &[], &request, None))
+            .into_iter()
+            .flatten()
+            .collect();
+        assert_eq!(linked, vec![2]);
     }
 
     fn items_of(left: Item, right: Item) -> Vec<Item> {

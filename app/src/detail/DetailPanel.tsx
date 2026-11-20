@@ -57,6 +57,10 @@ interface Props {
   onMute?: (muted: boolean) => void;
   /** Owners for this PR, once `prDetail` returns. */
   onDetail?: (detail: PrDetail) => void;
+  /** Opened from a URL and not stored. The panel only shows what was fetched. */
+  ephemeral?: boolean;
+  /** Overview for an ephemeral row. The panel does not ask again. */
+  previewOverview?: PrOverview | null;
 }
 
 /** Panel width as a share of the window, remembered across launches. */
@@ -83,10 +87,10 @@ function storedWidth(): number {
  * The PR detail slide-over (§7.2): docked on the right while the list stays usable, so a
  * click or ↑/↓ in the list switches the PR. Esc or ✕ closes it.
  */
-export function DetailPanel({ api, row, version, onClose, onOpen, onRequestReview, onNotice, onDraftChange, onMerged, onQueueChange, onClosed, slack, onToggleStar, onOpenPr, onSnooze, onMute, onDetail }: Props) {
-  const [overview, setOverview] = useState<PrOverview | null>(null);
+export function DetailPanel({ api, row, version, onClose, onOpen, onRequestReview, onNotice, onDraftChange, onMerged, onQueueChange, onClosed, slack, onToggleStar, onOpenPr, onSnooze, onMute, onDetail, ephemeral = false, previewOverview = null }: Props) {
+  const [overview, setOverview] = useState<PrOverview | null>(ephemeral ? previewOverview : null);
   const [overviewError, setOverviewError] = useState<string | null>(null);
-  const [loaded, setLoaded] = useState(false);
+  const [loaded, setLoaded] = useState(ephemeral);
   const [detail, setDetail] = useState<PrDetail | null>(null);
   const onDetailRef = useRef(onDetail);
   useEffect(() => {
@@ -101,7 +105,8 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
     api,
     prId: row.id,
     overview,
-    fresh: loaded && !overviewError,
+    fresh: loaded && !overviewError && !ephemeral,
+    ephemeral,
     onOverview: (next, observed) => {
       if (offerOverview(row.id, next, observed)) setOverview(next);
     },
@@ -112,6 +117,9 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
   // Each read keeps the generation it started with, so a late draft copy cannot
   // replace the overview a newer mark-ready already stored.
   useEffect(() => {
+    if (ephemeral) {
+      return;
+    }
     let cancel = false;
     const cachedGen = takeGeneration();
     const freshGen = takeGeneration();
@@ -134,9 +142,12 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
     return () => {
       cancel = true;
     };
-  }, [api, row.id, version]);
+  }, [api, row.id, version, ephemeral]);
 
   useEffect(() => {
+    if (ephemeral) {
+      return;
+    }
     let cancel = false;
     api
       .prDetail(row.id)
@@ -151,7 +162,7 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
     return () => {
       cancel = true;
     };
-  }, [api, row.id]);
+  }, [api, row.id, ephemeral]);
 
   // The minimum time between bumps, from settings (0 = no limit).
   const [minBumpHours, setMinBumpHours] = useState(0);
@@ -244,7 +255,7 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
   const verdict = overview ? applyQueueVerdict(overview, mergeVerdict(overview, branch.view.behindBy)) : null;
   /** The fix that sits on a blocker's row: Mark ready on the draft line, Update branch or Resolve on the branch line. */
   const blockerAction = (text: string, only: boolean): ReactNode => {
-    if (overview?.state !== "open") {
+    if (ephemeral || overview?.state !== "open") {
       return undefined;
     }
     if (draft.draft && (text === DRAFT_BLOCKER || only)) {
@@ -308,7 +319,7 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
           <IconButton label="Open on GitHub" shortcut="O" onClick={() => onOpen(row.url)}>
             <GitHubIcon size={16} />
           </IconButton>
-          {row.state === "open" && (
+          {row.state === "open" && !ephemeral && (
             <HeaderMenu
               canClose={overview?.viewer.can_close !== false}
               onClosePr={() => setConfirmClose(true)}
@@ -331,6 +342,7 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
         )}
         {overview && (
           <>
+            {ephemeral && <p className="text-xs text-slate-400">Opened from GitHub. Not in your lists.</p>}
             <StatCards overview={overview} onOpen={onOpen} branch={<BranchCard branch={branch} onOpen={onOpen} />} />
             <BotReviews reviews={overview.bot_reviews} onOpen={onOpen} />
             <BranchError branch={branch} />
@@ -359,7 +371,7 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
                   }))}
                   bullets={verdict.blockers.length > 1}
                 />
-                {overview.state === "open" && (
+                {overview.state === "open" && !ephemeral && (
                   <div data-testid="merge-controls" className="flex flex-wrap items-center gap-2 border-t border-slate-800/70 pt-2">
                     <AutoMerge
                       api={api}
@@ -377,24 +389,24 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
               </section>
             )}
             {/* The one primary action, right under "can I merge": asking for review is what unblocks it. */}
-            <SlackLine api={api} prId={row.id} minBumpHours={minBumpHours} onOpen={onOpen} onRequest={onRequestReview} workspaces={slack?.workspaces} />
+            {!ephemeral && <SlackLine api={api} prId={row.id} minBumpHours={minBumpHours} onOpen={onOpen} onRequest={onRequestReview} workspaces={slack?.workspaces} />}
             {overviewError && (
               <p className="text-xs text-amber-200">
                 Showing the copy from {ago(overview.fetched_at, new Date())}; refreshing failed: {overviewError}
               </p>
             )}
-            <StackSection api={api} prId={row.id} onOpen={(id) => onOpenPr?.(id)} />
+            {!ephemeral && <StackSection api={api} prId={row.id} onOpen={(id) => onOpenPr?.(id)} />}
             <PeopleRow
               groups={peopleGroups(overview, detail ? requiredSeats(overview.reviewers, detail.mandatory_teams, detail.approved_teams) : [])}
               missing={overview.required_approvals === null ? 0 : Math.max(0, overview.required_approvals - overview.approvals)}
             />
           </>
         )}
-        {!overview && (
+        {!overview && !ephemeral && (
           <SlackLine api={api} prId={row.id} minBumpHours={minBumpHours} onOpen={onOpen} onRequest={onRequestReview} workspaces={slack?.workspaces} />
         )}
-        <NoteSection api={api} prId={row.id} />
-        <div>
+        {!ephemeral && <NoteSection api={api} prId={row.id} />}
+        {!ephemeral && <div>
           <Expander title={`Files changed (${files})`} aside={detail?.codeowners_path ? "with code owners" : undefined}>
             <FilesBody detail={detail} error={detailError} />
           </Expander>
@@ -406,7 +418,7 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
               <SlackContextPanel api={api} prId={row.id} mentions={slack.mentions} onOpen={onOpen} />
             </Expander>
           )}
-        </div>
+        </div>}
         {overview && <p className="text-[11px] text-slate-600">Updated {ago(overview.fetched_at, new Date())}</p>}
       </div>
       {confirmClose && (

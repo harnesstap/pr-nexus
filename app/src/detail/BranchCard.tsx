@@ -24,7 +24,7 @@ export interface BranchController {
 }
 
 export interface BranchView {
-  state: BranchState | "merged" | "closed" | "loading";
+  state: BranchState | "merged" | "closed" | "loading" | "unknown";
   base: string;
   behindBy: number | null;
   otherAuthors: string[];
@@ -60,6 +60,7 @@ export function useBranch({
   prId,
   overview,
   fresh,
+  ephemeral = false,
   onOverview,
   onNotice,
 }: {
@@ -67,6 +68,8 @@ export function useBranch({
   prId: number;
   overview: PrOverview | null;
   fresh: boolean;
+  /** Opened from a link and not stored, so the compare is never requested. */
+  ephemeral?: boolean;
   onOverview: (next: PrOverview, observed: number) => void;
   onNotice: (text: string) => void;
 }): BranchController {
@@ -101,7 +104,13 @@ export function useBranch({
     latest.current = onOverview;
   });
 
-  const view = branchView(overview, status);
+  const guessed = branchView(overview, status);
+  // A stored row waits on the compare. An opened-from-GitHub row never asks,
+  // so "Checking…" would spin forever; say that it was not compared.
+  const view =
+    ephemeral && (guessed.state === "loading" || guessed.state === "checking")
+      ? { ...guessed, state: "unknown" as const }
+      : guessed;
   const checking = fresh && view.state === "checking";
   useEffect(() => {
     if (!checking || attempts >= CHECKING_DELAYS_MS.length) {
@@ -214,6 +223,12 @@ export function branchText(view: BranchView): {
         caption: `Comparing with ${view.base}`,
         tone: "muted",
       };
+    case "unknown":
+      return {
+        value: "Not compared",
+        caption: `Not compared with ${view.base}`,
+        tone: "muted",
+      };
     case "merged":
       return {
         value: "Merged",
@@ -253,6 +268,8 @@ function StateIcon({ state }: { state: BranchView["state"] }) {
           className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-slate-600 border-t-slate-300"
         />
       );
+    case "unknown":
+      return null;
     case "closed":
       return <DeclinedIcon size={16} data-icon="closed" />;
     default: {

@@ -1579,6 +1579,26 @@ pub async fn pr_overview(
     .await
 }
 
+/// A pull request named by a URL in the search field.
+///
+/// A stored row is returned as it is. Anything else is read from GitHub for
+/// the detail panel and is not written into the list.
+#[tauri::command]
+pub async fn lookup_pull_request(
+    app: State<'_, std::sync::Arc<AppState>>,
+    owner: String,
+    name: String,
+    number: u64,
+) -> Result<crate::services::pr_link::PrLinkHit, AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        let client = vcs_client(state)?;
+        crate::services::pr_link::lookup(state, client.as_ref(), &owner, &name, number)
+    })
+    .await
+}
+
 /// Turns auto-merge on with `method` (`squash`, `merge`, `rebase`), or off
 /// when `method` is null, and returns the refreshed overview.
 #[tauri::command]
@@ -1974,6 +1994,55 @@ fn attention_flags<'a>(
         .map_err(Into::into)
 }
 
+/// A list row for a pull request that was read for the panel and not stored.
+pub(crate) fn row_for_untracked(pr: &PullRequest) -> ListRow {
+    ListRow {
+        id: 0,
+        number: pr.number,
+        title: pr.title.clone(),
+        url: pr.url.clone(),
+        owner: pr.repo.owner.clone(),
+        repo: format!("{}/{}", pr.repo.owner, pr.repo.name),
+        author_login: pr.author_login.clone(),
+        head_ref: pr.head_ref.clone(),
+        base_ref: pr.base_ref.clone(),
+        stack: None,
+        is_draft: pr.is_draft,
+        state: pr.state.as_str().to_owned(),
+        checks: pr.checks.as_str().to_owned(),
+        review_decision: pr.review_decision.map(|value| value.as_str().to_owned()),
+        unresolved_threads: pr.unresolved_threads,
+        total_threads: pr.total_threads,
+        involvement: pr.involvement.bits(),
+        updated_at: pr.updated_at.to_rfc3339(),
+        created_at: pr.created_at.to_rfc3339(),
+        hidden: false,
+        starred: false,
+        unread: false,
+        muted: false,
+        snoozed: false,
+        project_ids: Vec::new(),
+        readiness: "unknown".into(),
+        readiness_notes: Vec::new(),
+        conflicts: pr.mergeable == pr_nexus_core::domain::Mergeable::Conflicting
+            || pr.merge_state == pr_nexus_core::domain::MergeStateStatus::Dirty,
+        merge_state: pr.merge_state.as_str().to_owned(),
+        merge_queue: None,
+        reviewers_requested: !pr.requested_reviewers.is_empty(),
+        pending_reviewers: pending_reviewers(&pr.requested_reviewers),
+        assignees: pr
+            .assignees
+            .iter()
+            .map(|person| AssigneeDto {
+                login: person.login.clone(),
+                name: person.name.clone().unwrap_or_default(),
+            })
+            .collect(),
+        slack: None,
+        bot_comments: 0,
+    }
+}
+
 fn to_item(
     facts: &mut ListFacts,
     workspaces: &[pr_nexus_core::review::route::Workspace],
@@ -2186,6 +2255,7 @@ mod tests {
             view_rule: String::new(),
             due_ids: Vec::new(),
             viewer_login: String::new(),
+            pr_link: None,
         }
     }
 

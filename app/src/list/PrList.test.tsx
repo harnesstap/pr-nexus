@@ -9,6 +9,7 @@ vi.mock("./paging", async (importOriginal) => ({ ...(await importOriginal<typeof
 import type { ListRow, ProjectDto } from "../api";
 import { PAGE_SIZE, pageFromRows, type PageDto, type PageRequest, type SearchRow } from "./paging";
 import { defaultView, type SavedView, type Toast } from "./model";
+import { MINE_QUERY } from "./viewRule";
 import { PrList, SEARCH_DEBOUNCE_MS, prRowRenderCountRef } from "./PrList";
 
 afterEach(() => {
@@ -64,6 +65,8 @@ function Harness({
   onCreateProjectWithPrs = () => Promise.resolve(),
   onEditProject = () => undefined,
   onDetails = () => undefined,
+  onExactLink,
+  viewRule = "",
   onToggleStar,
   detailId = null,
   onRequestReview = () => undefined,
@@ -89,6 +92,8 @@ function Harness({
   onCreateProjectWithPrs?: (name: string, ids: number[]) => Promise<void>;
   onEditProject?: (id: number) => void;
   onDetails?: (row: ListRow) => void;
+  onExactLink?: (report: { link: { owner: string; name: string; number: number }; row: ListRow | null } | null) => void;
+  viewRule?: string;
   onToggleStar?: (row: ListRow) => void;
   detailId?: number | null;
   onRequestReview?: (row: ListRow) => void;
@@ -124,6 +129,8 @@ function Harness({
       onLinkPrs={onLinkPrs}
       onCreateProjectWithPrs={onCreateProjectWithPrs}
       onDetails={onDetails}
+      onExactLink={onExactLink}
+      viewRule={viewRule}
       onToggleStar={onToggleStar}
       detailId={detailId}
       onRequestReview={onRequestReview}
@@ -784,6 +791,31 @@ const sspRows = [
   row({ id: 13, number: 125, title: "Drop the old floor", repo: "acme/service-ssp", state: "merged", project_ids: [] }),
   ...rows,
 ];
+
+test("a pull request URL shows that pull request even from another view", async () => {
+  vi.useFakeTimers();
+  const onExactLink = vi.fn();
+  const review = row({
+    id: 20,
+    number: 124,
+    title: "Review the latch",
+    repo: "acme/widgets",
+    owner: "acme",
+    involvement: 2,
+    url: "https://github.com/acme/widgets/pull/124",
+  });
+  const mine = row({ id: 21, number: 8, title: "Add passkeys" });
+  await show(<Harness rows={[mine, review]} viewRule={MINE_QUERY} onExactLink={onExactLink} />);
+  expect(screen.queryByText("Review the latch")).not.toBeInTheDocument();
+  await search("https://github.com/ACME/Widgets/pull/124/files?w=1#diff");
+  expect(screen.getByText("Review the latch")).toBeInTheDocument();
+  expect(screen.queryByText("Add passkeys")).not.toBeInTheDocument();
+  expect(onExactLink).toHaveBeenCalledWith(expect.objectContaining({ row: expect.objectContaining({ id: 20, number: 124 }) }));
+  await search("");
+  expect(screen.getByText("Add passkeys")).toBeInTheDocument();
+  expect(screen.queryByText("Review the latch")).not.toBeInTheDocument();
+  expect(onExactLink).toHaveBeenLastCalledWith(null);
+});
 
 test("searching a hyphenated repository name finds its PRs and select-all follows", async () => {
   vi.useFakeTimers();

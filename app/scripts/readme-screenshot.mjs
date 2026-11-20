@@ -24,6 +24,8 @@
 // when two selected drafts are CI-blocked and only one of those checks clears.
 // `--github-query <dir>` saves the GitHub query field (github-query-*.png):
 // matching rows, a rejected query, and the same list at 720px.
+// `--pr-link <dir>` saves a pasted pull request URL (pr-link-*.png): a stored
+// pull request from another view, and one read from GitHub for the panel.
 // `--people-filters <dir>` saves the reviewer-team and assignee menus, then
 // the list after those menus write qualifiers into the search field.
 // `--update <dir>` saves the sidebar's update indicator (update-*.png): none,
@@ -112,6 +114,11 @@ const githubQueryFlag = process.argv.indexOf("--github-query");
 const githubQueryDir = githubQueryFlag === -1 ? null : process.argv[githubQueryFlag + 1];
 if (githubQueryFlag !== -1 && !githubQueryDir) {
   throw new Error("--github-query needs an output directory");
+}
+const prLinkFlag = process.argv.indexOf("--pr-link");
+const prLinkDir = prLinkFlag === -1 ? null : process.argv[prLinkFlag + 1];
+if (prLinkFlag !== -1 && !prLinkDir) {
+  throw new Error("--pr-link needs an output directory");
 }
 const sidebarTreeFlag = process.argv.indexOf("--sidebar-tree");
 const sidebarTreeDir = sidebarTreeFlag === -1 ? null : process.argv[sidebarTreeFlag + 1];
@@ -409,7 +416,38 @@ async function repoFilterShots(page, dir) {
   await save("narrow");
 }
 
-/** GitHub query field with results, the rejected-query sentence, and a 720px toolbar. */
+/** A pasted pull request URL: one stored in another view, and one read for the panel. */
+async function prLinkShots(browser, dir) {
+  mkdirSync(dir, { recursive: true });
+  const other = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2, colorScheme: "dark" });
+  other.on("pageerror", (err) => console.error("page error:", err.message));
+  await other.addInitScript(() => {
+    globalThis.__prLinkScene = "other";
+  });
+  await other.goto(url);
+  await other.getByRole("textbox", { name: "Search" }).waitFor();
+  await other.getByRole("textbox", { name: "Search" }).fill("https://github.com/acme/infra/pull/61/files?w=1#diff");
+  await other.getByRole("button", { name: rowButton("rotate the staging") }).waitFor();
+  await other.getByRole("heading", { name: /rotate the staging/ }).waitFor();
+  await other.screenshot({ path: resolve(dir, "pr-link-other-view.png") });
+  console.log("wrote pr-link-other-view.png");
+  await other.close();
+
+  const fetched = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2, colorScheme: "dark" });
+  fetched.on("pageerror", (err) => console.error("page error:", err.message));
+  await fetched.addInitScript(() => {
+    globalThis.__prLinkScene = "fetch";
+  });
+  await fetched.goto(url);
+  await fetched.getByRole("textbox", { name: "Search" }).waitFor();
+  await fetched.getByRole("textbox", { name: "Search" }).fill("https://github.com/acme/widgets/pull/332");
+  await fetched.getByText("Opened from GitHub. Not in your lists.").first().waitFor();
+  await fetched.getByRole("heading", { name: /Add a retry budget/ }).waitFor();
+  await fetched.screenshot({ path: resolve(dir, "pr-link-fetched.png") });
+  console.log("wrote pr-link-fetched.png");
+  await fetched.close();
+}
+
 async function githubQueryShots(browser, dir) {
   mkdirSync(dir, { recursive: true });
   const shoot = async (scene, name, widthPx) => {
@@ -635,6 +673,12 @@ try {
   }
   if (githubQueryDir) {
     await githubQueryShots(browser, resolve(githubQueryDir));
+    await browser.close();
+    await vite.close();
+    process.exit(0);
+  }
+  if (prLinkDir) {
+    await prLinkShots(browser, resolve(prLinkDir));
     await browser.close();
     await vite.close();
     process.exit(0);

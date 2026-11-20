@@ -4,6 +4,7 @@
 pub mod branch;
 pub mod bulk;
 pub mod bumps;
+pub mod pr_link;
 pub mod project_info;
 pub mod projects;
 pub mod prs;

@@ -163,7 +163,35 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   save_sidebar_views: (args) => (sidebarTree() ? args.views : null),
   sidebar_collapse: () => ({ views: false, projects: false, parents: [] }),
   save_sidebar_collapse: (args) => args.collapse,
-  list_page: (args) => pageFromRows(rows, projects, args.request as PageRequest),
+  list_page: (args) => {
+    const scene = (window as { __prLinkScene?: string }).__prLinkScene;
+    const source = scene === "other" ? rows.map((row) => (row.number === 61 ? { ...row, involvement: 2 } : row)) : rows;
+    return pageFromRows(source, projects, args.request as PageRequest);
+  },
+  lookup_pull_request: () => {
+    const scene = (window as { __prLinkScene?: string }).__prLinkScene;
+    if (scene !== "fetch") {
+      return { status: "missing", message: "No pull request acme/widgets#332, or no access." };
+    }
+    const row: ListRow = {
+      ...rows[0],
+      id: 0,
+      number: 332,
+      title: "Add a retry budget",
+      url: "https://github.com/acme/widgets/pull/332",
+      owner: "acme",
+      repo: "acme/widgets",
+      author_login: "lee",
+      head_ref: "feature/retry",
+      state: "open",
+      involvement: 0,
+      project_ids: [],
+      slack: null,
+      starred: false,
+      unread: false,
+    };
+    return { status: "opened", row, overview: { ...overview, head_ref: "feature/retry", fetched_at: "2026-11-20T09:00:00Z" } };
+  },
   load_view_state: () => {
     const scene = (window as { __githubScene?: string }).__githubScene;
     if (!scene) {

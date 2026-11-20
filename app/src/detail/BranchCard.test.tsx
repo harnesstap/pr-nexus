@@ -16,8 +16,28 @@ function fakeApi(branch: BranchStatus, overrides: Partial<Api> = {}): Api {
   } as unknown as Api;
 }
 
-function Harness({ api, overview, onOpen, onNotice }: { api: Api; overview: PrOverview; onOpen: (url: string) => void; onNotice: (text: string) => void }) {
-  const branch = useBranch({ api, prId: 7, overview, fresh: true, onOverview: () => undefined, onNotice });
+function Harness({
+  api,
+  overview,
+  onOpen,
+  onNotice,
+  ephemeral = false,
+}: {
+  api: Api;
+  overview: PrOverview;
+  onOpen: (url: string) => void;
+  onNotice: (text: string) => void;
+  ephemeral?: boolean;
+}) {
+  const branch = useBranch({
+    api,
+    prId: 7,
+    overview,
+    fresh: !ephemeral,
+    ephemeral,
+    onOverview: () => undefined,
+    onNotice,
+  });
   return (
     <>
       <BranchCard branch={branch} onOpen={onOpen} />
@@ -27,11 +47,11 @@ function Harness({ api, overview, onOpen, onNotice }: { api: Api; overview: PrOv
   );
 }
 
-function renderCard(branch: BranchStatus, overview: PrOverview = mockOverview(), overrides: Partial<Api> = {}) {
+function renderCard(branch: BranchStatus, overview: PrOverview = mockOverview(), overrides: Partial<Api> = {}, ephemeral = false) {
   const api = fakeApi(branch, overrides);
   const onOpen = vi.fn();
   const onNotice = vi.fn();
-  render(<Harness api={api} overview={overview} onOpen={onOpen} onNotice={onNotice} />);
+  render(<Harness api={api} overview={overview} onOpen={onOpen} onNotice={onNotice} ephemeral={ephemeral} />);
   return { api, onOpen, onNotice, card: screen.getByTestId("branch-card") };
 }
 
@@ -105,6 +125,15 @@ test("checking: a spinner, and the overview is re-polled with backoff", async ()
   }
   await act(async () => vi.advanceTimersByTimeAsync(60_000));
   expect(prOverview).toHaveBeenCalledTimes(CHECKING_DELAYS_MS.length);
+});
+
+test("an opened pull request is not compared and does not ask GitHub", () => {
+  const { api, card } = renderCard(mockBranch(), mockOverview(), {}, true);
+  expect(card.dataset.branchState).toBe("unknown");
+  expect(card.textContent).toContain("Not compared");
+  expect(icon(card)).toBeUndefined();
+  expect(api.prBranchStatus).not.toHaveBeenCalled();
+  expect(api.prOverview).not.toHaveBeenCalled();
 });
 
 test("rebase asks first, explains the history rewrite, and warns about other authors", async () => {

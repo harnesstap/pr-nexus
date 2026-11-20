@@ -14,8 +14,17 @@ export const SEARCH_FIELD_MAX = 1024;
 export interface SplitSearch {
   /** Qualifier tokens, in order, ready for the GitHub query pipeline. */
   github: string;
-  /** Remaining words, for the local substring search. */
+  /** Remaining words, for the local substring search. Pull request links are left out. */
   text: string;
+  /** Pull request URLs and `owner/repo#n` tokens, in order. */
+  links: PrLink[];
+}
+
+/** A GitHub pull request named by URL or `owner/repo#n`. `searchText.ts` matches `pr_link::parse`. */
+export interface PrLink {
+  owner: string;
+  name: string;
+  number: number;
 }
 
 interface Token {
@@ -161,14 +170,128 @@ export function splitSearch(raw: string): SplitSearch {
   const tokens = scanTokens(raw);
   const github: string[] = [];
   const text: string[] = [];
+  const links: PrLink[] = [];
   for (const token of tokens) {
     if (isQualifier(token.text)) {
       github.push(token.text);
     } else {
-      text.push(token.text);
+      const link = parsePrLink(token.text);
+      if (link) {
+        links.push(link);
+      } else {
+        text.push(token.text);
+      }
     }
   }
-  return { github: github.join(" "), text: text.join(" ") };
+  return { github: github.join(" "), text: text.join(" "), links };
+}
+
+/**
+ * The field is only a pull request link: no other words and no qualifiers.
+ * That match ignores the view's base rule.
+ */
+export function exactPrLink(raw: string): PrLink | null {
+  const parts = splitSearch(raw);
+  if (parts.links.length === 1 && parts.text.trim() === "" && parts.github.trim() === "") {
+    return parts.links[0] ?? null;
+  }
+  return null;
+}
+
+/**
+ * `https://github.com/<owner>/<repo>/pull/<n>` (scheme and `www.` optional,
+ * trailing path, query, or fragment allowed) or `owner/repo#n`.
+ */
+export function parsePrLink(raw: string): PrLink | null {
+  const text = raw.trim();
+  if (text === "" || /\s/u.test(text)) {
+    return null;
+  }
+  if (looksLikeUrl(text)) {
+    return parseUrl(text);
+  }
+  return parseShorthand(text);
+}
+
+/** Case-insensitive owner and repository, exact number. `repo` is `owner/name` or a bare name. */
+export function linkMatches(row: { owner: string; repo: string; number: number }, link: PrLink): boolean {
+  if (row.number !== link.number) {
+    return false;
+  }
+  const slash = row.repo.lastIndexOf("/");
+  const repoOwner = slash >= 0 ? row.repo.slice(0, slash) : "";
+  const repoName = slash >= 0 ? row.repo.slice(slash + 1) : row.repo;
+  const ownerOk = sameLogin(row.owner, link.owner) || sameLogin(repoOwner, link.owner);
+  return ownerOk && sameLogin(repoName, link.name);
+}
+
+function looksLikeUrl(text: string): boolean {
+  const host = stripScheme(text).split(/[/?#]/u)[0] ?? "";
+  const bare = stripPrefixCi(host, "www.") ?? host;
+  return bare.toLowerCase() === "github.com";
+}
+
+function parseShorthand(text: string): PrLink | null {
+  const hash = text.indexOf("#");
+  if (hash <= 0 || text.indexOf("#", hash + 1) !== -1) {
+    return null;
+  }
+  const repo = text.slice(0, hash);
+  const slash = repo.indexOf("/");
+  if (slash <= 0 || repo.indexOf("/", slash + 1) !== -1) {
+    return null;
+  }
+  const owner = repo.slice(0, slash);
+  const name = repo.slice(slash + 1);
+  const number = parseNumber(text.slice(hash + 1));
+  if (number === null || !isLogin(owner) || !isLogin(name)) {
+    return null;
+  }
+  return { owner, name, number };
+}
+
+function parseUrl(text: string): PrLink | null {
+  let rest = stripScheme(text);
+  rest = stripPrefixCi(rest, "www.") ?? rest;
+  const path = stripPrefixCi(rest, "github.com");
+  if (path === null || !path.startsWith("/")) {
+    return null;
+  }
+  const parts = path.split(/[/?#]/u).filter((part) => part !== "");
+  const owner = parts[0];
+  const name = parts[1];
+  if (!owner || !name || parts[2]?.toLowerCase() !== "pull") {
+    return null;
+  }
+  const number = parseNumber(parts[3] ?? "");
+  if (number === null || !isLogin(owner) || !isLogin(name)) {
+    return null;
+  }
+  return { owner, name, number };
+}
+
+function stripScheme(text: string): string {
+  return stripPrefixCi(text, "https://") ?? stripPrefixCi(text, "http://") ?? text;
+}
+
+function stripPrefixCi(text: string, prefix: string): string | null {
+  return text.slice(0, prefix.length).toLowerCase() === prefix.toLowerCase() ? text.slice(prefix.length) : null;
+}
+
+function parseNumber(value: string): number | null {
+  if (!/^[0-9]+$/u.test(value)) {
+    return null;
+  }
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number > 0 ? number : null;
+}
+
+function isLogin(value: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/u.test(value);
+}
+
+function sameLogin(left: string, right: string): boolean {
+  return left.toLowerCase() === right.toLowerCase();
 }
 
 /** Completions for the token under the caret. Empty when the token is not the start of a qualifier. */

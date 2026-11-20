@@ -72,7 +72,7 @@ export function SearchField({ value, onChange, searching = false, inputRef, layo
         <Tooltip
           label="Search or filter"
           shortcut={toolbar ? hint("search") : undefined}
-          detail="Qualifiers such as author: and sort: search GitHub. Menu filters and bump:due stay on this machine. Other words search titles, projects, repos, and numbers."
+          detail="Qualifiers such as author: and sort: search GitHub. Menu filters and bump:due stay on this machine. Other words search titles, projects, repos, and numbers. Pasting a pull request URL opens that pull request."
           align="start"
         >
           <span className="inline-flex shrink-0 text-slate-500">
@@ -80,7 +80,7 @@ export function SearchField({ value, onChange, searching = false, inputRef, layo
           </span>
         </Tooltip>
         <span id={hintId} className="sr-only">
-          Qualifiers such as author:me and sort:updated-desc search GitHub. Menu filters and bump:due are decided on this machine. Other words search this list.
+          Qualifiers such as author:me and sort:updated-desc search GitHub. Menu filters and bump:due are decided on this machine. Other words search this list. Pasting a pull request URL opens that pull request.
         </span>
         <input
           {...plainText}
