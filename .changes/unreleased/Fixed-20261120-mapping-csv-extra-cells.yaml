@@ -1,0 +1,3 @@
+kind: Fixed
+body: A mapping CSV row with more cells than the header is rejected with its line number instead of losing the extra cells.
+time: 2026-11-20T09:10:00Z
