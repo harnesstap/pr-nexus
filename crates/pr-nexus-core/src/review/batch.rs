@@ -395,23 +395,24 @@ pub fn send_batch(
                         pace.now(),
                     );
                     let link = posted.permalink.clone();
-                    for item in &message.items {
-                        results.push(match &saved {
-                            Ok(()) => item_result(
-                                item,
-                                &card.target,
-                                SendOutcome::Sent,
-                                message_label(message),
-                                link.clone(),
-                            ),
-                            Err(err) => item_result(
-                                item,
-                                &card.target,
-                                SendOutcome::Failed,
-                                &format!("Posted to Slack but could not save it: {err}"),
-                                link.clone(),
-                            ),
-                        });
+                    for (i, item) in message.items.iter().enumerate() {
+                        let error = match &saved {
+                            Ok(items) => items[i].as_ref().err(),
+                            Err(err) => Some(err),
+                        };
+                        // In Slack either way: never `Failed`, so "Retry
+                        // failed" cannot post it twice.
+                        let detail = match error {
+                            None => message_label(message).to_owned(),
+                            Some(err) => format!("{SENT_NOT_SAVED} {err}"),
+                        };
+                        results.push(item_result(
+                            item,
+                            &card.target,
+                            SendOutcome::Sent,
+                            &detail,
+                            link.clone(),
+                        ));
                     }
                 }
                 Err(err) => {
@@ -448,6 +449,11 @@ pub fn send_batch(
 /// Detail for a message Slack accepted without a readable result.
 pub const SENT_LINK_UNKNOWN: &str =
     "Sent, link unknown. Check the channel; it is not tracked and will not be retried.";
+
+/// Detail prefix for a message Slack accepted that the app then could not
+/// record for this PR. It is `sent`, so "Retry failed" does not post it twice.
+pub const SENT_NOT_SAVED: &str =
+    "Posted to Slack but could not save it, so it is not tracked and will not be retried:";
 
 fn message_label(message: &PlannedMessage) -> &'static str {
     match message.kind {
@@ -519,6 +525,9 @@ fn post_with_retry(
     }
 }
 
+/// Records a posted message, then each of its PRs on its own, so one PR
+/// that cannot be saved (another send recorded it meanwhile) leaves the
+/// others tracked. Returns one result per item.
 fn record(
     store: &Store,
     chat: &dyn ChatProvider,
@@ -527,7 +536,7 @@ fn record(
     posted: &PostedMessage,
     batch_id: &str,
     now: DateTime<Utc>,
-) -> Result<(), CoreError> {
+) -> Result<Vec<Result<(), CoreError>>, CoreError> {
     let (thread_root_ts, kind) = match &message.kind {
         MessagePlanKind::Bump { root_ts } => (Some(root_ts.clone()), ReviewMessageKind::Bump),
         MessagePlanKind::Request => (None, ReviewMessageKind::Request),
@@ -548,7 +557,7 @@ fn record(
         batch_id: Some(batch_id.to_owned()),
         posted_at: now,
     })?;
-    for item in &message.items {
+    let record_item = |item: &PlannedItem| -> Result<(), CoreError> {
         store.insert_review_message_pr(ReviewMessagePr {
             message_id: row.id,
             pr_id: item.pr.id,
@@ -588,8 +597,9 @@ fn record(
                 return Err(CoreError::Store("bump without an active request".into()));
             }
         }
-    }
-    Ok(())
+        Ok(())
+    };
+    Ok(message.items.iter().map(record_item).collect())
 }
 
 #[cfg(test)]
@@ -1296,5 +1306,56 @@ mod tests {
         assert_eq!(results[0].outcome, SendOutcome::Skipped);
         assert!(fake.posts.lock().unwrap().is_empty());
         assert!(plan.cards[0].fingerprint().contains("request"));
+    }
+
+    #[test]
+    fn a_save_failure_after_the_post_is_sent_and_never_retried() {
+        let w = world();
+        let web = target("acme", "C0WEB");
+        let a = pr(&w, 1, "Fix login");
+        let b = pr(&w, 2, "Add search");
+        let plan = plan_batch(
+            &w.store,
+            &[input(&a, &[&web]), input(&b, &[&web])],
+            vec![],
+            &options(),
+            at(0),
+        )
+        .unwrap();
+        // Another send records B in this channel after the preview.
+        requested(&w, &b, &web, "1700000000.000001", 0);
+        let fake = Arc::new(FakeChat {
+            account: w.slack.0,
+            ..FakeChat::default()
+        });
+        let chat: Arc<dyn ChatProvider> = fake.clone();
+        let results = send_batch(
+            &w.store,
+            &mut |_| Ok(chat.clone()),
+            &plan,
+            &BTreeSet::new(),
+            "b5",
+            &FakePace::new(),
+        )
+        .unwrap();
+        assert_eq!(fake.posts.lock().unwrap().len(), 1);
+        assert!(results.iter().all(|r| r.outcome == SendOutcome::Sent));
+        let saved = results.iter().find(|r| r.pr == a.id).unwrap();
+        assert_eq!(saved.detail, "Requested");
+        let unsaved = results.iter().find(|r| r.pr == b.id).unwrap();
+        assert!(
+            unsaved.detail.starts_with(SENT_NOT_SAVED),
+            "{}",
+            unsaved.detail
+        );
+        assert!(unsaved.permalink.is_some());
+        let a_active: Vec<_> = w
+            .store
+            .list_review_requests(a.id)
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.status == RequestStatus::Active)
+            .collect();
+        assert_eq!(a_active.len(), 1, "A stays tracked on the posted message");
     }
 }
