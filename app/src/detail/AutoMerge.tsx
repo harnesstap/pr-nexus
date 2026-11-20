@@ -2,6 +2,7 @@ import { useState, type ReactElement } from "react";
 import type { Api, MergeMethod, PrOverview } from "../api";
 import { errorMessage } from "../api";
 import { Tooltip } from "../Tooltip";
+import { takeGeneration } from "./draftRecord";
 import { canDequeue, enqueueBlock } from "./mergeQueue";
 import { autoMergeView, canMergeNow, METHOD_LABEL } from "./status";
 
@@ -9,7 +10,8 @@ interface Props {
   api: Api;
   prId: number;
   overview: PrOverview;
-  onChange: (next: PrOverview) => void;
+  /** `observed` is the draft-record generation taken when the mutation started. */
+  onChange: (next: PrOverview, observed: number) => void;
   /** A short toast for the outcome, success or failure. */
   onNotice: (text: string) => void;
   /** Called once GitHub confirmed the merge, after the notice. */
@@ -39,10 +41,11 @@ export function AutoMerge({ api, prId, overview, onChange, onNotice, onMerged, h
 
   function run(next: MergeMethod | null) {
     setBusy(true);
+    const observed = takeGeneration();
     api
       .setAutoMerge(prId, next)
       .then((fresh) => {
-        onChange(fresh);
+        onChange(fresh, observed);
         onNotice(next ? `Auto-merge on: it will ${METHOD_LABEL[next].toLowerCase()} when ready.` : "Auto-merge turned off.");
       })
       .catch((err: unknown) => onNotice(`Could not change auto-merge: ${errorMessage(err)}`))
@@ -51,10 +54,11 @@ export function AutoMerge({ api, prId, overview, onChange, onNotice, onMerged, h
 
   function merge(next: MergeMethod) {
     setMerging(true);
+    const observed = takeGeneration();
     api
       .mergePr(prId, next)
       .then((fresh) => {
-        onChange(fresh);
+        onChange(fresh, observed);
         onNotice(`Merged: ${METHOD_LABEL[next].toLowerCase()} done.`);
         onMerged?.();
       })
@@ -67,10 +71,11 @@ export function AutoMerge({ api, prId, overview, onChange, onNotice, onMerged, h
 
   function addToQueue() {
     setQueueBusy(true);
+    const observed = takeGeneration();
     api
       .enqueuePullRequest(prId)
       .then((fresh) => {
-        onChange(fresh);
+        onChange(fresh, observed);
         onNotice("Added to the merge queue.");
         onQueueChange?.();
       })
@@ -83,10 +88,11 @@ export function AutoMerge({ api, prId, overview, onChange, onNotice, onMerged, h
 
   function removeFromQueue() {
     setQueueBusy(true);
+    const observed = takeGeneration();
     api
       .dequeuePullRequest(prId)
       .then((fresh) => {
-        onChange(fresh);
+        onChange(fresh, observed);
         onNotice("Removed from the merge queue.");
         onQueueChange?.();
       })

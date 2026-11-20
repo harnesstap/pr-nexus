@@ -1,0 +1,3 @@
+kind: Fixed
+body: A pull request read that started before an auto-merge, merge, or merge queue change no longer overwrites that change's result in the detail panel.
+time: 2026-11-20T06:35:00.000000+01:00
