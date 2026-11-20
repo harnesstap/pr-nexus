@@ -1147,6 +1147,7 @@ pub async fn send_review(
     target: ReviewTarget,
     teams: Vec<String>,
     note: Option<String>,
+    action: Option<String>,
 ) -> Result<SlackIndicator, AppError> {
     let state = app.inner().clone();
     blocking::run(move || {
@@ -1157,6 +1158,7 @@ pub async fn send_review(
             target,
             &teams,
             note.as_deref(),
+            action.as_deref(),
         )
     })
     .await
