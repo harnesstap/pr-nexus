@@ -84,6 +84,7 @@ query PullRequestOverview($owner: String!, $name: String!, $number: Int!) {
         nodes {
           commit {
             statusCheckRollup {
+              state
               contexts(first: 100) {
                 totalCount
                 nodes {

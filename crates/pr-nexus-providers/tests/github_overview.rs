@@ -80,7 +80,7 @@ const OVERVIEW: &str = r#"{"data":{
       "latestReviews":{"nodes":[
         {"state":"APPROVED","author":{"__typename":"User","login":"bob","name":"Bob","avatarUrl":"https://example.test/b"}}
       ]},
-      "commits":{"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"totalCount":3,"nodes":[
+      "commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"FAILURE","contexts":{"totalCount":3,"nodes":[
         {"__typename":"CheckRun","name":"build","status":"COMPLETED","conclusion":"SUCCESS","detailsUrl":"https://example.test/run/1","isRequired":true},
         {"__typename":"CheckRun","name":"lint","status":"IN_PROGRESS","conclusion":null,"detailsUrl":null,"isRequired":false},
         {"__typename":"StatusContext","context":"deploy/preview","state":"FAILURE","targetUrl":"https://example.test/s","isRequired":false}
@@ -206,6 +206,7 @@ fn overview_reads_checks_comments_people_and_merge_rights() {
     );
     assert_eq!((overview.issue_comments, overview.review_comments), (3, 3));
     assert_eq!(overview.checks_total, 3);
+    assert_eq!(overview.checks_state.as_deref(), Some("failure"));
     let states: Vec<_> = overview.checks.iter().map(|check| check.state).collect();
     assert_eq!(
         states,

@@ -215,6 +215,7 @@ mod tests {
             review_comments: 0,
             checks: Vec::new(),
             checks_total: 0,
+            checks_state: None,
             approvals: 0,
             required_approvals: None,
             reviewers: Vec::new(),

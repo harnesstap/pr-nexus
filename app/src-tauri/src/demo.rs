@@ -354,6 +354,7 @@ impl DemoProvider {
             issue_comments: (pr.number % 5) as u32,
             review_comments: pr.total_threads,
             checks_total: checks.len() as u32,
+            checks_state: None,
             checks,
             approvals,
             required_approvals: Some(1),

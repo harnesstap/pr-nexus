@@ -220,6 +220,7 @@ pub(crate) fn parse(body: &Value, fetched_at: String) -> Result<PrOverview, Prov
         review_comments,
         checks,
         checks_total,
+        checks_state: lower(node.pointer("/commits/nodes/0/commit/statusCheckRollup/state")),
         approvals,
         required_approvals: None,
         reviewers,

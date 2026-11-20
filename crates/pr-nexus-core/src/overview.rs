@@ -163,6 +163,10 @@ pub struct PrOverview {
     pub checks: Vec<CheckItem>,
     /// All checks, including any past the first page in `checks`.
     pub checks_total: u32,
+    /// GitHub's rollup over every check, lower case (`success`, `failure`,
+    /// ...). `None` without checks and on overviews cached before it was read.
+    #[serde(default)]
+    pub checks_state: Option<String>,
     pub approvals: u32,
     /// Approvals the base branch requires, when the token can see its rules.
     pub required_approvals: Option<u32>,
@@ -316,6 +320,9 @@ pub fn apply_to_pull_request(pr: &mut PullRequest, overview: &PrOverview) {
 }
 
 fn checks_of(overview: &PrOverview) -> Option<ChecksState> {
+    if let Some(state) = overview.checks_state.as_deref() {
+        return state.parse().ok();
+    }
     if overview.checks.is_empty() {
         return None;
     }
@@ -332,6 +339,9 @@ fn checks_of(overview: &PrOverview) -> Option<ChecksState> {
     }
     if failed {
         Some(ChecksState::Failure)
+    } else if overview.checks_total as usize > overview.checks.len() {
+        // The unread checks may fail; keep the stored rollup.
+        None
     } else if pending {
         Some(ChecksState::Pending)
     } else if passed {
@@ -543,6 +553,31 @@ mod tests {
     }
 
     #[test]
+    fn checks_past_the_first_page_do_not_turn_a_failing_rollup_green() {
+        let checks: Vec<String> = (0..100)
+            .map(|i| format!(r#"{{"name":"c{i}","state":"passed","url":null,"required":false}}"#))
+            .collect();
+        let json = format!(
+            r#"{{"state":"open","is_draft":false,"base_ref":"main","head_ref":"h","mergeable":"mergeable",
+            "merge_state":"unstable","review_decision":"approved","issue_comments":0,"review_comments":0,
+            "checks":[{}],"checks_total":150,"approvals":1,"required_approvals":null,"reviewers":[],
+            "author":null,"assignees":[],"commenters":[],
+            "viewer":{{"login":"a","permission":null,"can_merge_as_admin":false,
+            "can_enable_auto_merge":false,"can_disable_auto_merge":false}},
+            "merge_settings":{{"auto_merge_allowed":false,"squash":true,"merge":true,"rebase":true}},
+            "auto_merge":null,"fetched_at":"2026-11-10T12:00:00Z"}}"#,
+            checks.join(",")
+        );
+        // A cached overview without the rollup state: 50 checks were not
+        // read, so the stored state must be kept.
+        let mut overview: PrOverview = serde_json::from_str(&json).unwrap();
+        assert_eq!(checks_of(&overview), None);
+
+        overview.checks_state = Some("failure".into());
+        assert_eq!(checks_of(&overview), Some(ChecksState::Failure));
+    }
+
+    #[test]
     fn reviewer_serializes_flat() {
         let reviewer = Reviewer {
             person: Person {
@@ -664,6 +699,7 @@ mod tests {
                 required: true,
             }],
             checks_total: 1,
+            checks_state: Some("success".into()),
             approvals: 1,
             required_approvals: Some(1),
             reviewers: vec![Reviewer {
