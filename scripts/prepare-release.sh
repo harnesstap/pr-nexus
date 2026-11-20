@@ -33,7 +33,9 @@ workspace_version() {
 
 if [ "${DRY_RUN:-}" = "1" ]; then
   version="$(workspace_version)"
-  mapfile -t expected < <(bash scripts/check-release-assets.sh --list "$version")
+  # No mapfile: macOS /bin/bash is 3.2.
+  expected=()
+  while IFS= read -r name; do expected+=("$name"); done < <(bash scripts/check-release-assets.sh --list "$version")
   bash scripts/check-release-assets.sh "$version" "${expected[@]}"
   bash scripts/reseal-macos-app.sh "${TMPDIR:-/tmp}/pr-nexus-missing-bundle"
   write_output "dry_run=true"
