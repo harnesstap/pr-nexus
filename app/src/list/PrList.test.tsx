@@ -167,6 +167,21 @@ const rows = [
   row({ id: 3, number: 23, title: "Fix tax rounding", project_ids: [] }),
 ];
 
+test("a refresh re-renders only the rows that changed", async () => {
+  const rowsRef = { current: [row({ id: 1, title: "Latch the cache" }), row({ id: 2, title: "Add passkeys" })] };
+  // IPC hands back fresh objects on every call.
+  const loadPage = (request: PageRequest) =>
+    Promise.resolve(JSON.parse(JSON.stringify(pageFromRows(rowsRef.current, [auth, billing], request))) as PageDto);
+  const shown = await show(<Harness rows={[]} loadPage={loadPage} version={0} />);
+  expect(screen.getByText("Add passkeys")).toBeInTheDocument();
+  prRowRenderCountRef.current = 0;
+  rowsRef.current = [rowsRef.current[0], row({ id: 2, title: "Rename passkeys" })];
+  shown.rerender(<Harness rows={[]} loadPage={loadPage} version={1} />);
+  await settle();
+  expect(screen.getByText("Rename passkeys")).toBeInTheDocument();
+  expect(prRowRenderCountRef.current).toBe(1);
+});
+
 test("a clock tick updates relative time without re-rendering the row", async () => {
   const prior = globalThis.ResizeObserver;
   class SilentObserver {

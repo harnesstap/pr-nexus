@@ -68,7 +68,7 @@ export function usePagedList(loadPage: (request: PageRequest) => Promise<PageDto
         }
         const { entries: rows, ...rest } = next;
         loaded.current = rows.length;
-        setEntries(rows);
+        setEntries((current) => reuseUnchanged(current, rows));
         setPage(rest);
         setError(null);
         setMoreFrom(null);
@@ -115,4 +115,10 @@ export function usePagedList(loadPage: (request: PageRequest) => Promise<PageDto
   }, []);
 
   return { entries, page, error, pending, loadingMore, hasMore: cursor !== null, loadMore, retry };
+}
+
+/** Keeps the old object for an entry whose content is unchanged, so memoized rows skip rendering. */
+function reuseUnchanged(current: PageEntry[], next: PageEntry[]): PageEntry[] {
+  const old = new Map(current.map((entry) => [JSON.stringify(entry), entry]));
+  return next.map((entry) => old.get(JSON.stringify(entry)) ?? entry);
 }

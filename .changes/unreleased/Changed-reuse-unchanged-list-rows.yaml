@@ -1,0 +1,3 @@
+kind: Changed
+body: After a sync or another refresh, the list redraws only the rows that changed instead of every loaded row.
+time: 2026-11-20T18:10:00Z
