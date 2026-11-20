@@ -1810,3 +1810,63 @@ fn review_dialog_falls_back_to_requested_teams() {
     assert_ne!(live_teams, stored.teams);
     assert_eq!(state.github_resolves.load(Ordering::SeqCst), github + 1);
 }
+
+/// The review channel picked by typing its ID: no workspace, no team.
+fn typed_channel_id() -> ReviewTarget {
+    ReviewTarget {
+        workspace: String::new(),
+        team_id: None,
+        workspace_name: String::new(),
+        channel_id: "C0ACME0001".into(),
+        channel_name: String::new(),
+    }
+}
+
+#[test]
+fn a_typed_channel_id_bumps_the_open_thread_in_that_channel() {
+    let fx = fixture("typed-id-single");
+    let state = &fx.state;
+    connect_fake_workspace(state);
+    let slack = Arc::new(FakeSlack::default());
+    let pr = pr_id(state, 1);
+    review::send(state, &slack, pr, channel(), &[], None).unwrap();
+
+    let preview = review::preview_with(state, &slack, pr, typed_channel_id()).unwrap();
+    assert_eq!(preview.action, "bump");
+    review::send(state, &slack, pr, typed_channel_id(), &[], None).unwrap();
+    let posts = slack.posts.lock().unwrap().clone();
+    assert_eq!(posts.len(), 2);
+    assert!(posts[1].1.is_some(), "the second post is a thread reply");
+}
+
+#[test]
+fn all_to_one_typed_channel_id_bumps_the_open_thread() {
+    let fx = fixture("typed-id-bulk");
+    let state = &fx.state;
+    connect_fake_workspace(state);
+    let slack = Arc::new(FakeSlack::default());
+    let pr = pr_id(state, 1);
+    review::send(state, &slack, pr, channel(), &[], None).unwrap();
+    let request: BulkRequest = serde_json::from_value(serde_json::json!({
+        "pr_ids": [pr],
+        "target": {"workspace": "", "channel_id": "C0ACME0001", "channel_name": ""},
+    }))
+    .unwrap();
+
+    let preview = bulk::preview_with(state, &slack, &bulk::LiveVcs, &request).unwrap();
+    let actions: Vec<&str> = preview
+        .cards
+        .iter()
+        .flat_map(|card| card.messages.iter().map(|m| m.action.as_str()))
+        .collect();
+    assert_eq!(actions, ["bump"]);
+    let fingerprints: Vec<String> = preview
+        .cards
+        .iter()
+        .map(|card| card.fingerprint.clone())
+        .collect();
+    let result = bulk::send(state, &slack, &request, &fingerprints).unwrap();
+    assert!(result.results.iter().all(|r| r.outcome == "sent"));
+    let posts = slack.posts.lock().unwrap().clone();
+    assert!(posts[1].1.is_some(), "the second post is a thread reply");
+}

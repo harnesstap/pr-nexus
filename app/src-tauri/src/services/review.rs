@@ -15,6 +15,7 @@ use pr_nexus_core::settings;
 
 use crate::commands::{SlackIndicator, indicator};
 use crate::error::AppError;
+use crate::services::bulk::fill_open_request;
 use crate::slack::{
     ReviewPreview, ReviewTarget, any_usable, chat_for, labeled, load_pr, mark_rejected,
     pr_warnings, request_key, signed_in_account, slack_error, to_core, validate_target,
@@ -65,7 +66,9 @@ pub(crate) fn preview_named(
     names: crate::slack::Names,
 ) -> Result<ReviewPreview, AppError> {
     let pr = load_pr(&state.store, pr_id)?;
-    let target = crate::slack::resolve_targets(state, chats, vec![validate_target(target)?], names)
+    let mut target = validate_target(target)?;
+    fill_open_request(state, &pr, &mut target)?;
+    let target = crate::slack::resolve_targets(state, chats, vec![target], names)
         .pop()
         .expect("one target in, one out");
     let plan = plan(state, &pr, &target)?;
@@ -113,7 +116,9 @@ pub fn send(
     note: Option<&str>,
 ) -> Result<SlackIndicator, AppError> {
     let pr = load_pr(&state.store, pr_id)?;
-    let target = crate::slack::resolve_target(state, chats, validate_target(target)?);
+    let mut target = validate_target(target)?;
+    fill_open_request(state, &pr, &mut target)?;
+    let target = crate::slack::resolve_target(state, chats, target);
     let plan = lifecycle::with_note(plan(state, &pr, &target)?, note);
     let teams_json = serde_json::to_string(teams).unwrap_or_else(|_| "[]".into());
     let mut send = |chat: &dyn ChatProvider, target: &Target| {
