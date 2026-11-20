@@ -1,5 +1,6 @@
 # The viewer's own pull requests with the timeline the Stats view needs:
-# ready-for-review events, review requests and submitted reviews.
+# ready-for-review and convert-to-draft events, review requests and submitted
+# reviews.
 query ReviewStats($query: String!, $first: Int!, $cursor: String) {
   rateLimit {
     limit
@@ -27,10 +28,13 @@ query ReviewStats($query: String!, $first: Int!, $cursor: String) {
         repository {
           nameWithOwner
         }
-        timelineItems(first: 100, itemTypes: [READY_FOR_REVIEW_EVENT, REVIEW_REQUESTED_EVENT, PULL_REQUEST_REVIEW]) {
+        timelineItems(first: 100, itemTypes: [READY_FOR_REVIEW_EVENT, CONVERT_TO_DRAFT_EVENT, REVIEW_REQUESTED_EVENT, PULL_REQUEST_REVIEW]) {
           nodes {
             __typename
             ... on ReadyForReviewEvent {
+              createdAt
+            }
+            ... on ConvertToDraftEvent {
               createdAt
             }
             ... on ReviewRequestedEvent {

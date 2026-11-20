@@ -74,6 +74,9 @@ pub struct StatsPr {
     pub merged_at: Option<DateTime<Utc>>,
     /// Every `ReadyForReviewEvent`, any order.
     pub ready_events: Vec<DateTime<Utc>>,
+    /// Every `ConvertToDraftEvent`, any order.
+    #[serde(default)]
+    pub draft_events: Vec<DateTime<Utc>>,
     /// GitHub `ReviewRequestedEvent`s (users and teams), any order.
     pub requests: Vec<StatsRequest>,
     /// Submitted reviews, any order.
@@ -189,13 +192,18 @@ fn counts(review: &StatsReview, author: &str) -> bool {
     !review.is_bot && !is_bot_login(&review.author) && !review.author.eq_ignore_ascii_case(author)
 }
 
-/// When the pull request asked for review: the first ready-for-review event,
-/// else creation if it was never a draft. `None` while still a draft.
+/// When the pull request asked for review: creation when it was opened ready
+/// (no draft event, or one before the first ready-for-review event), else the
+/// first ready-for-review event. `None` while still the draft it was opened as.
 pub fn review_start(pr: &StatsPr) -> Option<DateTime<Utc>> {
-    if let Some(first) = pr.ready_events.iter().min() {
-        return Some(*first);
+    let ready = pr.ready_events.iter().min();
+    let drafted = pr.draft_events.iter().min();
+    match (ready, drafted) {
+        (Some(ready), Some(drafted)) if drafted < ready => Some(pr.created_at),
+        (Some(ready), _) => Some(*ready),
+        (None, Some(_)) => Some(pr.created_at),
+        (None, None) => (!pr.is_draft).then_some(pr.created_at),
     }
-    (!pr.is_draft).then_some(pr.created_at)
 }
 
 fn first_review_after(pr: &StatsPr, after: DateTime<Utc>) -> Option<DateTime<Utc>> {
@@ -279,7 +287,7 @@ pub fn compute(
         });
         match (start, reviewed) {
             (Some(_), Some(secs)) => first.push(secs),
-            (Some(_), None) if pr.state == StatsPrState::Open => waiting += 1,
+            (Some(_), None) if pr.state == StatsPrState::Open && !pr.is_draft => waiting += 1,
             _ => {}
         }
 

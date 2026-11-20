@@ -37,6 +37,7 @@ fn pr(repo: &str, number: u64, created: &str) -> StatsPr {
         state: StatsPrState::Open,
         merged_at: None,
         ready_events: vec![],
+        draft_events: vec![],
         requests: vec![],
         reviews: vec![],
     }
@@ -235,6 +236,48 @@ fn a_review_on_a_draft_counts_as_zero_wait() {
     p.reviews = vec![review("grace", "2026-03-28T10:00:00Z")];
     let stats = compute(&[p], &[], "ada", 30, now(), &StatsFilter::default());
     assert_eq!(stats.first_review.median_secs, Some(0));
+}
+
+#[test]
+fn a_pr_opened_ready_then_drafted_waits_from_creation() {
+    // Opened ready at 09:00, reviewed at 15:00, converted to draft at 16:00
+    // and back to ready at 17:00. The real wait is 6 h.
+    let mut p = pr("acme/api", 9, "2026-03-20T09:00:00Z");
+    p.draft_events = vec![t("2026-03-20T16:00:00Z")];
+    p.ready_events = vec![t("2026-03-20T17:00:00Z")];
+    p.reviews = vec![review("grace", "2026-03-20T15:00:00Z")];
+    let stats = compute(&[p], &[], "ada", 30, now(), &StatsFilter::default());
+    assert_eq!(stats.first_review.median_secs, Some(6 * 3600));
+}
+
+#[test]
+fn a_pr_opened_ready_and_still_a_draft_waits_from_creation() {
+    let mut p = pr("acme/api", 9, "2026-03-20T09:00:00Z");
+    p.is_draft = true;
+    p.draft_events = vec![t("2026-03-20T16:00:00Z")];
+    p.reviews = vec![review("grace", "2026-03-20T15:00:00Z")];
+    let stats = compute(&[p], &[], "ada", 30, now(), &StatsFilter::default());
+    assert_eq!(stats.first_review.median_secs, Some(6 * 3600));
+}
+
+#[test]
+fn a_draft_again_is_not_waiting_for_review() {
+    let mut drafted = pr("acme/api", 9, "2026-03-20T09:00:00Z");
+    drafted.is_draft = true;
+    drafted.draft_events = vec![t("2026-03-20T16:00:00Z")];
+    let mut redrafted = pr("acme/api", 10, "2026-03-20T09:00:00Z");
+    redrafted.is_draft = true;
+    redrafted.ready_events = vec![t("2026-03-20T10:00:00Z")];
+    redrafted.draft_events = vec![t("2026-03-20T11:00:00Z")];
+    let stats = compute(
+        &[drafted, redrafted],
+        &[],
+        "ada",
+        30,
+        now(),
+        &StatsFilter::default(),
+    );
+    assert_eq!(stats.waiting, 0);
 }
 
 #[test]
