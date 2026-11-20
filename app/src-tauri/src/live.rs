@@ -2,7 +2,7 @@
 //! checks between incremental syncs, never on the UI thread.
 
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Condvar, Mutex, TryLockError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, TryLockError};
 use std::thread;
 use std::time::Duration;
 
@@ -157,9 +157,9 @@ fn step(state: &AppState, poller: &mut LivePoller, client: &mut Option<Client>) 
         return MAX_SLEEP_SECS as u64;
     }
     // A sync is writing: let it finish rather than race it.
-    if let Err(TryLockError::WouldBlock) = state.sync_gate.try_lock() {
+    let Some(_tick) = tick_gate(state) else {
         return BUSY_RETRY_SECS;
-    }
+    };
     if !settings::live_updates(&state.store).unwrap_or(true) {
         poller.disable();
         return MAX_SLEEP_SECS as u64;
@@ -226,9 +226,45 @@ fn step(state: &AppState, poller: &mut LivePoller, client: &mut Option<Client>) 
     (due - Utc::now()).num_seconds().clamp(1, MAX_SLEEP_SECS) as u64
 }
 
+/// Held for the whole tick, so a sync starting meanwhile waits for it.
+/// `None` while a tick or a sync runs. Only `try_lock`s: a sync holds
+/// `sync_gate` and then waits on `live_tick`, so waiting here could deadlock.
+fn tick_gate(state: &AppState) -> Option<MutexGuard<'_, ()>> {
+    let tick = match state.live_tick.try_lock() {
+        Ok(guard) => guard,
+        Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+        Err(TryLockError::WouldBlock) => return None,
+    };
+    match state.sync_gate.try_lock() {
+        Err(TryLockError::WouldBlock) => None,
+        Ok(_) | Err(TryLockError::Poisoned(_)) => Some(tick),
+    }
+}
+
 /// Wakes the scheduler for an incremental pass, as Sync now does.
 pub fn request_sync(state: &AppState) {
     let (lock, cv) = &*state.wake;
     *lock.lock().expect("sync wake") = true;
     cv.notify_all();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_tick_skips_while_a_tick_or_a_sync_runs() {
+        let dir = std::env::temp_dir().join(format!("pr-nexus-live-gate-{}", std::process::id()));
+        let state = AppState::for_tests(&dir.join("pr-nexus.db"), true);
+        {
+            let _tick = tick_gate(&state).expect("nothing runs");
+            assert!(tick_gate(&state).is_none(), "the tick holds its lock");
+        }
+        {
+            let _sync = state.sync_gate.lock().unwrap();
+            assert!(tick_gate(&state).is_none(), "a sync is running");
+        }
+        assert!(tick_gate(&state).is_some());
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

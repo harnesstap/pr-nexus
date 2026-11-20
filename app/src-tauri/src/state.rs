@@ -188,6 +188,10 @@ pub struct AppState {
     pub sync: Mutex<SyncStatus>,
     /// Held while a sync runs, so overlapping requests join it (see [`run_sync`]).
     pub sync_gate: Mutex<()>,
+    /// Held for a whole live tick and for each sync pass, so their GitHub
+    /// reads and writes never interleave. Lock order: `sync_gate`, then
+    /// `live_tick`. The tick only `try_lock`s both, so it never waits.
+    pub live_tick: Mutex<()>,
     pub device: Mutex<Option<DeviceSession>>,
     pub focused: AtomicBool,
     /// Set once review requests were asked for this session; never stored,
@@ -257,6 +261,7 @@ impl AppState {
                 SyncStatus::idle()
             }),
             sync_gate: Mutex::new(()),
+            live_tick: Mutex::new(()),
             device: Mutex::new(None),
             focused: AtomicBool::new(true),
             reviews_active: AtomicBool::new(false),
@@ -645,6 +650,14 @@ fn unwound(payload: &(dyn std::any::Any + Send)) -> AppError {
     }
 }
 
+/// Waits for a live tick in flight; it is short. Take it after `sync_gate`.
+fn lock_live_tick(state: &AppState) -> std::sync::MutexGuard<'_, ()> {
+    state
+        .live_tick
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
+
 /// The sync status, even after a panic poisoned its lock.
 fn lock_status(state: &AppState) -> std::sync::MutexGuard<'_, SyncStatus> {
     state.sync.lock().unwrap_or_else(PoisonError::into_inner)
@@ -680,6 +693,7 @@ fn sync_once(state: &AppState, kind: SyncKind) -> Result<sync::SyncReport, AppEr
     }
     // My PRs: search, status pass and code owners. The sync phase ends
     // with them, so the header stops saying "Syncing".
+    let tick = lock_live_tick(state);
     let report = settle(state, kind, || {
         let client = github_client(state)?;
         let mut on_progress = progress_writer(state, |status, message| status.message = message);
@@ -696,6 +710,7 @@ fn sync_once(state: &AppState, kind: SyncKind) -> Result<sync::SyncReport, AppEr
         after_pass(state, &client.1, client.0, &report, SearchBucket::Mine)?;
         Ok::<_, AppError>(report)
     })?;
+    drop(tick);
     // Then review requests, once this session asked for them (§6), unless
     // they already ran because they were the view on screen.
     if !reviews_first && !report.paused && state.reviews_active.load(Ordering::Relaxed) {
@@ -829,6 +844,7 @@ fn review_pass(
     plan: sync::BucketPlan,
 ) -> Result<sync::SyncReport, AppError> {
     let searching = plan.terms.is_some();
+    let _tick = lock_live_tick(state);
     {
         let mut status = lock_status(state);
         status.reviews.state = "loading".into();
@@ -1365,6 +1381,22 @@ mod tests {
             waiter.join().unwrap().is_none(),
             "it joined instead of syncing again"
         );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn a_review_pass_waits_for_the_live_tick_in_flight() {
+        let (state, path) = demo_state("live-tick");
+        let state = Arc::new(state);
+        let tick = state.live_tick.lock().unwrap();
+        let pass = {
+            let state = Arc::clone(&state);
+            thread::spawn(move || run_reviews(&state))
+        };
+        thread::sleep(Duration::from_millis(100));
+        assert!(!pass.is_finished(), "the pass waits for the tick");
+        drop(tick);
+        let _ = pass.join().unwrap();
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
