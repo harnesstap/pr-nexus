@@ -362,10 +362,16 @@ fn local_date(clock: &QueryClock) -> NaiveDate {
 }
 
 /// `Some` when `value` is a relative date (optionally compared or a range).
+/// In a range, a side that is not relative (`*`, a fixed date) is kept as typed.
 fn resolve_date_value(value: &str, today: NaiveDate) -> Option<String> {
     if let Some((left, right)) = value.split_once("..") {
-        let left = resolve_side(left, today)?;
-        let right = resolve_side(right, today)?;
+        let (resolved_left, resolved_right) =
+            (resolve_side(left, today), resolve_side(right, today));
+        if resolved_left.is_none() && resolved_right.is_none() {
+            return None;
+        }
+        let left = resolved_left.unwrap_or_else(|| left.to_owned());
+        let right = resolved_right.unwrap_or_else(|| right.to_owned());
         return Some(format!("{left}..{right}"));
     }
     resolve_side(value, today)
@@ -769,6 +775,15 @@ mod tests {
         assert_eq!(
             query.q,
             "is:pr created:2026-11-01..2026-11-08 updated:>2026-10-08..<=2026-11-07"
+        );
+    }
+
+    #[test]
+    fn a_range_with_one_relative_end_resolves_that_end_and_keeps_the_other() {
+        let query = prepared("created:@today-1w..* updated:*..@today closed:2026-01-01..@today-1d");
+        assert_eq!(
+            query.q,
+            "is:pr created:2026-11-01..* updated:*..2026-11-08 closed:2026-01-01..2026-11-07"
         );
     }
 

@@ -1,0 +1,3 @@
+kind: Fixed
+body: A date range with one relative end, such as created:@today-1w..*, now resolves that end instead of being sent as typed and rejected by GitHub.
+time: 2026-11-20T09:30:00Z
