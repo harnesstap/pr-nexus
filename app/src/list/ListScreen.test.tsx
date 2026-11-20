@@ -347,6 +347,18 @@ test("the sidebar's new-project field can take the current selection", async () 
   expect(await within(projects).findByRole("button", { name: "Launch" })).toHaveAttribute("aria-current", "page");
 });
 
+test("leaving the list for Settings drops its selection from the sidebar's new-project field", async () => {
+  const fake = api([{ id: 1, name: "Checkout", color: "#7c5cbf", archived: false, description: "", sort_order: 0 , jira_links: [] }], [pr(7, "Add passkeys"), pr(8, "Fix tax rounding")]);
+  render(<ListScreen api={fake} boot={boot} onBoot={() => undefined} />);
+  fireEvent.click(await screen.findByRole("checkbox", { name: /Select Add passkeys/ }));
+  fireEvent.click(within(screen.getByRole("contentinfo")).getByRole("button", { name: /account menu/ }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Settings" }));
+  await waitFor(() => expect(screen.queryByRole("checkbox", { name: /Select Add passkeys/ })).not.toBeInTheDocument());
+  fireEvent.click(within(screen.getByRole("region", { name: "Projects" })).getByRole("button", { name: "New project" }));
+  expect(screen.getByRole("textbox", { name: "Project name" })).toBeInTheDocument();
+  expect(screen.queryByRole("checkbox", { name: /selected PR/ })).not.toBeInTheDocument();
+});
+
 test("Add to project → New project from selection creates it, confirms, and highlights it", async () => {
   const fake = api([{ id: 1, name: "Checkout", color: "#7c5cbf", archived: false, description: "", sort_order: 0 , jira_links: [] }], [pr(7, "Add passkeys"), pr(8, "Fix tax rounding")]);
   const create = vi.spyOn(fake, "createProjectWithPrs");

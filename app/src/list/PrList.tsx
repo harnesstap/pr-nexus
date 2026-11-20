@@ -443,6 +443,9 @@ export function PrList({
   useEffect(() => {
     onSelectionChange?.(activeKey === "" ? [] : activeKey.split(",").map(Number));
   }, [activeKey, onSelectionChange]);
+  // Leaving the list (Settings, Bumps due) leaves no selection behind; only on unmount, so re-renders do not flicker.
+  const clearSelection = useStable(() => onSelectionChange?.([]));
+  useEffect(() => clearSelection, [clearSelection]);
   const singleSelected = active.size === 1 ? (flat.find((item) => active.has(item.row.id))?.row ?? null) : null;
   // Opening a pull request from the stack moves the highlight with the panel.
   const [seenDetail, setSeenDetail] = useState(detailId);
