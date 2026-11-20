@@ -20,6 +20,7 @@ use pr_nexus_core::review::batch::{
 };
 use pr_nexus_core::review::groups::{self, GroupTeamChoice, OwnerGroup};
 use pr_nexus_core::review::lifecycle::Target;
+use pr_nexus_core::review::message::slack_bullets;
 use pr_nexus_core::review::route::{self, Workspace};
 use pr_nexus_core::settings;
 use serde::{Deserialize, Serialize};
@@ -807,7 +808,7 @@ fn plan_request(
 ///
 /// One note is the text alone. Several notes in one message are each prefixed
 /// with `#N`, so a shared bump still says which pull request the line is for.
-/// The blank line matches `lifecycle::with_note`. Empty notes are skipped, so
+/// The blank line and the Slack bullets match `lifecycle::with_note`. Empty notes are skipped, so
 /// a request with none keeps the fingerprint the preview already had.
 fn apply_notes(plan: &mut BatchPlan, notes: &[BumpNote]) {
     if notes.iter().all(|note| note.text.trim().is_empty()) {
@@ -850,7 +851,7 @@ fn note_block(items: impl IntoIterator<Item = (i64, u64)>, notes: &[BumpNote]) -
     if lines.is_empty() {
         None
     } else {
-        Some(lines.join("\n"))
+        Some(slack_bullets(&lines.join("\n")))
     }
 }
 
@@ -1486,5 +1487,13 @@ mod draft_tests {
             Some("#142: look at login")
         );
         assert_eq!(note_block([(2, 138)], &notes), None);
+        let listed = vec![BumpNote {
+            pr_id: 1,
+            text: "Context:\n- first\n- second".into(),
+        }];
+        assert_eq!(
+            note_block([(1, 142)], &listed).as_deref(),
+            Some("Context:\n• first\n• second")
+        );
     }
 }

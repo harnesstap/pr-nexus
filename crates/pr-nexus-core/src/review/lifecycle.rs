@@ -187,12 +187,14 @@ pub fn plan(
 }
 
 /// Appends the sender's optional note after the message, separated by a
-/// blank line, to both the stored and the sent text. Blank notes change
-/// nothing. The preview shows the same text before the send.
+/// blank line, to both the stored and the sent text, with its list markers
+/// turned into Slack bullets (§7.6). Blank notes change nothing. The preview
+/// shows the same text before the send.
 pub fn with_note(mut plan: Plan, note: Option<&str>) -> Plan {
     let Some(note) = note.map(str::trim).filter(|note| !note.is_empty()) else {
         return plan;
     };
+    let note = message::slack_bullets(note);
     let append = |text: &str| format!("{}\n\n{note}\n", text.trim_end());
     plan.text = append(&plan.text);
     plan.wire_text = append(&plan.wire_text);
@@ -571,6 +573,15 @@ pub(crate) mod tests {
             noted.text
         );
         assert_eq!(noted.wire_text, noted.text);
+        let listed = with_note(planned, Some("Context:\n- first\n  * second"));
+        assert!(
+            listed
+                .text
+                .ends_with("Thanks!\n\nContext:\n• first\n  • second\n"),
+            "{}",
+            listed.text
+        );
+        assert_eq!(listed.wire_text, listed.text);
     }
 
     #[test]
