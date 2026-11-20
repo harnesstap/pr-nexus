@@ -1618,7 +1618,7 @@ Refresh runs one manual sync. It does not block the menu.
 
 | Event | When | Default |
 |---|---|---|
-| Review requested | The review-requested flag turns on, or a pull request appears with it set, after review requests have been synced once this session | on |
+| Review requested | The review search returned the pull request and GitHub lists the user, or any team, as a pending reviewer. It fires when that turns on, or a pull request appears with it on, after review requests have been synced once this session. A review drops the user from the pending reviewers while the stored review-requested flag stays set, so a re-request after a review fires again. The user's teams are not known, so any pending team request counts | on |
 | CI failed | Checks on a pull request the user authored go from not-failing to `failure` or `error` | on |
 | Approved | That pull request's review decision becomes approved | on |
 | Changes requested | That decision becomes changes requested | on |
