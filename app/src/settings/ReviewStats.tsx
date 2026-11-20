@@ -140,7 +140,11 @@ export function ReviewStats({ api }: Props) {
   }
 
   const stats = view?.stats;
-  const orgs = [...new Set((stats?.repos ?? []).map((repo) => repo.split("/")[0]))];
+  const repos = stats?.repos ?? [];
+  const orgs = [...new Set(repos.map((repo) => repo.split("/")[0]))];
+  // A period with no pull requests in the chosen scope still lists it, so the menu matches the request.
+  const current = filterFrom(scope);
+  const unlisted = Boolean((current.org && !orgs.includes(current.org)) || (current.repo && !repos.includes(current.repo)));
 
   return (
     <div className="mt-3">
@@ -170,11 +174,12 @@ export function ReviewStats({ api }: Props) {
               {org} (all)
             </option>
           ))}
-          {(stats?.repos ?? []).map((repo) => (
+          {repos.map((repo) => (
             <option key={`repo:${repo}`} value={`repo:${repo}`}>
               {repo}
             </option>
           ))}
+          {unlisted && <option value={scope}>{current.org ? `${current.org} (all)` : current.repo}</option>}
         </select>
         <button type="button" className={`${button} ml-auto`} disabled={loading} onClick={refresh}>
           {loading ? "Loading…" : "Refresh"}
