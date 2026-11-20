@@ -1615,7 +1615,7 @@ The menu is **Open PR Nexus**, **To review: N**, **Mine: N**, **Refresh**, **Qui
 
 Refresh runs one manual sync. It does not block the menu.
 
-**Notifications** compare successive sync snapshots in `pr-nexus-core` (`notify`). The first successful sync after launch, and the first snapshot of a session that includes review requests, produce none: pull requests already stored are not news. A paused or failed sync does not move that baseline. Switching profile starts it over. Live updates notify only after a baseline exists.
+**Notifications** compare successive sync snapshots in `pr-nexus-core` (`notify`). The first successful sync after launch, and the first snapshot of a session that includes review requests, produce none: pull requests already stored are not news. Pull requests an on-demand review pass stores (Load more, the To review search, a GitHub filter, the MCP `list_prs` review options) join the snapshot without a notification; only their later changes notify. A paused or failed sync does not move that baseline. Switching profile starts it over. Live updates notify only after a baseline exists.
 
 | Event | When | Default |
 |---|---|---|
