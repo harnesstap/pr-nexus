@@ -1,0 +1,3 @@
+kind: Fixed
+body: A low GitHub rate budget pauses scheduled sync and live updates only until it resets, instead of until the next manual refresh, and the "Rate limited · resets" time is shown in local time.
+time: 2026-11-20T16:55:00Z

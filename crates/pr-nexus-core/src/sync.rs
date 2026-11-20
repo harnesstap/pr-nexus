@@ -357,13 +357,21 @@ pub fn scope_is_empty(scope: &TrackedScope) -> bool {
     scope.orgs.is_empty() && !scope.include_personal
 }
 
-/// Scheduled polls stop below 10% of the limit, and while a secondary limit is active.
-/// Manual refresh ignores this.
+/// Scheduled polls stop below 10% of the limit until it resets, and while a
+/// secondary limit is active. Manual refresh ignores this. Past `reset_at` the
+/// stored reading is stale: only a sync that runs can refresh it.
 pub fn scheduled_poll_paused(budget: &RateBudget, now: DateTime<Utc>) -> bool {
-    if budget.secondary_until.is_some_and(|until| now < until) {
-        return true;
-    }
-    budget.limit > 0 && u64::from(budget.remaining) * 10 < u64::from(budget.limit)
+    resume_at(budget, now).is_some()
+}
+
+/// When a paused scheduled poll may run again, or `None` when it is not paused.
+pub fn resume_at(budget: &RateBudget, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    let secondary = budget.secondary_until.filter(|until| now < *until);
+    let primary = (budget.limit > 0
+        && now < budget.reset_at
+        && u64::from(budget.remaining) * 10 < u64::from(budget.limit))
+    .then_some(budget.reset_at);
+    secondary.max(primary)
 }
 
 pub fn should_hide_closed(
@@ -664,7 +672,13 @@ pub fn sync_buckets(
     {
         return Ok(SyncReport::idle(
             true,
-            format!("Rate limited · resets {}", budget.reset_at.format("%H:%M")),
+            format!(
+                "Rate limited · resets {}",
+                budget
+                    .reset_at
+                    .with_timezone(&chrono::Local)
+                    .format("%H:%M")
+            ),
         ));
     }
     let mut run = RunState::default();
@@ -2304,6 +2318,9 @@ mod tests {
         let budget = sample_budget(1000, 50);
         assert!(scheduled_poll_paused(&budget, ts(1)));
         assert!(!scheduled_poll_paused(&sample_budget(1000, 100), ts(1)));
+        // Past the reset the low reading is stale; only a sync can refresh it.
+        assert_eq!(resume_at(&budget, ts(1)), Some(ts(90)));
+        assert!(!scheduled_poll_paused(&budget, ts(91)));
         let (_dir, store, account) = open_store();
         settings::set_rate_budget(&store, &budget).unwrap();
         let fake = Fake {
@@ -2328,6 +2345,9 @@ mod tests {
         let manual = sync_account(&store, &fake, account, SyncKind::Manual, ts(30)).unwrap();
         assert!(!manual.paused);
         assert_eq!(manual.stored, 1);
+        // The stored reading is still the low one, but its window is over.
+        let resumed = sync_account(&store, &fake, account, SyncKind::Scheduled, ts(120)).unwrap();
+        assert!(!resumed.paused);
     }
 
     #[test]
