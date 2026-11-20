@@ -1,0 +1,3 @@
+kind: Fixed
+body: Clearing a "Sync every" field in Settings → Schedule leaves it empty instead of showing 1, and Save asks for a value instead of failing.
+time: 2026-11-20T10:30:00Z

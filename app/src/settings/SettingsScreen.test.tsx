@@ -183,6 +183,29 @@ test("Sync edits intervals in minutes and shows an error from the backend", asyn
   expect(saved[0]?.focused_interval_s).toBe(2700);
 });
 
+test("Sync lets an interval be cleared and does not save it empty", async () => {
+  const saved: Preferences[] = [];
+  const api = fakeSettingsApi({
+    savePreferences: (prefs) => {
+      saved.push(prefs);
+      return Promise.resolve(prefs);
+    },
+  }) as Api;
+  render(<Harness api={api} start="schedule" />);
+  const background = await screen.findByRole("spinbutton", { name: /in the background/ });
+  expect(background).toHaveValue(15);
+  fireEvent.change(background, { target: { value: "" } });
+  expect(background).toHaveValue(null);
+  expect(background).toBeInvalid();
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  expect(saved).toEqual([]);
+  fireEvent.change(background, { target: { value: "30" } });
+  expect(background).toHaveValue(30);
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  expect(await screen.findByText("Saved")).toBeInTheDocument();
+  expect(saved.map((prefs) => prefs.unfocused_interval_s)).toEqual([1800]);
+});
+
 test("Mappings: empty state names the skipped setup step", async () => {
   render(<Harness api={fakeSettingsApi() as Api} start="mappings" />);
   expect(await screen.findByText("No team channels mapped yet.")).toBeInTheDocument();
