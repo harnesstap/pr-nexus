@@ -373,6 +373,8 @@ fn pending_of(overview: &PrOverview) -> Vec<RequestedReviewer> {
 }
 
 /// Turns auto-merge on with `method`, or off with `None`, then refreshes.
+/// A failed refresh falls back to the cached overview with the new setting:
+/// the change already happened on GitHub.
 pub fn set_auto_merge(
     store: &Store,
     provider: &dyn VcsProvider,
@@ -380,7 +382,15 @@ pub fn set_auto_merge(
     method: Option<MergeMethod>,
 ) -> Result<PrOverview, CoreError> {
     provider.set_auto_merge(pr, method)?;
-    refresh(store, provider, pr)
+    refresh(store, provider, pr).or_else(|err| {
+        let mut overview = cached(store, pr.id)?.ok_or(err)?;
+        overview.auto_merge = method.map(|method| AutoMergeState {
+            method,
+            enabled_by: Some(overview.viewer.login.clone()),
+            enabled_at: None,
+        });
+        Ok(overview)
+    })
 }
 
 /// Converts the pull request to a draft (`true`) or marks it ready for
@@ -389,6 +399,7 @@ pub fn set_auto_merge(
 /// Marking ready does not decide that CI passed. When GitHub returns a
 /// status, those checks and merge fields replace the stored ones; a failed
 /// status read keeps the previous checks and still records the draft flag.
+/// A failed refresh falls back to the cached overview with the new flag.
 pub fn set_draft(
     store: &Store,
     provider: &dyn VcsProvider,
@@ -404,8 +415,12 @@ pub fn set_draft(
     } else {
         current.is_draft = draft;
     }
-    store.update_pull_request_gate(&current)?;
-    refresh(store, provider, &current)
+    let _ = store.update_pull_request_gate(&current);
+    refresh(store, provider, &current).or_else(|err| {
+        let mut overview = cached(store, pr.id)?.ok_or(err)?;
+        overview.is_draft = draft;
+        Ok(overview)
+    })
 }
 
 /// Writes `draft` onto `pr`, then the matching status when GitHub returned one.
@@ -463,6 +478,7 @@ pub(crate) fn unsupported() -> ProviderError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::branch::tests::{Fake, overview, seed};
 
     #[test]
     fn merge_method_round_trips_both_spellings() {
@@ -781,5 +797,25 @@ mod tests {
         assert_eq!(row.assignees[0].login, "ada");
         assert!(row.updated_at > at);
         assert!(store.detail_fetched_at(saved.id).unwrap().is_some());
+    }
+
+    #[test]
+    fn a_draft_or_auto_merge_change_survives_a_failed_read() {
+        let (_dir, store, pr) = seed();
+        let fake = Fake::new(overview("mergeable", "clean"));
+        refresh(&store, &fake, &pr).unwrap();
+        *fake.read_fails.lock().unwrap() = true;
+
+        let drafted = set_draft(&store, &fake, &pr, true).unwrap();
+        assert!(drafted.is_draft);
+        assert!(store.get_pull_request(pr.id).unwrap().unwrap().is_draft);
+
+        let auto = set_auto_merge(&store, &fake, &pr, Some(MergeMethod::Squash)).unwrap();
+        assert_eq!(
+            auto.auto_merge.map(|state| state.method),
+            Some(MergeMethod::Squash)
+        );
+        let off = set_auto_merge(&store, &fake, &pr, None).unwrap();
+        assert!(off.auto_merge.is_none());
     }
 }

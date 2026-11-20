@@ -1,0 +1,3 @@
+kind: Fixed
+body: Marking ready or draft, changing auto-merge, removing from the merge queue, and updating a branch no longer report an error when GitHub accepted the change but the read after it failed.
+time: 2026-11-20T09:00:00Z

@@ -65,17 +65,20 @@ fn states_serialize_snake_case() {
 }
 
 /// A fake GitHub: answers overviews from `overview`, compares from
-/// `comparison`, and records every update instead of sending it.
-struct Fake {
+/// `comparison`, and records every update instead of sending it. Draft,
+/// auto-merge and dequeue writes succeed. With `read_fails` set, every
+/// overview read fails, as a GitHub read can right after a write.
+pub(crate) struct Fake {
     overview: Mutex<PrOverview>,
     comparison: BranchComparison,
     compares: Mutex<Vec<(String, String)>>,
     updates: Mutex<Vec<(String, UpdateMethod)>>,
     update_error: Mutex<Option<ProviderError>>,
+    pub(crate) read_fails: Mutex<bool>,
 }
 
 impl Fake {
-    fn new(overview: PrOverview) -> Self {
+    pub(crate) fn new(overview: PrOverview) -> Self {
         Self {
             overview: Mutex::new(overview),
             comparison: BranchComparison {
@@ -86,6 +89,7 @@ impl Fake {
             compares: Mutex::new(Vec::new()),
             updates: Mutex::new(Vec::new()),
             update_error: Mutex::new(None),
+            read_fails: Mutex::new(false),
         }
     }
 }
@@ -136,7 +140,23 @@ impl VcsProvider for Fake {
         unused()
     }
     fn pull_request_overview(&self, _: &PullRequest) -> Result<PrOverview, ProviderError> {
+        if *self.read_fails.lock().unwrap() {
+            return Err(ProviderError::Network("timed out".into()));
+        }
         Ok(self.overview.lock().unwrap().clone())
+    }
+    fn set_draft(&self, _: &PullRequest, _: bool) -> Result<(), ProviderError> {
+        Ok(())
+    }
+    fn set_auto_merge(
+        &self,
+        _: &PullRequest,
+        _: Option<crate::overview::MergeMethod>,
+    ) -> Result<(), ProviderError> {
+        Ok(())
+    }
+    fn dequeue_pull_request(&self, _: &PullRequest) -> Result<(), ProviderError> {
+        Ok(())
     }
     fn compare_branches(
         &self,
@@ -171,7 +191,7 @@ impl VcsProvider for Fake {
     }
 }
 
-fn overview(mergeable: &str, merge_state: &str) -> PrOverview {
+pub(crate) fn overview(mergeable: &str, merge_state: &str) -> PrOverview {
     PrOverview {
         state: "open".into(),
         is_draft: false,
@@ -218,7 +238,7 @@ fn overview(mergeable: &str, merge_state: &str) -> PrOverview {
     }
 }
 
-fn seed() -> (tempfile::TempDir, Store, PullRequest) {
+pub(crate) fn seed() -> (tempfile::TempDir, Store, PullRequest) {
     let now = Utc.with_ymd_and_hms(2026, 10, 26, 12, 0, 0).unwrap();
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path().join("branch.db")).unwrap();
@@ -342,6 +362,21 @@ fn update_sends_the_seen_head_and_refreshes() {
         overview::cached(&store, pr.id).unwrap().unwrap().head_sha,
         "h2"
     );
+}
+
+#[test]
+fn a_failed_read_after_an_update_still_reports_the_update() {
+    let (_dir, store, pr) = seed();
+    let fake = Fake::new(overview("mergeable", "behind"));
+    let cache = BranchCache::default();
+    status(&store, &fake, &cache, &pr).unwrap();
+    *fake.read_fails.lock().unwrap() = true;
+    let updated = update(&store, &fake, &cache, &pr, UpdateMethod::Merge).unwrap();
+    assert_eq!(fake.updates.lock().unwrap().len(), 1);
+    // GitHub is recomputing the branch: the card polls instead of offering
+    // another update with the old head.
+    assert_eq!(updated.branch.state, BranchState::Checking);
+    assert_eq!(updated.overview.mergeable, "unknown");
 }
 
 #[test]
