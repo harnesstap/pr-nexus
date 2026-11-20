@@ -232,8 +232,9 @@ pub fn on_demand_queries(
 ///
 /// Org chunks and repository chunks stay together: the union of (the same
 /// owner query AND a subset of repositories) is every owner AND every
-/// repository. A term that cannot fit beside its stem is skipped. When none
-/// fit, the stem is kept, so the search stays a superset of the local filter.
+/// repository. A term that cannot fit beside its stem is skipped, and the
+/// stem is then also kept unnarrowed, so the search stays a superset of the
+/// local filter.
 pub(crate) fn pack_repo_terms(scoped: &[String], repos: &[String]) -> Vec<String> {
     if repos.is_empty() {
         return scoped.to_vec();
@@ -241,21 +242,22 @@ pub(crate) fn pack_repo_terms(scoped: &[String], repos: &[String]) -> Vec<String
     let mut out = Vec::new();
     for stem in scoped {
         let mut current = stem.clone();
-        let mut fitted = false;
+        let mut skipped = false;
         for term in repos {
             let piece = format!(" {term}");
             if stem.len() + piece.len() > SEARCH_QUERY_MAX {
+                skipped = true;
                 continue;
             }
             if current.len() + piece.len() > SEARCH_QUERY_MAX {
                 out.push(std::mem::replace(&mut current, stem.clone()));
             }
             current.push_str(&piece);
-            fitted = true;
         }
-        if fitted && current.len() > stem.len() {
+        if current.len() > stem.len() {
             out.push(current);
-        } else if !fitted {
+        }
+        if skipped {
             out.push(stem.clone());
         }
     }
@@ -2406,6 +2408,31 @@ mod tests {
     }
 
     #[test]
+    fn a_repository_too_long_for_the_owner_query_is_still_searched_through_the_bare_owner_query() {
+        let team = format!("acme/{}", "t".repeat(136));
+        let long = format!("acme/{}", "x".repeat(100));
+        let filter = RemoteReviewFilter {
+            teams: vec![team],
+            repos: vec!["acme/a".into(), long.clone()],
+            ..Default::default()
+        };
+        let queries = on_demand_queries(
+            SearchBucket::ReviewRequested,
+            &scope(&["acme"], false),
+            Some(&filter),
+            None,
+        );
+        assert!(queries.iter().all(|query| query.len() <= SEARCH_QUERY_MAX));
+        assert!(queries.iter().any(|query| query.ends_with(" repo:acme/a")));
+        assert!(
+            queries
+                .iter()
+                .any(|query| query.contains(&format!("repo:{long}")) || !query.contains("repo:")),
+            "{queries:?}"
+        );
+    }
+
+    #[test]
     fn repository_filters_are_repeated_on_every_owner_query() {
         let filter = RemoteReviewFilter {
             repos: vec![
@@ -2432,7 +2459,7 @@ mod tests {
     }
 
     #[test]
-    fn repository_terms_split_beside_a_long_stem_and_a_term_that_cannot_fit_is_dropped() {
+    fn repository_terms_split_beside_a_long_stem_and_a_term_that_cannot_fit_keeps_the_stem() {
         let stem = "x".repeat(240);
         let packed = pack_repo_terms(
             std::slice::from_ref(&stem),
@@ -2447,9 +2474,7 @@ mod tests {
         let tight = "y".repeat(245);
         let long = format!("repo:{}", "a".repeat(20));
         let kept = pack_repo_terms(std::slice::from_ref(&tight), &[long, "repo:a/b".into()]);
-        assert_eq!(kept.len(), 1);
-        assert!(kept[0].contains("repo:a/b"));
-        assert!(!kept[0].contains(&"a".repeat(20)));
+        assert_eq!(kept, vec![format!("{tight} repo:a/b"), tight.clone()]);
 
         let full = "z".repeat(250);
         assert_eq!(

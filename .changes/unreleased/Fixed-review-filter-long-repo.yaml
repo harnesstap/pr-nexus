@@ -1,0 +1,3 @@
+kind: Fixed
+body: A To review repository filter no longer drops a repository whose name does not fit beside a long search query; that query also runs without repository terms.
+time: 2026-11-20T09:00:00Z
