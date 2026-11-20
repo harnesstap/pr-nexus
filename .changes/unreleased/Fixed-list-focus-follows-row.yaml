@@ -1,0 +1,3 @@
+kind: Fixed
+body: Keyboard focus stays on the same pull request when a reload moves its row, so keys no longer act on a different PR after a star or a sync.
+time: 2026-11-20T12:00:00Z

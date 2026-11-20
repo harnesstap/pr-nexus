@@ -300,7 +300,8 @@ export function PrList({
   const [editing, setEditing] = useState<Editing | null>(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const [deleteFor, setDeleteFor] = useState<Section | null>(null);
-  const [focusIndex, setFocusIndex] = useState(0);
+  // The focused row by key, so a reload that moves it (a star, a sync) keeps it on the same PR.
+  const [focusAt, setFocusAt] = useState<{ view: string; key: string | null; index: number }>({ view: viewKey, key: null, index: 0 });
   /** The view whose "Add to project" menu is open, so switching views closes it. */
   const [addMenuFor, setAddMenuFor] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -432,6 +433,10 @@ export function PrList({
     });
     return map;
   }, [flat]);
+  function setFocusIndex(index: number) {
+    const item = flat[index];
+    setFocusAt({ view: viewKey, key: item ? `${item.section.key}:${item.row.id}` : null, index });
+  }
   // Every matching id, loaded or not: select-all, counts and drag cover them all.
   const ids = useMemo(() => pageIds(page?.sections ?? []).filter((id) => !removedIds?.has(id)), [page, removedIds]);
   const hidden = hiddenSelectedCount(selected, ids);
@@ -455,8 +460,10 @@ export function PrList({
       }
     }
   }
-  // The focused row stays in range when filters or a sync shrink the list.
-  const focus = flat.length === 0 ? -1 : Math.min(focusIndex, flat.length - 1);
+  // Focus follows its row; once that row is gone it keeps the old index, in range. Another view starts at the top.
+  const sameView = focusAt.view === viewKey;
+  const focusKeyed = sameView && focusAt.key !== null ? indexOf.get(focusAt.key) : undefined;
+  const focus = flat.length === 0 ? -1 : (focusKeyed ?? Math.min(sameView ? focusAt.index : 0, flat.length - 1));
   const listRef = useRef<HTMLDivElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
   const sentinelVisible = useRef(false);

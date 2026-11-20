@@ -692,6 +692,26 @@ test("j and k move the focused row, x and Shift+x select, Esc clears", async () 
   expect(screen.getByRole("checkbox", { name: "Select all" })).toBeChecked();
 });
 
+test("the focus stays on its PR when a reload moves that row, so Shift+S twice toggles the same PR", async () => {
+  let data = [1, 2, 3].map((id) => row({ id, title: `PR ${id}`, project_ids: [], created_at: `2026-10-2${id}T11:00:00Z` }));
+  const loadPage = (request: PageRequest) => Promise.resolve(pageFromRows(data, [], request));
+  const onToggleStar = vi.fn();
+  const view = await show(<Harness rows={data} projects={[]} loadPage={loadPage} onToggleStar={onToggleStar} />);
+  const order = Array.from(document.querySelectorAll("article")).map((element) => element.getAttribute("aria-label"));
+  fireEvent.keyDown(window, { key: "j" });
+  fireEvent.keyDown(window, { key: "j" });
+  expect(focused()).toBe(order[2]);
+  fireEvent.keyDown(window, { key: "S", shiftKey: true });
+  const starred = (onToggleStar.mock.calls[0][0] as ListRow).id;
+  // The reload pins the starred row first.
+  data = data.map((item) => (item.id === starred ? { ...item, starred: true } : item));
+  view.rerender(<Harness rows={data} projects={[]} loadPage={loadPage} onToggleStar={onToggleStar} version={1} />);
+  await settle();
+  expect(focused()).toBe(order[2]);
+  fireEvent.keyDown(window, { key: "S", shiftKey: true });
+  expect((onToggleStar.mock.calls[1][0] as ListRow).id).toBe(starred);
+});
+
 test("Esc clears the selection from a focused row checkbox, but not from the search field", async () => {
   await show(<Harness rows={rows} />);
   const first = screen.getAllByRole("checkbox", { name: "Select Migrate login" })[0];
