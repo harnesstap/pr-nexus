@@ -1,0 +1,3 @@
+kind: Fixed
+body: Switching profiles no longer stops a review search an MCP tool runs on a third profile.
+time: 2026-11-20T07:10:00Z

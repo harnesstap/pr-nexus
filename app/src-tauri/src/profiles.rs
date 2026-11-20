@@ -4,7 +4,6 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError, RwLock};
 
 use chrono::Utc;
@@ -58,13 +57,11 @@ impl std::ops::Deref for StoreSlot {
     }
 }
 
-/// The registry, the profile stores, and the switch generation.
+/// The registry and the profile stores.
 pub struct ProfileManager {
     pub dirs: ProfileDirs,
     registry: Mutex<Registry>,
     stores: Mutex<HashMap<PathBuf, &'static Store>>,
-    /// Bumped on every switch; a sync started under an older value stops.
-    generation: AtomicU64,
 }
 
 /// A sync stopped by a profile switch. Unwound with `resume_unwind`, so the
@@ -80,7 +77,6 @@ impl ProfileManager {
             dirs,
             registry: Mutex::new(registry),
             stores: Mutex::new(HashMap::new()),
-            generation: AtomicU64::new(0),
         })
     }
 
@@ -89,14 +85,6 @@ impl ProfileManager {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
-    }
-
-    pub fn generation(&self) -> u64 {
-        self.generation.load(Ordering::SeqCst)
-    }
-
-    pub fn bump(&self) {
-        self.generation.fetch_add(1, Ordering::SeqCst);
     }
 
     /// The store of profile `id`, opened on first use.

@@ -2,6 +2,7 @@
 //! active profile unless an agent names another one.
 
 use std::collections::HashMap;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 
 use rmcp::model::JsonObject;
@@ -58,13 +59,20 @@ pub fn resolve(main: &Arc<AppState>, key: Option<&str>) -> Result<Arc<AppState>,
     Ok(state)
 }
 
-/// Drops the cached state of `id` (it became active, or was deleted).
+/// Drops the cached state of `id` (it became active, or was deleted) and
+/// stops a sync running on it.
 pub fn forget(id: &str) {
     let suffix = format!("/{id}");
     OTHERS
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
-        .retain(|key, _| !key.ends_with(&suffix));
+        .retain(|key, state| {
+            let keep = !key.ends_with(&suffix);
+            if !keep {
+                state.generation.fetch_add(1, Ordering::SeqCst);
+            }
+            keep
+        });
 }
 
 /// "Profile: Work" for confirmations, once there is more than one profile.

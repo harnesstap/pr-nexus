@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError, TryLockError};
 use std::thread;
 use std::time::Duration;
@@ -188,6 +188,11 @@ pub struct AppState {
     pub sync: Mutex<SyncStatus>,
     /// Held while a sync runs, so overlapping requests join it (see [`run_sync`]).
     pub sync_gate: Mutex<()>,
+    /// Bumped when this state stops serving its profile: a switch, or
+    /// [`crate::mcp::profiles::forget`] for another profile's state. A sync
+    /// started under an older value stops. Per state, so a switch never
+    /// stops a pass an MCP tool runs on a third profile.
+    pub generation: AtomicU64,
     pub device: Mutex<Option<DeviceSession>>,
     pub focused: AtomicBool,
     /// Set once review requests were asked for this session; never stored,
@@ -257,6 +262,7 @@ impl AppState {
                 SyncStatus::idle()
             }),
             sync_gate: Mutex::new(()),
+            generation: AtomicU64::new(0),
             device: Mutex::new(None),
             focused: AtomicBool::new(true),
             reviews_active: AtomicBool::new(false),
@@ -287,7 +293,7 @@ impl AppState {
         // A running sync sees the new generation at its next progress
         // report and unwinds; holding the gate keeps a new one from
         // starting until the switch is done.
-        self.profiles.bump();
+        self.generation.fetch_add(1, Ordering::SeqCst);
         let _gate = self
             .sync_gate
             .lock()
@@ -762,9 +768,9 @@ fn progress_writer<'a>(
     let mut throttle = sync::Throttle::new(sync::PROGRESS_EVERY);
     let mut shown = 0usize;
     let mut stage = None;
-    let generation = state.profiles.generation();
+    let generation = state.generation.load(Ordering::SeqCst);
     move |progress| {
-        if state.profiles.generation() != generation {
+        if state.generation.load(Ordering::SeqCst) != generation {
             // A profile switch: stop here. `settle` and `review_pass`
             // catch the unwind; `resume_unwind` skips the panic hook.
             std::panic::resume_unwind(Box::new(crate::profiles::Cancelled));
@@ -1412,6 +1418,30 @@ mod tests {
         assert!(status.synced_at.is_some());
         drop(status);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn a_switch_between_other_profiles_leaves_a_third_profiles_pass_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let main = Arc::new(AppState::for_tests(&dir.path().join("pr-nexus.db"), true));
+        let (bravo, _) = main.profiles.create("Bravo", &[]).unwrap();
+        let (charlie, _) = main.profiles.create("Charlie", &[]).unwrap();
+        let other = crate::mcp::profiles::resolve(&main, Some(&bravo.id)).unwrap();
+        let tick = sync::SyncProgress {
+            full: false,
+            bucket: SearchBucket::ReviewRequested,
+            stage: sync::SyncStage::Searching,
+            seen: 0,
+            updated: 0,
+        };
+        let mut on_progress = progress_writer(&other, |_, _| {});
+        main.switch_profile(&charlie.id).unwrap();
+        main.switch_profile(pr_nexus_core::profiles::DEFAULT_ID)
+            .unwrap();
+        on_progress(tick);
+        main.switch_profile(&bravo.id).unwrap();
+        let stopped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| on_progress(tick)));
+        assert!(stopped.is_err_and(|payload| payload.is::<crate::profiles::Cancelled>()));
     }
 
     fn progress(
