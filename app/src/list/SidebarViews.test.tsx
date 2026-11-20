@@ -85,6 +85,34 @@ test("a default view resets and cannot be deleted", () => {
   expect(screen.queryByRole("button", { name: "Authored" })).not.toBeInTheDocument();
 });
 
+test("reset and duplicate never build a catalog the backend refuses", () => {
+  const long = "L".repeat(79);
+  const [mine, ...rest] = defaultCatalog();
+  render(
+    <Harness
+      initial={[
+        { ...mine, name: "Mine" },
+        ...rest,
+        { key: "custom:1", name: "My PRs", query: "is:draft", builtin: false, sort_order: 3 },
+        { key: "custom:2", name: long, query: "", builtin: false, sort_order: 4 },
+      ]}
+    />,
+  );
+  // Reset gives My PRs its name back; the custom view that took it is renamed, not duplicated.
+  openMenu("Mine");
+  fireEvent.click(screen.getByRole("menuitem", { name: "Reset to default" }));
+  const names = within(screen.getByRole("navigation", { name: "Views" }))
+    .getAllByRole("button")
+    .map((button) => button.getAttribute("aria-label") ?? button.textContent ?? "")
+    .filter((name) => /^My PRs/.test(name));
+  expect(new Set(names.map((name) => name.toLowerCase())).size).toBe(names.length);
+  // A copy of a long name still fits the 80-character limit.
+  openMenu(long);
+  fireEvent.click(screen.getByRole("menuitem", { name: "Duplicate" }));
+  const copy = screen.getByRole("button", { name: (value) => value.endsWith(" copy") });
+  expect([...(copy.textContent ?? "").trim()].length).toBeLessThanOrEqual(80);
+});
+
 test("the view menu stays in the row and shows on hover, focus, or while open", () => {
   render(<Harness />);
   const selected = screen.getByRole("button", { name: (value) => value === "My PRs" });

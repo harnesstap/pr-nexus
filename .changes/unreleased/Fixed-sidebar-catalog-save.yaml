@@ -1,0 +1,3 @@
+kind: Fixed
+body: Resetting a renamed default view or duplicating a long-named view no longer stops every later sidebar change from being saved, and a failed save now says so.
+time: 2026-11-20T16:25:00Z
