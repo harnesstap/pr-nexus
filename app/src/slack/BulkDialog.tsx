@@ -245,6 +245,10 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen, onReady, onNot
     if (!next) {
       replan(request({ oneChannel: false }));
     } else {
+      // Drop any per-team plan still in flight, so its answer can't come back.
+      generation.current += 1;
+      setNaming(false);
+      setLoading(false);
       setPreview(null);
     }
   }
