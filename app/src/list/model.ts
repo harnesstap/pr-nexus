@@ -813,7 +813,8 @@ export function moreReviews(reviews: ReviewsStatus | undefined): boolean {
  * CI choices, and the No review and CI or conflicts quick filters.
  * Reviewer teams and assignees are sent even when several are chosen: GitHub
  * ORs those repeated qualifiers. `no:assignee` together with `assignee:` is
- * not sent, because GitHub ANDs them and the menu ORs them.
+ * not sent, because GitHub ANDs them and the menu ORs them. Teams are not
+ * sent with No team, which GitHub cannot search.
  */
 export function remoteReviewFilter(filters: Filters): RemoteReviewFilter | null {
   const remote: RemoteReviewFilter = {
@@ -822,7 +823,9 @@ export function remoteReviewFilter(filters: Filters): RemoteReviewFilter | null 
     draft: null,
     review: null,
     ci: null,
-    teams: [...filters.teams],
+    // GitHub has no "no team" qualifier, and `team-review-requested:` alone
+    // would drop the rows No team keeps: send no team then.
+    teams: filters.no_team ? [] : [...filters.teams],
     assignees: [...filters.assignees],
     unassigned: filters.unassigned,
   };
