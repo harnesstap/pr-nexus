@@ -423,11 +423,13 @@ pub async fn load_more_reviews(
     app: State<'_, std::sync::Arc<AppState>>,
 ) -> Result<SyncDto, AppError> {
     let background = app.inner().clone();
-    if !background.demo {
+    // Grown here, not in the thread: the answer must already say
+    // "loading" or the list stops polling until the next idle poll.
+    if !background.demo && state::grow_reviews(&background) {
         let _ = std::thread::Builder::new()
             .name("pr-nexus-reviews".into())
             .spawn(move || {
-                let _ = state::load_more_reviews(&background);
+                let _ = state::run_reviews(&background);
             });
     }
     Ok(sync_dto(app.inner()))

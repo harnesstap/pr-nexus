@@ -928,8 +928,10 @@ pub fn run_reviews(state: &AppState) -> Result<(), AppError> {
     .map(|_| ())
 }
 
-/// Widens the window by one more [`sync::REVIEW_WINDOW`] and reads it.
-pub fn load_more_reviews(state: &AppState) -> Result<(), AppError> {
+/// Widens the window by one more [`sync::REVIEW_WINDOW`] and marks
+/// reviews loading, so a caller that answers at once already says so.
+/// `false` when the window already holds every request.
+pub fn grow_reviews(state: &AppState) -> bool {
     {
         let mut status = lock_status(state);
         let known = status
@@ -937,11 +939,21 @@ pub fn load_more_reviews(state: &AppState) -> Result<(), AppError> {
             .total
             .map_or(usize::MAX, |total| total as usize);
         if status.reviews.window >= known {
-            return Ok(());
+            return false;
         }
         status.reviews.window += sync::REVIEW_WINDOW;
+        status.reviews.state = "loading".into();
+        status.reviews.message = "Loading reviews…".into();
     }
     state.reviews_active.store(true, Ordering::Relaxed);
+    true
+}
+
+/// Widens the window by one more [`sync::REVIEW_WINDOW`] and reads it.
+pub fn load_more_reviews(state: &AppState) -> Result<(), AppError> {
+    if !grow_reviews(state) {
+        return Ok(());
+    }
     run_reviews(state)
 }
 
@@ -1522,6 +1534,28 @@ mod tests {
         assert_eq!(status.reviews.state, "error");
         assert!(status.reviews.message.contains("Connect GitHub"));
         drop(status);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// Regression: "Load more" answered "ready" before its thread grew the
+    /// window, so the list stopped polling and rows showed up late.
+    #[test]
+    fn growing_the_review_window_marks_reviews_loading() {
+        let (mut state, path) = demo_state("grow");
+        state.demo = false;
+        {
+            let mut status = state.sync.lock().unwrap();
+            status.reviews.state = "ready".into();
+            status.reviews.window = sync::REVIEW_WINDOW;
+            status.reviews.total = Some(3 * sync::REVIEW_WINDOW as u64);
+        }
+        assert!(grow_reviews(&state));
+        let status = state.sync.lock().unwrap();
+        assert_eq!(status.reviews.state, "loading");
+        assert_eq!(status.reviews.window, 2 * sync::REVIEW_WINDOW);
+        drop(status);
+        state.sync.lock().unwrap().reviews.window = 3 * sync::REVIEW_WINDOW;
+        assert!(!grow_reviews(&state), "the window holds them all");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
