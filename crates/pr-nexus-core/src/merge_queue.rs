@@ -340,9 +340,14 @@ fn refresh_keeping(
     let mut overview = match overview::refresh(store, provider, pr) {
         Ok(overview) => overview,
         Err(_) => overview::cached(store, pr.id)?.ok_or_else(|| {
-            CoreError::Provider(ProviderError::Network(
-                "Added to the merge queue, but the updated pull request could not be read.".into(),
-            ))
+            let done = if fallback.phase == Some(MergeQueuePhase::Removed) {
+                "Removed from"
+            } else {
+                "Added to"
+            };
+            CoreError::Provider(ProviderError::Network(format!(
+                "{done} the merge queue, but the updated pull request could not be read."
+            )))
         })?,
     };
     if queue_read_is_stale(overview.merge_queue.as_ref(), fallback) {
@@ -405,7 +410,13 @@ fn plain(err: &ProviderError) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{AccountId, ChecksState, Involvement, PrId, ProviderRef, RepoRef};
+    use crate::domain::{
+        AccountId, ChecksState, Involvement, PrId, ProviderRef, RepoRef, TeamRef, VcsKind,
+    };
+    use crate::providers::{
+        OwnershipInputs, OwnershipProbe, PrQuery, PrStatus, RateBudget, SyncedPullRequest,
+        TeamMembers, VcsUser,
+    };
     use chrono::{TimeZone, Utc};
 
     fn pr(state: PrState, merge_state: MergeStateStatus) -> PullRequest {
@@ -662,5 +673,76 @@ mod tests {
         .unwrap();
         assert!(snap.required);
         assert!(snap.phase.is_none());
+    }
+
+    /// A provider that cannot be reached: every call fails.
+    struct Offline;
+
+    fn offline<T>() -> Result<T, ProviderError> {
+        Err(ProviderError::Network("offline".into()))
+    }
+
+    impl VcsProvider for Offline {
+        fn kind(&self) -> VcsKind {
+            VcsKind::GitHub
+        }
+        fn viewer(&self) -> Result<VcsUser, ProviderError> {
+            offline()
+        }
+        fn search_pull_requests(
+            &self,
+            _: &PrQuery,
+        ) -> Result<Vec<SyncedPullRequest>, ProviderError> {
+            offline()
+        }
+        fn refresh_pull_requests(
+            &self,
+            _: &[ProviderRef],
+        ) -> Result<Vec<SyncedPullRequest>, ProviderError> {
+            offline()
+        }
+        fn pull_request_status(&self, _: &[ProviderRef]) -> Result<Vec<PrStatus>, ProviderError> {
+            offline()
+        }
+        fn ownership_probe(&self, _: &PullRequest) -> Result<OwnershipProbe, ProviderError> {
+            offline()
+        }
+        fn ownership_inputs(
+            &self,
+            _: &PullRequest,
+            _: &OwnershipProbe,
+        ) -> Result<OwnershipInputs, ProviderError> {
+            offline()
+        }
+        fn team_members(&self, _: &TeamRef) -> Result<TeamMembers, ProviderError> {
+            offline()
+        }
+        fn rate_limit(&self) -> Result<RateBudget, ProviderError> {
+            offline()
+        }
+        fn request_team_review(&self, _: &PullRequest, _: &[TeamRef]) -> Result<(), ProviderError> {
+            offline()
+        }
+    }
+
+    #[test]
+    fn an_unreadable_refresh_names_the_action_that_went_through() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("queue.db")).unwrap();
+        let pr = pr(PrState::Open, MergeStateStatus::Clean);
+        let message = |fallback: MergeQueueSnapshot| match refresh_keeping(
+            &store, &Offline, &pr, &fallback,
+        ) {
+            Err(CoreError::Provider(ProviderError::Network(message))) => message,
+            other => panic!("expected a network error, got {other:?}"),
+        };
+        assert!(
+            message(required(Some(MergeQueuePhase::Removed)))
+                .starts_with("Removed from the merge queue,")
+        );
+        assert!(
+            message(required(Some(MergeQueuePhase::Queued)))
+                .starts_with("Added to the merge queue,")
+        );
     }
 }
