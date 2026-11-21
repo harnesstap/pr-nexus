@@ -188,8 +188,7 @@ pub async fn preview_mapping_import(
     blocking::run(move || {
         let mode = import_mode(&mode)?;
         let incoming = mapping::parse_csv(&csv, Some(workspace.trim()))?;
-        let existing = app.inner().store.list_mappings()?;
-        let diff = mapping::plan_import(&existing, &incoming, mode);
+        let diff = mapping::preview_import(&app.inner().store, &incoming, mode)?;
         Ok(ImportPreviewDto {
             added: diff.added.into_iter().map(Into::into).collect(),
             changed: diff
