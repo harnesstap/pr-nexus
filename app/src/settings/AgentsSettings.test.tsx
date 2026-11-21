@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { AgentsSettings } from "./AgentsSettings";
-import type { McpToolInfo, SlackProposal } from "../api";
+import type { McpClientState, McpToolInfo, SlackProposal } from "../api";
 import { FAKE_MCP_TOKEN, FAKE_SLACK_WORKSPACES, fakeMcp, sampleActivity, sampleSlackActivity } from "./fakes";
 import { mcpClientSnippet } from "./mcpClients";
 import { parseExtraHost, parsePort } from "./tabs";
@@ -126,7 +126,7 @@ test("copies the real token and a config snippet with it", async () => {
   await screen.findByText("Copied token.");
   expect(writeText).toHaveBeenLastCalledWith(FAKE_MCP_TOKEN);
 
-  fireEvent.click(screen.getByRole("button", { name: "Copy client config" }));
+  fireEvent.click(screen.getByRole("button", { name: "Copy config" }));
   await screen.findByText("Copied Claude Desktop config.");
   expect(writeText).toHaveBeenLastCalledWith(mcpClientSnippet("claude-desktop", "http://127.0.0.1:43117/mcp", FAKE_MCP_TOKEN).text);
   expect(screen.getByRole("tabpanel")).not.toHaveTextContent(FAKE_MCP_TOKEN);
@@ -134,7 +134,7 @@ test("copies the real token and a config snippet with it", async () => {
   fireEvent.click(screen.getByRole("tab", { name: "Codex" }));
   expect(window.localStorage.getItem("pr-nexus.mcp-client-tab")).toBe("codex");
   expect(screen.getByRole("tabpanel")).toHaveTextContent("~/.codex/config.toml");
-  fireEvent.click(screen.getByRole("button", { name: "Copy client config" }));
+  fireEvent.click(screen.getByRole("button", { name: "Copy config" }));
   await screen.findByText("Copied Codex config.");
   expect(writeText).toHaveBeenLastCalledWith(mcpClientSnippet("codex", "http://127.0.0.1:43117/mcp", FAKE_MCP_TOKEN).text);
   window.localStorage.clear();
@@ -401,6 +401,60 @@ test("adds pr-nexus to a client and shows its status", async () => {
   expect(screen.getByRole("button", { name: "Add to OpenCode" })).toBeDisabled();
   expect(screen.getByRole("status", { name: "OpenCode status" })).toHaveTextContent("Can't read the config file. Fix it, or copy the snippet.");
   expect(screen.getByText(/^Merge into ~\/\.config\/opencode\/opencode\.jsonc\./)).toBeInTheDocument();
+  window.localStorage.clear();
+});
+
+test("adding one AI agent leaves the other tabs usable", async () => {
+  const api = fakeMcp({ enabled: true, port: 43117 });
+  let releaseClaude: ((state: McpClientState) => void) | undefined;
+  const calls: string[] = [];
+  vi.spyOn(api, "mcpAddToClient").mockImplementation((client) => {
+    calls.push(client);
+    if (client === "claude-code") {
+      return new Promise((resolve) => {
+        releaseClaude = resolve;
+      });
+    }
+    return Promise.resolve({
+      client,
+      status: "added",
+      path: "/Users/acme/.cursor/mcp.json",
+      display_path: "~/.cursor/mcp.json",
+      exists: true,
+    });
+  });
+  window.localStorage.setItem("pr-nexus.mcp-client-tab", "claude-code");
+  render(<AgentsSettings api={api} />);
+
+  const start = await screen.findByRole("button", { name: "Add to Claude Code" });
+  fireEvent.click(start);
+  fireEvent.click(start);
+  expect(calls).toEqual(["claude-code"]);
+  expect(screen.getByRole("button", { name: "Adding…" })).toBeDisabled();
+
+  fireEvent.click(screen.getByRole("tab", { name: "Cursor" }));
+  const cursor = screen.getByRole("button", { name: "Add to Cursor" });
+  expect(cursor).toBeEnabled();
+  expect(screen.getByRole("status", { name: "Cursor status" })).toHaveTextContent("Not added");
+  expect(screen.queryByRole("button", { name: "Adding…" })).not.toBeInTheDocument();
+
+  fireEvent.click(cursor);
+  expect(await screen.findByRole("button", { name: "Added ✓" })).toBeDisabled();
+  expect(screen.getByRole("status", { name: "Cursor status" })).toHaveTextContent("Added");
+  expect(calls).toEqual(["claude-code", "cursor"]);
+
+  fireEvent.click(screen.getByRole("tab", { name: "Claude Code" }));
+  expect(screen.getByRole("button", { name: "Adding…" })).toBeDisabled();
+  expect(screen.getByRole("status", { name: "Claude Code status" })).toHaveTextContent("Not added");
+  releaseClaude?.({
+    client: "claude-code",
+    status: "added",
+    path: "/Users/acme/.claude.json",
+    display_path: "~/.claude.json",
+    exists: true,
+  });
+  expect(await screen.findByRole("button", { name: "Added ✓" })).toBeDisabled();
+  expect(screen.getByRole("status", { name: "Claude Code status" })).toHaveTextContent("Added");
   window.localStorage.clear();
 });
 

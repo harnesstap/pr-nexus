@@ -346,7 +346,7 @@ pub(crate) fn exposed(state: &AppState) -> Result<(Vec<Exposed>, usize), AppErro
 fn none_exposed() -> AppError {
     AppError::new(
         "not_found",
-        "No Slack workspace is exposed to agents. The user can tick one in PR Nexus → Settings → Agents.",
+        "No Slack workspace is exposed to agents. The user can tick one in PR Nexus → Settings → MCP server.",
     )
 }
 
@@ -593,7 +593,7 @@ fn list_workspaces(state: &AppState, arguments: JsonObject) -> Result<Value, App
                 "scopes_missing": ws.scopes_missing,
                 "reauth_hint": (!ws.scopes_missing.is_empty()).then_some(
                     "Some slack_* tools may fail with Slack's missing_scope error. To fix it, ask the user to click \
-                     Sign in again next to this workspace in PR Nexus → Settings → Agents.",
+                     Sign in again next to this workspace in PR Nexus → Settings → MCP server.",
                 ),
             })
         })

@@ -71,6 +71,27 @@ test("deny shows the reason with Retry, and Retry waits for the new prompt", asy
   expect(onReady).toHaveBeenCalledTimes(1);
 });
 
+test("a keychain notice replaces another notice in the same slot", () => {
+  const api = { keyringStatus: vi.fn(() => Promise.resolve(ready)), keyringRetry: vi.fn() };
+  const notice = <p role="alert">Cursor has an outdated PR Nexus config.</p>;
+  const { unmount } = render(
+    <KeyringBanner api={api} initial={denied} pollMs={100}>
+      {notice}
+    </KeyringBanner>,
+  );
+  expect(screen.getByRole("alert")).toHaveTextContent("Keychain access was denied");
+  expect(screen.queryByText(/outdated PR Nexus config/)).not.toBeInTheDocument();
+  unmount();
+
+  render(
+    <KeyringBanner api={api} initial={ready} pollMs={100}>
+      {notice}
+    </KeyringBanner>,
+  );
+  expect(screen.getByRole("alert")).toHaveTextContent("outdated PR Nexus config");
+  expect(screen.queryByText(/Keychain access was denied/)).not.toBeInTheDocument();
+});
+
 test("a locked keychain shows one banner and Retry", async () => {
   const locked: KeyringStatus = {
     state: "denied",

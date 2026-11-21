@@ -136,7 +136,14 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   mcp_token: () => mcp.mcpToken(),
   regenerate_mcp_token: () => mcp.regenerateMcpToken(),
   mcp_client_states: () => mcp.mcpClientStates(),
-  mcp_add_to_client: (args) => mcp.mcpAddToClient(args.client as McpClientId),
+  mcp_add_to_client: (args) => {
+    const client = args.client as McpClientId;
+    const hang = (globalThis as { __mcpAddHang?: string }).__mcpAddHang;
+    if (hang && hang === client) {
+      return new Promise(() => undefined);
+    }
+    return mcp.mcpAddToClient(client);
+  },
   mcp_open_client_config: (args) => mcp.mcpOpenClientConfig(args.client as McpClientId),
   mcp_activity: (args) => mcp.mcpActivity((args.outcome as McpOutcome | null) ?? undefined),
   clear_mcp_activity: () => mcp.clearMcpActivity(),
@@ -303,6 +310,15 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
       ? { ...branchFor(args.id), state: "up_to_date", behind_by: 0 }
       : branchFor(args.id),
   update_pr_branch: (args) => ({ overview: { ...baseOverviewFor(args.id), fetched_at: new Date().toISOString() }, branch: branchFixtures[1].branch }),
+  list_mappings: () => [],
+  app_info: () => ({
+    version: "0.1.0",
+    repository: "acme/pr-nexus",
+    db_path: "/tmp/pr-nexus.db",
+    log_dir: "/tmp/pr-nexus-logs",
+    keyring_in_memory: false,
+    os: "linux",
+  }),
   load_preferences: () => ({
     review_requester: "Ada Park",
     min_bump_interval_hours: 4,

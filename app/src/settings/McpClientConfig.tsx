@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Api, McpClientState } from "../api";
 import { errorMessage } from "../api";
 import { Tooltip } from "../Tooltip";
@@ -38,6 +38,10 @@ interface Props {
   onFixPort?: () => void;
   /** Copies the snippet built with the real token. */
   onCopy: (label: string, build: (token: string) => string) => void;
+  /** Select this AI agent when a notice opens the page. */
+  focusClient?: McpClient | null;
+  /** The agent's config was written. */
+  onChanged?: () => void;
 }
 
 const STATUS_TEXT: Record<McpClientState["status"], string> = {
@@ -47,13 +51,15 @@ const STATUS_TEXT: Record<McpClientState["status"], string> = {
   unreadable: "Can't read the config file. Fix it, or copy the snippet.",
 };
 
-/** "Client config" in Settings → Agents: one tab per MCP client, each with its own snippet. */
-export function McpClientConfig({ api, url, tokenMasked, tokenVersion, fixedPort, onFixPort, onCopy }: Props) {
+/** "Add to your agent" in Settings → MCP server: one tab per AI agent, each with its own snippet. */
+export function McpClientConfig({ api, url, tokenMasked, tokenVersion, fixedPort, onFixPort, onCopy, focusClient, onChanged }: Props) {
   const [client, setClient] = useState<McpClient>(readClient);
   const [states, setStates] = useState<McpClientState[]>([]);
-  const [busy, setBusy] = useState(false);
+  const inflight = useRef(new Set<McpClient>());
+  const [pending, setPending] = useState<ReadonlySet<McpClient>>(() => new Set());
   const [error, setError] = useState<string | null>(null);
   const [restartFor, setRestartFor] = useState<McpClient | null>(null);
+  const [appliedFocus, setAppliedFocus] = useState<McpClient | null>(null);
   const label = MCP_CLIENTS.find((c) => c.id === client)?.label ?? client;
   const state = states.find((s) => s.client === client);
   const found = state?.exists ? state.display_path : undefined;
@@ -70,23 +76,44 @@ export function McpClientConfig({ api, url, tokenMasked, tokenVersion, fixedPort
     };
   }, [api, url, tokenVersion]);
 
+  if (focusClient && focusClient !== appliedFocus) {
+    setAppliedFocus(focusClient);
+    setClient(focusClient);
+    writeClient(focusClient);
+    setError(null);
+  }
+
   function select(next: McpClient) {
     setClient(next);
     writeClient(next);
     setError(null);
   }
 
+  function markPending(target: McpClient, on: boolean) {
+    if (on) {
+      inflight.current.add(target);
+    } else {
+      inflight.current.delete(target);
+    }
+    setPending(new Set(inflight.current));
+  }
+
   function add() {
-    setBusy(true);
+    const target = client;
+    if (inflight.current.has(target)) {
+      return;
+    }
+    markPending(target, true);
     setError(null);
     api
-      .mcpAddToClient(client)
+      .mcpAddToClient(target)
       .then((next) => {
-        setStates((prev) => [...prev.filter((s) => s.client !== next.client), next]);
+        setStates((prev) => [...prev.filter((item) => item.client !== next.client), next]);
         setRestartFor(NEEDS_RESTART.has(next.client) ? next.client : null);
+        onChanged?.();
       })
       .catch((err: unknown) => setError(errorMessage(err)))
-      .finally(() => setBusy(false));
+      .finally(() => markPending(target, false));
   }
 
   function open() {
@@ -95,22 +122,23 @@ export function McpClientConfig({ api, url, tokenMasked, tokenVersion, fixedPort
   }
 
   const current = state?.status === "added";
+  const adding = pending.has(client);
   const addLabel = current ? "Added ✓" : state?.status === "outdated" ? `Update ${label}` : `Add to ${label}`;
 
   return (
     <div className="mt-3">
       <div className="flex items-center justify-between">
-        <span className="text-slate-400">Client config</span>
+        <span className="text-slate-400">AI agent</span>
         <button
           type="button"
-          aria-label="Copy client config"
+          aria-label="Copy config"
           className="rounded px-2 py-0.5 text-xs hover:bg-slate-800"
           onClick={() => onCopy(`${label} config`, (token) => mcpClientSnippet(client, url, token, found).text)}
         >
           Copy with token
         </button>
       </div>
-      <div role="tablist" aria-label="MCP client" className="mt-1 flex flex-wrap gap-1">
+      <div role="tablist" aria-label="AI agent" className="mt-1 flex flex-wrap gap-1">
         {MCP_CLIENTS.map((c) => (
           <button
             key={c.id}
@@ -134,10 +162,10 @@ export function McpClientConfig({ api, url, tokenMasked, tokenVersion, fixedPort
             <button
               type="button"
               className="rounded border border-slate-700 px-2 py-0.5 hover:bg-slate-800 disabled:opacity-60 disabled:hover:bg-transparent"
-              disabled={busy || current || state.status === "unreadable"}
+              disabled={adding || current || state.status === "unreadable"}
               onClick={add}
             >
-              {busy ? "Adding…" : addLabel}
+              {adding ? "Adding…" : addLabel}
             </button>
             <Tooltip label={state.exists ? state.path : `${state.path} does not exist yet. Opens its folder.`}>
               <button type="button" className="rounded px-2 py-0.5 text-sky-300 hover:bg-slate-800" onClick={open}>

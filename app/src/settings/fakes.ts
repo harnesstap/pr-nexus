@@ -184,7 +184,7 @@ export function sampleActivity(now = new Date()): McpActivityEntry[] {
     row(6, 1, "set_pr_starred", "allowed", "starred acme/api#482"),
     row(5, 2, "add_prs_to_project", "allowed", "added 3 PRs to project 2"),
     row(4, 3, "remove_jira_link", "error", "removed a JIRA link from project 2", "Project 2 has no JIRA link ACME-9"),
-    row(3, 26, "set_pr_starred", "denied", "starred PR id 482", "set_pr_starred is turned off in PR Nexus Settings → Agents (MCP)."),
+    row(3, 26, "set_pr_starred", "denied", "starred PR id 482", "set_pr_starred is turned off in PR Nexus Settings → MCP server."),
     row(2, 27, "list_prs", "allowed", "listed pull requests"),
     row(1, 95, "list_projects", "allowed", "listed projects"),
   ];

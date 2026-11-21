@@ -12,8 +12,8 @@ export type PreferencesSection = "requests" | "rules" | "schedule" | "notificati
 interface Props {
   api: Api;
   prefs: Preferences;
-  /** Null keeps the draft mounted without showing the form. */
-  section: PreferencesSection | null;
+  /** Empty keeps the draft mounted without showing the form. */
+  sections: readonly PreferencesSection[];
   permission: NotificationPermission;
   onRequestPermission: () => void;
   onSaved: (prefs: Preferences) => void;
@@ -22,7 +22,7 @@ interface Props {
 const input = "mt-1 w-28 rounded border border-slate-700 bg-slate-900 px-2 py-1";
 
 /** Requests, rules, schedule and notifications: one §7.12 draft and one save bar. */
-export function PreferencesForm({ api, prefs, section, permission, onRequestPermission, onSaved }: Props) {
+export function PreferencesForm({ api, prefs, sections, permission, onRequestPermission, onSaved }: Props) {
   const { draft, setDraft, bar } = useSaveBar(prefs, async (next) => {
     const saved = await api.savePreferences(next);
     onSaved(saved);
@@ -33,7 +33,7 @@ export function PreferencesForm({ api, prefs, section, permission, onRequestPerm
     setDraft((current) => ({ ...current, ...next }));
   }
 
-  if (section === null) {
+  if (sections.length === 0) {
     return null;
   }
 
@@ -45,8 +45,8 @@ export function PreferencesForm({ api, prefs, section, permission, onRequestPerm
         bar.onSave();
       }}
     >
-      {section === "requests" && (
-        <>
+      {sections.includes("requests") && (
+        <section id="settings-anchor-requests" className="scroll-mt-6 space-y-5">
           <h2 className="text-base font-semibold">Requests & bumps</h2>
           <Field label="Requester" help='Added in brackets after the PR in review requests, e.g. "Ada Acme". Never on reminders. Empty adds nothing.'>
             <input {...plainText}
@@ -136,10 +136,10 @@ export function PreferencesForm({ api, prefs, section, permission, onRequestPerm
             checked={draft.blocked_review_required_is_ready}
             onChange={(on) => patch({ blocked_review_required_is_ready: on })}
           />
-        </>
+        </section>
       )}
-      {section === "rules" && (
-        <>
+      {sections.includes("rules") && (
+        <section id="settings-anchor-rules" className="scroll-mt-6 space-y-5">
           <h2 className="text-base font-semibold">Rules</h2>
           <Field label="Ticket key pattern" help="Regular expression for ticket keys in branch names and titles, used by project rules. Empty restores the default.">
             <input {...plainText}
@@ -175,10 +175,10 @@ export function PreferencesForm({ api, prefs, section, permission, onRequestPerm
               onChange={(event) => patch({ jira_base_url: event.target.value })}
             />
           </Field>
-        </>
+        </section>
       )}
-      {section === "schedule" && (
-        <>
+      {sections.includes("schedule") && (
+        <section id="settings-anchor-schedule" className="scroll-mt-6 space-y-5">
           <h2 className="text-base font-semibold">Schedule</h2>
           <div>
             <Tooltip
@@ -226,10 +226,10 @@ export function PreferencesForm({ api, prefs, section, permission, onRequestPerm
               onChange={(event) => patch({ keep_closed_days: Number(event.target.value) })}
             />
           </Field>
-        </>
+        </section>
       )}
-      {section === "notifications" && (
-        <div className="space-y-3">
+      {sections.includes("notifications") && (
+        <section id="settings-anchor-notifications" className="scroll-mt-6 space-y-3">
           <h2 className="text-base font-semibold">Notifications</h2>
             <Check
               label="Desktop notifications"
@@ -278,7 +278,7 @@ export function PreferencesForm({ api, prefs, section, permission, onRequestPerm
               onChange={(on) => patch({ notify_comment: on })}
             />
             {notificationHint(permission) && <p className="text-xs text-slate-500">{notificationHint(permission)}</p>}
-        </div>
+        </section>
       )}
       <SaveBar {...bar} submit />
     </form>

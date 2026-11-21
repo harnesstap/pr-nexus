@@ -261,7 +261,7 @@ fn request_reviews(state: &AppState, arguments: JsonObject) -> Result<Value, App
                 "destination": destination_json(None, &card.target),
                 "status": "error",
                 "prs": card_prs(&card),
-                "error": { "kind": "forbidden", "message": "This channel's Slack workspace is not exposed to agents in PR Nexus → Settings → Agents." },
+                "error": { "kind": "forbidden", "message": "This channel's Slack workspace is not exposed to agents in PR Nexus → Settings → MCP server." },
             })),
         }
     }

@@ -158,7 +158,7 @@ test("Settings → Setup → Re-run setup opens the wizard at step 1 and Back re
   render(<App api={fake} />);
   fireEvent.click(await screen.findByRole("button", { name: /account menu/ }));
   fireEvent.click(screen.getByRole("menuitem", { name: "Settings" }));
-  fireEvent.click(await screen.findByRole("tab", { name: "Setup" }));
+  fireEvent.click(await screen.findByRole("tab", { name: "About" }));
   fireEvent.click(await screen.findByRole("button", { name: "Re-run setup" }));
   expect(await screen.findByRole("heading", { name: /Step 1 of 5/ })).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Next" }));
