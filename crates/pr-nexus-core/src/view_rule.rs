@@ -397,9 +397,9 @@ fn match_token(token: &Scanned, facts: &LocalFacts<'_>, strict: bool) -> bool {
         ("author", "@me") => facts.involvement & AUTHOR != 0,
         ("review-requested", "@me") => facts.involvement & REVIEW_REQUESTED != 0,
         ("is", "open") | ("state", "open") | ("is", "pr") => true,
-        ("is", "closed") => facts.state.eq_ignore_ascii_case("closed"),
+        // GitHub's `is:closed` includes merged pull requests.
+        ("is", "closed") | ("state", "closed") => !open,
         ("is", "merged") => facts.state.eq_ignore_ascii_case("merged"),
-        ("state", "closed") => !open,
         ("is", "draft") | ("draft", "true") => facts.is_draft,
         ("draft", "false") => !facts.is_draft,
         ("bump", "due") => facts.due,
@@ -693,6 +693,18 @@ mod tests {
             false,
             "-is:open author:@me"
         ));
+    }
+
+    #[test]
+    fn is_closed_includes_merged_like_github() {
+        let rule = "is:closed author:@me";
+        assert!(matches_local(AUTHOR, "closed", false, false, rule));
+        assert!(matches_local(AUTHOR, "merged", false, false, rule));
+        assert!(!matches_local(AUTHOR, "open", false, false, rule));
+        assert!(matches_local(AUTHOR, "open", false, false, "-is:closed"));
+        assert!(!matches_local(AUTHOR, "merged", false, false, "-is:closed"));
+        assert!(matches_local(AUTHOR, "merged", false, false, "is:merged"));
+        assert!(!matches_local(AUTHOR, "closed", false, false, "is:merged"));
     }
 
     fn author_bit() -> u8 {
