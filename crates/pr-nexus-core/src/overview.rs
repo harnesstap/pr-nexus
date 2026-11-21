@@ -249,10 +249,10 @@ pub fn refresh(
         if stored != before {
             store.update_pull_request_detail(&stored)?;
         }
-        let fetched = chrono::DateTime::parse_from_rfc3339(&overview.fetched_at)
-            .map(|value| value.with_timezone(&Utc))
-            .unwrap_or_else(|_| Utc::now());
-        store.set_detail_fetched_at(stored.id, fetched)?;
+        // When the row was written, not when GitHub answered: a sync that
+        // started before this read its rows before the write, so its status
+        // fields must not count as newer.
+        store.set_detail_fetched_at(stored.id, Utc::now())?;
     }
     Ok(overview)
 }

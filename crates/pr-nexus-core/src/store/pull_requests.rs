@@ -808,7 +808,10 @@ fn replace_assignees(conn: &Connection, id: i64, pr: &PullRequest) -> Result<(),
 }
 
 /// A live overview wrote this row, and `incoming` is not a newer document.
-/// Keep the list-row fields the overview stored.
+/// Keep the search-document fields the overview stored, and its status
+/// fields too unless `incoming` was read after the overview was stored
+/// (`synced_at` is when that sync or live pass started). CI finishing does
+/// not move `updated_at`, so a later status read must still get through.
 fn protect_fresher_detail(conn: &Connection, incoming: &mut PullRequest) -> Result<(), CoreError> {
     let found = conn
         .query_row(
@@ -859,9 +862,10 @@ fn protect_fresher_detail(conn: &Connection, incoming: &mut PullRequest) -> Resu
     else {
         return Ok(());
     };
-    if fetched_at.is_none() {
+    let Some(fetched_at) = fetched_at else {
         return Ok(());
-    }
+    };
+    let status_is_older = incoming.synced_at <= parse_ts(&fetched_at)?;
     let updated_at = parse_ts(&updated_at)?;
     let last_activity_at = parse_ts(&last_activity_at)?;
     if incoming.updated_at > updated_at {
@@ -879,20 +883,22 @@ fn protect_fresher_detail(conn: &Connection, incoming: &mut PullRequest) -> Resu
     incoming.head_ref = head_ref;
     incoming.base_ref = base_ref;
     incoming.head_sha = head_sha;
-    incoming.review_decision = review_decision
-        .as_deref()
-        .and_then(|text| text.parse().ok());
-    if let Ok(checks) = checks.parse() {
-        incoming.checks = checks;
+    if status_is_older {
+        incoming.review_decision = review_decision
+            .as_deref()
+            .and_then(|text| text.parse().ok());
+        if let Ok(checks) = checks.parse() {
+            incoming.checks = checks;
+        }
+        if let Ok(mergeable) = mergeable.parse() {
+            incoming.mergeable = mergeable;
+        }
+        if let Ok(merge_state) = merge_state.parse() {
+            incoming.merge_state = merge_state;
+        }
+        incoming.unresolved_threads = u32::try_from(unresolved).unwrap_or(0);
+        incoming.total_threads = u32::try_from(total).unwrap_or(0);
     }
-    if let Ok(mergeable) = mergeable.parse() {
-        incoming.mergeable = mergeable;
-    }
-    if let Ok(merge_state) = merge_state.parse() {
-        incoming.merge_state = merge_state;
-    }
-    incoming.unresolved_threads = u32::try_from(unresolved).unwrap_or(0);
-    incoming.total_threads = u32::try_from(total).unwrap_or(0);
     if updated_at >= incoming.updated_at {
         incoming.updated_at = updated_at;
     }

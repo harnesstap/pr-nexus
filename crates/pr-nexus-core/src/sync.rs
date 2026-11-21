@@ -3156,7 +3156,8 @@ mod tests {
             vec![pr("M1", "acme", 1, Involvement::AUTHOR)],
             vec![stale_status],
         );
-        sync_account(&store, &stale, account, SyncKind::Manual, ts(50)).unwrap();
+        // This sync started before the detail was stored.
+        sync_account(&store, &stale, account, SyncKind::Manual, ts(35)).unwrap();
         let kept = row(&store, account, 1);
         assert_eq!(
             kept.review_decision,
@@ -3184,6 +3185,34 @@ mod tests {
         assert!(replaced.requested_reviewers.is_empty());
         assert_eq!(replaced.updated_at, ts(60));
         assert!(store.detail_fetched_at(replaced.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_status_read_after_the_detail_replaces_its_status_fields() {
+        let (_dir, store, account) = open_store();
+        let first = fake(vec![pr("M1", "acme", 1, Involvement::AUTHOR)], Vec::new());
+        sync_account(&store, &first, account, SyncKind::Full, ts(15)).unwrap();
+        let mut stored = row(&store, account, 1);
+        stored.checks = ChecksState::Pending;
+        stored.requested_reviewers = vec![crate::domain::RequestedReviewer::bare(
+            crate::domain::Reviewer::User {
+                login: "sam".into(),
+            },
+        )];
+        store.update_pull_request_detail(&stored).unwrap();
+        store.set_detail_fetched_at(stored.id, ts(40)).unwrap();
+
+        // CI finished after the detail; GitHub's updatedAt did not move.
+        let later = fake(
+            vec![pr("M1", "acme", 1, Involvement::AUTHOR)],
+            vec![status("M1", ChecksState::Success)],
+        );
+        let report = sync_account(&store, &later, account, SyncKind::Manual, ts(50)).unwrap();
+        assert_eq!(report.updated, 1);
+        let after = row(&store, account, 1);
+        assert_eq!(after.checks, ChecksState::Success);
+        assert_eq!(after.requested_reviewers.len(), 1);
+        assert_eq!(after.updated_at, stored.updated_at);
     }
 
     fn sample_budget(limit: u32, remaining: u32) -> RateBudget {
