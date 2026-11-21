@@ -339,6 +339,8 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNot
     setNaming(false);
     setTarget(next);
     setChosen(choice);
+    // The old preview names the old channel: Send stays off until this one loads.
+    setPreview(null);
     void loadPreview(next);
   }
 
@@ -359,7 +361,7 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNot
   }
 
   async function send() {
-    if (!preview) {
+    if (!preview || (target && !sameDestination(preview.target, target))) {
       return;
     }
     setSending(true);
