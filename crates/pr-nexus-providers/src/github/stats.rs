@@ -121,6 +121,7 @@ pub(crate) fn parse(body: &Value) -> Result<Page, ProviderError> {
             state,
             merged_at: time(node.get("mergedAt")),
             ready_events: Vec::new(),
+            draft_events: Vec::new(),
             requests: Vec::new(),
             reviews: Vec::new(),
         };
@@ -132,6 +133,7 @@ pub(crate) fn parse(body: &Value) -> Result<Page, ProviderError> {
         {
             match text(item, "/__typename") {
                 Some("ReadyForReviewEvent") => pr.ready_events.extend(time(item.get("createdAt"))),
+                Some("ConvertToDraftEvent") => pr.draft_events.extend(time(item.get("createdAt"))),
                 Some("ReviewRequestedEvent") => {
                     let Some(at) = time(item.get("createdAt")) else {
                         continue;
@@ -199,6 +201,7 @@ mod tests {
                 "author": { "login": "ada" },
                 "repository": { "nameWithOwner": "acme/api" },
                 "timelineItems": { "nodes": [
+                    { "__typename": "ConvertToDraftEvent", "createdAt": "2026-03-01T09:30:00Z" },
                     { "__typename": "ReadyForReviewEvent", "createdAt": "2026-03-01T10:00:00Z" },
                     { "__typename": "ReviewRequestedEvent", "createdAt": "2026-03-01T10:00:00Z",
                       "requestedReviewer": { "__typename": "User", "login": "grace" } },
@@ -225,6 +228,7 @@ mod tests {
         );
         assert_eq!(pr.state, StatsPrState::Merged);
         assert_eq!(pr.ready_events.len(), 1);
+        assert_eq!(pr.draft_events.len(), 1);
         assert_eq!(
             pr.requests
                 .iter()

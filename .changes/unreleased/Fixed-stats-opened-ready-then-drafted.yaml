@@ -1,0 +1,3 @@
+kind: Fixed
+body: Review stats measure the wait from creation for a pull request opened ready and later converted to a draft, and a pull request that is a draft again no longer counts as waiting for review.
+time: 2026-11-20T12:10:00Z
