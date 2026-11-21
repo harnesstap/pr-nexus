@@ -764,7 +764,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
             setCatalog(next);
           }
         },
-        () => undefined,
+        (err: unknown) => setNotice({ text: `Couldn't save the sidebar views: ${errorMessage(err)}` }),
       );
     }, 200);
     return () => window.clearTimeout(timer);

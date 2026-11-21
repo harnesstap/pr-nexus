@@ -377,7 +377,8 @@ export function SidebarViews({
             if (!fallback) {
               return;
             }
-            onChange(views.map((item) => (item.key === active.key ? { ...item, name: fallback.name, query: fallback.query } : item)));
+            // normalizeCatalog renames a custom view that took the default name meanwhile.
+            onChange(normalizeCatalog(views.map((item) => (item.key === active.key ? { ...item, name: fallback.name, query: fallback.query } : item))));
           }}
         />
       )}

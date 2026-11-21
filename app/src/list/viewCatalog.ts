@@ -110,7 +110,7 @@ export function duplicateOf(views: readonly SidebarView[], source: SidebarView):
   const key = nextCustomKey(views);
   return {
     key,
-    name: uniqueName(views, `${source.name} copy`),
+    name: uniqueName(views, fitName(source.name, " copy")),
     query: source.query,
     builtin: false,
     sort_order: views.length,
@@ -201,17 +201,23 @@ function nameTaken(views: readonly SidebarView[], name: string): boolean {
   return views.some((view) => view.name.toLowerCase() === folded);
 }
 
+/** `base` cut so that `base + suffix` fits VIEW_NAME_MAX characters, which the backend enforces. */
+function fitName(base: string, suffix = ""): string {
+  return [...base].slice(0, VIEW_NAME_MAX - [...suffix].length).join("").trimEnd() + suffix;
+}
+
 function uniqueName(views: readonly SidebarView[], name: string): string {
-  if (!nameTaken(views, name)) {
-    return name;
+  const fitted = fitName(name);
+  if (!nameTaken(views, fitted)) {
+    return fitted;
   }
   for (let index = 2; index < 1000; index += 1) {
-    const next = `${name} ${index}`;
+    const next = fitName(name, ` ${index}`);
     if (!nameTaken(views, next)) {
       return next;
     }
   }
-  return name;
+  return fitted;
 }
 
 function validCustomKey(key: string): boolean {
