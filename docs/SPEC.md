@@ -503,6 +503,7 @@ Unresolved threads come from counting `reviewThreads.nodes[].isResolved == false
 - Store them in `sync_state`.
 - When remaining is below 10% of the limit, skip scheduled polls until `resetAt`; manual and pre-send refreshes still run.
 - On a secondary limit (403/429 with `retry-after`), back off exponentially starting at `retry-after` (each wait at most 2 min) and retry the page, up to 3 times; then return `RateLimited{secondary:true}`.
+- A spent primary limit (403/429 with `x-ratelimit-remaining: 0` and no `retry-after`, or a GraphQL `RATE_LIMITED` error) is not retried: it returns `RateLimited{secondary:false}` with `reset_at` from `x-ratelimit-reset` (for GraphQL without the header, the last known `resetAt`).
 - Send at most 4 concurrent requests per host. A secondary rate limit (403/429 with `retry-after`) is waited out before the request is retried.
 
 **Ownership inputs.** These are fetched lazily: for PRs the user opens or selects for a request, plus a capped post-sync pass for BLOCKED PRs with no review decision (below). They are cached in `ownership_cache` keyed by `(head_sha, base_ref, codeowners_oid)`.

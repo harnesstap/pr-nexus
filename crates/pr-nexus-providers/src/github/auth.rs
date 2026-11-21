@@ -397,6 +397,7 @@ pub fn start_device_flow(
             status,
             None,
             None,
+            None,
             &body,
             chrono::Utc::now(),
         ));

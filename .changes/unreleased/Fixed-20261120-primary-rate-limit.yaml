@@ -1,0 +1,3 @@
+kind: Fixed
+body: A spent GitHub rate limit now reports its real reset time and is no longer retried like a secondary limit.
+time: 2026-11-20T12:00:00Z

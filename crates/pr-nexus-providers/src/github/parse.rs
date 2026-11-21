@@ -116,7 +116,8 @@ pub(crate) fn parse_budget(body: &Value) -> Option<RateBudget> {
     })
 }
 
-pub(crate) fn graphql_failure(body: &Value) -> Option<ProviderError> {
+/// `reset_at` is when a RATE_LIMITED answer may be retried.
+pub(crate) fn graphql_failure(body: &Value, reset_at: DateTime<Utc>) -> Option<ProviderError> {
     let errors = body.get("errors")?.as_array()?;
     if errors.is_empty() || only_missing_nodes(body, errors) {
         return None;
@@ -138,7 +139,7 @@ pub(crate) fn graphql_failure(body: &Value) -> Option<ProviderError> {
     });
     if rate {
         return Some(ProviderError::RateLimited {
-            reset_at: Utc::now(),
+            reset_at,
             secondary: false,
         });
     }
@@ -532,22 +533,22 @@ mod tests {
                 { "type": "FORBIDDEN", "path": ["nodes", 2], "message": "saml" }
             ]
         });
-        assert!(graphql_failure(&gone).is_none());
+        assert!(graphql_failure(&gone, Utc::now()).is_none());
         let mutation = serde_json::json!({
             "data": { "mergePullRequest": null },
             "errors": [{ "type": "FORBIDDEN", "path": ["mergePullRequest"], "message": "no" }]
         });
-        assert!(graphql_failure(&mutation).is_some());
+        assert!(graphql_failure(&mutation, Utc::now()).is_some());
         let null_data = serde_json::json!({
             "data": null,
             "errors": [{ "type": "NOT_FOUND", "path": ["nodes", 0], "message": "gone" }]
         });
-        assert!(graphql_failure(&null_data).is_some());
+        assert!(graphql_failure(&null_data, Utc::now()).is_some());
         let top_level = serde_json::json!({
             "data": { "nodes": [null] },
             "errors": [{ "type": "NOT_FOUND", "message": "gone" }]
         });
-        assert!(graphql_failure(&top_level).is_some());
+        assert!(graphql_failure(&top_level, Utc::now()).is_some());
     }
 
     #[test]

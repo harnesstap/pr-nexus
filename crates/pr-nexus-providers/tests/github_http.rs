@@ -164,6 +164,68 @@ fn maps_401_sso_secondary_and_404() {
     ));
 }
 
+/// 2026-01-01T01:00:00Z, as `x-ratelimit-reset` sends it.
+const RESET_EPOCH: &str = "1767229200";
+
+fn reset_time() -> chrono::DateTime<chrono::Utc> {
+    chrono::DateTime::from_timestamp(1_767_229_200, 0).unwrap()
+}
+
+#[test]
+fn a_spent_primary_limit_waits_for_its_reset() {
+    let rest = server();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async {
+        Mock::given(method("GET"))
+            .and(path("/search/issues"))
+            .respond_with(
+                ResponseTemplate::new(403)
+                    .insert_header("x-ratelimit-remaining", "0")
+                    .insert_header("x-ratelimit-reset", RESET_EPOCH)
+                    .set_body_string(r#"{"message":"API rate limit exceeded for user ID 1."}"#),
+            )
+            .mount(&rest)
+            .await;
+    });
+    drop(runtime);
+    let client = GithubClient::with_base(rest.uri(), AccountId(1), "token").unwrap();
+    match client
+        .search_issues("is:pr author:@me", None, true, "github.com", 100)
+        .unwrap_err()
+    {
+        ProviderError::RateLimited {
+            reset_at,
+            secondary,
+        } => {
+            assert!(!secondary);
+            assert_eq!(reset_at, reset_time());
+        }
+        other => panic!("{other:?}"),
+    }
+
+    let graphql = server();
+    mount(
+        &graphql,
+        ResponseTemplate::new(200)
+            .insert_header("x-ratelimit-remaining", "0")
+            .insert_header("x-ratelimit-reset", RESET_EPOCH)
+            .set_body_string(
+                r#"{"data":null,"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded for user ID 1."}]}"#,
+            ),
+    );
+    let client = GithubClient::with_base(graphql.uri(), AccountId(1), "token").unwrap();
+    match client.viewer().unwrap_err() {
+        ProviderError::RateLimited {
+            reset_at,
+            secondary,
+        } => {
+            assert!(!secondary);
+            assert_eq!(reset_at, reset_time());
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
 #[test]
 fn device_flow_start_and_poll() {
     let server = server();
