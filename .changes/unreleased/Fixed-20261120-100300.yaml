@@ -1,0 +1,3 @@
+kind: Fixed
+body: A team written with different capitals in CODEOWNERS (for example @Acme/team-a) now finds its saved Slack channel.
+time: 2026-11-20T10:03:00.000000+01:00

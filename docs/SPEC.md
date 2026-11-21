@@ -654,7 +654,7 @@ There is no age-based expiry. An old request is still the right thread to bump; 
 - Two layers in `team_channel_mappings`:
   - `imported`: rows from a CSV import in `replace` mode. A new `replace` import swaps them out wholesale.
   - `user`: corrections made in the app, or a CSV imported in `merge` mode. A `replace` import never touches them.
-- **Precedence: a user row beats an imported row for the same `(org, slug)`, whatever the workspace.** One team maps to one channel in one workspace. A user row with `disabled=1` is a tombstone that hides the imported row. Lookup is one SQL query:
+- **Precedence: a user row beats an imported row for the same `(org, slug)`, whatever the workspace.** One team maps to one channel in one workspace. A user row with `disabled=1` is a tombstone that hides the imported row. Org, slug, and team name match without regard to ASCII case, like GitHub handles (`@Acme/Team-A` finds `acme,team-a`). Lookup is one SQL query:
   `SELECT … ORDER BY layer='user' DESC LIMIT 1` on slug, then on name.
 - **Δ vs the skill:** in the skill, `~/.slack-team-channel-mapping.csv` *replaces the whole bundled file* (`home_override_replaces_bundled`), so a sparse home file hides every bundled row. Row-level layering fixes that: a re-import of the team's shared CSV keeps your corrections.
 - **Δ:** the skill's `upsert-mapping.py` writes CSV columns in a nondeterministic order (it builds them from a Python `set`). PR Nexus always exports this fixed header:
@@ -669,7 +669,7 @@ There is no age-based expiry. An old request is still the right thread to bump; 
   - Unknown columns are an error. Missing optional columns default to empty.
 - **CSV source.** The text is pasted, or loaded with **Choose file…** (wizard step 6 and Settings → Mappings). That button opens the native open dialog through `tauri-plugin-dialog` (filters: CSV, All files) and only returns a path to the webview; the `read_mapping_file` command reads it in Rust (regular file, at most 1 MiB, UTF-8, a leading BOM dropped) and fills the CSV box with the text and the file name. The usual import commands then parse and validate it, so a file and a paste fail the same way. The app has no `fs` plugin scope.
 - Export modes: `effective` (merged view), `user` (corrections only, for backup), and `imported`.
-- **No company data in the repo.** Test fixtures use made-up orgs, teams, and channels (`acme`, `team-a`, `#team-reviews`). The CSV parser is tested on those fixtures (header, column count, unique `(org, slug)`, `C…`/`G…` ID shape).
+- **No company data in the repo.** Test fixtures use made-up orgs, teams, and channels (`acme`, `team-a`, `#team-reviews`). The CSV parser is tested on those fixtures (header, column count, unique `(org, slug)` ignoring case, `C…`/`G…` ID shape).
 - The settings UI has a mappings table with filters (org, empty channel, overridden) and inline edits that write user rows (the channel is set with a picker, see §7.7 "Mapping editor"). It has a "Reset to imported" action per row, which deletes the user row.
 
 ### 7.6 Message text: byte-exact port of `build-review-message.py` (MUST)
