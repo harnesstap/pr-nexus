@@ -1,0 +1,3 @@
+kind: Fixed
+body: Clicking a notification posted before a profile switch no longer opens an unrelated pull request of the new profile.
+time: 2026-11-20T17:05:00Z
