@@ -134,10 +134,15 @@ pub fn absorb_new(state: &AppState) {
     let Ok(items) = crate::commands::list_items(state) else {
         return;
     };
+    let viewer = state::github_account(&state.store)
+        .ok()
+        .flatten()
+        .map(|account| account.login)
+        .unwrap_or_default();
     let rows: Vec<WatchedPr> = items
         .iter()
         .filter(|item| !item.row.hidden)
-        .map(watched)
+        .map(|item| watched(item, &viewer))
         .collect();
     state
         .notifier
