@@ -1351,9 +1351,13 @@ impl<'a> Writer<'a> {
         Ok(changed)
     }
 
+    /// `pr` may be a provider copy with no stored id, so the stored row's id
+    /// is used when this writer knows it.
     pub(crate) fn set_hidden(&mut self, pr: &PullRequest, hidden: bool) -> Result<(), CoreError> {
-        self.store.set_pull_request_hidden(pr.id, hidden)?;
-        if let Some(row) = self.rows.get_mut(&pr.remote.id) {
+        let row = self.rows.get_mut(&pr.remote.id);
+        let id = row.as_ref().map_or(pr.id, |row| row.id);
+        self.store.set_pull_request_hidden(id, hidden)?;
+        if let Some(row) = row {
             row.hidden = hidden;
         }
         self.changed.insert(pr.remote.id.clone());
