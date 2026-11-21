@@ -693,6 +693,35 @@ mod tests {
     }
 
     #[test]
+    fn a_sync_between_failed_close_and_retry_keeps_the_posted_comment() {
+        let (_dir, store) = open_store();
+        let pr = seed(&store, "PR_resync", 13, PrState::Open);
+        let repo_id = store
+            .list_repositories(pr.remote.account)
+            .unwrap()
+            .into_iter()
+            .find(|repo| repo.name == "widgets")
+            .unwrap()
+            .id;
+        let mut script = script();
+        script.fail_close.insert("PR_resync".into());
+        close_pull_requests(&store, &script, &[pr.id], "No longer needed").unwrap();
+
+        // The posted comment bumps updatedAt, and the next sync rewrites the row.
+        let mut synced = store.get_pull_request(pr.id).unwrap().unwrap();
+        synced.updated_at += ChronoDuration::minutes(1);
+        store.upsert_pull_request(repo_id, synced).unwrap();
+
+        script.fail_close.clear();
+        close_pull_requests(&store, &script, &[pr.id], "No longer needed").unwrap();
+        let comments = log_of(&script)
+            .into_iter()
+            .filter(|step| matches!(step, Step::Comment(_, _)))
+            .count();
+        assert_eq!(comments, 1, "a sync must not forget the posted comment");
+    }
+
+    #[test]
     fn a_changed_comment_on_retry_is_posted() {
         let (_dir, store) = open_store();
         let pr = seed(&store, "PR_edit", 12, PrState::Open);
@@ -852,6 +881,7 @@ mod tests {
             .find(|repo| repo.name == "widgets")
             .unwrap()
             .id;
+        store.remember_close_comment(pr.id, "Done").unwrap();
         store.mark_closed_from_app(pr.id, Utc::now()).unwrap();
 
         let mut stale = store.get_pull_request(pr.id).unwrap().unwrap();
@@ -860,6 +890,10 @@ mod tests {
         let kept = store.upsert_pull_request(repo_id, stale).unwrap();
         assert_eq!(kept.state, PrState::Closed);
         assert!(kept.updated_at > at());
+        assert_eq!(
+            store.close_comment_body(pr.id).unwrap().as_deref(),
+            Some("Done")
+        );
 
         let mut reopened = kept.clone();
         reopened.state = PrState::Open;
@@ -867,6 +901,7 @@ mod tests {
         let back = store.upsert_pull_request(repo_id, reopened).unwrap();
         assert_eq!(back.state, PrState::Open);
         assert!(store.app_closed_at_by_node().unwrap().is_empty());
+        assert_eq!(store.close_comment_body(pr.id).unwrap(), None);
     }
 
     fn seed_request(store: &Store, pr: PrId) -> ReviewRequestId {

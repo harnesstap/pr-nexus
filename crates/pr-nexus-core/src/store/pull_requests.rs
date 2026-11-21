@@ -456,6 +456,14 @@ fn upsert_pull_request(
     repo_id: i64,
     pr: &PullRequest,
 ) -> Result<PullRequest, CoreError> {
+    let prior_state: Option<String> = conn
+        .query_row(
+            "SELECT state FROM pull_requests WHERE node_id = ?1",
+            [&pr.remote.id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(db)?;
     let mut pr = pr.clone();
     protect_fresher_detail(conn, &mut pr)?;
     let pr = &pr;
@@ -600,8 +608,9 @@ fn upsert_pull_request(
 
     let saved = load_pull_request(conn, PrId(id))?
         .ok_or_else(|| CoreError::Store("upserted pull request disappeared".to_owned()))?;
-    // A real reopen clears the close note, so the next close can comment again.
-    if saved.state == PrState::Open {
+    // A real reopen (closed, now open) clears the close note, so the next
+    // close can comment again. A plain resync of an open row keeps it.
+    if saved.state == PrState::Open && prior_state.as_deref() == Some(PrState::Closed.as_str()) {
         conn.execute("DELETE FROM pr_close_notes WHERE pr_id = ?1", [id])
             .map_err(db)?;
     }

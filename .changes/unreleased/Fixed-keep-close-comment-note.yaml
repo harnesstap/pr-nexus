@@ -1,0 +1,3 @@
+kind: Fixed
+body: A sync between a failed close and its retry no longer forgets the posted close comment, so the retry does not post it twice.
+time: 2026-11-20T14:10:00Z
