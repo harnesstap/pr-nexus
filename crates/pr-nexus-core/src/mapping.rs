@@ -642,6 +642,15 @@ fn row_from_record(
     record: &csv::StringRecord,
     line: usize,
 ) -> Result<CsvRow, CoreError> {
+    if record
+        .iter()
+        .skip(headers.len())
+        .any(|value| !value.trim().is_empty())
+    {
+        return Err(CoreError::Validation(format!(
+            "mapping csv line {line}: more cells than header columns"
+        )));
+    }
     let mut values = BTreeMap::new();
     for (header, value) in headers.iter().zip(record.iter()) {
         values.insert(header, value.trim().to_string());
@@ -1236,5 +1245,23 @@ acme,team-b,Team B,team-b-reviews,C0123456789,
         let rows = store.list_mappings().unwrap();
         let hit = lookup_mapping(&rows, "acme", "team-a", "").unwrap();
         assert_eq!(hit.slack_team_id.as_deref(), Some("T0BETA0001"));
+    }
+
+    #[test]
+    fn a_cell_past_the_header_is_a_line_error() {
+        let header = "github_org,github_team_slug,slack_channel_name,slack_channel_id\n";
+        let err = parse_csv(
+            &format!("{header}acme,team-a,team-reviews,C0123456789,beta\n"),
+            Some("acme"),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("line 2"), "{err}");
+        // Trailing empty cells (a spreadsheet's extra commas) are fine.
+        let rows = parse_csv(
+            &format!("{header}acme,team-a,team-reviews,C0123456789,,\n"),
+            Some("acme"),
+        )
+        .unwrap();
+        assert_eq!(rows[0].slack_channel_id, "C0123456789");
     }
 }

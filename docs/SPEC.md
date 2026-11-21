@@ -667,7 +667,7 @@ There is no age-based expiry. An old request is still the right thread to bump; 
   - `replace`: delete imported rows, then insert.
   - `merge`: upsert into user rows; empty cells do not overwrite non-empty ones.
   - A dry-run diff is shown before applying: added, changed, unchanged, and rows that the user layer shadows.
-  - Unknown columns are an error. Missing optional columns default to empty.
+  - Unknown columns are an error. Missing optional columns default to empty. A non-empty cell past the header's last column is an error for that line; trailing empty cells are ignored.
 - **CSV source.** The text is pasted, or loaded with **Choose file…** (wizard step 6 and Settings → Mappings). That button opens the native open dialog through `tauri-plugin-dialog` (filters: CSV, All files) and only returns a path to the webview; the `read_mapping_file` command reads it in Rust (regular file, at most 1 MiB, UTF-8, a leading BOM dropped) and fills the CSV box with the text and the file name. The usual import commands then parse and validate it, so a file and a paste fail the same way. The app has no `fs` plugin scope.
 - Export modes: `effective` (merged view), `user` (corrections only, for backup), and `imported`.
 - **No company data in the repo.** Test fixtures use made-up orgs, teams, and channels (`acme`, `team-a`, `#team-reviews`). The CSV parser is tested on those fixtures (header, column count, unique `(org, slug)` ignoring case, `C…`/`G…` ID shape).
