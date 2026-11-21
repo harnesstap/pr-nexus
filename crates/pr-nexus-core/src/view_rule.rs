@@ -109,8 +109,15 @@ pub fn analyze(raw: &str) -> Analyzed {
         if !local_pair(key, &token.value) {
             fully_local = false;
         }
-        github.push(render_qualifier(token));
+        github.push(token);
     }
+    // Locally `is:open` is always true. GitHub ANDs it with `is:merged`, so a
+    // child of My PRs that asks for finished rows would find nothing.
+    let github: Vec<String> = github
+        .into_iter()
+        .filter(|token| !(shows_finished && open_token(token)))
+        .map(render_qualifier)
+        .collect();
     Analyzed {
         empty: false,
         fully_local,
@@ -388,6 +395,12 @@ fn finished_token(token: &Scanned) -> bool {
         (key, value.as_str()),
         ("is", "closed" | "merged") | ("state", "closed")
     )
+}
+
+fn open_token(token: &Scanned) -> bool {
+    !token.negated
+        && matches!(token.key.as_deref(), Some("is" | "state"))
+        && token.value.eq_ignore_ascii_case("open")
 }
 
 fn match_token(token: &Scanned, facts: &LocalFacts<'_>, strict: bool) -> bool {
@@ -708,6 +721,26 @@ mod tests {
         assert!(!matches_local(AUTHOR, "merged", false, false, "-is:closed"));
         assert!(matches_local(AUTHOR, "merged", false, false, "is:merged"));
         assert!(!matches_local(AUTHOR, "closed", false, false, "is:merged"));
+    }
+
+    #[test]
+    fn inherited_open_is_not_sent_with_a_finished_qualifier() {
+        assert_eq!(
+            analyze("is:open author:@me is:merged label:bug").github,
+            "author:@me is:merged label:bug"
+        );
+        assert_eq!(
+            analyze("state:open author:@me state:closed label:bug").github,
+            "author:@me state:closed label:bug"
+        );
+        assert_eq!(
+            analyze("is:open -is:open label:bug").github,
+            "-is:open label:bug"
+        );
+        assert_eq!(
+            analyze("is:open author:@me label:bug").github,
+            "is:open author:@me label:bug"
+        );
     }
 
     fn author_bit() -> u8 {

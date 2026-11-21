@@ -45,7 +45,7 @@ export function analyzeViewRule(raw: string): AnalyzedRule {
   if (tokens === null) {
     return { empty: false, fullyLocal: false, github: "", text: "", showsFinished: false, invalid: true, qualifiers: [] };
   }
-  const github: string[] = [];
+  const github: Token[] = [];
   const text: string[] = [];
   const qualifiers: ViewQualifier[] = [];
   let fullyLocal = true;
@@ -64,12 +64,15 @@ export function analyzeViewRule(raw: string): AnalyzedRule {
     if (!localPair(token.key, token.value)) {
       fullyLocal = false;
     }
-    github.push(renderQualifier(token));
+    github.push(token);
   }
+  // Locally `is:open` is always true. GitHub ANDs it with `is:merged`, so a
+  // child of My PRs that asks for finished rows would find nothing.
+  const sent = github.filter((token) => !(showsFinished && openToken(token))).map(renderQualifier);
   return {
     empty: false,
     fullyLocal,
-    github: fullyLocal ? "" : github.join(" "),
+    github: fullyLocal ? "" : sent.join(" "),
     text: text.join(" "),
     showsFinished,
     invalid: false,
@@ -228,6 +231,10 @@ function localPair(key: string, value: string): boolean {
     (key === "bump" && folded === "due") ||
     (key === "no" && folded === "assignee")
   );
+}
+
+function openToken(token: Token): boolean {
+  return !token.negated && (token.key === "is" || token.key === "state") && token.value.toLowerCase() === "open";
 }
 
 function finished(token: Token): boolean {
