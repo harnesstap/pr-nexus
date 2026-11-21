@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use chrono::Utc;
 use pr_nexus_core::domain::{Account, AccountId, AccountKind, AuthMode, ChatKind};
-use pr_nexus_core::domain::{ProviderRef, PullRequest, TeamRef, VcsKind};
+use pr_nexus_core::domain::{PrId, PrState, ProviderRef, PullRequest, TeamRef, VcsKind};
 use pr_nexus_core::error::ProviderError;
 use pr_nexus_core::providers::{
     ChatChannel, ChatProvider, ChatUser, OutgoingMessage, OwnershipInputs, OwnershipProbe, Page,
@@ -1947,4 +1947,22 @@ fn all_to_one_typed_channel_id_bumps_the_open_thread() {
     assert!(result.results.iter().all(|r| r.outcome == "sent"));
     let posts = slack.posts.lock().unwrap().clone();
     assert!(posts[1].1.is_some(), "the second post is a thread reply");
+}
+
+#[test]
+fn single_send_refuses_a_pr_merged_since_the_preview() {
+    let fx = fixture("send-merged");
+    let state = &fx.state;
+    connect_fake_workspace(state);
+    let slack = Arc::new(FakeSlack::default());
+    let pr = pr_id(state, 1);
+    review::preview_with(state, &slack, pr, channel()).unwrap();
+    // Background sync sees the merge while the dialog is open.
+    let mut row = state.store.get_pull_request(PrId(pr)).unwrap().unwrap();
+    row.state = PrState::Merged;
+    replace_pr(state, row);
+
+    let err = review::send(state, &slack, pr, channel(), &[], None).unwrap_err();
+    assert_eq!(err.kind, "conflict");
+    assert!(slack.posts.lock().unwrap().is_empty());
 }

@@ -1,0 +1,3 @@
+kind: Fixed
+body: Sending a single Slack review request now checks the pull request again first, so one merged, closed, or blocked while the dialog was open is not posted.
+time: 2026-11-20T10:20:00Z
