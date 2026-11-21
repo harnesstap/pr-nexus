@@ -211,6 +211,9 @@ fn overview(mergeable: &str, merge_state: &str) -> PrOverview {
         },
         auto_merge: None,
         merge_queue: None,
+        updated_at: String::new(),
+        unresolved_threads: 0,
+        total_threads: 0,
         fetched_at: "2026-10-26T12:00:00Z".into(),
     }
 }
@@ -271,6 +274,7 @@ fn seed() -> (tempfile::TempDir, Store, PullRequest) {
         mergeable: Mergeable::Mergeable,
         merge_state: MergeStateStatus::Clean,
         requested_reviewers: Vec::new(),
+        assignees: Vec::new(),
         unresolved_threads: 0,
         total_threads: 0,
         involvement: Involvement::AUTHOR,

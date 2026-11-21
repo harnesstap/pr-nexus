@@ -2,7 +2,8 @@
 // README screenshot. Usage, from app/: bun run screenshot
 // `bun run screenshot -- --detail <path>` opens #479's detail panel and saves
 // that view to <path> instead; `--draft <path>` opens draft #488, which has
-// no Slack request yet.
+// no Slack request yet. `--agree <path>` opens #479 after a detail refresh
+// so the list row and the panel show the same review, checks, and merge state.
 // `--width <px>` sets the viewport width (default 1440); `--out <path>` saves the
 // list view somewhere other than the README asset. `--tooltips <dir>` hovers a
 // few controls and saves tooltip-*.png crops showing the app tooltip open.
@@ -23,12 +24,21 @@
 // when two selected drafts are CI-blocked and only one of those checks clears.
 // `--github-query <dir>` saves the GitHub query field (github-query-*.png):
 // matching rows, a rejected query, and the same list at 720px.
+// `--pr-link <dir>` saves a pasted pull request URL (pr-link-*.png): a stored
+// pull request from another view, and one read from GitHub for the panel.
+// `--people-filters <dir>` saves the reviewer-team and assignee menus, then
+// the list after those menus write qualifiers into the search field.
 // `--update <dir>` saves the sidebar's update indicator (update-*.png): none,
 // the icon for a newer release, and its popover for a release and a dev build.
 // `--merge-queue <dir>` saves the merge queue preview (merge-queue-*.png):
 // the list, the add confirmation, the bulk dialog, and a narrow list.
 // `--views <dir>` saves custom views (views-*.png): the sidebar at rest,
 // one row hovered, and the … menu open.
+// `--sidebar-tree <dir>` saves parent views and collapsible section headers
+// (sidebar-tree.png, sidebar-new-view.png, sidebar-edit-parent.png,
+// sidebar-views-collapsed.png, sidebar-projects-collapsed.png).
+// `--view-drag <dir>` saves dragging a view onto a parent, the confirm,
+// the tree after the move, and the Move to submenu.
 // `--close-pr <dir>` saves Close PR (close-*.png): the detail menu, the
 // confirmation with a comment, the bulk confirmation, and the narrow bar menu.
 // `--settings-nav <dir>` saves the settings rail (settings-nav-*.png): Slack,
@@ -44,6 +54,11 @@ import { createServer } from "vite";
 const appDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const tooltipsFlag = process.argv.indexOf("--tooltips");
 const tooltipsDir = tooltipsFlag === -1 ? null : resolve(process.argv[tooltipsFlag + 1] ?? "");
+const agreeFlag = process.argv.indexOf("--agree");
+const agreeOut = agreeFlag === -1 ? null : process.argv[agreeFlag + 1];
+if (agreeFlag !== -1 && !agreeOut) {
+  throw new Error("--agree needs an output path");
+}
 const detailFlag = process.argv.indexOf("--detail");
 const draftFlag = process.argv.indexOf("--draft");
 const draftOut = draftFlag === -1 ? null : process.argv[draftFlag + 1];
@@ -69,7 +84,7 @@ const branchDir = branchFlag === -1 ? null : process.argv[branchFlag + 1];
 if (branchFlag !== -1 && !branchDir) {
   throw new Error("--branch needs an output directory");
 }
-const out = resolve(detailOut ?? listOut ?? resolve(appDir, "../docs/assets/screenshot-list.png"));
+const out = resolve(agreeOut ?? detailOut ?? listOut ?? resolve(appDir, "../docs/assets/screenshot-list.png"));
 const scenesFlag = process.argv.indexOf("--scenes");
 const scenesDir = scenesFlag === -1 ? null : process.argv[scenesFlag + 1];
 if (scenesFlag !== -1 && !scenesDir) {
@@ -79,6 +94,11 @@ const slackDraftFlag = process.argv.indexOf("--slack-draft");
 const slackDraftDir = slackDraftFlag === -1 ? null : process.argv[slackDraftFlag + 1];
 if (slackDraftFlag !== -1 && !slackDraftDir) {
   throw new Error("--slack-draft needs an output directory");
+}
+const reviewOpenFlag = process.argv.indexOf("--review-open");
+const reviewOpenDir = reviewOpenFlag === -1 ? null : process.argv[reviewOpenFlag + 1];
+if (reviewOpenFlag !== -1 && !reviewOpenDir) {
+  throw new Error("--review-open needs an output directory");
 }
 const repoFilterFlag = process.argv.indexOf("--repo-filter");
 const repoFilterDir = repoFilterFlag === -1 ? null : process.argv[repoFilterFlag + 1];
@@ -94,6 +114,26 @@ const githubQueryFlag = process.argv.indexOf("--github-query");
 const githubQueryDir = githubQueryFlag === -1 ? null : process.argv[githubQueryFlag + 1];
 if (githubQueryFlag !== -1 && !githubQueryDir) {
   throw new Error("--github-query needs an output directory");
+}
+const prLinkFlag = process.argv.indexOf("--pr-link");
+const prLinkDir = prLinkFlag === -1 ? null : process.argv[prLinkFlag + 1];
+if (prLinkFlag !== -1 && !prLinkDir) {
+  throw new Error("--pr-link needs an output directory");
+}
+const sidebarTreeFlag = process.argv.indexOf("--sidebar-tree");
+const sidebarTreeDir = sidebarTreeFlag === -1 ? null : process.argv[sidebarTreeFlag + 1];
+if (sidebarTreeFlag !== -1 && !sidebarTreeDir) {
+  throw new Error("--sidebar-tree needs an output directory");
+}
+const viewDragFlag = process.argv.indexOf("--view-drag");
+const viewDragDir = viewDragFlag === -1 ? null : process.argv[viewDragFlag + 1];
+if (viewDragFlag !== -1 && !viewDragDir) {
+  throw new Error("--view-drag needs an output directory");
+}
+const peopleFiltersFlag = process.argv.indexOf("--people-filters");
+const peopleFiltersDir = peopleFiltersFlag === -1 ? null : process.argv[peopleFiltersFlag + 1];
+if (peopleFiltersFlag !== -1 && !peopleFiltersDir) {
+  throw new Error("--people-filters needs an output directory");
 }
 const filterBarFlag = process.argv.indexOf("--filter-bar");
 const filterBarDir = filterBarFlag === -1 ? null : process.argv[filterBarFlag + 1];
@@ -376,7 +416,38 @@ async function repoFilterShots(page, dir) {
   await save("narrow");
 }
 
-/** GitHub query field with results, the rejected-query sentence, and a 720px toolbar. */
+/** A pasted pull request URL: one stored in another view, and one read for the panel. */
+async function prLinkShots(browser, dir) {
+  mkdirSync(dir, { recursive: true });
+  const other = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2, colorScheme: "dark" });
+  other.on("pageerror", (err) => console.error("page error:", err.message));
+  await other.addInitScript(() => {
+    globalThis.__prLinkScene = "other";
+  });
+  await other.goto(url);
+  await other.getByRole("textbox", { name: "Search" }).waitFor();
+  await other.getByRole("textbox", { name: "Search" }).fill("https://github.com/acme/infra/pull/61/files?w=1#diff");
+  await other.getByRole("button", { name: rowButton("rotate the staging") }).waitFor();
+  await other.getByRole("heading", { name: /rotate the staging/ }).waitFor();
+  await other.screenshot({ path: resolve(dir, "pr-link-other-view.png") });
+  console.log("wrote pr-link-other-view.png");
+  await other.close();
+
+  const fetched = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2, colorScheme: "dark" });
+  fetched.on("pageerror", (err) => console.error("page error:", err.message));
+  await fetched.addInitScript(() => {
+    globalThis.__prLinkScene = "fetch";
+  });
+  await fetched.goto(url);
+  await fetched.getByRole("textbox", { name: "Search" }).waitFor();
+  await fetched.getByRole("textbox", { name: "Search" }).fill("https://github.com/acme/widgets/pull/332");
+  await fetched.getByText("Opened from GitHub. Not in your lists.").first().waitFor();
+  await fetched.getByRole("heading", { name: /Add a retry budget/ }).waitFor();
+  await fetched.screenshot({ path: resolve(dir, "pr-link-fetched.png") });
+  console.log("wrote pr-link-fetched.png");
+  await fetched.close();
+}
+
 async function githubQueryShots(browser, dir) {
   mkdirSync(dir, { recursive: true });
   const shoot = async (scene, name, widthPx) => {
@@ -416,6 +487,42 @@ async function githubQueryShots(browser, dir) {
   await shoot("results", "github-query-results.png", 1440);
   await shoot("error", "github-query-error.png", 1440);
   await shoot("results", "github-query-narrow.png", 720);
+}
+
+/** Reviewer team and assignee filters, and the qualifiers they write into the field. */
+async function peopleFilterShots(browser, dir) {
+  mkdirSync(dir, { recursive: true });
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2, colorScheme: "dark" });
+  page.on("pageerror", (err) => console.error("page error:", err.message));
+  await page.goto(url);
+  await page.getByRole("button", { name: /To review/ }).click();
+  await page.getByRole("button", { name: "Filter menu" }).click();
+  await page.getByRole("button", { name: /^Reviewer team/ }).click();
+  await page.getByRole("checkbox", { name: /acme\/web-platform/ }).waitFor();
+  await page.mouse.move(8, 8);
+  await page.screenshot({ path: resolve(dir, "filters-team-menu.png") });
+  await page.getByRole("button", { name: /^Assignee/ }).click();
+  await page.getByRole("checkbox", { name: /^Me \(/ }).waitFor();
+  await page.mouse.move(8, 8);
+  await page.screenshot({ path: resolve(dir, "filters-assignee-menu.png") });
+  await page.getByRole("button", { name: /^Reviewer team/ }).click();
+  await page.getByRole("checkbox", { name: /acme\/web-platform/ }).click();
+  await page.getByRole("button", { name: /^Assignee/ }).click();
+  await page.getByRole("checkbox", { name: /^Me \(/ }).click();
+  await page.keyboard.press("Escape");
+  await page.getByRole("textbox", { name: "Search" }).waitFor();
+  await page.waitForFunction(() => {
+    const field = globalThis.document.querySelector('[aria-label="Search"]');
+    return (
+      field instanceof globalThis.HTMLInputElement &&
+      field.value.includes("team-review-requested:acme/web-platform") &&
+      field.value.includes("assignee:@me")
+    );
+  });
+  await page.getByRole("article", { name: /Add address autocomplete/ }).waitFor();
+  await page.screenshot({ path: resolve(dir, "filters-team-list.png") });
+  console.log("wrote people filter shots");
+  await page.close();
 }
 
 /** The one search field, with the filter menu open on Sort. */
@@ -466,9 +573,68 @@ async function filterBarShots(browser, dir) {
   await shoot("filter-bar-sort.png", 1440, "author:me sort:created-asc", true);
 }
 
+async function reviewOpenShots(browser, dir) {
+  mkdirSync(dir, { recursive: true });
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2, colorScheme: "dark" });
+  page.on("pageerror", (err) => console.error("page error:", err.message));
+  await page.addInitScript(() => {
+    globalThis.__reviewTiming = true;
+  });
+  await page.goto(url);
+  await page.getByRole("group", { name: "Quick filters" }).waitFor();
+  await page.getByRole("button", { name: rowButton("lazy-load the card form") }).first().click();
+  await page.getByTestId("detail-panel").getByRole("button", { name: "Request review on Slack" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByText("New message in #web-reviews · Acme.").waitFor();
+  await dialog.getByText("Checking channel…").waitFor();
+  if ((await dialog.getByText("Finding channels…").count()) !== 0) {
+    throw new Error("Finding channels is still showing");
+  }
+  await page.waitForFunction(() => typeof globalThis.__releaseReviewNames === "function");
+  await page.screenshot({ path: resolve(dir, "review-dialog-open.png") });
+  const marks = () =>
+    page.evaluate(() =>
+      performance
+        .getEntriesByType("mark")
+        .filter((mark) => mark.name.startsWith("review-dialog:"))
+        .map((mark) => ({ name: mark.name, startTime: mark.startTime })),
+    );
+  const before = await marks();
+  if (before.some((mark) => mark.name === "review-dialog:names")) {
+    throw new Error("the live name landed before the first shot");
+  }
+  await page.evaluate(() => {
+    globalThis.__releaseReviewNames();
+  });
+  await dialog.getByText("New message in #web-reviews-live · Acme.").waitFor();
+  await page.waitForFunction(() => {
+    const button = [...globalThis.document.querySelectorAll("button")].find((item) => item.textContent === "Send request");
+    return button instanceof globalThis.HTMLButtonElement && !button.disabled;
+  });
+  if ((await dialog.getByText("Checking channel…").count()) !== 0) {
+    throw new Error("Checking channel is still showing");
+  }
+  await page.screenshot({ path: resolve(dir, "review-dialog-live.png") });
+  const after = await marks();
+  console.log(JSON.stringify({ before, after }, null, 2));
+  await page.close();
+}
+
 let browser;
 try {
   browser = await chromium.launch(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: "chrome" });
+  if (sidebarTreeDir) {
+    await sidebarTreeShots(browser, resolve(sidebarTreeDir));
+    await browser.close();
+    await vite.close();
+    process.exit(0);
+  }
+  if (viewDragDir) {
+    await viewDragShots(browser, resolve(viewDragDir));
+    await browser.close();
+    await vite.close();
+    process.exit(0);
+  }
   if (viewsDir) {
     await viewShots(browser, resolve(viewsDir));
     await browser.close();
@@ -477,6 +643,12 @@ try {
   }
   if (settingsNavDir) {
     await settingsNavShots(browser, resolve(settingsNavDir));
+    await browser.close();
+    await vite.close();
+    process.exit(0);
+  }
+  if (reviewOpenDir) {
+    await reviewOpenShots(browser, resolve(reviewOpenDir));
     await browser.close();
     await vite.close();
     process.exit(0);
@@ -501,6 +673,18 @@ try {
   }
   if (githubQueryDir) {
     await githubQueryShots(browser, resolve(githubQueryDir));
+    await browser.close();
+    await vite.close();
+    process.exit(0);
+  }
+  if (prLinkDir) {
+    await prLinkShots(browser, resolve(prLinkDir));
+    await browser.close();
+    await vite.close();
+    process.exit(0);
+  }
+  if (peopleFiltersDir) {
+    await peopleFilterShots(browser, resolve(peopleFiltersDir));
     await browser.close();
     await vite.close();
     process.exit(0);
@@ -533,6 +717,11 @@ try {
       globalThis.__repoScene = true;
     });
   }
+  if (agreeOut) {
+    await page.addInitScript(() => {
+      globalThis.__agreeDetail = true;
+    });
+  }
   await page.goto(url);
   await page.getByRole("group", { name: "Quick filters" }).waitFor();
   if (repoFilterDir) {
@@ -549,6 +738,20 @@ try {
     await branchShots(page, resolve(branchDir));
   } else if (closePrDir) {
     await closePrShots(page, resolve(closePrDir));
+  } else if (agreeOut) {
+    await page
+      .getByRole("button", { name: rowButton("Add address autocomplete to checkout") })
+      .first()
+      .click();
+    const panel = page.getByTestId("detail-panel");
+    await panel.getByText("You can merge").waitFor();
+    await panel.getByLabel("Approvals: 1/1, Approved").waitFor();
+    await page.waitForFunction(() => {
+      const button = [...globalThis.document.querySelectorAll("button")].find(
+        (el) => el.textContent?.includes("Add address autocomplete to checkout") && !el.getAttribute("aria-label")?.startsWith("Star"),
+      );
+      return Boolean(button) && !button.textContent.includes("Waiting");
+    });
   } else if (detailOut) {
     await page
       .getByRole("button", {
@@ -856,6 +1059,135 @@ async function expectBusy(block, busy) {
   if ((value === "true") !== busy) {
     throw new Error(`Refresh aria-busy is ${value}, expected ${busy}`);
   }
+}
+
+async function sidebarTreeShots(browser, dir) {
+  mkdirSync(dir, { recursive: true });
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2, colorScheme: "dark" });
+  page.on("pageerror", (err) => console.error("page error:", err.message));
+  await page.addInitScript(() => {
+    globalThis.__sidebarTree = true;
+  });
+  await page.goto(url);
+  await page.getByRole("button", { name: "Drafts", exact: true }).waitFor();
+  await page.mouse.move(900, 40);
+  const clip = { x: 0, y: 0, width: 320, height: 640 };
+  await page.screenshot({ path: resolve(dir, "sidebar-tree.png"), clip });
+
+  await page.getByRole("button", { name: "To review", exact: true }).click();
+  const search = page.getByRole("textbox", { name: "Search" });
+  await search.fill("team-review-requested:acme/web-platform");
+  await page.getByRole("button", { name: "New view" }).click();
+  await page.getByRole("combobox", { name: "Parent" }).waitFor();
+  await page.getByText("Shows is:open review-requested:@me team-review-requested:acme/web-platform").waitFor();
+  const dialog = page.getByRole("dialog", { name: "New view" });
+  const box = await dialog.boundingBox();
+  await page.screenshot({
+    path: resolve(dir, "sidebar-new-view.png"),
+    clip: { x: Math.max(0, (box?.x ?? 0) - 24), y: Math.max(0, (box?.y ?? 0) - 24), width: Math.ceil((box?.width ?? 480) + 48), height: Math.ceil((box?.height ?? 360) + 48) },
+  });
+  await page.keyboard.press("Escape");
+
+  const platform = page.getByRole("button", { name: "Web platform", exact: true });
+  await platform.hover();
+  await platform.locator("xpath=..").getByRole("button", { name: "View menu" }).click();
+  await page.getByRole("menuitem", { name: "Edit filters" }).click();
+  await page.getByRole("dialog", { name: "Edit filters" }).waitFor();
+  await page.getByText("Shows is:open review-requested:@me team-review-requested:acme/web-platform").waitFor();
+  const edit = page.getByRole("dialog", { name: "Edit filters" });
+  const editBox = await edit.boundingBox();
+  await page.screenshot({
+    path: resolve(dir, "sidebar-edit-parent.png"),
+    clip: {
+      x: Math.max(0, (editBox?.x ?? 0) - 24),
+      y: Math.max(0, (editBox?.y ?? 0) - 24),
+      width: Math.ceil((editBox?.width ?? 480) + 48),
+      height: Math.ceil((editBox?.height ?? 360) + 48),
+    },
+  });
+  await page.keyboard.press("Escape");
+  await page.mouse.move(900, 40);
+
+  await page.getByRole("button", { name: "Views", exact: true }).click();
+  await page.getByRole("button", { name: "Views", exact: true }).waitFor();
+  await page.screenshot({ path: resolve(dir, "sidebar-views-collapsed.png"), clip });
+  await page.getByRole("button", { name: "Views", exact: true }).click();
+  await page.getByRole("button", { name: "Drafts", exact: true }).waitFor();
+  await page.getByRole("button", { name: "Projects", exact: true }).click();
+  await page.getByRole("button", { name: "Projects", exact: true }).waitFor();
+  await page.screenshot({ path: resolve(dir, "sidebar-projects-collapsed.png"), clip: { x: 0, y: 0, width: 320, height: 900 } });
+  console.log("wrote sidebar tree shots");
+  await page.close();
+}
+
+async function viewDragShots(browser, dir) {
+  mkdirSync(dir, { recursive: true });
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2, colorScheme: "dark" });
+  page.on("pageerror", (err) => console.error("page error:", err.message));
+  await page.addInitScript(() => {
+    globalThis.__sidebarTree = true;
+  });
+  await page.goto(url);
+  await page.getByRole("button", { name: "Drafts", exact: true }).waitFor();
+  await page.mouse.move(900, 40);
+
+  const source = page.locator('[data-view-key="custom:1"]');
+  const target = page.locator('[data-view-key="to_review"]');
+  const sourceBox = await source.boundingBox();
+  const targetBox = await target.boundingBox();
+  if (!sourceBox || !targetBox) {
+    throw new Error("missing drag rows");
+  }
+  const from = { x: sourceBox.x + 28, y: sourceBox.y + sourceBox.height / 2 };
+  const to = { x: targetBox.x + targetBox.width / 2, y: targetBox.y + targetBox.height / 2 };
+  await page.mouse.move(from.x, from.y);
+  await page.mouse.down();
+  await page.mouse.move(to.x, to.y, { steps: 16 });
+  await page.locator('[data-view-key="to_review"][data-drop-target="active"]').waitFor();
+  await page.getByTestId("view-drag-ghost").waitFor();
+  const side = { x: 0, y: 0, width: 360, height: 560 };
+  await page.screenshot({ path: resolve(dir, "view-drag-over.png"), clip: side });
+  console.log("wrote view-drag-over.png");
+  await page.mouse.up();
+  const dialog = page.getByRole("dialog", { name: "Move view" });
+  await dialog.waitFor();
+  await dialog.getByText("review-requested:@me").waitFor();
+  const box = await dialog.boundingBox();
+  await page.screenshot({
+    path: resolve(dir, "view-drag-confirm.png"),
+    clip: {
+      x: 0,
+      y: 0,
+      width: Math.max(420, Math.ceil((box?.x ?? 0) + (box?.width ?? 280) + 24)),
+      height: Math.max(560, Math.ceil((box?.y ?? 0) + (box?.height ?? 120) + 24)),
+    },
+  });
+  console.log("wrote view-drag-confirm.png");
+  await dialog.getByRole("button", { name: "Move" }).click();
+  await dialog.waitFor({ state: "detached" });
+  const drafts = page.getByRole("button", { name: "Drafts", exact: true });
+  await drafts.waitFor();
+  await page.mouse.move(900, 40);
+  await page.screenshot({ path: resolve(dir, "view-drag-tree.png"), clip: side });
+  console.log("wrote view-drag-tree.png");
+
+  await page.getByRole("button", { name: "Payments", exact: true }).hover();
+  await page.locator('[data-view-key="custom:3"]').getByRole("button", { name: "View menu" }).click();
+  await page.getByRole("menuitem", { name: "Move to" }).hover();
+  await page.getByRole("menu", { name: "Move to" }).waitFor();
+  const menu = page.getByRole("menu", { name: "Actions for Payments" });
+  const menuBox = await menu.boundingBox();
+  const subBox = await page.getByRole("menu", { name: "Move to" }).boundingBox();
+  const top = Math.max(0, Math.min(menuBox?.y ?? 0, subBox?.y ?? 0) - 56);
+  const right = Math.max((menuBox?.x ?? 0) + (menuBox?.width ?? 0), (subBox?.x ?? 0) + (subBox?.width ?? 0)) + 24;
+  const bottom = Math.max((menuBox?.y ?? 0) + (menuBox?.height ?? 0), (subBox?.y ?? 0) + (subBox?.height ?? 0)) + 24;
+  const left = 0;
+  await page.screenshot({
+    path: resolve(dir, "view-drag-menu.png"),
+    clip: { x: left, y: top, width: Math.ceil(right - left), height: Math.ceil(bottom - top) },
+  });
+  console.log("wrote view-drag-menu.png");
+  await page.close();
 }
 
 async function viewShots(browser, dir) {

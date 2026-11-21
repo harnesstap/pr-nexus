@@ -9,6 +9,7 @@ query PullRequestOverview($owner: String!, $name: String!, $number: Int!) {
     rebaseMergeAllowed
     pullRequest(number: $number) {
       state
+      updatedAt
       isDraft
       baseRefName
       headRefName
@@ -46,6 +47,7 @@ query PullRequestOverview($owner: String!, $name: String!, $number: Int!) {
         }
       }
       reviewThreads(first: 100) {
+        totalCount
         nodes {
           isResolved
           comments(first: 3) {

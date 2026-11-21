@@ -1,9 +1,10 @@
 import { createPortal } from "react-dom";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import type { Api, Bootstrap, ListRow, PrDetail, ProjectDto, RemoteReviewFilter, ReplacedLinkDto } from "../api";
+import type { Api, Bootstrap, ListRow, PrDetail, PrOverview, ProjectDto, RemoteReviewFilter, ReplacedLinkDto } from "../api";
 import { CloseDialog, type CloseTarget } from "../detail/CloseDialog";
 import { MergeQueueDialog } from "../detail/MergeQueueDialog";
 import { errorMessage } from "../api";
+import { every } from "../every";
 import { CloseIcon, FolderIcon, LogoIcon, PlusIcon, RefreshIcon } from "../icons";
 import { parseOpenRequest } from "./openRequest";
 import { Tooltip } from "../Tooltip";
@@ -28,13 +29,15 @@ import {
 } from "./model";
 import { copyText } from "./markdown";
 import { PrList, type ListActions } from "./PrList";
-import { githubQueryOf, searchFieldValue } from "./searchText";
+import { exactPrLink, githubQueryOf, searchFieldValue, type PrLink } from "./searchText";
 import { DeleteProjectDialog, ProjectMenu, ProjectRow } from "./SidebarProjects";
+import { SectionHeader } from "./SectionHeader";
 import { SidebarViews } from "./SidebarViews";
-import { defaultCatalog, normalizeCatalog, type SidebarView } from "./viewCatalog";
+import { OPEN_SIDEBAR, normalizeCollapse } from "./sidebarCollapse";
+import { defaultCatalog, effectiveQuery, newViewDraft, normalizeCatalog, type SidebarView } from "./viewCatalog";
 import { analyzeViewRule, isBumpQueueQuery } from "./viewRule";
 import { loadProjectCounts } from "./projectCount";
-import { loadViewCounts, type RemoteFetch } from "./viewCount";
+import { knownTotal, loadViewCounts, localRuleCounts, type RemoteFetch } from "./viewCount";
 import { DEFAULT_REVIEW_SLA, type ReviewSla } from "./sla";
 import { loadStandupRows, standupRecap } from "./standup";
 import { sidebarProjects } from "./projects";
@@ -51,7 +54,7 @@ export const REMOTE_FILTER_DEBOUNCE_MS = 400;
 export const GITHUB_QUERY_DEBOUNCE_MS = 400;
 const GITHUB_QUERY_PAGE = 100;
 const GITHUB_QUERY_CAP = 1000;
-const NO_REMOTE_FILTER: RemoteReviewFilter = { orgs: [], repos: [], draft: null, review: null, ci: null };
+const NO_REMOTE_FILTER: RemoteReviewFilter = { orgs: [], repos: [], draft: null, review: null, ci: null, teams: [], assignees: [], unassigned: false };
 import { DetailPanel } from "../detail/DetailPanel";
 import { ProjectDialog } from "./ProjectDialog";
 import { AccountsSettings } from "../settings/AccountsSettings";
@@ -94,6 +97,8 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
   const [viewKey, setViewKey] = useState(startView);
   const [catalog, setCatalog] = useState<SidebarView[]>(defaultCatalog);
   const skipCatalogSave = useRef(Boolean(api.listSidebarViews));
+  const [collapse, setCollapse] = useState(OPEN_SIDEBAR);
+  const skipCollapseSave = useRef(true);
   const [dueCount, setDueCount] = useState(0);
   const [dueIds, setDueIds] = useState<number[]>([]);
   const [counts, setCounts] = useState<Record<string, number | null>>({});
@@ -133,6 +138,15 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
   const [flash, setFlash] = useState<number | null>(null);
   const [editingProject, setEditingProject] = useState<number | null>(null);
   const [detailRow, setDetailRow] = useState<ListRow | null>(null);
+  const [linkNote, setLinkNote] = useState<string | null>(null);
+  const [linkOverview, setLinkOverview] = useState<PrOverview | null>(null);
+  const detailRef = useRef<ListRow | null>(null);
+  detailRef.current = detailRow;
+  /** The panel from before a pull request link took over. `undefined` means the field is not a link. */
+  const linkSnap = useRef<ListRow | null | undefined>(undefined);
+  const linkAsked = useRef("");
+  const linkGen = useRef(0);
+  const openDetailRef = useRef<(row: ListRow) => void>(() => undefined);
   const [reviewRow, setReviewRow] = useState<ListRow | null>(null);
   const [panelDetail, setPanelDetail] = useState<PrDetail | null>(null);
   const panelDetailRef = useRef<PrDetail | null>(null);
@@ -190,8 +204,122 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
   const [bulkSummary, setBulkSummary] = useState<string | null>(null);
   const fallbackView = useRef(defaultView());
   const view = views[viewKey] ?? fallbackView.current;
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  const endLink = useCallback(() => {
+    linkGen.current += 1;
+    linkAsked.current = "";
+    setLinkNote(null);
+    setLinkOverview(null);
+    if (linkSnap.current !== undefined) {
+      const previous = linkSnap.current;
+      linkSnap.current = undefined;
+      setDetailRow(previous);
+    }
+  }, []);
+  const onExactLink = useCallback(
+    (report: { link: PrLink; row: ListRow | null } | null) => {
+      if (!report) {
+        endLink();
+        return;
+      }
+      const live = exactPrLink(searchFieldValue(viewRef.current.filters));
+      if (!live || !sameLink(live, report.link)) {
+        return;
+      }
+      const key = linkKey(live);
+      if (report.row) {
+        if (linkAsked.current === `row:${report.row.id}`) {
+          return;
+        }
+        linkGen.current += 1;
+        linkAsked.current = `row:${report.row.id}`;
+        setLinkNote(null);
+        setLinkOverview(null);
+        if (linkSnap.current === undefined) {
+          linkSnap.current = detailRef.current;
+        }
+        openDetailRef.current(report.row);
+        return;
+      }
+      if (linkAsked.current === `miss:${key}`) {
+        return;
+      }
+      linkAsked.current = `miss:${key}`;
+      if (linkSnap.current === undefined) {
+        linkSnap.current = detailRef.current;
+      }
+      setDetailRow(null);
+      setLinkOverview(null);
+      const label = `${report.link.owner}/${report.link.name}#${report.link.number}`;
+      setLinkNote(`Opening ${label}…`);
+      const lookup = api.lookupPullRequest;
+      if (!lookup) {
+        setLinkNote(`No pull request ${label}, or no access.`);
+        return;
+      }
+      const gen = linkGen.current + 1;
+      linkGen.current = gen;
+      void lookup(report.link.owner, report.link.name, report.link.number)
+        .then((hit) => {
+          if (gen !== linkGen.current) {
+            return;
+          }
+          switch (hit.status) {
+            case "stored":
+              setLinkNote(null);
+              setLinkOverview(null);
+              if (linkSnap.current === undefined) {
+                linkSnap.current = detailRef.current;
+              }
+              openDetailRef.current(hit.row);
+              return;
+            case "opened":
+              setLinkOverview(hit.overview);
+              setLinkNote("Opened from GitHub. Not in your lists.");
+              setDetailRow(hit.row);
+              return;
+            case "missing":
+              setLinkOverview(null);
+              setDetailRow(null);
+              setLinkNote(hit.message);
+              return;
+            default: {
+              const unexpected: never = hit;
+              return unexpected;
+            }
+          }
+        })
+        .catch((err: unknown) => {
+          if (gen !== linkGen.current) {
+            return;
+          }
+          setDetailRow(null);
+          setLinkNote(`Couldn't open that pull request. ${errorMessage(err)}`);
+        });
+    },
+    [api, endLink],
+  );
   const sidebarView = catalog.find((item) => item.key === viewKey) ?? null;
-  const sidebarQuery = sidebarView?.query ?? "";
+  const sidebarQuery = sidebarView ? effectiveQuery(sidebarView, catalog) : "";
+  const shownIds = useRef<number[]>([]);
+  const publishHint = useCallback(
+    (ids: number[]) => {
+      void api.setSyncHint?.({ view_key: viewKey, query: sidebarQuery, pr_ids: ids });
+    },
+    [api, viewKey, sidebarQuery],
+  );
+  useEffect(() => {
+    shownIds.current = [];
+    publishHint([]);
+  }, [publishHint]);
+  const onShownIds = useCallback(
+    (ids: number[]) => {
+      shownIds.current = ids;
+      publishHint(ids);
+    },
+    [publishHint],
+  );
   const ruleInfo = analyzeViewRule(sidebarQuery);
   const toolbarGithub = githubQueryOf(view.filters);
   // A toolbar qualifier replaces membership, as it did before view rules.
@@ -224,10 +352,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
   const githubTotal = githubShown?.total ?? 0;
   const needsOrgs = orgs.length === 0 && !personal;
 
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(new Date()), 30_000);
-    return () => window.clearInterval(timer);
-  }, []);
+  useEffect(() => every(30_000, () => setNow(new Date())), []);
 
   useEffect(() => {
     if (flash === null) {
@@ -404,7 +529,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
       return;
     }
     let cancel = false;
-    const timer = window.setInterval(() => {
+    const stop = every(SYNC_POLL_MS, () => {
       void api.syncStatus().then((status) => {
         if (cancel) {
           return;
@@ -415,10 +540,10 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
           void api.listProjects().then((next) => !cancel && setProjects(next));
         }
       });
-    }, SYNC_POLL_MS);
+    });
     return () => {
       cancel = true;
-      window.clearInterval(timer);
+      stop();
     };
   }, [api, polling, noteRevision]);
 
@@ -429,7 +554,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
       return;
     }
     let cancel = false;
-    const timer = window.setInterval(() => {
+    const stop = every(IDLE_POLL_MS, () => {
       void api.syncStatus().then((status) => {
         if (cancel) {
           return;
@@ -444,10 +569,10 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
           void api.listProjects().then((next) => !cancel && setProjects(next));
         }
       });
-    }, IDLE_POLL_MS);
+    });
     return () => {
       cancel = true;
-      window.clearInterval(timer);
+      stop();
     };
   }, [api, polling, noteRevision]);
 
@@ -548,7 +673,8 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
       return;
     }
     let cancel = false;
-    void loadViewCounts(catalog, dueCount, dueIds, remotes, (request) => api.listPage(request), new Date()).then(
+    const counted = catalog.map((view) => ({ ...view, query: effectiveQuery(view, catalog) }));
+    void loadViewCounts(counted, dueCount, dueIds, remotes, (request) => api.listPage(request), new Date()).then(
       (next) => {
         if (!cancel) {
           setCounts(next);
@@ -628,6 +754,40 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
   }, [api, catalog, catalogJson]);
 
   useEffect(() => {
+    if (!api.sidebarCollapse) {
+      return;
+    }
+    let cancel = false;
+    void api.sidebarCollapse().then(
+      (saved) => {
+        if (!cancel) {
+          skipCollapseSave.current = true;
+          setCollapse(normalizeCollapse(saved));
+        }
+      },
+      () => undefined,
+    );
+    return () => {
+      cancel = true;
+    };
+  }, [api]);
+
+  const collapseJson = JSON.stringify(collapse);
+  useEffect(() => {
+    if (!api.saveSidebarCollapse) {
+      return;
+    }
+    if (skipCollapseSave.current) {
+      skipCollapseSave.current = false;
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void api.saveSidebarCollapse?.(collapse);
+    }, 200);
+    return () => window.clearTimeout(timer);
+  }, [api, collapse, collapseJson]);
+
+  useEffect(() => {
     let cancel = false;
     void api.loadViewState(viewKey).then((json) => {
       if (cancel) {
@@ -691,10 +851,12 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
         return rest;
       });
       setDetailRow((current) => (current && current.id === id ? { ...current, is_draft: !current.is_draft } : current));
+      setReviewRow((current) => (current && current.id === id ? { ...current, is_draft: !current.is_draft } : current));
       return;
     }
     setDraftPatches((current) => ({ ...current, [id]: { draft, until: Number.MAX_SAFE_INTEGER } }));
     setDetailRow((current) => (current && current.id === id ? { ...current, is_draft: draft } : current));
+    setReviewRow((current) => (current && current.id === id ? { ...current, is_draft: draft } : current));
   }
 
   // PRs merged or closed from the app leave the list at once. The backend has
@@ -741,6 +903,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
       void markRead([row.id], null, row.id);
     }
   }
+  openDetailRef.current = openDetail;
 
   async function markRead(ids: number[], notice: string | null, rollbackId?: number) {
     if (ids.length === 0) {
@@ -807,7 +970,8 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
     setError(null);
     setSync({ ...sync, phase: "syncing", message: "Syncing…" });
     try {
-      const status = await (full ? api.fullResync() : api.syncNow());
+      const hint = { view_key: viewKey, query: sidebarQuery, pr_ids: shownIds.current };
+      const status = await (full ? api.fullResync(hint) : api.syncNow(hint));
       setSync(status);
       await reload();
       onBoot(await api.bootstrap());
@@ -960,7 +1124,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
 
   return (
     <div className="flex h-screen bg-slate-950 text-slate-100">
-      <aside className="flex w-60 shrink-0 flex-col border-r border-slate-800 bg-slate-950">
+      <aside className="flex min-h-0 w-60 shrink-0 flex-col overflow-hidden border-r border-slate-800 bg-slate-950">
         <p className="flex items-center gap-2 px-4 py-4 text-base font-semibold">
           <LogoIcon size={20} className="text-violet-400" />
           PR Nexus
@@ -969,8 +1133,20 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
           views={catalog}
           current={viewKey}
           counts={counts}
+          collapsed={collapse.views}
+          onToggleCollapsed={() => setCollapse((current) => ({ ...current, views: !current.views }))}
+          collapsedParents={collapse.parents}
+          onToggleParent={(key) =>
+            setCollapse((current) => ({
+              ...current,
+              parents: current.parents.includes(key) ? current.parents.filter((item) => item !== key) : [...current.parents, key],
+            }))
+          }
+          createDraft={newViewDraft(catalog, viewKey, searchFieldValue(view.filters))}
+          fill={collapse.projects}
           onSelect={setViewKey}
           onChange={setCatalog}
+          countMove={(before, after) => localRuleCounts(before, after, dueIds, (request) => api.listPage(request), new Date())}
           onDuplicateState={(from, to) => {
             const live = views[from];
             if (live && loaded === from) {
@@ -986,24 +1162,31 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
             });
           }}
         />
-        <section aria-labelledby="projects-heading" className="mt-4 flex min-h-0 flex-1 flex-col px-2 text-sm">
-          <div className="flex items-center justify-between px-2 pb-1">
-            <h2 id="projects-heading" className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-slate-500">
-              <FolderIcon size={14} />
-              Projects
-            </h2>
-            <Tooltip label="New project" detail="Group related PRs, for example by feature or initiative" align="end">
-              <button
-                type="button"
-                aria-label="New project"
-                className="rounded p-0.5 text-slate-500 hover:bg-slate-800 hover:text-slate-200"
-                onClick={() => setDraft({ name: "", error: null, withSelection: selection.length > 0 })}
-              >
-                <PlusIcon />
-              </button>
-            </Tooltip>
-          </div>
-          <div className="flex min-h-0 min-w-0 flex-col gap-0.5 overflow-auto">
+        <section
+          aria-labelledby="projects-heading"
+          className={`mt-4 flex flex-col px-2 text-sm ${collapse.projects ? "" : "min-h-0 flex-1"}`}
+        >
+          <SectionHeader
+            id="projects-heading"
+            icon={<FolderIcon size={14} />}
+            label="Projects"
+            collapsed={collapse.projects}
+            hint={knownTotal(activeProjects.map((project) => projectCounts[project.id] ?? null))}
+            onToggle={() => setCollapse((current) => ({ ...current, projects: !current.projects }))}
+            controls={
+              <Tooltip label="New project" detail="Group related PRs, for example by feature or initiative" align="end">
+                <button
+                  type="button"
+                  aria-label="New project"
+                  className="rounded p-0.5 text-slate-500 hover:bg-slate-800 hover:text-slate-200"
+                  onClick={() => setDraft({ name: "", error: null, withSelection: selection.length > 0 })}
+                >
+                  <PlusIcon />
+                </button>
+              </Tooltip>
+            }
+          />
+          {!collapse.projects && <div className="flex min-h-0 min-w-0 flex-col gap-0.5 overflow-auto">
             {activeProjects.map((project) => (
               <ProjectRow
                 key={project.id}
@@ -1019,7 +1202,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
                 onDropPrs={(ids) => void linkPrs(project.id, ids)}
               />
             ))}
-          </div>
+          </div>}
           {projectMenu && menuProject && (
             <ProjectMenu
               name={menuProject.name}
@@ -1077,7 +1260,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
               )}
             </form>
           ) : (
-            activeProjects.length === 0 && (
+            !collapse.projects && activeProjects.length === 0 && (
               <div className="mx-1 mt-1 rounded-md border border-dashed border-slate-800 px-3 py-3 text-xs text-slate-500">
                 <p>No projects yet. Group related PRs, for example by feature or initiative.</p>
                 <button
@@ -1240,11 +1423,17 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
                 projects={projects}
                 viewKey={viewKey}
                 viewRule={sidebarQuery}
+                viewerLogin={boot.github_login ?? ""}
                 dueIds={dueIds}
                 viewTitles={viewTitles}
                 view={view}
                 now={now}
-                onViewChange={(next) => setViews((current) => ({ ...current, [viewKey]: next }))}
+                onViewChange={(next) => {
+                  setViews((current) => ({ ...current, [viewKey]: next }));
+                  if (!exactPrLink(searchFieldValue(next.filters))) {
+                    endLink();
+                  }
+                }}
                 onShowView={showViewKeepingSearch}
                 onOpenSettings={() => {
                   setSettingsTab("github");
@@ -1261,8 +1450,11 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
                 onLinkPrs={(projectId, ids) => void linkPrs(projectId, ids)}
                 onCreateProjectWithPrs={createProjectWithPrs}
                 onSelectionChange={setSelection}
+                onShownIds={onShownIds}
                 detailId={detailRow?.id ?? null}
                 onDetails={openDetail}
+                onExactLink={onExactLink}
+                linkNote={linkNote}
                 onMarkRead={(ids) => void markRead(ids, "Marked as read")}
                 onMarkAllRead={(ids) => void markRead(ids, "Marked all as read")}
                 onSnooze={(ids, choice) => void snoozeRows(ids, choice)}
@@ -1284,20 +1476,22 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
             </div>
             {detailRow && (
               <DetailPanel
-                key={detailRow.id}
+                key={detailRow.id === 0 ? `link-${detailRow.owner}-${detailRow.repo}-${detailRow.number}` : detailRow.id}
                 api={api}
                 row={detailRow}
                 version={version}
+                ephemeral={detailRow.id === 0}
+                previewOverview={detailRow.id === 0 ? linkOverview : null}
                 onClose={closeDetail}
                 onOpen={(url) => void api.openExternal(url)}
-                onRequestReview={() => setReviewRow(detailRow)}
+                onRequestReview={detailRow.id === 0 ? undefined : () => setReviewRow(detailRow)}
                 onNotice={(text) => setNotice({ text })}
                 onDraftChange={changeDraft}
                 onMerged={() => prMerged(detailRow.id)}
                 onQueueChange={() => void reload()}
                 onClosed={forgetOpenPrs}
                 slack={{ mentions: boot.slack_mentions, workspaces: boot.slack_workspaces }}
-                onToggleStar={() => void toggleStar(detailRow)}
+                onToggleStar={detailRow.id === 0 ? undefined : () => void toggleStar(detailRow)}
                 onOpenPr={(id) => {
                   void api.rowsById([id]).then((found) => {
                     const next = found[0];
@@ -1306,8 +1500,8 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
                     }
                   });
                 }}
-                onSnooze={(choice) => void snoozeRows([detailRow.id], choice)}
-                onMute={(muted) => void muteRows([detailRow.id], muted)}
+                onSnooze={detailRow.id === 0 ? undefined : (choice) => void snoozeRows([detailRow.id], choice)}
+                onMute={detailRow.id === 0 ? undefined : (muted) => void muteRows([detailRow.id], muted)}
                 onDetail={(next) => {
                   panelDetailRef.current = next;
                   setPanelDetail(next);
@@ -1421,6 +1615,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
         <GlobalCommands
           api={api}
           projects={projects}
+          views={catalog}
           actions={listActions}
           listShown={viewKey !== "settings"}
           onView={setViewKey}
@@ -1453,4 +1648,12 @@ function snoozeNotice(choice: SnoozeChoice): string {
 
 function prCount(count: number): string {
   return `${count} ${count === 1 ? "PR" : "PRs"}`;
+}
+
+function linkKey(link: PrLink | null): string {
+  return link ? `${link.owner.toLowerCase()}/${link.name.toLowerCase()}#${link.number}` : "";
+}
+
+function sameLink(left: PrLink, right: PrLink): boolean {
+  return linkKey(left) === linkKey(right);
 }

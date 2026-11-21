@@ -252,11 +252,22 @@ pub struct ListRow {
     pub reviewers_requested: bool,
     /// Who still has to review, in display order (see [`pending_reviewers`]).
     pub pending_reviewers: Vec<PendingReviewerDto>,
+    /// Users assigned on GitHub. Empty until a sync that asked for them.
+    #[serde(default)]
+    pub assignees: Vec<AssigneeDto>,
     pub slack: Option<SlackIndicator>,
     /// Bot comments and reviews seen the last time this pull request's
     /// detail was loaded. `0` until then: the list sync does not fetch them.
     #[serde(default)]
     pub bot_comments: u32,
+}
+
+/// A user assigned to the pull request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AssigneeDto {
+    pub login: String,
+    /// Display name, or empty when GitHub did not return one.
+    pub name: String,
 }
 
 /// One pending review request as the list row shows it.
@@ -892,10 +903,16 @@ pub async fn finish_onboarding(
 }
 
 #[tauri::command]
-pub async fn sync_now(app: State<'_, std::sync::Arc<AppState>>) -> Result<SyncDto, AppError> {
+pub async fn sync_now(
+    app: State<'_, std::sync::Arc<AppState>>,
+    hint: Option<state::SyncHintInput>,
+) -> Result<SyncDto, AppError> {
     let app = blocking::Handle::new(&app);
     blocking::run(move || {
         let state = app.inner().as_ref();
+        if let Some(hint) = hint.as_ref() {
+            state::note_sync_hint(state, hint);
+        }
         let _ = state::run_sync(state, SyncKind::Manual);
         Ok(sync_dto(state))
     })
@@ -906,14 +923,34 @@ pub async fn sync_now(app: State<'_, std::sync::Arc<AppState>>) -> Result<SyncDt
 /// incremental sync is already running this waits for it, then runs the
 /// full one.
 #[tauri::command]
-pub async fn full_resync(app: State<'_, std::sync::Arc<AppState>>) -> Result<SyncDto, AppError> {
+pub async fn full_resync(
+    app: State<'_, std::sync::Arc<AppState>>,
+    hint: Option<state::SyncHintInput>,
+) -> Result<SyncDto, AppError> {
     let app = blocking::Handle::new(&app);
     blocking::run(move || {
         let state = app.inner().as_ref();
+        if let Some(hint) = hint.as_ref() {
+            state::note_sync_hint(state, hint);
+        }
         if let Ok(None) = state::run_sync(state, SyncKind::Full) {
             let _ = state::run_sync(state, SyncKind::Full);
         }
         Ok(sync_dto(state))
+    })
+    .await
+}
+
+/// Remembers the view on screen so a scheduled sync starts with those pull requests.
+#[tauri::command]
+pub async fn set_sync_hint(
+    app: State<'_, std::sync::Arc<AppState>>,
+    hint: state::SyncHintInput,
+) -> Result<(), AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        state::note_sync_hint(app.inner().as_ref(), &hint);
+        Ok(())
     })
     .await
 }
@@ -1459,6 +1496,26 @@ pub async fn pr_detail(
         .map_err(|err| AppError::new("internal", err.to_string()))?
 }
 
+/// Teams for the review dialog's first paint. Never calls GitHub.
+#[tauri::command]
+pub async fn review_teams(
+    app: State<'_, std::sync::Arc<AppState>>,
+    id: i64,
+) -> Result<crate::services::prs::StoredReviewTeams, AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || crate::services::prs::stored_review_teams(app.inner().as_ref(), id)).await
+}
+
+/// Live owner resolution for the review dialog, after the first paint.
+#[tauri::command]
+pub async fn review_owners(
+    app: State<'_, std::sync::Arc<AppState>>,
+    id: i64,
+) -> Result<PrDetail, AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || crate::services::prs::pr_detail_resolve(app.inner().as_ref(), id)).await
+}
+
 pub(crate) fn stored_pr(
     state: &AppState,
     id: PrId,
@@ -1516,7 +1573,28 @@ pub async fn pr_overview(
         let overview = with_vcs(state, |provider| {
             overview::refresh(&state.store, provider, &pr)
         })?;
+        state::note_list_changed(state);
         Ok(Some(present_overview(state, overview)?))
+    })
+    .await
+}
+
+/// A pull request named by a URL in the search field.
+///
+/// A stored row is returned as it is. Anything else is read from GitHub for
+/// the detail panel and is not written into the list.
+#[tauri::command]
+pub async fn lookup_pull_request(
+    app: State<'_, std::sync::Arc<AppState>>,
+    owner: String,
+    name: String,
+    number: u64,
+) -> Result<crate::services::pr_link::PrLinkHit, AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        let client = vcs_client(state)?;
+        crate::services::pr_link::lookup(state, client.as_ref(), &owner, &name, number)
     })
     .await
 }
@@ -1543,6 +1621,7 @@ pub async fn set_auto_merge(
         let overview = with_vcs(state, |provider| {
             overview::set_auto_merge(&state.store, provider, &pr, method)
         })?;
+        state::note_list_changed(state);
         present_overview(state, overview)
     })
     .await
@@ -1562,9 +1641,11 @@ pub async fn close_pull_requests(
     let app = blocking::Handle::new(&app);
     blocking::run(move || {
         let state = app.inner().as_ref();
-        with_vcs(state, |provider| {
+        let reports = with_vcs(state, |provider| {
             pr_nexus_core::close::close_pull_requests(&state.store, provider, &ids, &comment)
-        })
+        })?;
+        state::note_list_changed(state);
+        Ok(reports)
     })
     .await
 }
@@ -1580,9 +1661,11 @@ pub async fn enqueue_pull_request(
     blocking::run(move || {
         let state = app.inner().as_ref();
         let pr = stored_pr(state, PrId(id))?;
-        with_vcs(state, |provider| {
+        let overview = with_vcs(state, |provider| {
             pr_nexus_core::merge_queue::enqueue(&state.store, provider, &pr)
-        })
+        })?;
+        state::note_list_changed(state);
+        Ok(overview)
     })
     .await
 }
@@ -1598,9 +1681,11 @@ pub async fn dequeue_pull_request(
     blocking::run(move || {
         let state = app.inner().as_ref();
         let pr = stored_pr(state, PrId(id))?;
-        with_vcs(state, |provider| {
+        let overview = with_vcs(state, |provider| {
             pr_nexus_core::merge_queue::dequeue(&state.store, provider, &pr)
-        })
+        })?;
+        state::note_list_changed(state);
+        Ok(overview)
     })
     .await
 }
@@ -1617,9 +1702,11 @@ pub async fn enqueue_pull_requests(
     let app = blocking::Handle::new(&app);
     blocking::run(move || {
         let state = app.inner().as_ref();
-        with_vcs(state, |provider| {
+        let reports = with_vcs(state, |provider| {
             pr_nexus_core::merge_queue::enqueue_pull_requests(&state.store, provider, &ids)
-        })
+        })?;
+        state::note_list_changed(state);
+        Ok(reports)
     })
     .await
 }
@@ -1641,6 +1728,7 @@ pub async fn merge_pr(
         let overview = with_vcs(state, |provider| {
             overview::merge(&state.store, provider, &pr, method)
         })?;
+        state::note_list_changed(state);
         present_overview(state, overview)
     })
     .await
@@ -1697,6 +1785,7 @@ pub async fn set_pr_draft(
         })?;
         // The next Slack preview must recompute readiness from the updated row.
         crate::slack::lock(&state.owners).remove(&id);
+        state::note_list_changed(state);
         present_overview(state, overview)
     })
     .await
@@ -1839,6 +1928,34 @@ pub async fn save_sidebar_views(
     .await
 }
 
+#[tauri::command]
+pub async fn sidebar_collapse(
+    app: State<'_, std::sync::Arc<AppState>>,
+) -> Result<pr_nexus_core::view_rule::SidebarCollapse, AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        Ok(pr_nexus_core::view_rule::load_collapse(&state.store)?)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn save_sidebar_collapse(
+    app: State<'_, std::sync::Arc<AppState>>,
+    collapse: pr_nexus_core::view_rule::SidebarCollapse,
+) -> Result<pr_nexus_core::view_rule::SidebarCollapse, AppError> {
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        Ok(pr_nexus_core::view_rule::save_collapse(
+            &state.store,
+            collapse,
+        )?)
+    })
+    .await
+}
+
 pub(crate) fn indicator(
     request: pr_nexus_core::domain::ReviewRequest,
     workspaces: &[pr_nexus_core::review::route::Workspace],
@@ -1875,6 +1992,55 @@ fn attention_flags<'a>(
         .store
         .sync_attention(&current, Utc::now())
         .map_err(Into::into)
+}
+
+/// A list row for a pull request that was read for the panel and not stored.
+pub(crate) fn row_for_untracked(pr: &PullRequest) -> ListRow {
+    ListRow {
+        id: 0,
+        number: pr.number,
+        title: pr.title.clone(),
+        url: pr.url.clone(),
+        owner: pr.repo.owner.clone(),
+        repo: format!("{}/{}", pr.repo.owner, pr.repo.name),
+        author_login: pr.author_login.clone(),
+        head_ref: pr.head_ref.clone(),
+        base_ref: pr.base_ref.clone(),
+        stack: None,
+        is_draft: pr.is_draft,
+        state: pr.state.as_str().to_owned(),
+        checks: pr.checks.as_str().to_owned(),
+        review_decision: pr.review_decision.map(|value| value.as_str().to_owned()),
+        unresolved_threads: pr.unresolved_threads,
+        total_threads: pr.total_threads,
+        involvement: pr.involvement.bits(),
+        updated_at: pr.updated_at.to_rfc3339(),
+        created_at: pr.created_at.to_rfc3339(),
+        hidden: false,
+        starred: false,
+        unread: false,
+        muted: false,
+        snoozed: false,
+        project_ids: Vec::new(),
+        readiness: "unknown".into(),
+        readiness_notes: Vec::new(),
+        conflicts: pr.mergeable == pr_nexus_core::domain::Mergeable::Conflicting
+            || pr.merge_state == pr_nexus_core::domain::MergeStateStatus::Dirty,
+        merge_state: pr.merge_state.as_str().to_owned(),
+        merge_queue: None,
+        reviewers_requested: !pr.requested_reviewers.is_empty(),
+        pending_reviewers: pending_reviewers(&pr.requested_reviewers),
+        assignees: pr
+            .assignees
+            .iter()
+            .map(|person| AssigneeDto {
+                login: person.login.clone(),
+                name: person.name.clone().unwrap_or_default(),
+            })
+            .collect(),
+        slack: None,
+        bot_comments: 0,
+    }
 }
 
 fn to_item(
@@ -1941,6 +2107,14 @@ fn to_item(
             merge_queue: facts.merge_queues.get(&pr.id).cloned(),
             reviewers_requested: !pr.requested_reviewers.is_empty(),
             pending_reviewers: pending_reviewers(&pr.requested_reviewers),
+            assignees: pr
+                .assignees
+                .iter()
+                .map(|person| AssigneeDto {
+                    login: person.login.clone(),
+                    name: person.name.clone().unwrap_or_default(),
+                })
+                .collect(),
             slack: request.map(|request| indicator(request, workspaces)),
             bot_comments: 0,
         },
@@ -1962,12 +2136,7 @@ fn reqwest_client() -> Result<reqwest::blocking::Client, AppError> {
 #[tauri::command]
 pub async fn open_external(app: tauri::AppHandle, url: String) -> Result<(), AppError> {
     blocking::run(move || {
-        let slack_https = url.starts_with("https://") && url.contains(".slack.com/");
-        let allowed = url.starts_with("https://github.com/")
-            || url.starts_with("https://api.slack.com/")
-            || slack_https
-            || url.starts_with("slack://");
-        if !allowed {
+        if !external_url_allowed(&url) {
             return Err(AppError::new("validation", "That link cannot be opened"));
         }
         app.opener()
@@ -1975,6 +2144,20 @@ pub async fn open_external(app: tauri::AppHandle, url: String) -> Result<(), App
             .map_err(|err| AppError::new("network", err.to_string()))
     })
     .await
+}
+
+/// GitHub, Slack web (`*.slack.com`, by parsed host) and the Slack app scheme.
+fn external_url_allowed(url: &str) -> bool {
+    if url.starts_with("https://github.com/") || url.starts_with("slack://") {
+        return true;
+    }
+    let Ok(parsed) = tauri::Url::parse(url) else {
+        return false;
+    };
+    parsed.scheme() == "https"
+        && parsed
+            .host_str()
+            .is_some_and(|host| host == "slack.com" || host.ends_with(".slack.com"))
 }
 
 #[cfg(test)]
@@ -2071,6 +2254,8 @@ mod tests {
             tz_offset_minutes: 0,
             view_rule: String::new(),
             due_ids: Vec::new(),
+            viewer_login: String::new(),
+            pr_link: None,
         }
     }
 
@@ -2296,5 +2481,38 @@ mod tests {
         eprintln!(
             "list_page 500 cold {cold_ms:.2} ms, cached {warm_ms:.2} ms; bot counts parse {parse_ms:.2} ms, stored {stored_ms:.2} ms"
         );
+    }
+
+    #[test]
+    fn external_url_allowed_checks_the_slack_host() {
+        assert!(external_url_allowed("https://github.com/o/r/pull/1"));
+        assert!(external_url_allowed(
+            "https://github.com/acme/widgets/pull/42#discussion_r1"
+        ));
+        assert!(external_url_allowed(
+            "https://github.com/acme/pr-nexus/releases"
+        ));
+        assert!(external_url_allowed("https://api.slack.com/apps"));
+        assert!(external_url_allowed(
+            "https://team.slack.com/archives/C1/p1"
+        ));
+        // Review dialog, detail panel, and Slack context open these permalinks.
+        assert!(external_url_allowed(
+            "https://acme.slack.com/archives/C0123456789/p1700000500000200?thread_ts=1700000000.000100&cid=C0123456789"
+        ));
+        assert!(external_url_allowed(
+            "https://acme-labs.enterprise.slack.com/archives/C0123456789/p1700000000000100"
+        ));
+        assert!(external_url_allowed("slack://channel?team=T1&id=C1"));
+        assert!(!external_url_allowed("https://evil.example/a.slack.com/x"));
+        assert!(!external_url_allowed(
+            "https://evil.example/a.slack.com/archives/C0123456789/p1?thread_ts=1"
+        ));
+        assert!(!external_url_allowed("https://evilslack.com/x"));
+        assert!(!external_url_allowed(
+            "https://team.slack.com.evil.example/x"
+        ));
+        assert!(!external_url_allowed("http://team.slack.com/x"));
+        assert!(!external_url_allowed("javascript:alert(1)"));
     }
 }

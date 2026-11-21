@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Api, BulkCard, BulkGroup, BulkMessage, BulkPreview, GroupChannelChoice, GroupChoice, GroupRef, ListRow, MappingRow, OwnerGroup, PrWarning, ReviewTarget, SlackIndicator, SlackWorkspace, TargetChoice } from "../api";
 import { channelLabel, errorMessage } from "../api";
+import { beginDraftFlip, draftPhase, offerPreviewDraft, settleDraftCall, settleDraftFlip, takeGeneration, useDraftRecord, type DraftPhase } from "../detail/draftRecord";
 import type { Toast } from "../list/model";
 import { plainText } from "../textInput";
 import { Tooltip } from "../Tooltip";
@@ -8,6 +9,7 @@ import { CopyMessageButton } from "./CopyMessageButton";
 import { DraftWarning } from "./DraftWarning";
 import { Mrkdwn } from "./mrkdwn";
 import { TargetCombobox } from "./TargetCombobox";
+import { expiredSignIn } from "./workspaces";
 
 function withNote(text: string, note: string): string {
   const trimmed = note.trim();
@@ -356,14 +358,14 @@ export function GroupedRequest({ api, row, onClose, onSent, onOpen, onReady, onN
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [note, setNote] = useState("");
-  const [markedReady, setMarkedReady] = useState(false);
-  const [marking, setMarking] = useState(false);
   const [unconfirmed, setUnconfirmed] = useState<string | null>(null);
   const generation = useRef(0);
+  const record = useDraftRecord(row.id);
 
   const plan = useCallback(
     async (groupChoices: GroupChoice[], groupChannels: GroupChannelChoice[], skippedGroups: GroupRef[]) => {
       const run = ++generation.current;
+      const observed = takeGeneration();
       const current = () => run === generation.current;
       const body = {
         pr_ids: [row.id],
@@ -386,6 +388,7 @@ export function GroupedRequest({ api, row, onClose, onSent, onOpen, onReady, onN
       if (!current()) {
         return;
       }
+      if (first.pr_warnings.some((warning) => warning.kind === "draft")) offerPreviewDraft(row.id, observed);
       setPreview(first);
       setLoading(false);
       if (!first.names_pending) {
@@ -395,6 +398,7 @@ export function GroupedRequest({ api, row, onClose, onSent, onOpen, onReady, onN
       try {
         const named = await api.bulkPreview({ ...body, cached_names: false });
         if (current()) {
+          if (named.pr_warnings.some((warning) => warning.kind === "draft")) offerPreviewDraft(row.id, observed);
           setPreview(named);
         }
       } catch {
@@ -408,8 +412,47 @@ export function GroupedRequest({ api, row, onClose, onSent, onOpen, onReady, onN
     [api, row.id],
   );
 
+  function groupedLabel(phase: DraftPhase, label: string): string {
+    switch (phase) {
+      case "draft":
+        return `${label} anyway`;
+      case "marking":
+      case "ready":
+        return label;
+      default: {
+        const unexpected: never = phase;
+        return unexpected;
+      }
+    }
+  }
+
   useEffect(() => {
-    void api.slackWorkspaces().then(setWorkspaces).catch(() => setWorkspaces([]));
+    let cancel = false;
+    const validated = { current: false };
+    void api
+      .slackWorkspaces(false)
+      .then((list) => {
+        if (!cancel && !validated.current) {
+          setWorkspaces(list);
+        }
+      })
+      .catch(() => {
+        if (!cancel && !validated.current) {
+          setWorkspaces([]);
+        }
+      });
+    void api
+      .slackWorkspaces(true)
+      .then((list) => {
+        if (!cancel) {
+          validated.current = true;
+          setWorkspaces(list);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancel = true;
+    };
   }, [api]);
 
   useEffect(() => {
@@ -463,19 +506,19 @@ export function GroupedRequest({ api, row, onClose, onSent, onOpen, onReady, onN
   }
 
   async function markReady() {
-    setMarking(true);
     setError(null);
+    const observed = beginDraftFlip(row.id, false);
     try {
-      await api.setPrDraft(row.id, false);
-      setMarkedReady(true);
-      onReady?.(row.id);
-      setLoading(true);
-      await plan(choices, channels, skipped);
+      const fresh = await api.setPrDraft(row.id, false);
+      settleDraftCall(row.id, observed, fresh, false);
     } catch (err) {
+      settleDraftFlip(row.id, observed, { ok: false });
       setError(`Couldn't mark it ready for review: ${errorMessage(err)}`);
-    } finally {
-      setMarking(false);
+      return;
     }
+    onReady?.(row.id);
+    setLoading(true);
+    await plan(choices, channels, skipped);
   }
 
   async function send() {
@@ -505,17 +548,18 @@ export function GroupedRequest({ api, row, onClose, onSent, onOpen, onReady, onN
   }
 
   const groups = preview?.groups ?? [];
-  const drafts = !markedReady && (preview?.pr_warnings ?? []).some((warning) => warning.kind === "draft");
+  const phase = draftPhase(record, row.state === "open" && row.is_draft);
   const messageCount = preview?.cards.reduce((sum, card) => sum + card.messages.length, 0) ?? 0;
   const unsigned = preview?.cards.some((card) => !card.signed_in) ?? false;
+  const expiredSend = preview?.cards.some((card) => expiredSignIn(card.target, workspaces)) ?? false;
   const label = messageCount > 1 ? `Send ${messageCount} messages` : "Send request";
   const overridden = (group: BulkGroup) => channels.some((choice) => choice.pr_id === group.pr_id && choice.group_id === group.group_id);
 
   return (
     <>
-      {(drafts || (row.state === "open" && row.is_draft && !markedReady)) && (
-        <DraftWarning busy={marking} onMarkReady={() => void markReady()}>
-          This PR is still a draft. Reviewers may skip it.
+      {(phase === "draft" || phase === "marking") && (
+        <DraftWarning busy={phase === "marking"} busyLabel="Marking ready…" onMarkReady={() => void markReady()}>
+          {phase === "marking" ? "Marking this PR ready for review…" : "This PR is still a draft. Reviewers may skip it."}
         </DraftWarning>
       )}
       {preview && <CheckNotes warnings={preview.pr_warnings} />}
@@ -584,10 +628,10 @@ export function GroupedRequest({ api, row, onClose, onSent, onOpen, onReady, onN
         <button
           type="button"
           className="rounded bg-violet-500 px-3 py-1.5 font-medium text-white disabled:opacity-40"
-          disabled={!preview || loading || naming || messageCount === 0 || unsigned || sending || marking || unconfirmed !== null}
+          disabled={!preview || loading || naming || messageCount === 0 || unsigned || expiredSend || sending || phase === "marking" || unconfirmed !== null}
           onClick={() => void send()}
         >
-          {sending ? "Sending…" : drafts ? `${label} anyway` : label}
+          {sending ? "Sending…" : groupedLabel(phase, label)}
         </button>
       </footer>
     </>
@@ -629,6 +673,7 @@ function GroupCard({
   const teams = [...new Set(mine.flatMap((group) => group.teams))];
   const prIds = [...new Set(mine.map((group) => group.pr_id))];
   const label = channelLabel(card.target);
+  const expired = expiredSignIn(card.target, workspaces);
   return (
     <section aria-label={label} className="rounded border border-slate-700 p-3">
       <header className="flex items-start justify-between gap-2">
@@ -664,7 +709,11 @@ function GroupCard({
       {mine.filter((group) => overridden(group) && group.selected).map((group) => (
         <SaveChannelBox key={groupKey(group)} team={group.selected as string} checked={saveChecked(saveFor, group)} onChange={(checked) => onSave(group, checked)} />
       ))}
-      {!card.signed_in && <p className="mt-1 text-xs text-amber-300">Sign in to {card.target.workspace} in Settings → Slack before sending.</p>}
+      {expired ? (
+        <p className="mt-1 text-xs text-amber-300">Slack sign-in expired. Reconnect the {expired.team_name} workspace in Settings.</p>
+      ) : (
+        !card.signed_in && <p className="mt-1 text-xs text-amber-300">Sign in to {card.target.workspace} in Settings → Slack before sending.</p>
+      )}
     </section>
   );
 }

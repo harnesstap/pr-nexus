@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { PageDto, PageRequest } from "./list/paging";
+import type { SidebarCollapse } from "./list/sidebarCollapse";
 import type { SidebarView } from "./list/viewCatalog";
 import type { StackPlace } from "./list/stack";
 
@@ -63,6 +64,12 @@ export interface RemoteReviewFilter {
   draft: boolean | null;
   review: "approved" | "changes_requested" | "required" | null;
   ci: "success" | "failure" | "pending" | null;
+  /** Pending reviewer teams, `org/slug`. */
+  teams: string[];
+  /** Assignee logins, including `@me`. */
+  assignees: string[];
+  /** `no:assignee`. With assignees set, the remote query sends neither. */
+  unassigned: boolean;
 }
 
 /** A GitHub pull-request query. `ok` is false when the sentence in `message` explains why it did not run. */
@@ -549,6 +556,12 @@ export interface DevicePrompt {
   interval: number;
 }
 
+/** A search-field pull request link: stored, fetched for the panel, or missing. */
+export type PrLinkHit =
+  | { status: "stored"; row: ListRow }
+  | { status: "opened"; row: ListRow; overview: PrOverview }
+  | { status: "missing"; message: string };
+
 export interface ListRow {
   id: number;
   number: number;
@@ -593,6 +606,8 @@ export interface ListRow {
   reviewers_requested: boolean;
   /** Who still has to review: users first, then teams, each by login. */
   pending_reviewers: PendingReviewer[];
+  /** Users assigned on GitHub. Absent on older payloads. */
+  assignees?: { login: string; name: string }[];
   slack: {
     requested_at: string;
     last_bumped_at: string | null;
@@ -916,6 +931,14 @@ export interface PrDetail {
   from_cache: boolean;
 }
 
+/** Owners the review dialog can paint without calling GitHub. */
+export interface StoredReviewTeams {
+  teams: string[];
+  owner_groups: OwnerGroup[];
+  /** `session`, `cache`, or `requested`. */
+  source: string;
+}
+
 /** Settings → Agents (MCP). */
 export interface McpSettings {
   enabled: boolean;
@@ -1087,6 +1110,13 @@ export interface ReviewStatsView {
   partial: boolean;
 }
 
+/** The view on screen. `pr_ids` are local ids, first visible first. */
+export interface SyncHint {
+  view_key: string;
+  query: string;
+  pr_ids: number[];
+}
+
 export interface Api {
   bootstrap(): Promise<Bootstrap>;
   /** Never waits on the keychain; poll it while the state is `waiting` or `timed_out`. */
@@ -1119,7 +1149,11 @@ export interface Api {
   saveMessageTemplate?(kind: TemplateKind, text: string | null): Promise<void>;
   /** The message `text` produces for a sample PR, rendered by the backend builder. */
   previewMessageTemplate?(kind: TemplateKind, text: string): Promise<string>;
-  slackWorkspaces(): Promise<SlackWorkspace[]>;
+  /**
+   * Stored workspaces. `validate: false` returns at once and does not call Slack.
+   * Omitted, the list waits on the grant check (Settings and startup).
+   */
+  slackWorkspaces(validate?: boolean): Promise<SlackWorkspace[]>;
   /** Opens the system browser and resolves after the redirect, a timeout, or cancel. */
   slackConnect(): Promise<SlackWorkspace>;
   slackCancelConnect(): Promise<void>;
@@ -1154,10 +1188,13 @@ export interface Api {
   /** Native open dialog filtered to .csv (with All files); null when cancelled. */
   pickMappingFile(): Promise<MappingFile | null>;
   finish(): Promise<SyncStatus>;
-  syncNow(): Promise<SyncStatus>;
+  /** `hint` is the view on screen, so that sync reads those pull requests first. */
+  syncNow(hint?: SyncHint): Promise<SyncStatus>;
   syncStatus(): Promise<SyncStatus>;
   /** Re-read every open pull request instead of only what changed (§6). */
-  fullResync(): Promise<SyncStatus>;
+  fullResync(hint?: SyncHint): Promise<SyncStatus>;
+  /** Remembers the view on screen for a scheduled sync. */
+  setSyncHint?(hint: SyncHint): Promise<void>;
   /** Starts the review-request sync of this session; returns at once (§6). */
   activateReviews?(): Promise<SyncStatus>;
   /** Reads the next window of review requests in the background. */
@@ -1221,10 +1258,22 @@ export interface Api {
   listSidebarViews?(): Promise<SidebarView[]>;
   /** Stores the catalog and returns it repaired (built-ins restored, names unique). */
   saveSidebarViews?(views: SidebarView[]): Promise<SidebarView[]>;
+  /** Which sidebar sections and parent views are collapsed. Missing means all open. */
+  sidebarCollapse?(): Promise<SidebarCollapse>;
+  saveSidebarCollapse?(collapse: SidebarCollapse): Promise<SidebarCollapse>;
   openExternal(url: string): Promise<void>;
   prDetail(id: number): Promise<PrDetail>;
+  /** Stored owners for the review dialog. Never calls GitHub. Absent in fakes that still use `prDetail`. */
+  reviewTeams?(id: number): Promise<StoredReviewTeams>;
+  /** Live owner resolution after the dialog's first paint. Absent in fakes that do not refresh owners. */
+  reviewOwners?(id: number): Promise<PrDetail>;
   /** The detail panel's cards. `refresh: false` reads only the cache (null when empty). */
   prOverview(id: number, refresh: boolean): Promise<PrOverview | null>;
+  /**
+   * A pull request URL from the search field. Stored rows come back as they are.
+   * Anything else is read for the panel and is not written into the list.
+   */
+  lookupPullRequest?(owner: string, name: string, number: number): Promise<PrLinkHit>;
   /** The stack this pull request belongs to, from stored refs. Null when it is not stacked. */
   prStack?(id: number): Promise<PrStack | null>;
   /** Turns auto-merge on with `method`, or off with null; returns the fresh overview. */
@@ -1326,7 +1375,7 @@ export const tauriApi: Api = {
   messageTemplates: () => invoke("load_message_templates"),
   saveMessageTemplate: (kind, text) => invoke("save_message_template", { kind, text }),
   previewMessageTemplate: (kind, text) => invoke("preview_message_template", { kind, text }),
-  slackWorkspaces: () => invoke("slack_workspaces"),
+  slackWorkspaces: (validate) => invoke("slack_workspaces", validate === undefined ? {} : { validate }),
   slackConnect: () => invoke("slack_connect"),
   slackCancelConnect: () => invoke("slack_cancel_connect"),
   slackRemoveWorkspace: (id) => invoke("slack_remove_workspace", { id }),
@@ -1359,9 +1408,10 @@ export const tauriApi: Api = {
     return path ? invoke<MappingFile>("read_mapping_file", { path }) : null;
   },
   finish: () => invoke("finish_onboarding"),
-  syncNow: () => invoke("sync_now"),
+  syncNow: (hint) => invoke("sync_now", { hint: hint ?? null }),
   syncStatus: () => invoke("sync_status"),
-  fullResync: () => invoke("full_resync"),
+  fullResync: (hint) => invoke("full_resync", { hint: hint ?? null }),
+  setSyncHint: (hint) => invoke("set_sync_hint", { hint }),
   activateReviews: () => invoke("activate_reviews"),
   loadMoreReviews: () => invoke("load_more_reviews"),
   searchReviews: (terms) => invoke("search_reviews", { terms }),
@@ -1401,9 +1451,14 @@ export const tauriApi: Api = {
   saveViewState: (viewKey, stateJson) => invoke("save_view_state", { viewKey, stateJson }),
   listSidebarViews: () => invoke("list_sidebar_views"),
   saveSidebarViews: (views) => invoke("save_sidebar_views", { views }),
+  sidebarCollapse: () => invoke("sidebar_collapse"),
+  saveSidebarCollapse: (collapse) => invoke("save_sidebar_collapse", { collapse }),
   openExternal: (url) => invoke("open_external", { url }),
   prDetail: (id) => invoke("pr_detail", { id }),
+  reviewTeams: (id) => invoke("review_teams", { id }),
+  reviewOwners: (id) => invoke("review_owners", { id }),
   prOverview: (id, refresh) => invoke("pr_overview", { id, refresh }),
+  lookupPullRequest: (owner, name, number) => invoke("lookup_pull_request", { owner, name, number }),
   prStack: (id) => invoke("pr_stack", { id }),
   setAutoMerge: (id, method) => invoke("set_auto_merge", { id, method }),
   setPrDraft: (id, draft) => invoke("set_pr_draft", { id, draft }),

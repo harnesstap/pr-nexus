@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { githubQueryOf, sortLocksOrder, splitSearch, suggestionsFor } from "./searchText";
+import { exactPrLink, githubQueryOf, linkMatches, parsePrLink, sortLocksOrder, splitSearch, suggestionsFor } from "./searchText";
 
 test("qualifiers go to GitHub and the other words stay local", () => {
   const parts = splitSearch('author:@me passkeys -label:"bug fix" created:>@today-1w "two words" repo:acme/widgets sort:updated-desc');
@@ -10,12 +10,30 @@ test("qualifiers go to GitHub and the other words stay local", () => {
   expect(bare.text).toBe("draft");
 });
 
-test("a pasted link and a plain word stay local", () => {
+test("a pull request URL is a link, and other pasted text stays local", () => {
   const parts = splitSearch("https://github.com/acme/widgets/pull/1 fix(api): #123");
   expect(parts.github).toBe("");
-  expect(parts.text).toBe("https://github.com/acme/widgets/pull/1 fix(api): #123");
+  expect(parts.links).toEqual([{ owner: "acme", name: "widgets", number: 1 }]);
+  expect(parts.text).toBe("fix(api): #123");
+  expect(exactPrLink("https://github.com/acme/widgets/pull/1 fix(api): #123")).toBeNull();
+  const other = splitSearch("https://example.com/acme/widgets/pull/1 notes");
+  expect(other.links).toEqual([]);
+  expect(other.text).toBe("https://example.com/acme/widgets/pull/1 notes");
   // An unfinished quoted qualifier is still a qualifier, so the server can reject it.
   expect(splitSearch('label:"bug').github).toBe('label:"bug');
+});
+
+test("pull request links accept a URL, a trailing path, and owner/repo#n", () => {
+  const url = parsePrLink("https://github.com/Acme/Widgets/pull/332/files?w=1#diff");
+  expect(url).toEqual({ owner: "Acme", name: "Widgets", number: 332 });
+  expect(parsePrLink("github.com/acme/widgets/pull/332")).toEqual({ owner: "acme", name: "widgets", number: 332 });
+  expect(parsePrLink("acme/widgets#332")).toEqual({ owner: "acme", name: "widgets", number: 332 });
+  expect(exactPrLink("  ACME/Widgets#332  ")).toEqual({ owner: "ACME", name: "Widgets", number: 332 });
+  expect(parsePrLink("https://github.com/acme/widgets/issues/332")).toBeNull();
+  expect(parsePrLink("acme/widgets#0")).toBeNull();
+  const link = { owner: "Acme", name: "Widgets", number: 332 };
+  expect(linkMatches({ owner: "acme", repo: "acme/widgets", number: 332 }, link)).toBe(true);
+  expect(linkMatches({ owner: "acme", repo: "acme/widgets", number: 333 }, link)).toBe(false);
 });
 
 test("only an explicit sort: qualifier locks the order", () => {
@@ -29,6 +47,8 @@ test("free text alone is not a GitHub query", () => {
   expect(githubQueryOf({ search: "passkeys", github: "" })).toBe("");
   expect(githubQueryOf({ search: "", github: "author:me" })).toBe("author:me");
   expect(githubQueryOf({ search: "author:me passkeys", github: "author:me" })).toBe("author:me");
+  expect(githubQueryOf({ search: "is:draft review:approved author:ada", github: "" })).toBe("author:ada");
+  expect(githubQueryOf({ search: "-org:acme org:acme", github: "" })).toBe("-org:acme");
 });
 
 test("suggestions follow the qualifier being typed", () => {

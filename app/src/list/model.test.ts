@@ -251,14 +251,27 @@ test("To review filters with a GitHub qualifier go to GitHub; the rest stays loc
   ]) {
     expect(remoteReviewFilter({ ...defaultFilters(), ...local })).toBeNull();
   }
-  expect(remoteReviewFilter({ ...defaultFilters(), orgs: ["acme-labs"] })).toEqual({ orgs: ["acme-labs"], repos: [], draft: null, review: null, ci: null });
+  const people = { teams: [] as string[], assignees: [] as string[], unassigned: false };
+  expect(remoteReviewFilter({ ...defaultFilters(), orgs: ["acme-labs"] })).toEqual({ orgs: ["acme-labs"], repos: [], draft: null, review: null, ci: null, ...people });
   expect(remoteReviewFilter({ ...defaultFilters(), repos: ["acme/widgets", "not a repo"] })).toEqual({
     orgs: [],
     repos: ["acme/widgets", "not a repo"],
     draft: null,
     review: null,
     ci: null,
+    ...people,
   });
+  expect(remoteReviewFilter({ ...defaultFilters(), teams: ["acme/web-platform"] })).toEqual({
+    orgs: [],
+    repos: [],
+    draft: null,
+    review: null,
+    ci: null,
+    teams: ["acme/web-platform"],
+    assignees: [],
+    unassigned: false,
+  });
+  expect(remoteReviewFilter({ ...defaultFilters(), assignees: ["ada"], unassigned: true })?.assignees).toEqual(["ada"]);
   expect(remoteReviewFilter({ ...defaultFilters(), statuses: ["draft"] })?.draft).toBe(true);
   expect(remoteReviewFilter({ ...defaultFilters(), statuses: ["ready", "blocked"] })?.draft).toBe(false);
   expect(remoteReviewFilter({ ...defaultFilters(), reviews: ["review_required"] })?.review).toBe("required");
@@ -267,15 +280,40 @@ test("To review filters with a GitHub qualifier go to GitHub; the rest stays loc
   expect(remoteReviewFilter({ ...defaultFilters(), ci: ["pending"] })?.ci).toBe("pending");
   expect(remoteReviewFilter({ ...defaultFilters(), quick: "draft" })?.draft).toBe(true);
   expect(remoteReviewFilter({ ...defaultFilters(), quick: "declined" })?.review).toBe("changes_requested");
-  expect(remoteReviewFilter({ ...defaultFilters(), quick: "ready" })).toEqual({ orgs: [], repos: [], draft: false, review: "approved", ci: "success" });
+  expect(remoteReviewFilter({ ...defaultFilters(), quick: "ready" })).toEqual({
+    orgs: [],
+    repos: [],
+    draft: false,
+    review: "approved",
+    ci: "success",
+    teams: [],
+    assignees: [],
+    unassigned: false,
+  });
   // A menu choice wins over the quick filter's: the local pass narrows further.
   expect(remoteReviewFilter({ ...defaultFilters(), reviews: ["approved"], quick: "declined" })?.review).toBe("approved");
 });
 
 test("the remote filter key mirrors the backend's", () => {
-  const filter = { orgs: ["acme-labs", "Acme"], repos: ["Acme/Widgets", "acme/widgets"], draft: false, review: "approved" as const, ci: "success" as const };
-  expect(remoteFilterKey(filter)).toBe("acme,acme-labs|acme/widgets|draft:false review:approved status:success");
-  expect(remoteFilterKey({ orgs: [], repos: [], draft: null, review: null, ci: "failure" })).toBe("||status:failure");
+  const filter = {
+    orgs: ["acme-labs", "Acme"],
+    repos: ["Acme/Widgets", "acme/widgets"],
+    draft: false,
+    review: "approved" as const,
+    ci: "success" as const,
+    teams: ["acme/web-platform"],
+    assignees: ["@me", "Sam"],
+    unassigned: false,
+  };
+  expect(remoteFilterKey(filter)).toBe(
+    "acme,acme-labs|acme/widgets|draft:false review:approved status:success team-review-requested:acme/web-platform assignee:@me assignee:sam",
+  );
+  expect(remoteFilterKey({ orgs: [], repos: [], draft: null, review: null, ci: "failure", teams: [], assignees: [], unassigned: false })).toBe(
+    "||status:failure",
+  );
+  expect(
+    remoteFilterKey({ orgs: [], repos: [], draft: null, review: null, ci: null, teams: [], assignees: ["ada"], unassigned: true }),
+  ).toBe("||");
 });
 
 test("a GitHub-side filter reports its own window", () => {

@@ -94,3 +94,21 @@ test("a view rule's free text narrows the list", () => {
   const rows = [row({ id: 1, title: "Passkeys" }), row({ id: 2, title: "Billing" })];
   expect(ids(rows, "custom:1", { view_rule: "is:open author:@me passkeys" })).toEqual([1]);
 });
+
+test("team and assignee rules stay local and match any selected value", () => {
+  const rule = "is:open team-review-requested:acme/web-platform assignee:@me no:assignee";
+  expect(analyzeViewRule(rule).fullyLocal).toBe(true);
+  const web = [{ kind: "team" as const, login: "acme/web-platform", name: "Web platform", avatar_url: null }];
+  expect(matchesLocalRule({ involvement: REVIEW_REQUESTED, state: "open", is_draft: false, pending_reviewers: web, assignees: [] }, false, rule, "ada")).toBe(true);
+  expect(
+    matchesLocalRule(
+      { involvement: REVIEW_REQUESTED, state: "open", is_draft: false, pending_reviewers: web, assignees: [{ login: "sam" }] },
+      false,
+      "is:open assignee:@me",
+      "ada",
+    ),
+  ).toBe(false);
+  expect(
+    matchesLocalRule({ involvement: REVIEW_REQUESTED, state: "open", is_draft: false, assignees: [{ login: "ada" }] }, false, "assignee:@me", "ada"),
+  ).toBe(true);
+});

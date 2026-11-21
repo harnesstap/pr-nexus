@@ -31,5 +31,7 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     setupFiles: "./src/test/setup.ts",
+    // Release-script tests spawn bash and git; on a busy CI runner one took 5.0 s.
+    testTimeout: 15_000,
   },
 });

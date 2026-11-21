@@ -406,6 +406,7 @@ pub fn sync_account_with_progress(
         kind,
         now,
         &[BucketPlan::mine(), BucketPlan::reviews(None)],
+        &SyncHint::default(),
         progress,
     )
 }
@@ -502,9 +503,135 @@ pub fn mark_key(bucket: SearchBucket) -> &'static str {
     }
 }
 
+/// Which view is on screen. A hint only reorders work a sync already does.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SyncHint {
+    pub view_key: String,
+    /// The view's saved rule. Empty for a project.
+    pub query: String,
+    /// Visible pull requests, GitHub node ids, first on screen first.
+    pub remote_ids: Vec<String>,
+    /// `owner/name` of those rows, first seen first.
+    pub repos: Vec<String>,
+    /// Bucket to run first. `None` keeps mine before reviews.
+    pub lead: Option<SearchBucket>,
+}
+
+/// The bucket whose rows the view is showing, when that is knowable.
+pub fn lead_bucket(view_key: &str, query: &str, visible: &[PullRequest]) -> Option<SearchBucket> {
+    if view_key == "to_review" {
+        return Some(SearchBucket::ReviewRequested);
+    }
+    if view_key == "mine" || view_key == "bumps_due" {
+        return Some(SearchBucket::Mine);
+    }
+    let folded = query.to_ascii_lowercase();
+    let reviews = folded.contains("review-requested:@me");
+    let authored = folded.contains("author:@me");
+    if reviews && !authored {
+        return Some(SearchBucket::ReviewRequested);
+    }
+    if authored && !reviews {
+        return Some(SearchBucket::Mine);
+    }
+    if visible.is_empty() {
+        return None;
+    }
+    let mut review_only = 0usize;
+    let mut mine = 0usize;
+    for pr in visible {
+        if owned_by(pr, SearchBucket::ReviewRequested) {
+            review_only += 1;
+        } else {
+            mine += 1;
+        }
+    }
+    if review_only > mine {
+        Some(SearchBucket::ReviewRequested)
+    } else {
+        Some(SearchBucket::Mine)
+    }
+}
+
+fn hot_repos(hint: &SyncHint) -> Vec<String> {
+    let mut hot = Vec::new();
+    let mut push = |repo: &str| {
+        let repo = repo.trim().trim_matches('"').to_ascii_lowercase();
+        if repo.is_empty() || hot.iter().any(|known: &String| known == &repo) {
+            return;
+        }
+        hot.push(repo);
+    };
+    for repo in &hint.repos {
+        push(repo);
+    }
+    for term in hint.query.split_whitespace() {
+        if let Some((name, value)) = term.split_once(':')
+            && name.eq_ignore_ascii_case("repo")
+        {
+            push(value);
+        }
+    }
+    hot
+}
+
+fn query_mentions(query: &str, repo: &str) -> bool {
+    let wanted_repo = repo.to_ascii_lowercase();
+    let wanted_org = wanted_repo.split('/').next().unwrap_or("");
+    query.split_whitespace().any(|term| {
+        let (name, value) = term.split_once(':').unwrap_or(("", ""));
+        let value = value.to_ascii_lowercase();
+        (name.eq_ignore_ascii_case("repo") && value == wanted_repo)
+            || (name.eq_ignore_ascii_case("org") && !wanted_org.is_empty() && value == wanted_org)
+    })
+}
+
+fn heat(query: &str, hot: &[String]) -> usize {
+    hot.iter()
+        .position(|repo| query_mentions(query, repo))
+        .unwrap_or(usize::MAX)
+}
+
+/// Stable: the chunk that covers the first visible repository comes first.
+fn order_query_strings(queries: &mut [String], hint: &SyncHint) {
+    if queries.len() < 2 {
+        return;
+    }
+    let hot = hot_repos(hint);
+    if hot.is_empty() {
+        return;
+    }
+    queries.sort_by_key(|query| heat(query, &hot));
+}
+
+fn id_rank(id: &str, priority: &[String]) -> usize {
+    priority
+        .iter()
+        .position(|item| item == id)
+        .unwrap_or(usize::MAX)
+}
+
+/// Stable: hinted node ids come first, in the order they are on screen.
+pub(crate) fn order_refs(ids: &mut [ProviderRef], priority: &[String]) {
+    if priority.is_empty() || ids.len() < 2 {
+        return;
+    }
+    ids.sort_by_key(|item| id_rank(&item.id, priority));
+}
+
+/// [`order_refs`] for stored rows (live checks).
+pub(crate) fn order_pull_requests(rows: &mut [&PullRequest], priority: &[String]) {
+    if priority.is_empty() || rows.len() < 2 {
+        return;
+    }
+    rows.sort_by_key(|row| id_rank(&row.remote.id, priority));
+}
+
+#[allow(clippy::too_many_arguments)]
 /// Runs `plans` one after the other, each through search, status pass,
-/// vanished-row recheck, closing finished review requests and its own mark,
-/// so authored pull requests are complete before review requests start.
+/// vanished-row recheck, closing finished review requests and its own mark.
+/// With no [`SyncHint::lead`], authored pull requests finish before reviews.
+/// A hint only moves the on-screen bucket, query chunk, and pull requests first.
 pub fn sync_buckets(
     store: &Store,
     provider: &dyn VcsProvider,
@@ -512,6 +639,7 @@ pub fn sync_buckets(
     kind: SyncKind,
     now: DateTime<Utc>,
     plans: &[BucketPlan],
+    hint: &SyncHint,
     progress: &mut dyn FnMut(SyncProgress),
 ) -> Result<SyncReport, CoreError> {
     let account = store
@@ -541,9 +669,13 @@ pub fn sync_buckets(
     }
     let mut run = RunState::default();
     let mut total = SyncReport::idle(false, String::new());
-    for plan in plans {
+    let mut ordered: Vec<&BucketPlan> = plans.iter().collect();
+    if let Some(lead) = hint.lead {
+        ordered.sort_by_key(|plan| u8::from(plan.bucket != lead));
+    }
+    for plan in ordered {
         let report = sync_bucket(
-            store, provider, account_id, kind, now, &scope, plan, &mut run, progress,
+            store, provider, account_id, kind, now, &scope, plan, &mut run, hint, progress,
         )?;
         total.fetched += report.fetched;
         total.refreshed += report.refreshed;
@@ -582,6 +714,7 @@ fn sync_bucket(
     scope: &TrackedScope,
     bucket_plan: &BucketPlan,
     run: &mut RunState,
+    hint: &SyncHint,
     progress: &mut dyn FnMut(SyncProgress),
 ) -> Result<SyncReport, CoreError> {
     let bucket = bucket_plan.bucket;
@@ -624,7 +757,7 @@ fn sync_bucket(
     let app_closed = store.app_closed_at_by_node()?;
     let mut writer = Writer::new(store, account_id, now, &existing)?;
     let mut early = EarlyRows::default();
-    let queries = match plan {
+    let mut queries = match plan {
         SyncPlan::Full(_) if on_demand => on_demand_queries(
             bucket,
             scope,
@@ -634,6 +767,7 @@ fn sync_bucket(
         SyncPlan::Full(_) => search_queries(bucket, scope),
         SyncPlan::Incremental { since, .. } => incremental_queries(bucket, scope, since),
     };
+    order_query_strings(&mut queries, hint);
     let query = PrQuery { bucket, queries };
     let mut failed: Option<CoreError> = None;
     let mut on_page = |rows: &[SyncedPullRequest]| {
@@ -737,7 +871,7 @@ fn sync_bucket(
 
     // Status: what this sync has not read yet, and, when this bucket's
     // statuses are fresh, not the unchanged settled rows either.
-    let ids: Vec<ProviderRef> = kept
+    let mut ids: Vec<ProviderRef> = kept
         .iter()
         .filter(|item| {
             let id = &item.pull_request.remote.id;
@@ -761,6 +895,7 @@ fn sync_bucket(
                 .map(|pr| pr.remote.clone()),
         )
         .collect();
+    order_refs(&mut ids, &hint.remote_ids);
     let seen = early.involvement.len();
     run.checked.extend(ids.iter().map(|id| id.id.clone()));
     let mut done = 0usize;
@@ -826,7 +961,7 @@ fn sync_bucket(
     // the volatile ones whose status answer says they finished or changed
     // beyond their status.
     let mut status_only: Vec<SyncedPullRequest> = Vec::new();
-    let stale: Vec<ProviderRef> = if full {
+    let mut stale: Vec<ProviderRef> = if full {
         writer
             .rows()
             .filter(|pr| {
@@ -860,6 +995,7 @@ fn sync_bucket(
         }
         stale
     };
+    order_refs(&mut stale, &hint.remote_ids);
     for item in &status_only {
         writer.write(item)?;
     }
@@ -1297,6 +1433,7 @@ mod tests {
                 mergeable: Mergeable::Mergeable,
                 merge_state: MergeStateStatus::Clean,
                 requested_reviewers: Vec::new(),
+                assignees: Vec::new(),
                 unresolved_threads: 0,
                 total_threads: 0,
                 involvement,
@@ -1762,6 +1899,7 @@ mod tests {
             SyncKind::Full,
             ts(40),
             &[BucketPlan::mine()],
+            &SyncHint::default(),
             &mut |_| {},
         )
         .unwrap();
@@ -1812,6 +1950,7 @@ mod tests {
             SyncKind::Full,
             ts(40),
             &[BucketPlan::mine(), BucketPlan::reviews(Some(2))],
+            &SyncHint::default(),
             &mut |_| {},
         )
         .unwrap();
@@ -1875,6 +2014,7 @@ mod tests {
             SyncKind::Manual,
             ts(30),
             &[BucketPlan::review_search("widget fix")],
+            &SyncHint::default(),
             &mut |_| {},
         )
         .unwrap();
@@ -1917,6 +2057,7 @@ mod tests {
             SyncKind::Manual,
             ts(30),
             &[BucketPlan::review_filter(filter, 100)],
+            &SyncHint::default(),
             &mut |_| {},
         )
         .unwrap();
@@ -1958,6 +2099,7 @@ mod tests {
             SyncKind::Manual,
             ts(30),
             &[BucketPlan::review_filter(filter, 100)],
+            &SyncHint::default(),
             &mut |_| {},
         )
         .unwrap();
@@ -2878,6 +3020,166 @@ mod tests {
         let after = settings::sync_mark(&store).unwrap().unwrap();
         assert_eq!(after.updated_at, ts(38));
         assert_eq!(after.full_at, before.full_at);
+    }
+
+    #[test]
+    fn the_view_on_screen_is_fetched_and_checked_first() {
+        let (_dir, store, account) = open_store();
+        let orgs: Vec<String> = (0..40).map(|n| format!("acme-team-{n:02}")).collect();
+        settings::set_tracked_orgs(&store, &orgs).unwrap();
+        let names: Vec<&str> = orgs.iter().map(String::as_str).collect();
+        let plain = search_queries(SearchBucket::Mine, &scope(&names, false));
+        assert!(plain.len() > 1, "{plain:?}");
+        assert!(
+            !plain[0].contains("org:acme-team-39"),
+            "the last org is not already first: {}",
+            plain[0]
+        );
+        let mine = vec![
+            pr("COLD", "acme-team-00", 1, Involvement::AUTHOR),
+            pr("HOT", "acme-team-39", 2, Involvement::AUTHOR),
+        ];
+        let fake = fake(mine, Vec::new());
+        let hint = SyncHint {
+            view_key: "project:1".into(),
+            query: String::new(),
+            remote_ids: vec!["HOT".into()],
+            repos: vec!["acme-team-39/widgets".into()],
+            lead: Some(SearchBucket::Mine),
+        };
+        sync_buckets(
+            &store,
+            &fake,
+            account,
+            SyncKind::Full,
+            ts(30),
+            &[BucketPlan::mine()],
+            &hint,
+            &mut |_| {},
+        )
+        .unwrap();
+        let queries = fake.queries.lock().unwrap();
+        assert_eq!(queries.len(), 1, "a hint adds no search");
+        assert!(
+            queries[0].queries[0].contains("org:acme-team-39"),
+            "visible org first: {:?}",
+            queries[0].queries
+        );
+        assert!(
+            !queries[0].queries[0].contains("org:acme-team-00"),
+            "the cold chunk stays later: {}",
+            queries[0].queries[0]
+        );
+        let asked = fake.status_asked.lock().unwrap();
+        assert_eq!(asked.first().map(String::as_str), Some("HOT"));
+        assert_eq!(asked.get(1).map(String::as_str), Some("COLD"));
+    }
+
+    #[test]
+    fn a_review_view_runs_that_bucket_before_authored_pull_requests() {
+        let (_dir, store, account) = open_store();
+        let fake = Fake {
+            review: vec![pr("R1", "acme", 1, Involvement::REVIEW_REQUESTED)],
+            ..fake(vec![pr("M1", "acme", 2, Involvement::AUTHOR)], Vec::new())
+        };
+        let hint = SyncHint {
+            view_key: "to_review".into(),
+            query: String::new(),
+            remote_ids: vec!["R1".into()],
+            repos: vec!["acme/widgets".into()],
+            lead: Some(SearchBucket::ReviewRequested),
+        };
+        let mut buckets = Vec::new();
+        sync_buckets(
+            &store,
+            &fake,
+            account,
+            SyncKind::Full,
+            ts(30),
+            &[BucketPlan::mine(), BucketPlan::reviews(None)],
+            &hint,
+            &mut |progress| {
+                if buckets.last() != Some(&progress.bucket) {
+                    buckets.push(progress.bucket);
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            buckets.first().copied(),
+            Some(SearchBucket::ReviewRequested)
+        );
+        assert_eq!(fake.queries.lock().unwrap().len(), 2);
+        assert_eq!(
+            fake.queries.lock().unwrap()[0].bucket,
+            SearchBucket::ReviewRequested
+        );
+        assert_eq!(
+            fake.status_asked
+                .lock()
+                .unwrap()
+                .first()
+                .map(String::as_str),
+            Some("R1")
+        );
+    }
+
+    #[test]
+    fn an_older_sync_does_not_overwrite_a_newer_detail() {
+        let (_dir, store, account) = open_store();
+        let first = fake(vec![pr("M1", "acme", 1, Involvement::AUTHOR)], Vec::new());
+        sync_account(&store, &first, account, SyncKind::Full, ts(15)).unwrap();
+        let mut stored = row(&store, account, 1);
+        stored.review_decision = Some(crate::domain::ReviewDecision::Approved);
+        stored.checks = ChecksState::Success;
+        stored.mergeable = Mergeable::Mergeable;
+        stored.merge_state = MergeStateStatus::Clean;
+        stored.updated_at = ts(20);
+        stored.last_activity_at = ts(20);
+        stored.requested_reviewers = vec![crate::domain::RequestedReviewer::bare(
+            crate::domain::Reviewer::User {
+                login: "sam".into(),
+            },
+        )];
+        store.update_pull_request_detail(&stored).unwrap();
+        store.set_detail_fetched_at(stored.id, ts(40)).unwrap();
+
+        let mut stale_status = status("M1", ChecksState::Failure);
+        stale_status.review_decision = Some(crate::domain::ReviewDecision::ReviewRequired);
+        stale_status.mergeable = Mergeable::Conflicting;
+        stale_status.merge_state = MergeStateStatus::Dirty;
+        let stale = fake(
+            vec![pr("M1", "acme", 1, Involvement::AUTHOR)],
+            vec![stale_status],
+        );
+        sync_account(&store, &stale, account, SyncKind::Manual, ts(50)).unwrap();
+        let kept = row(&store, account, 1);
+        assert_eq!(
+            kept.review_decision,
+            Some(crate::domain::ReviewDecision::Approved)
+        );
+        assert_eq!(kept.checks, ChecksState::Success);
+        assert_eq!(kept.mergeable, Mergeable::Mergeable);
+        assert_eq!(kept.requested_reviewers.len(), 1);
+        assert_eq!(kept.updated_at, ts(20));
+        assert!(store.detail_fetched_at(kept.id).unwrap().is_some());
+
+        let mut newer = pr("M1", "acme", 1, Involvement::AUTHOR);
+        newer.pull_request.updated_at = ts(60);
+        newer.pull_request.last_activity_at = ts(60);
+        let mut moved = status("M1", ChecksState::Failure);
+        moved.review_decision = Some(crate::domain::ReviewDecision::ReviewRequired);
+        let fresh = fake(vec![newer], vec![moved]);
+        sync_account(&store, &fresh, account, SyncKind::Manual, ts(70)).unwrap();
+        let replaced = row(&store, account, 1);
+        assert_eq!(
+            replaced.review_decision,
+            Some(crate::domain::ReviewDecision::ReviewRequired)
+        );
+        assert_eq!(replaced.checks, ChecksState::Failure);
+        assert!(replaced.requested_reviewers.is_empty());
+        assert_eq!(replaced.updated_at, ts(60));
+        assert!(store.detail_fetched_at(replaced.id).unwrap().is_none());
     }
 
     fn sample_budget(limit: u32, remaining: u32) -> RateBudget {

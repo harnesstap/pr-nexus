@@ -1,7 +1,8 @@
 import { targetWorkspaceName } from "../slack/workspaces";
 import type { BulkOutcome, BulkResult, FilteredReviews, ListRow, ProjectDto, RemoteReviewFilter, ReviewsStatus, SlackIndicator, SyncStatus } from "../api";
 import { channelLabel } from "../api";
-import { githubQueryOf, splitSearch, SEARCH_FIELD_MAX } from "./searchText";
+import { applyFilterChange, applySearchChange } from "./filterQuery";
+import { githubQueryOf, membershipQuery, splitSearch, SEARCH_FIELD_MAX } from "./searchText";
 
 export const AUTHOR = 1;
 export const REVIEW_REQUESTED = 2;
@@ -53,8 +54,16 @@ export interface Filters {
    * Empty, plus an empty `github`, keeps the usual list.
    */
   search: string;
-  /** Qualifier tokens from `search`. Empty keeps Mine, To review, and project membership. */
+  /** Qualifier tokens from `search` that replace view membership. Menu-owned tokens are left out. */
   github: string;
+  /** Pending reviewer teams, `org/slug`. Any one match keeps the row. */
+  teams: string[];
+  /** No pending team reviewer. Combined with `teams` as OR. Stays in the menu. */
+  no_team: boolean;
+  /** Assignee logins, including the literal `@me`. Any one match keeps the row. */
+  assignees: string[];
+  /** Nobody assigned. Combined with `assignees` as OR. */
+  unassigned: boolean;
 }
 
 /** How long to hide a pull request, or `off` to bring it back. */
@@ -90,7 +99,25 @@ export function defaultShow(): ShowFlags {
 }
 
 export function defaultFilters(): Filters {
-  return { orgs: [], repos: [], statuses: [], reviews: [], ci: [], slack: [], archived: false, starred: false, unread: false, snoozed: false, quick: null, search: "", github: "" };
+  return {
+    orgs: [],
+    repos: [],
+    statuses: [],
+    reviews: [],
+    ci: [],
+    slack: [],
+    archived: false,
+    starred: false,
+    unread: false,
+    snoozed: false,
+    quick: null,
+    search: "",
+    github: "",
+    teams: [],
+    no_team: false,
+    assignees: [],
+    unassigned: false,
+  };
 }
 
 export function defaultView(): SavedView {
@@ -120,28 +147,36 @@ export function parseViewState(json: string | null): SavedView {
   }
   const record = raw as Partial<SavedView> & { query?: unknown; filters?: Partial<Filters> & { query?: unknown } };
   const search = migratedSearch(record);
+  const drafted: Filters = {
+    ...base.filters,
+    ...(record.filters ?? {}),
+    orgs: stringList(record.filters?.orgs),
+    repos: repoList(record.filters?.repos),
+    statuses: pickList(record.filters?.statuses, ["ready", "unknown", "blocked", "draft"]),
+    reviews: pickList(record.filters?.reviews, ["approved", "changes_requested", "review_required", "none"]),
+    ci: pickList(record.filters?.ci, ["passing", "failing", "pending", "none"]),
+    slack: pickList(record.filters?.slack, ["none", "requested", "bumped", "bump_due"]),
+    archived: record.filters?.archived === true,
+    starred: record.filters?.starred === true,
+    unread: record.filters?.unread === true,
+    snoozed: record.filters?.snoozed === true,
+    quick: QUICK_FILTERS.includes(record.filters?.quick as QuickFilter) ? (record.filters?.quick as QuickFilter) : null,
+    teams: stringList(record.filters?.teams),
+    no_team: record.filters?.no_team === true,
+    assignees: stringList(record.filters?.assignees),
+    unassigned: record.filters?.unassigned === true,
+    search,
+    github: "",
+  };
+  const absorbed = applySearchChange(drafted, "", search);
+  const blank = { ...absorbed, orgs: [], statuses: [], reviews: [], ci: [], teams: [], assignees: [], unassigned: false };
+  const synced = applyFilterChange(search, blank, absorbed, "");
   return {
     grouping: pick(record.grouping, ["project", "repository", "org", "status", "updated", "stack"], base.grouping),
     ordering: pick(record.ordering, ORDERING_IDS, base.ordering),
     direction: pick(record.direction, ["asc", "desc"], base.direction),
     show: { ...base.show, ...(record.show ?? {}) },
-    filters: {
-      ...base.filters,
-      ...(record.filters ?? {}),
-      orgs: stringList(record.filters?.orgs),
-      repos: repoList(record.filters?.repos),
-      statuses: pickList(record.filters?.statuses, ["ready", "unknown", "blocked", "draft"]),
-      reviews: pickList(record.filters?.reviews, ["approved", "changes_requested", "review_required", "none"]),
-      ci: pickList(record.filters?.ci, ["passing", "failing", "pending", "none"]),
-      slack: pickList(record.filters?.slack, ["none", "requested", "bumped", "bump_due"]),
-      archived: record.filters?.archived === true,
-      starred: record.filters?.starred === true,
-      unread: record.filters?.unread === true,
-      snoozed: record.filters?.snoozed === true,
-      quick: QUICK_FILTERS.includes(record.filters?.quick as QuickFilter) ? (record.filters?.quick as QuickFilter) : null,
-      search,
-      github: splitSearch(search).github,
-    },
+    filters: { ...absorbed, search: synced, github: membershipQuery(synced) },
   };
 }
 
@@ -168,10 +203,11 @@ function capJoin(github: string, local: string): string {
   return joined.length > SEARCH_FIELD_MAX ? joined.slice(0, SEARCH_FIELD_MAX) : joined;
 }
 
-/** Writes the search field and the qualifier half the GitHub pipeline reads. */
+/** Writes the search field, the menu filters it spells, and the membership query. */
 export function withSearch(view: SavedView, raw: string): SavedView {
   const search = raw.length > SEARCH_FIELD_MAX ? raw.slice(0, SEARCH_FIELD_MAX) : raw;
-  return { ...view, filters: { ...view.filters, search, github: splitSearch(search).github } };
+  const filters = applySearchChange(view.filters, view.filters.search, search);
+  return { ...view, filters: { ...filters, search, github: membershipQuery(search) } };
 }
 
 export function filtersActive(filters: Filters): boolean {
@@ -187,6 +223,10 @@ export function filtersActive(filters: Filters): boolean {
     filters.unread ||
     filters.snoozed ||
     filters.quick !== null ||
+    filters.teams.length > 0 ||
+    filters.no_team ||
+    filters.assignees.length > 0 ||
+    filters.unassigned ||
     githubQueryOf(filters) !== ""
   );
 }
@@ -314,6 +354,22 @@ export function passesMenu(row: ListRow, filters: Filters, now: Date): boolean {
   }
   if (filters.slack.length > 0 && !filters.slack.some((kind) => slackKinds(row, now).includes(kind))) {
     return false;
+  }
+  if (filters.teams.length > 0 || filters.no_team) {
+    const pending = (row.pending_reviewers ?? []).filter((reviewer) => reviewer.kind === "team").map((reviewer) => reviewer.login);
+    const named = filters.teams.some((team) => pending.some((have) => have.toLowerCase() === team.toLowerCase()));
+    const none = filters.no_team && pending.length === 0;
+    if (!named && !none) {
+      return false;
+    }
+  }
+  if (filters.assignees.length > 0 || filters.unassigned) {
+    const people = row.assignees ?? [];
+    const named = filters.assignees.some((login) => people.some((person) => person.login.toLowerCase() === login.toLowerCase()));
+    const none = filters.unassigned && people.length === 0;
+    if (!named && !none) {
+      return false;
+    }
   }
   return true;
 }
@@ -753,11 +809,23 @@ export function moreReviews(reviews: ReviewsStatus | undefined): boolean {
  *   A name that is not `owner/name` of plain logins is dropped from the query
  *   and still applied locally.
  * Local only: projects, Slack request, starred, unread, snoozed, archived, the search box,
- * readiness (Ready / Unknown / Blocked), "None" choices, several choices in
- * one submenu, and the No review and CI or conflicts quick filters.
+ * readiness (Ready / Unknown / Blocked), CI None, No team, several review or
+ * CI choices, and the No review and CI or conflicts quick filters.
+ * Reviewer teams and assignees are sent even when several are chosen: GitHub
+ * ORs those repeated qualifiers. `no:assignee` together with `assignee:` is
+ * not sent, because GitHub ANDs them and the menu ORs them.
  */
 export function remoteReviewFilter(filters: Filters): RemoteReviewFilter | null {
-  const remote: RemoteReviewFilter = { orgs: [...filters.orgs], repos: [...filters.repos], draft: null, review: null, ci: null };
+  const remote: RemoteReviewFilter = {
+    orgs: [...filters.orgs],
+    repos: [...filters.repos],
+    draft: null,
+    review: null,
+    ci: null,
+    teams: [...filters.teams],
+    assignees: [...filters.assignees],
+    unassigned: filters.unassigned,
+  };
   if (filters.statuses.length > 0) {
     remote.draft = filters.statuses.length === 1 && filters.statuses[0] === "draft" ? true : filters.statuses.includes("draft") ? null : false;
   }
@@ -788,7 +856,15 @@ export function remoteReviewFilter(filters: Filters): RemoteReviewFilter | null 
       return unreachable;
     }
   }
-  const empty = remote.orgs.length === 0 && remote.repos.length === 0 && remote.draft === null && remote.review === null && remote.ci === null;
+  const empty =
+    remote.orgs.length === 0 &&
+    remote.repos.length === 0 &&
+    remote.draft === null &&
+    remote.review === null &&
+    remote.ci === null &&
+    remote.teams.length === 0 &&
+    remote.assignees.length === 0 &&
+    !remote.unassigned;
   return empty ? null : remote;
 }
 
@@ -840,7 +916,36 @@ export function remoteFilterKey(filter: RemoteReviewFilter): string {
   if (filter.ci !== null) {
     qualifiers.push(`status:${filter.ci}`);
   }
+  const teams = [...new Set(filter.teams.map((team) => teamTerm(team)).filter((team): team is string => team !== null))].sort();
+  qualifiers.push(...teams);
+  if (!(filter.unassigned && filter.assignees.length > 0)) {
+    const people = [...new Set(filter.assignees.map((login) => assigneeTerm(login)).filter((login): login is string => login !== null))].sort();
+    qualifiers.push(...people);
+    if (filter.unassigned) {
+      qualifiers.push("no:assignee");
+    }
+  }
   return `${orgs.join(",")}|${repos.join(",")}|${qualifiers.join(" ")}`;
+}
+
+function plainLogin(part: string): boolean {
+  return part.length > 0 && /^[A-Za-z0-9._-]+$/u.test(part);
+}
+
+function teamTerm(team: string): string | null {
+  const [org, slug, extra] = team.trim().split("/");
+  if (!org || !slug || extra !== undefined || !plainLogin(org) || !plainLogin(slug)) {
+    return null;
+  }
+  return `team-review-requested:${org.toLowerCase()}/${slug.toLowerCase()}`;
+}
+
+function assigneeTerm(login: string): string | null {
+  const trimmed = login.trim();
+  if (trimmed.toLowerCase() === "@me") {
+    return "assignee:@me";
+  }
+  return plainLogin(trimmed) ? `assignee:${trimmed.toLowerCase()}` : null;
 }
 
 /** The review status as the list should read it: the filtered window only when it answers `key`. */

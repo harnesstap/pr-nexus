@@ -49,6 +49,16 @@ pub struct RemoteReviewFilter {
     pub review: Option<ReviewQualifier>,
     #[serde(default)]
     pub ci: Option<CiQualifier>,
+    /// Pending reviewer teams, `org/slug`. Repeated values are OR on GitHub.
+    #[serde(default)]
+    pub teams: Vec<String>,
+    /// Assignee logins, including `@me`. Repeated values are OR on GitHub.
+    #[serde(default)]
+    pub assignees: Vec<String>,
+    /// `no:assignee`. Combined with [`Self::assignees`] the local filter is
+    /// OR, while GitHub ANDs the two keys, so both set sends neither.
+    #[serde(default)]
+    pub unassigned: bool,
 }
 
 impl RemoteReviewFilter {
@@ -58,6 +68,9 @@ impl RemoteReviewFilter {
             && self.draft.is_none()
             && self.review.is_none()
             && self.ci.is_none()
+            && self.teams.is_empty()
+            && self.assignees.is_empty()
+            && !self.unassigned
     }
 
     /// `repo:owner/name` terms GitHub can search, lowercased, sorted, and
@@ -100,6 +113,35 @@ impl RemoteReviewFilter {
                 CiQualifier::Failure => " status:failure",
                 CiQualifier::Pending => " status:pending",
             });
+        }
+        let mut teams: Vec<String> = self
+            .teams
+            .iter()
+            .filter_map(|team| team_term(team))
+            .collect();
+        teams.sort();
+        teams.dedup();
+        for team in teams {
+            out.push(' ');
+            out.push_str(&team);
+        }
+        // GitHub ANDs `assignee:` with `no:assignee`, which is a subset of
+        // the local OR. Send neither and let the local pass decide.
+        if !(self.unassigned && !self.assignees.is_empty()) {
+            let mut people: Vec<String> = self
+                .assignees
+                .iter()
+                .filter_map(|login| assignee_term(login))
+                .collect();
+            people.sort();
+            people.dedup();
+            for person in people {
+                out.push(' ');
+                out.push_str(&person);
+            }
+            if self.unassigned {
+                out.push_str(" no:assignee");
+            }
         }
         out
     }
@@ -148,6 +190,37 @@ impl RemoteReviewFilter {
             self.qualifiers().trim()
         )
     }
+}
+
+fn plain_login(part: &str) -> bool {
+    !part.is_empty()
+        && part
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
+/// `team-review-requested:org/slug` when both sides are plain logins.
+fn team_term(team: &str) -> Option<String> {
+    let (org, slug) = team.trim().split_once('/')?;
+    if slug.contains('/') {
+        return None;
+    }
+    (plain_login(org) && plain_login(slug)).then(|| {
+        format!(
+            "team-review-requested:{}/{}",
+            org.to_ascii_lowercase(),
+            slug.to_ascii_lowercase()
+        )
+    })
+}
+
+/// `assignee:login` or `assignee:@me`.
+fn assignee_term(login: &str) -> Option<String> {
+    let login = login.trim();
+    if login.eq_ignore_ascii_case("@me") {
+        return Some("assignee:@me".to_owned());
+    }
+    plain_login(login).then(|| format!("assignee:{}", login.to_ascii_lowercase()))
 }
 
 /// `repo:owner/name` when both sides are plain logins.
@@ -199,6 +272,7 @@ mod tests {
             draft: Some(false),
             review: Some(ReviewQualifier::Approved),
             ci: Some(CiQualifier::Success),
+            ..Default::default()
         };
         assert_eq!(
             filter.qualifiers(),
@@ -233,6 +307,22 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(draft.qualifiers(), " draft:true");
+        let people = RemoteReviewFilter {
+            teams: vec!["acme/web-platform".into(), "not a team".into()],
+            assignees: vec!["@me".into(), "Sam".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            people.qualifiers(),
+            " team-review-requested:acme/web-platform assignee:@me assignee:sam"
+        );
+        let either = RemoteReviewFilter {
+            assignees: vec!["ada".into()],
+            unassigned: true,
+            ..Default::default()
+        };
+        assert_eq!(either.qualifiers(), "");
+        assert!(!either.is_empty());
     }
 
     #[test]

@@ -18,6 +18,7 @@ mod preferences;
 mod presence;
 mod profiles;
 mod project_info;
+mod schedule;
 pub mod services;
 mod slack;
 mod slack_link;
@@ -76,6 +77,7 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move { agents.apply().await });
             }
             app.manage(agents);
+            let ui = Arc::clone(&shared);
             app.manage(shared);
             if let Err(err) = presence::install(app.handle()) {
                 tracing::warn!(error = %err, "menu bar icon unavailable");
@@ -86,6 +88,10 @@ pub fn run() {
                     // First launch: open maximized (§7.1). Later launches restore the last geometry.
                     let _ = window.maximize();
                 }
+                // A visible window may ask the keychain once. Background work
+                // stays silent until then.
+                let visible = window.is_visible().unwrap_or(true);
+                state::set_focused(&ui, visible);
             }
             Ok(())
         })
@@ -176,6 +182,7 @@ pub fn run() {
             mapping_file::read_mapping_file,
             commands::finish_onboarding,
             commands::sync_now,
+            commands::set_sync_hint,
             commands::activate_reviews,
             commands::load_more_reviews,
             commands::search_reviews,
@@ -208,10 +215,15 @@ pub fn run() {
             commands::save_view_state,
             commands::list_sidebar_views,
             commands::save_sidebar_views,
+            commands::sidebar_collapse,
+            commands::save_sidebar_collapse,
             commands::open_external,
             commands::pr_detail,
+            commands::review_teams,
+            commands::review_owners,
             commands::pr_stack,
             commands::pr_overview,
+            commands::lookup_pull_request,
             commands::set_auto_merge,
             commands::set_pr_draft,
             commands::merge_pr,

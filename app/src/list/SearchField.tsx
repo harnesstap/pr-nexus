@@ -14,13 +14,16 @@ interface Props {
   layout?: "toolbar" | "dialog";
   /** Accessible name. The toolbar field is Search; the view dialog is Query. */
   label?: string;
+  /** Team slugs and assignee logins from the loaded list, offered as completions. */
+  teams?: readonly string[];
+  assignees?: readonly string[];
 }
 
 /**
  * The one list search box. Qualifiers and free text share it; completion is
  * a short list while a qualifier is being typed.
  */
-export function SearchField({ value, onChange, searching = false, inputRef, layout = "toolbar", label = "Search" }: Props) {
+export function SearchField({ value, onChange, searching = false, inputRef, layout = "toolbar", label = "Search", teams, assignees }: Props) {
   const listId = useId();
   const hintId = useId();
   const [focused, setFocused] = useState(false);
@@ -37,7 +40,7 @@ export function SearchField({ value, onChange, searching = false, inputRef, layo
     setDismissed(null);
   }
   const open = focused && token !== null && dismissed !== tokenText;
-  const suggestions = open ? suggestionsFor(tokenText).slice(0, 6) : [];
+  const suggestions = open ? suggestionsFor(tokenText, { teams, assignees }).slice(0, 6) : [];
   const current = suggestions.length === 0 ? 0 : Math.min(active, suggestions.length - 1);
 
   function rememberCaret(element: HTMLInputElement) {
@@ -69,7 +72,7 @@ export function SearchField({ value, onChange, searching = false, inputRef, layo
         <Tooltip
           label="Search or filter"
           shortcut={toolbar ? hint("search") : undefined}
-          detail="Qualifiers such as author:, is:, and sort: search GitHub. bump:due stays on this machine. Other words search titles, projects, repos, and numbers."
+          detail="Qualifiers such as author: and sort: search GitHub. Menu filters and bump:due stay on this machine. Other words search titles, projects, repos, and numbers. Pasting a pull request URL opens that pull request."
           align="start"
         >
           <span className="inline-flex shrink-0 text-slate-500">
@@ -77,7 +80,7 @@ export function SearchField({ value, onChange, searching = false, inputRef, layo
           </span>
         </Tooltip>
         <span id={hintId} className="sr-only">
-          Qualifiers such as author:me, is:draft, and sort:updated-desc search GitHub. bump:due is decided on this machine and is not sent to GitHub. Other words search this list.
+          Qualifiers such as author:me and sort:updated-desc search GitHub. Menu filters and bump:due are decided on this machine. Other words search this list. Pasting a pull request URL opens that pull request.
         </span>
         <input
           {...plainText}

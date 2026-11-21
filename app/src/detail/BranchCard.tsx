@@ -3,6 +3,7 @@ import type { Api, BranchState, BranchStatus, PrOverview, UpdateMethod } from ".
 import { errorMessage } from "../api";
 import { CloseButton } from "../CloseButton";
 import { AlertIcon, CheckIcon, ChevronDownIcon, DeclinedIcon, ExternalIcon, GitBranchIcon } from "../icons";
+import { takeGeneration } from "./draftRecord";
 import { BAR_SLOT, CAPTION, CARD, VALUE } from "./StatCards";
 import { Tooltip } from "../Tooltip";
 import { TONE_TEXT, type Tone } from "./status";
@@ -23,7 +24,7 @@ export interface BranchController {
 }
 
 export interface BranchView {
-  state: BranchState | "merged" | "closed" | "loading";
+  state: BranchState | "merged" | "closed" | "loading" | "unknown";
   base: string;
   behindBy: number | null;
   otherAuthors: string[];
@@ -59,6 +60,7 @@ export function useBranch({
   prId,
   overview,
   fresh,
+  ephemeral = false,
   onOverview,
   onNotice,
 }: {
@@ -66,7 +68,9 @@ export function useBranch({
   prId: number;
   overview: PrOverview | null;
   fresh: boolean;
-  onOverview: (next: PrOverview) => void;
+  /** Opened from a link and not stored, so the compare is never requested. */
+  ephemeral?: boolean;
+  onOverview: (next: PrOverview, observed: number) => void;
   onNotice: (text: string) => void;
 }): BranchController {
   // Everything below belongs to one PR; a different id starts from scratch.
@@ -100,19 +104,26 @@ export function useBranch({
     latest.current = onOverview;
   });
 
-  const view = branchView(overview, status);
+  const guessed = branchView(overview, status);
+  // A stored row waits on the compare. An opened-from-GitHub row never asks,
+  // so "Checking…" would spin forever; say that it was not compared.
+  const view =
+    ephemeral && (guessed.state === "loading" || guessed.state === "checking")
+      ? { ...guessed, state: "unknown" as const }
+      : guessed;
   const checking = fresh && view.state === "checking";
   useEffect(() => {
     if (!checking || attempts >= CHECKING_DELAYS_MS.length) {
       return;
     }
     let live = true;
+    const observed = takeGeneration();
     const timer = window.setTimeout(() => {
       api
         .prOverview(prId, true)
         .then((next) => {
           if (live && next) {
-            latest.current(next);
+            latest.current(next, observed);
           }
         })
         .catch(() => undefined)
@@ -126,10 +137,11 @@ export function useBranch({
 
   function run(method: UpdateMethod) {
     patch({ confirmingRebase: false, updating: method, error: null });
+    const observed = takeGeneration();
     api
       .updatePrBranch(prId, method)
       .then((result) => {
-        onOverview(result.overview);
+        onOverview(result.overview, observed);
         patch({ status: result.branch, attempts: 0 });
         onNotice(method === "rebase" ? `Rebased onto ${view.base}.` : `Merged ${view.base} into the branch.`);
       })
@@ -211,6 +223,12 @@ export function branchText(view: BranchView): {
         caption: `Comparing with ${view.base}`,
         tone: "muted",
       };
+    case "unknown":
+      return {
+        value: "Not compared",
+        caption: `Not compared with ${view.base}`,
+        tone: "muted",
+      };
     case "merged":
       return {
         value: "Merged",
@@ -250,6 +268,8 @@ function StateIcon({ state }: { state: BranchView["state"] }) {
           className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-slate-600 border-t-slate-300"
         />
       );
+    case "unknown":
+      return null;
     case "closed":
       return <DeclinedIcon size={16} data-icon="closed" />;
     default: {

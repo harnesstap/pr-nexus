@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { expect, test, vi } from "vitest";
-import type { Api, Bootstrap, ProjectDto, ReviewTarget } from "../api";
+import type { Api, Bootstrap, ProjectDto, ReviewTarget, SyncHint } from "../api";
 import type { SearchRow } from "./paging";
 import { ListScreen } from "./ListScreen";
 import { memoryProjectApi } from "../memoryProjects";
@@ -229,6 +229,7 @@ test("sidebar projects are alphabetical and stay that way after create and renam
   const names = () =>
     within(region)
       .getAllByRole("button")
+      .filter((button) => !button.hasAttribute("aria-expanded"))
       .map((button) => button.textContent)
       .filter((name) => name && name !== "");
   await waitFor(() => expect(names()).toEqual(["Alpha", "beta 2", "beta 10", "zeta"]));
@@ -478,10 +479,18 @@ test("To review filters with a GitHub qualifier search GitHub, debounced, with t
   render(<ListScreen api={{ ...fake, loadViewState, activateReviews, filterReviews, loadMoreReviews }} boot={boot} onBoot={() => {}} />);
   fireEvent.click(await screen.findByRole("button", { name: /To review/ }));
   await waitFor(() => expect(filterReviews).toHaveBeenCalledTimes(1), { timeout: 3_000 });
-  expect(filterReviews).toHaveBeenCalledWith({ orgs: [], repos: [], draft: null, review: null, ci: "failure" }, false);
+  expect(filterReviews).toHaveBeenCalledWith(
+    { orgs: [], repos: [], draft: null, review: null, ci: "failure", teams: [], assignees: [], unassigned: false },
+    false,
+  );
   expect(await screen.findByText(/40 of 57 loaded/)).toBeInTheDocument();
   fireEvent.click(await screen.findByRole("button", { name: "Load more review requests" }));
-  await waitFor(() => expect(filterReviews).toHaveBeenLastCalledWith({ orgs: [], repos: [], draft: null, review: null, ci: "failure" }, true));
+  await waitFor(() =>
+    expect(filterReviews).toHaveBeenLastCalledWith(
+      { orgs: [], repos: [], draft: null, review: null, ci: "failure", teams: [], assignees: [], unassigned: false },
+      true,
+    ),
+  );
   expect(loadMoreReviews).not.toHaveBeenCalled();
 });
 
@@ -510,6 +519,84 @@ test("To review still searches GitHub for free text and does not replace the lis
   fireEvent.change(input, { target: { value: "passkeys" } });
   await waitFor(() => expect(searchReviews).toHaveBeenCalledWith("passkeys"));
   expect(searchGithubQuery).not.toHaveBeenCalled();
+});
+
+test("a child view publishes the parent rule and its own rule as the sync hint", async () => {
+  const setSyncHint = vi.fn<(hint: SyncHint) => Promise<void>>(() => Promise.resolve());
+  const fake = api([]);
+  fake.listSidebarViews = () =>
+    Promise.resolve([
+      { key: "mine", name: "My PRs", query: "is:open author:@me", builtin: true, sort_order: 0 },
+      { key: "to_review", name: "To review", query: "is:open review-requested:@me", builtin: true, sort_order: 1 },
+      { key: "bumps_due", name: "Bumps due", query: "is:open author:@me bump:due", builtin: true, sort_order: 2 },
+      { key: "custom:1", name: "Drafts", query: "is:draft", builtin: false, sort_order: 3, parent: "to_review" },
+    ]);
+  render(<ListScreen api={{ ...fake, setSyncHint }} boot={boot} onBoot={() => undefined} />);
+  fireEvent.click(await screen.findByRole("button", { name: "Drafts" }));
+  await waitFor(() => {
+    const hints = setSyncHint.mock.calls.map((call) => call[0]);
+    expect(hints).toContainEqual({ view_key: "custom:1", query: "is:open review-requested:@me is:draft", pr_ids: [] });
+  });
+});
+
+test("a pull request URL opens a pull request from another view", async () => {
+  const authored = pr(7, "Add passkeys");
+  const review = pr(124, "Review the latch");
+  review.involvement = 2;
+  let lookups = 0;
+  const fake = api([], [authored, review]);
+  fake.lookupPullRequest = () => {
+    lookups += 1;
+    return Promise.resolve({ status: "missing", message: "No pull request acme/widgets#124, or no access." });
+  };
+  render(<ListScreen api={fake} boot={boot} onBoot={() => undefined} />);
+  expect(await screen.findByText("Add passkeys")).toBeInTheDocument();
+  expect(screen.queryByText("Review the latch")).not.toBeInTheDocument();
+  fireEvent.change(screen.getByRole("textbox", { name: "Search" }), {
+    target: { value: "https://github.com/ACME/Widgets/pull/124/files?w=1#diff" },
+  });
+  expect(await screen.findByRole("heading", { name: /Review the latch/ })).toBeInTheDocument();
+  expect(lookups).toBe(0);
+  fireEvent.click(screen.getByRole("button", { name: "Clear search" }));
+  await waitFor(() => expect(screen.getByText("Add passkeys")).toBeInTheDocument());
+  expect(screen.queryByRole("heading", { name: /Review the latch/ })).not.toBeInTheDocument();
+  expect(screen.queryByText("Review the latch")).not.toBeInTheDocument();
+  expect(lookups).toBe(0);
+});
+
+test("a pull request URL fetches a pull request that is not stored", async () => {
+  const authored = pr(7, "Add passkeys");
+  let lookups = 0;
+  const fake = api([], [authored]);
+  const opened = pr(332, "Add a retry budget");
+  opened.id = 0;
+  fake.lookupPullRequest = () => {
+    lookups += 1;
+    return Promise.resolve({ status: "opened", row: opened, overview: mockOverview({ head_ref: "feature/retry" }) });
+  };
+  render(<ListScreen api={fake} boot={boot} onBoot={() => undefined} />);
+  expect(await screen.findByText("Add passkeys")).toBeInTheDocument();
+  fireEvent.change(screen.getByRole("textbox", { name: "Search" }), {
+    target: { value: "https://github.com/acme/widgets/pull/332" },
+  });
+  expect(await screen.findByRole("heading", { name: /Add a retry budget/ })).toBeInTheDocument();
+  expect(screen.getAllByText("Opened from GitHub. Not in your lists.").length).toBeGreaterThan(0);
+  expect(lookups).toBe(1);
+  fireEvent.click(screen.getByRole("button", { name: "Clear search" }));
+  await waitFor(() => expect(screen.getByText("Add passkeys")).toBeInTheDocument());
+  expect(screen.queryByRole("heading", { name: /Add a retry budget/ })).not.toBeInTheDocument();
+  expect(lookups).toBe(1);
+});
+
+test("a pull request URL says when GitHub has no such pull request", async () => {
+  const fake = api([], [pr(7, "Add passkeys")]);
+  fake.lookupPullRequest = () => Promise.resolve({ status: "missing", message: "No pull request acme/widgets#332, or no access." });
+  render(<ListScreen api={fake} boot={boot} onBoot={() => undefined} />);
+  fireEvent.change(await screen.findByRole("textbox", { name: "Search" }), {
+    target: { value: "acme/widgets#332" },
+  });
+  expect(await screen.findByText("No pull request acme/widgets#332, or no access.")).toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: /332/ })).not.toBeInTheDocument();
 });
 
 test("My PRs never searches GitHub with its filters", async () => {

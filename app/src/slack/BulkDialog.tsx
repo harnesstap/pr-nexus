@@ -1,5 +1,6 @@
-import { targetWorkspaceName } from "./workspaces";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { beginDraftFlip, settleDraftCall, settleDraftFlip } from "../detail/draftRecord";
+import { targetWorkspaceName } from "./workspaces";
 import type { Api, BulkCard, BulkGroup, BulkPreview, BulkRequest, BulkResult, ChannelKey, ChannelMove, GroupChannelChoice, GroupChoice, GroupRef, ReviewTarget, SlackWorkspace } from "../api";
 import { channelLabel, errorMessage } from "../api";
 import { ChannelHeading, CheckNotes, GroupSwitcher, PendingGroups, RemoveCardButton, SaveChannelBox, groupKey, groupOnCard, saveChecked, saveChosenChannels } from "./OwnerGroups";
@@ -275,7 +276,14 @@ export function BulkDialog({ api, prIds, onClose, onSent, onOpen, onReady, onNot
     setError(null);
     const pending = drafts;
     const results = await mapLimit(pending, BULK_CONCURRENCY, async (warning) => {
-      await api.setPrDraft(warning.pr_id, false);
+      const observed = beginDraftFlip(warning.pr_id, false);
+      try {
+        const fresh = await api.setPrDraft(warning.pr_id, false);
+        settleDraftCall(warning.pr_id, observed, fresh, false);
+      } catch (err) {
+        settleDraftFlip(warning.pr_id, observed, { ok: false });
+        throw err;
+      }
       setReadied((current) => [...current, warning.pr_id]);
       onReady?.(warning.pr_id);
     });

@@ -138,6 +138,8 @@ pub fn spawn(state: Arc<AppState>) {
 fn run(state: &AppState) {
     let mut poller = LivePoller::new();
     let mut client: Option<Client> = None;
+    // One step each time the wait returns. A sleep that covers several poll
+    // intervals is one pass, not one pass per missed tick.
     loop {
         let wait = step(state, &mut poller, &mut client);
         *state.live.status.lock().expect("live status") = poller.status();
@@ -190,6 +192,12 @@ fn step(state: &AppState, poller: &mut LivePoller, client: &mut Option<Client>) 
     };
     let focused = state.focused.load(Ordering::Relaxed);
     let now = Utc::now();
+    let priority_ids = state
+        .sync_hint
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remote_ids
+        .clone();
     let input = LiveInput {
         store: &state.store,
         provider: &known.github,
@@ -197,6 +205,7 @@ fn step(state: &AppState, poller: &mut LivePoller, client: &mut Option<Client>) 
         enabled: true,
         focused,
         now,
+        priority_ids: &priority_ids,
     };
     match poller.tick(&input) {
         Ok(tick) => {

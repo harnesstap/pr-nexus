@@ -47,6 +47,63 @@ pub fn pr_detail_live(state: &Arc<AppState>, id: i64) -> Result<PrDetail, AppErr
     Ok(detail)
 }
 
+/// Teams the review dialog can paint without calling GitHub.
+///
+/// Session cache, then [`ownership::report_from_cache`], then the requested
+/// reviewer teams already stored on the pull request. `source` is `session`,
+/// `cache`, or `requested`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct StoredReviewTeams {
+    pub teams: Vec<String>,
+    pub owner_groups: Vec<crate::commands::OwnerGroupDto>,
+    pub source: String,
+}
+
+pub fn stored_review_teams(state: &AppState, id: i64) -> Result<StoredReviewTeams, AppError> {
+    let pr = stored_pr(state, PrId(id))?;
+    if let Some(detail) = crate::services::bulk::cached_detail(state, &pr) {
+        return Ok(stored_from_detail(detail, "session"));
+    }
+    let flag = settings::blocked_review_required_is_ready(&state.store)?;
+    if let Some(report) = ownership::report_from_cache(&state.store, &pr, flag, Utc::now())? {
+        return Ok(stored_from_detail(detail_dto(pr.id, report), "cache"));
+    }
+    Ok(StoredReviewTeams {
+        teams: requested_team_names(&pr),
+        owner_groups: Vec::new(),
+        source: "requested".into(),
+    })
+}
+
+/// Always probes GitHub. The dialog calls this after the first paint.
+pub fn pr_detail_resolve(state: &AppState, id: i64) -> Result<PrDetail, AppError> {
+    let pr = stored_pr(state, PrId(id))?;
+    load_detail(state, &pr, false)
+}
+
+fn stored_from_detail(detail: PrDetail, source: &str) -> StoredReviewTeams {
+    let teams = if detail.mandatory_teams.is_empty() {
+        detail.candidate_teams.clone()
+    } else {
+        detail.mandatory_teams.clone()
+    };
+    StoredReviewTeams {
+        teams,
+        owner_groups: detail.owner_groups,
+        source: source.into(),
+    }
+}
+
+fn requested_team_names(pr: &PullRequest) -> Vec<String> {
+    pr.requested_reviewers
+        .iter()
+        .filter_map(|request| match &request.reviewer {
+            pr_nexus_core::domain::Reviewer::Team(team) => Some(team.to_string()),
+            pr_nexus_core::domain::Reviewer::User { .. } => None,
+        })
+        .collect()
+}
+
 fn load_detail(state: &AppState, pr: &PullRequest, use_store: bool) -> Result<PrDetail, AppError> {
     let flag = settings::blocked_review_required_is_ready(&state.store)?;
     let now = Utc::now();
@@ -56,6 +113,10 @@ fn load_detail(state: &AppState, pr: &PullRequest, use_store: bool) -> Result<Pr
         {
             return Ok(report);
         }
+        #[cfg(test)]
+        state
+            .github_resolves
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         ownership::resolve(&state.store, provider, pr, flag, now)
     })?;
     let detail = detail_dto(pr.id, report);
@@ -79,8 +140,9 @@ fn schedule_owner_refresh(state: &Arc<AppState>, id: i64) {
             let pr = stored_pr(&state, PrId(id))?;
             load_detail(&state, &pr, false)
         })();
-        if let Err(err) = refresh {
-            tracing::debug!(pr = id, %err, "owner refresh failed");
+        match refresh {
+            Ok(_) => crate::state::note_list_changed(&state),
+            Err(err) => tracing::debug!(pr = id, %err, "owner refresh failed"),
         }
         state
             .owner_refresh

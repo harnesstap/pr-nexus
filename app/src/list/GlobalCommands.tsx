@@ -31,6 +31,8 @@ export function searchRequest(viewKey: string, query: string, now: Date): PageRe
 interface Props {
   api: Pick<Api, "listPage">;
   projects: readonly ProjectDto[];
+  /** Sidebar views, so a collapsed section can still be opened from the palette. */
+  views?: readonly { key: string; name: string }[];
   actions: { current: ListActions | null };
   /** True while the list (not Settings) is on screen, so row actions apply. */
   listShown: boolean;
@@ -41,7 +43,7 @@ interface Props {
 }
 
 /** The `?` cheat sheet and the ⌘K palette, over the list screen. */
-export function GlobalCommands({ api, projects, actions, listShown, onView, onDetails, onSync, syncing }: Props) {
+export function GlobalCommands({ api, projects, views = [], actions, listShown, onView, onDetails, onSync, syncing }: Props) {
   const [open, setOpen] = useState<"palette" | "help" | null>(null);
   const found = useRef(new Map<number, string>());
 
@@ -98,6 +100,9 @@ export function GlobalCommands({ api, projects, actions, listShown, onView, onDe
       { id: "github", label: "Open in GitHub", hint: hint("github"), keywords: "browser pull request", disabled: !focusedUrl, run: run("github") },
       { id: "mine", label: "Go to My PRs", keywords: "view mine", run: () => onView("mine") },
       { id: "to_review", label: "Go to To review", keywords: "view review queue", run: () => onView("to_review") },
+      ...views
+        .filter((view) => view.key !== "mine" && view.key !== "to_review")
+        .map((view) => ({ id: view.key, label: `Go to ${view.name}`, keywords: `view ${view.name}`, run: () => onView(view.key) })),
       ...projects
         .filter((project) => !project.archived)
         .map((project) => ({ id: `project:${project.id}`, label: `Go to project ${project.name}`, keywords: project.name, run: () => onView(`project:${project.id}`) })),
@@ -108,7 +113,7 @@ export function GlobalCommands({ api, projects, actions, listShown, onView, onDe
     ];
     // `actions` is a ref filled by the list; recompute whenever the palette opens.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, projects, listShown, syncing, onView, onSync]);
+  }, [open, projects, views, listShown, syncing, onView, onSync]);
 
   if (open === "help") {
     return <ShortcutSheet onClose={() => setOpen(null)} />;

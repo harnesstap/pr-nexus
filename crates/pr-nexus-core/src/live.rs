@@ -107,6 +107,16 @@ pub fn should_sync_on_focus(blurred_at: Option<DateTime<Utc>>, now: DateTime<Utc
     blurred_at.is_some_and(|at| now - at > Duration::seconds(FOCUS_AWAY_SECS))
 }
 
+fn pending_rank(rows: &[PullRequest], key: &(String, String, u64), priority: &[String]) -> usize {
+    let id = rows.iter().find(|pr| {
+        pr.number == key.2
+            && pr.repo.owner.eq_ignore_ascii_case(&key.0)
+            && pr.repo.name.eq_ignore_ascii_case(&key.1)
+    });
+    id.and_then(|pr| priority.iter().position(|item| item == &pr.remote.id))
+        .unwrap_or(usize::MAX)
+}
+
 fn backoff(failures: u32) -> Duration {
     let secs = MIN_POLL_SECS.saturating_mul(1_i64 << failures.saturating_sub(1).min(10));
     Duration::seconds(secs.min(MAX_BACKOFF_SECS))
@@ -120,6 +130,8 @@ pub struct LiveInput<'a> {
     pub enabled: bool,
     pub focused: bool,
     pub now: DateTime<Utc>,
+    /// Visible pull requests, GitHub node ids, first on screen first.
+    pub priority_ids: &'a [String],
 }
 
 #[derive(Debug)]
@@ -366,7 +378,9 @@ impl LivePoller {
         let rows = input
             .store
             .list_pull_requests_for_account(input.account_id)?;
-        let keys: Vec<_> = self.pending.keys().cloned().collect();
+        let mut keys: Vec<_> = self.pending.keys().cloned().collect();
+        let priority = input.priority_ids;
+        keys.sort_by_key(|key| pending_rank(&rows, key, priority));
         for key in keys {
             let target = self.pending[&key].clone();
             match refresh_target(input, scope, &rows, &target) {
@@ -399,7 +413,7 @@ impl LivePoller {
         let rows = input
             .store
             .list_pull_requests_for_account(input.account_id)?;
-        let waiting: Vec<&PullRequest> = rows
+        let mut waiting: Vec<&PullRequest> = rows
             .iter()
             .filter(|pr| {
                 !pr.hidden
@@ -408,6 +422,7 @@ impl LivePoller {
                     && sync::in_scope(&pr.repo.owner, scope)
             })
             .collect();
+        sync::order_pull_requests(&mut waiting, input.priority_ids);
         if waiting.is_empty() {
             return Ok(());
         }
@@ -560,6 +575,7 @@ mod tests {
                 mergeable: Mergeable::Mergeable,
                 merge_state: MergeStateStatus::Clean,
                 requested_reviewers: Vec::new(),
+                assignees: Vec::new(),
                 unresolved_threads: 0,
                 total_threads: 0,
                 involvement: Involvement::empty(),
@@ -752,6 +768,7 @@ mod tests {
             enabled: true,
             focused: true,
             now,
+            priority_ids: &[],
         }
     }
 

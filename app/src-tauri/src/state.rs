@@ -1,12 +1,14 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError, TryLockError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use chrono::{DateTime, Utc};
-use pr_nexus_core::domain::{Account, AccountKind, ChecksState};
+use pr_nexus_core::domain::{Account, AccountKind, ChecksState, PrId};
 use pr_nexus_core::onboarding::{self, OnboardingState, StepValidity};
 use pr_nexus_core::providers::{ChatProvider, SearchBucket};
 use pr_nexus_core::providers::{ProviderRegistry, SetupStep};
@@ -170,6 +172,17 @@ pub struct AppState {
     pub slack_cancel: Mutex<Option<CancelHandle>>,
     /// Latest Slack grant check per account (§7.11). A refresh replaces it.
     pub slack_tokens: Mutex<HashMap<i64, SlackTokenCheck>>,
+    /// One grant check at a time. A second caller waits, then sees the cache.
+    pub slack_validation: tokio::sync::Mutex<()>,
+    /// How many times [`crate::slack::validate_tokens`] started.
+    #[cfg(test)]
+    pub token_validations: AtomicUsize,
+    /// How many grant checks actually called Slack (`auth.test`).
+    #[cfg(test)]
+    pub token_probes: AtomicUsize,
+    /// How many ownership resolves called GitHub.
+    #[cfg(test)]
+    pub github_resolves: AtomicUsize,
     /// Upstream sessions behind the Slack tools of the local MCP server.
     pub slack_proxy: crate::mcp::slack::SlackProxy,
     pub sync: Mutex<SyncStatus>,
@@ -191,6 +204,8 @@ pub struct AppState {
     pub demo: bool,
     /// Last sync snapshot, so desktop notifications fire only on changes (§8.5).
     pub notifier: Mutex<pr_nexus_core::notify::Watcher>,
+    /// The view on screen, so the next sync reads those pull requests first.
+    pub sync_hint: Mutex<sync::SyncHint>,
 }
 
 impl AppState {
@@ -228,6 +243,13 @@ impl AppState {
             github_clients: Mutex::new(HashMap::new()),
             slack_cancel: Mutex::new(None),
             slack_tokens: Mutex::new(HashMap::new()),
+            slack_validation: tokio::sync::Mutex::new(()),
+            #[cfg(test)]
+            token_validations: AtomicUsize::new(0),
+            #[cfg(test)]
+            token_probes: AtomicUsize::new(0),
+            #[cfg(test)]
+            github_resolves: AtomicUsize::new(0),
             slack_proxy: crate::mcp::slack::SlackProxy::default(),
             sync: Mutex::new(if demo {
                 SyncStatus::demo()
@@ -244,6 +266,7 @@ impl AppState {
             list_cache: crate::item_cache::ListItemCache::default(),
             demo,
             notifier: Mutex::new(pr_nexus_core::notify::Watcher::default()),
+            sync_hint: Mutex::new(sync::SyncHint::default()),
         })
     }
 
@@ -541,6 +564,78 @@ fn settle(
     outcome
 }
 
+/// What the window is showing. `pr_ids` are local ids, in on-screen order.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct SyncHintInput {
+    #[serde(default)]
+    pub view_key: String,
+    #[serde(default)]
+    pub query: String,
+    #[serde(default)]
+    pub pr_ids: Vec<i64>,
+}
+
+/// Remembers the view so a scheduled sync and the tray refresh start there.
+pub fn note_sync_hint(state: &AppState, input: &SyncHintInput) {
+    let hint = resolve_sync_hint(state, input);
+    *state
+        .sync_hint
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = hint;
+}
+
+fn current_hint(state: &AppState) -> sync::SyncHint {
+    state
+        .sync_hint
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
+}
+
+fn resolve_sync_hint(state: &AppState, input: &SyncHintInput) -> sync::SyncHint {
+    let Some(account) = github_account(&state.store).ok().flatten() else {
+        return sync::SyncHint {
+            view_key: input.view_key.clone(),
+            query: input.query.clone(),
+            lead: sync::lead_bucket(&input.view_key, &input.query, &[]),
+            ..sync::SyncHint::default()
+        };
+    };
+    let stored = state
+        .store
+        .list_pull_requests_for_account(account.id)
+        .unwrap_or_default();
+    let mut remote_ids = Vec::new();
+    let mut repos = Vec::new();
+    let mut visible = Vec::new();
+    for id in &input.pr_ids {
+        let Some(pr) = stored.iter().find(|pr| pr.id == PrId(*id)) else {
+            continue;
+        };
+        remote_ids.push(pr.remote.id.clone());
+        let repo = format!("{}/{}", pr.repo.owner, pr.repo.name);
+        if !repos
+            .iter()
+            .any(|known: &String| known.eq_ignore_ascii_case(&repo))
+        {
+            repos.push(repo);
+        }
+        visible.push(pr.clone());
+    }
+    sync::SyncHint {
+        view_key: input.view_key.clone(),
+        query: input.query.clone(),
+        remote_ids,
+        repos,
+        lead: sync::lead_bucket(&input.view_key, &input.query, &visible),
+    }
+}
+
+/// The list polls this. A live overview bumps it the same way a sync write does.
+pub fn note_list_changed(state: &AppState) {
+    lock_status(state).revision += 1;
+}
+
 /// The error for a sync that unwound: a profile switch, or a panic.
 fn unwound(payload: &(dyn std::any::Any + Send)) -> AppError {
     if payload.is::<crate::profiles::Cancelled>() {
@@ -564,8 +659,27 @@ fn sync_once(state: &AppState, kind: SyncKind) -> Result<sync::SyncReport, AppEr
             ..sync::SyncReport::default()
         });
     }
-    // My PRs first, fully: search, status pass and code owners. The sync
-    // phase ends with them, so the header stops saying "Syncing".
+    // The view on screen goes first when its bucket is one this sync
+    // would run anyway. Reviews stay lazy: a hint never starts that pass.
+    let reviews_first = current_hint(state).lead == Some(SearchBucket::ReviewRequested)
+        && state.reviews_active.load(Ordering::Relaxed);
+    let mut include_reviews = false;
+    if reviews_first {
+        {
+            let mut status = lock_status(state);
+            status.phase = "syncing".into();
+            status.message = "Syncing…".into();
+        }
+        let (window, known) = {
+            let status = lock_status(state);
+            (status.reviews.window, status.reviews.total.is_some())
+        };
+        let review_kind = if known { kind } else { SyncKind::Full };
+        include_reviews =
+            review_pass(state, review_kind, sync::BucketPlan::reviews(Some(window))).is_ok();
+    }
+    // My PRs: search, status pass and code owners. The sync phase ends
+    // with them, so the header stops saying "Syncing".
     let report = settle(state, kind, || {
         let client = github_client(state)?;
         let mut on_progress = progress_writer(state, |status, message| status.message = message);
@@ -576,15 +690,15 @@ fn sync_once(state: &AppState, kind: SyncKind) -> Result<sync::SyncReport, AppEr
             kind,
             Utc::now(),
             &[sync::BucketPlan::mine()],
+            &current_hint(state),
             &mut on_progress,
         )?;
         after_pass(state, &client.1, client.0, &report, SearchBucket::Mine)?;
         Ok::<_, AppError>(report)
     })?;
-    // Then review requests, once this session asked for them (§6). The
-    // list stays usable: their progress shows in the To review tab only.
-    let mut include_reviews = false;
-    if !report.paused && state.reviews_active.load(Ordering::Relaxed) {
+    // Then review requests, once this session asked for them (§6), unless
+    // they already ran because they were the view on screen.
+    if !reviews_first && !report.paused && state.reviews_active.load(Ordering::Relaxed) {
         let (window, known) = {
             let status = lock_status(state);
             (status.reviews.window, status.reviews.total.is_some())
@@ -733,6 +847,7 @@ fn review_pass(
             kind,
             Utc::now(),
             std::slice::from_ref(&plan),
+            &current_hint(state),
             &mut on_progress,
         )?;
         after_pass(
@@ -1002,6 +1117,7 @@ pub fn filter_reviews(
             SyncKind::Manual,
             Utc::now(),
             std::slice::from_ref(&plan),
+            &current_hint(state),
             &mut |_| {},
         )?;
         after_pass(
@@ -1033,6 +1149,8 @@ pub fn filter_reviews(
 /// network work: it only flips flags and wakes the background threads.
 pub fn set_focused(state: &AppState, focused: bool) {
     state.focused.store(focused, Ordering::Relaxed);
+    // Opening the window may show one keychain prompt. A memory vault no-ops.
+    state.vault.note_focus(focused);
     if state.demo {
         return;
     }
@@ -1056,15 +1174,27 @@ pub fn spawn_scheduler(state: Arc<AppState>) {
                 let _ = run_sync(&state, SyncKind::Full);
             }
             loop {
-                let interval = interval_secs(&state);
+                let interval = Duration::from_secs(interval_secs(&state));
+                let started = SystemTime::now();
                 let (lock, cv) = &*state.wake;
                 let guard = lock.lock().expect("sync wake");
-                let (mut guard, wait) = cv
-                    .wait_timeout(guard, Duration::from_secs(interval))
-                    .expect("sync wake");
-                let manual = *guard || !wait.timed_out();
+                let (mut guard, wait) = cv.wait_timeout(guard, interval).expect("sync wake");
+                let poked = *guard;
                 *guard = false;
                 drop(guard);
+                // Wall time, so a sleep shows up as one long wait. A timeout
+                // that lands a little early still counts as one interval.
+                // `runs_due` is 0 or 1: many missed intervals are one pass.
+                let elapsed = started.elapsed().unwrap_or(interval);
+                let manual = poked || !wait.timed_out();
+                let due = if manual {
+                    1
+                } else {
+                    crate::schedule::runs_due(elapsed.max(interval), interval)
+                };
+                if due == 0 {
+                    continue;
+                }
                 let finished = onboarding::load(&state.store)
                     .ok()
                     .is_some_and(|saved| saved.is_finished());

@@ -1,9 +1,11 @@
 //! GraphQL JSON to domain pull requests.
 
+use std::collections::HashSet;
+
 use chrono::{DateTime, Utc};
 use pr_nexus_core::domain::{
-    AccountId, ChecksState, Involvement, MergeStateStatus, Mergeable, PrId, PrState, ProviderRef,
-    PullRequest, RepoRef, RequestedReviewer, ReviewDecision, Reviewer, TeamRef,
+    AccountId, Assignee, ChecksState, Involvement, MergeStateStatus, Mergeable, PrId, PrState,
+    ProviderRef, PullRequest, RepoRef, RequestedReviewer, ReviewDecision, Reviewer, TeamRef,
 };
 use pr_nexus_core::error::ProviderError;
 use pr_nexus_core::providers::{PrStatus, RateBudget, SyncedPullRequest, VcsUser};
@@ -214,6 +216,7 @@ fn parse_pr(
             mergeable: Mergeable::Unknown,
             merge_state: MergeStateStatus::Unknown,
             requested_reviewers: reviewers(node),
+            assignees: assignees(node),
             unresolved_threads: 0,
             total_threads: 0,
             involvement,
@@ -298,6 +301,36 @@ fn parse_status_node(node: &Value) -> Result<PrStatus, ProviderError> {
             .and_then(parse_time),
         merge_queue: super::merge_queue::snapshot_from_node(node),
     })
+}
+
+fn assignees(node: &Value) -> Vec<Assignee> {
+    let Some(nodes) = node.pointer("/assignees/nodes").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for node in nodes {
+        let Some(login) = node
+            .get("login")
+            .and_then(Value::as_str)
+            .filter(|login| !login.is_empty())
+        else {
+            continue;
+        };
+        if !seen.insert(login.to_ascii_lowercase()) {
+            continue;
+        }
+        let name = node
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned);
+        out.push(Assignee {
+            login: login.to_owned(),
+            name,
+        });
+    }
+    out
 }
 
 fn reviewers(node: &Value) -> Vec<RequestedReviewer> {
@@ -468,5 +501,48 @@ pub(crate) fn merge_orgs(user: &mut VcsUser, rest: Vec<String>) {
             user.organizations.push(org.clone());
             user.organizations_needing_sso.push(org);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn assignees_keep_the_first_login_and_skip_a_missing_list() {
+        let body = serde_json::json!({
+            "data": { "search": { "nodes": [{
+                "id": "PR_1",
+                "number": 7,
+                "title": "Latch",
+                "state": "OPEN",
+                "createdAt": "2026-11-01T00:00:00Z",
+                "updatedAt": "2026-11-02T00:00:00Z",
+                "repository": { "owner": { "login": "acme" }, "name": "widgets" },
+                "assignees": { "nodes": [
+                    { "login": "Ada", "name": "Ada" },
+                    { "login": "ada" },
+                    { "login": "sam", "name": "Sam" },
+                    { "login": "" }
+                ]}
+            }]}}
+        });
+        let page = parse_search(&body, AccountId(1), Involvement::empty()).unwrap();
+        let people = &page.items[0].pull_request.assignees;
+        assert_eq!(people.len(), 2);
+        assert_eq!(people[0].login, "Ada");
+        assert_eq!(people[0].name.as_deref(), Some("Ada"));
+        assert_eq!(people[1].login, "sam");
+
+        let bare = serde_json::json!({
+            "data": { "search": { "nodes": [{
+                "id": "PR_2",
+                "state": "OPEN",
+                "createdAt": "2026-11-01T00:00:00Z",
+                "updatedAt": "2026-11-02T00:00:00Z"
+            }]}}
+        });
+        let page = parse_search(&bare, AccountId(1), Involvement::empty()).unwrap();
+        assert!(page.items[0].pull_request.assignees.is_empty());
     }
 }

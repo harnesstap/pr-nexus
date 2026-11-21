@@ -2,6 +2,7 @@ import { expect, test } from "vitest";
 import type { ProjectDto } from "../api";
 import { checkState, defaultView, filtersActive, resetFilters, toggleParent, type SavedView } from "./model";
 import { PAGE_SIZE, dayBounds, pageFromRows, pageIds, selectionCountText, summaryText, candidatesFromRows, type PageRequest, type SearchRow } from "./paging";
+import { MINE_QUERY } from "./viewRule";
 
 const now = new Date("2026-10-26T12:00:00Z");
 
@@ -412,4 +413,31 @@ test("snoozed rows leave the default list and the unread chip combines", () => {
   expect(waiting.sections.flatMap((section) => section.ids)).toEqual([3]);
   expect(waiting.attention).toBe(1);
   expect(summaryText(waiting.summary, "mine", null, true)).toBe("1 snoozed PR");
+});
+
+test("an exact pull request link ignores the view and shows that pull request", () => {
+  const mine = row({ id: 1, number: 10, title: "Mine" });
+  const review = row({ id: 2, number: 332, title: "Review the latch", involvement: 2 });
+  const shipped = row({ id: 3, number: 90, title: "Ship the widget", state: "merged" });
+  const view = defaultView();
+  const hidden = pageFromRows([mine, review, shipped], [], request("mine", view, "", { view_rule: MINE_QUERY }));
+  expect(pageIds(hidden.sections)).toEqual([1]);
+  const exact = pageFromRows(
+    [mine, review, shipped],
+    [],
+    request("mine", view, "", { view_rule: MINE_QUERY, pr_link: { owner: "ACME", name: "Widgets", number: 332, exact: true } }),
+  );
+  expect(pageIds(exact.sections)).toEqual([2]);
+  const finished = pageFromRows(
+    [mine, review, shipped],
+    [],
+    request("mine", view, "", { view_rule: MINE_QUERY, pr_link: { owner: "acme", name: "widgets", number: 90, exact: true } }),
+  );
+  expect(pageIds(finished.sections)).toEqual([3]);
+  const mixed = pageFromRows(
+    [mine, review, shipped],
+    [],
+    request("mine", view, "latch", { view_rule: MINE_QUERY, pr_link: { owner: "acme", name: "widgets", number: 332, exact: false } }),
+  );
+  expect(pageIds(mixed.sections)).toEqual([]);
 });

@@ -19,7 +19,7 @@ import {
   type Ordering,
   type QuickFilter,
 } from "./model";
-import { sortLocksOrder } from "./searchText";
+import { linkMatches, sortLocksOrder } from "./searchText";
 import { analyzeViewRule, matchesBumpOnly, matchesLocalRule } from "./viewRule";
 
 /** Rows per `list_page` call. Bigger pages mean fewer round trips while scrolling. */
@@ -62,6 +62,13 @@ export interface PageRequest {
   view_rule?: string;
   /** Pull requests whose bump is due. `bump:due` reads this and is not sent to GitHub. */
   due_ids?: number[];
+  /** GitHub login for `assignee:@me`. */
+  viewer_login?: string;
+  /**
+   * A pull request URL or `owner/repo#n` from the search field.
+   * `exact` means the field is only that link, so the view rule does not apply.
+   */
+  pr_link?: { owner: string; name: string; number: number; exact: boolean } | null;
 }
 
 /** A section header (`row` null) or a row inside `section`. */
@@ -99,6 +106,14 @@ export interface PageDto {
   orgs: { name: string; count: number }[];
   /** Repositories in this view, counted after the other menu filters, search, and the quick filter. */
   repos: { name: string; count: number }[];
+  /** Reviewer teams in this view, ignoring the team filter itself. */
+  teams: { slug: string; name: string; count: number }[];
+  /** Rows in that set with no pending team reviewer. */
+  no_team: number;
+  /** Assignees in this view, ignoring the assignee filter itself. */
+  assignees: { login: string; name: string; count: number }[];
+  /** Rows in that set with nobody assigned. */
+  unassigned: number;
   /** Rows per quick filter, over the menu filters and search but ignoring the quick filter. */
   quick: Record<QuickFilter, number>;
   /** Unread rows in this snooze scope after the other filters, including the quick filter. */
@@ -203,6 +218,8 @@ export function pageIds(sections: readonly PageSection[]): number[] {
  * browser preview and tests. `app/src-tauri/src/listing.rs` must agree.
  */
 export function pageFromRows(rows: readonly SearchRow[], projects: readonly ProjectDto[], request: PageRequest): PageDto {
+  const viewer = request.viewer_login ?? "";
+  request = { ...request, viewer_login: viewer, filters: resolveViewer(request.filters, viewer) };
   const filters = request.filters;
   const now = new Date(request.now);
   const githubIds = request.github_ids ?? null;
@@ -210,13 +227,17 @@ export function pageFromRows(rows: readonly SearchRow[], projects: readonly Proj
   const toolbarGithub = request.filters.github.trim() !== "";
   const anyState = request.github_any_state === true || (!toolbarGithub && rule.showsFinished);
   const due = new Set(request.due_ids ?? []);
-  const nav = rows.filter((row) => inMembership(row, request, githubIds, due, rule, toolbarGithub));
-  const viewed = nav.filter((row) => scopeRow(row, projects, filters, anyState));
-  const scoped = viewed.filter((row) => inAttention(row, filters));
-  const terms = normalizeSearch(`${request.query} ${rule.text}`).split(/\s+/).filter((term) => term.length > 0);
-  const matched = scoped.filter((row) => passesMenu(row, filters, now) && matchesTerms(row, projects, terms));
+  const link = request.pr_link ?? null;
+  const exact = link?.exact === true;
+  const nav = exact ? rows.filter((row) => link !== null && linkMatches(row, link)) : rows.filter((row) => inMembership(row, request, githubIds, due, rule, toolbarGithub));
+  const viewed = exact ? nav : nav.filter((row) => scopeRow(row, projects, filters, anyState));
+  const scoped = exact ? viewed : viewed.filter((row) => inAttention(row, filters));
+  const terms = exact ? [] : normalizeSearch(`${request.query} ${rule.text}`).split(/\s+/).filter((term) => term.length > 0);
+  const matched = exact
+    ? scoped
+    : scoped.filter((row) => passesMenu(row, filters, now) && matchesTerms(row, projects, terms) && (link === null || linkMatches(row, link)));
   const quick = Object.fromEntries(QUICK_FILTERS.map((key) => [key, matched.filter((row) => quickMatches(row, key)).length])) as Record<QuickFilter, number>;
-  const shown = filters.quick ? matched.filter((row) => quickMatches(row, filters.quick as QuickFilter)) : matched;
+  const shown = !exact && filters.quick ? matched.filter((row) => quickMatches(row, filters.quick as QuickFilter)) : matched;
 
   const live = displayed(projects, filters);
   const liveIds = new Set(live.map((project) => project.id));
@@ -248,7 +269,7 @@ export function pageFromRows(rows: readonly SearchRow[], projects: readonly Proj
       },
     });
   });
-  const keepEmpty = keptEmpty(live, request.view_key, filters, terms.length > 0);
+  const keepEmpty = keptEmpty(live, request.view_key, filters, terms.length > 0 || exact);
   const marks = stackMarks(rows);
   const groups = group(ordered, live, request, keepEmpty, marks);
   const collapsed = new Set(request.collapsed);
@@ -285,10 +306,11 @@ export function pageFromRows(rows: readonly SearchRow[], projects: readonly Proj
     in_view: scoped.length,
     orgs: [...orgCounts.entries()].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)).map(([name, count]) => ({ name, count })),
     repos: repoChoices(scoped, filters, projects, terms, now),
+    ...peopleChoices(scoped, filters, projects, terms, now),
     quick,
     attention: attentionCount(scoped, filters, projects, terms, now),
     snoozed_count: snoozedCount(viewed, filters, projects, terms, now),
-    elsewhere: terms.length > 0 ? elsewhereFor(rows, projects, request, terms, now) : null,
+    elsewhere: !exact && terms.length > 0 ? elsewhereFor(rows, projects, request, terms, now) : null,
   };
 }
 
@@ -307,6 +329,93 @@ function snoozedCount(viewed: readonly SearchRow[], filters: Filters, projects: 
 }
 
 /** First casing wins. A selected repository missing from the view stays, at count 0. */
+function resolveViewer(filters: Filters, viewer: string): Filters {
+  if (!filters.assignees.some((login) => login.toLowerCase() === "@me")) {
+    return filters;
+  }
+  return { ...filters, assignees: filters.assignees.map((login) => (login.toLowerCase() === "@me" ? viewer : login)) };
+}
+
+function peopleChoices(
+  scoped: readonly SearchRow[],
+  filters: Filters,
+  projects: readonly ProjectDto[],
+  terms: readonly string[],
+  now: Date,
+): Pick<PageDto, "teams" | "no_team" | "assignees" | "unassigned"> {
+  const teamFilters = { ...filters, teams: [], no_team: false };
+  const assigneeFilters = { ...filters, assignees: [], unassigned: false };
+  const passes = (row: SearchRow, menu: Filters) => passesMenu(row, menu, now) && matchesTerms(row, projects, terms) && (!filters.quick || quickMatches(row, filters.quick));
+  const teams = new Map<string, { slug: string; name: string; count: number }>();
+  let noTeam = 0;
+  for (const row of scoped) {
+    if (!passes(row, teamFilters)) {
+      continue;
+    }
+    const pending = (row.pending_reviewers ?? []).filter((reviewer) => reviewer.kind === "team");
+    if (pending.length === 0) {
+      noTeam += 1;
+    }
+    for (const reviewer of pending) {
+      const key = reviewer.login.toLowerCase();
+      const current = teams.get(key);
+      if (!current) {
+        teams.set(key, { slug: reviewer.login, name: reviewer.name ?? "", count: 1 });
+      } else {
+        current.count += 1;
+        if (current.name === "" && reviewer.name) {
+          current.name = reviewer.name;
+        }
+      }
+    }
+  }
+  for (const team of filters.teams) {
+    const key = team.toLowerCase();
+    if (!teams.has(key)) {
+      teams.set(key, { slug: team, name: "", count: 0 });
+    }
+  }
+  const assignees = new Map<string, { login: string; name: string; count: number }>();
+  let unassigned = 0;
+  for (const row of scoped) {
+    if (!passes(row, assigneeFilters)) {
+      continue;
+    }
+    const people = row.assignees ?? [];
+    if (people.length === 0) {
+      unassigned += 1;
+    }
+    for (const person of people) {
+      const key = person.login.toLowerCase();
+      const current = assignees.get(key);
+      if (!current) {
+        assignees.set(key, { login: person.login, name: person.name ?? "", count: 1 });
+      } else {
+        current.count += 1;
+        if (current.name === "" && person.name) {
+          current.name = person.name;
+        }
+      }
+    }
+  }
+  for (const login of filters.assignees) {
+    if (login === "" || login.toLowerCase() === "@me") {
+      continue;
+    }
+    const key = login.toLowerCase();
+    if (!assignees.has(key)) {
+      assignees.set(key, { login, name: "", count: 0 });
+    }
+  }
+  const byName = (left: string, right: string) => left.toLowerCase().localeCompare(right.toLowerCase());
+  return {
+    teams: [...teams.values()].sort((left, right) => byName(left.slug, right.slug)),
+    no_team: noTeam,
+    assignees: [...assignees.values()].sort((left, right) => byName(left.login, right.login)),
+    unassigned,
+  };
+}
+
 function repoChoices(scoped: readonly SearchRow[], filters: Filters, projects: readonly ProjectDto[], terms: readonly string[], now: Date): { name: string; count: number }[] {
   const cleared = { ...filters, repos: [] };
   const counts = new Map<string, { name: string; count: number }>();
@@ -447,7 +556,7 @@ function inMembership(
     return false;
   }
   if (rule.fullyLocal) {
-    return matchesLocalRule(row, due.has(row.id), request.view_rule ?? "");
+    return matchesLocalRule(row, due.has(row.id), request.view_rule ?? "", request.viewer_login ?? "");
   }
   return (githubIds?.includes(row.id) ?? false) && matchesBumpOnly(due.has(row.id), request.view_rule ?? "");
 }

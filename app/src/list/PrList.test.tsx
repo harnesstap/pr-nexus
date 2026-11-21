@@ -9,6 +9,7 @@ vi.mock("./paging", async (importOriginal) => ({ ...(await importOriginal<typeof
 import type { ListRow, ProjectDto } from "../api";
 import { PAGE_SIZE, pageFromRows, type PageDto, type PageRequest, type SearchRow } from "./paging";
 import { defaultView, type SavedView, type Toast } from "./model";
+import { MINE_QUERY } from "./viewRule";
 import { PrList, SEARCH_DEBOUNCE_MS, prRowRenderCountRef } from "./PrList";
 
 afterEach(() => {
@@ -64,6 +65,8 @@ function Harness({
   onCreateProjectWithPrs = () => Promise.resolve(),
   onEditProject = () => undefined,
   onDetails = () => undefined,
+  onExactLink,
+  viewRule = "",
   onToggleStar,
   detailId = null,
   onRequestReview = () => undefined,
@@ -89,6 +92,8 @@ function Harness({
   onCreateProjectWithPrs?: (name: string, ids: number[]) => Promise<void>;
   onEditProject?: (id: number) => void;
   onDetails?: (row: ListRow) => void;
+  onExactLink?: (report: { link: { owner: string; name: string; number: number }; row: ListRow | null } | null) => void;
+  viewRule?: string;
   onToggleStar?: (row: ListRow) => void;
   detailId?: number | null;
   onRequestReview?: (row: ListRow) => void;
@@ -124,6 +129,8 @@ function Harness({
       onLinkPrs={onLinkPrs}
       onCreateProjectWithPrs={onCreateProjectWithPrs}
       onDetails={onDetails}
+      onExactLink={onExactLink}
+      viewRule={viewRule}
       onToggleStar={onToggleStar}
       detailId={detailId}
       onRequestReview={onRequestReview}
@@ -785,6 +792,31 @@ const sspRows = [
   ...rows,
 ];
 
+test("a pull request URL shows that pull request even from another view", async () => {
+  vi.useFakeTimers();
+  const onExactLink = vi.fn();
+  const review = row({
+    id: 20,
+    number: 124,
+    title: "Review the latch",
+    repo: "acme/widgets",
+    owner: "acme",
+    involvement: 2,
+    url: "https://github.com/acme/widgets/pull/124",
+  });
+  const mine = row({ id: 21, number: 8, title: "Add passkeys" });
+  await show(<Harness rows={[mine, review]} viewRule={MINE_QUERY} onExactLink={onExactLink} />);
+  expect(screen.queryByText("Review the latch")).not.toBeInTheDocument();
+  await search("https://github.com/ACME/Widgets/pull/124/files?w=1#diff");
+  expect(screen.getByText("Review the latch")).toBeInTheDocument();
+  expect(screen.queryByText("Add passkeys")).not.toBeInTheDocument();
+  expect(onExactLink).toHaveBeenCalledWith(expect.objectContaining({ row: expect.objectContaining({ id: 20, number: 124 }) }));
+  await search("");
+  expect(screen.getByText("Add passkeys")).toBeInTheDocument();
+  expect(screen.queryByText("Review the latch")).not.toBeInTheDocument();
+  expect(onExactLink).toHaveBeenLastCalledWith(null);
+});
+
 test("searching a hyphenated repository name finds its PRs and select-all follows", async () => {
   vi.useFakeTimers();
   await show(<Harness rows={sspRows} />);
@@ -1416,6 +1448,88 @@ test("Reset filters in the empty state clears a menu filter", async () => {
   await settle();
   expect(screen.getByText("Add passkeys")).toBeInTheDocument();
   expect(screen.queryByText(/match your filters/)).not.toBeInTheDocument();
+});
+
+test("a stored detail refresh re-renders the row with the new review and checks", async () => {
+  const prior = globalThis.ResizeObserver;
+  class SilentObserver {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  globalThis.ResizeObserver = SilentObserver as unknown as typeof ResizeObserver;
+  const stale = row({
+    id: 1,
+    number: 42,
+    title: "Latch the cache",
+    checks: "failure",
+    review_decision: "review_required",
+    pending_reviewers: [{ kind: "user", login: "sam", name: "Sam", avatar_url: null }],
+    conflicts: true,
+    created_at: "2026-10-23T15:00:00Z",
+  });
+  const fresh = row({
+    id: 1,
+    number: 42,
+    title: "Latch the cache",
+    checks: "success",
+    review_decision: "approved",
+    pending_reviewers: [],
+    conflicts: false,
+    created_at: "2026-10-23T15:00:00Z",
+  });
+  const rowsRef = { current: [stale] };
+  function DetailHarness({ version }: { version: number }) {
+    const [view, setView] = useState(defaultView());
+    const loadPage = useCallback(
+      (request: PageRequest) => Promise.resolve(pageFromRows(rowsRef.current, [auth], request)),
+      [],
+    );
+    return (
+      <PrList
+        loadPage={loadPage}
+        version={version}
+        projects={[auth]}
+        viewKey="mine"
+        view={view}
+        onViewChange={setView}
+        onShowView={() => undefined}
+        now={now}
+        onOpen={() => undefined}
+        onRename={() => Promise.resolve()}
+        onArchive={() => undefined}
+        onDelete={() => undefined}
+        onEditProject={() => undefined}
+        onLinkPrs={() => undefined}
+        onCreateProjectWithPrs={() => Promise.resolve()}
+        onDetails={() => undefined}
+        onRequestReview={() => undefined}
+        onBulkReview={() => undefined}
+      />
+    );
+  }
+  try {
+    prRowRenderCountRef.current = 0;
+    const shown = await show(<DetailHarness version={0} />);
+    expect(screen.getByText("Latch the cache")).toBeInTheDocument();
+    expect(screen.getByText(/Waiting/)).toBeInTheDocument();
+    expect(screen.getByText("Failing")).toBeInTheDocument();
+    const rendered = prRowRenderCountRef.current;
+    expect(rendered).toBeGreaterThan(0);
+    rowsRef.current = [fresh];
+    shown.rerender(<DetailHarness version={1} />);
+    await settle();
+    expect(prRowRenderCountRef.current).toBeGreaterThan(rendered);
+    expect(screen.queryByText(/Waiting/)).not.toBeInTheDocument();
+    expect(screen.getByText("Passing")).toBeInTheDocument();
+    expect(screen.queryByText("Failing")).not.toBeInTheDocument();
+  } finally {
+    if (prior) {
+      globalThis.ResizeObserver = prior;
+    } else {
+      Reflect.deleteProperty(globalThis, "ResizeObserver");
+    }
+  }
 });
 
 test("the search field suggests qualifiers and inserts the chosen one", async () => {

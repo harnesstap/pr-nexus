@@ -10,11 +10,14 @@ export function DraftWarning({
   busy,
   onMarkReady,
   action = "Mark ready for review",
+  busyLabel = "Saving…",
 }: {
   children: ReactNode;
   busy: boolean;
   onMarkReady?: () => void;
   action?: string;
+  /** Button label while `busy`. Mark ready uses "Marking ready…". */
+  busyLabel?: string;
 }) {
   return (
     <div
@@ -30,7 +33,7 @@ export function DraftWarning({
           onClick={onMarkReady}
           className="shrink-0 rounded-md bg-violet-500/20 px-2 py-0.5 text-xs font-medium text-violet-100 ring-1 ring-violet-400/40 enabled:hover:bg-violet-500/30 disabled:cursor-default disabled:opacity-50"
         >
-          {busy ? "Saving…" : action}
+          {busy ? busyLabel : action}
         </button>
       )}
     </div>

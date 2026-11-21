@@ -1,11 +1,12 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::str::FromStr;
 
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::domain::{
-    AccountId, Involvement, PR_BODY_MAX_BYTES, PrId, PrState, ProviderRef, PullRequest, RepoRef,
-    Repository, RequestedReviewer, Reviewer, TeamRef,
+    AccountId, Assignee, Involvement, PR_BODY_MAX_BYTES, PrId, PrState, ProviderRef, PullRequest,
+    RepoRef, Repository, RequestedReviewer, Reviewer, TeamRef,
 };
 use crate::error::CoreError;
 use crate::search;
@@ -148,6 +149,80 @@ impl Store {
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(db)?;
             Ok(ids)
+        })
+    }
+
+    /// Writes the list-row fields a live overview just read: review, checks,
+    /// mergeability, draft, head, assignees, and pending reviewers.
+    pub fn update_pull_request_detail(&self, pr: &PullRequest) -> Result<(), CoreError> {
+        let pr = pr.clone();
+        self.write(move |conn| {
+            conn.execute(
+                "UPDATE pull_requests SET
+                    state = CASE WHEN pull_requests.state = 'merged' THEN pull_requests.state ELSE ?1 END,
+                    is_draft = ?2,
+                    head_ref = ?3,
+                    base_ref = ?4,
+                    head_sha = ?5,
+                    review_decision = ?6,
+                    checks_state = ?7,
+                    mergeable = ?8,
+                    merge_state = ?9,
+                    unresolved_threads = ?10,
+                    total_threads = ?11,
+                    updated_at = CASE WHEN ?12 > pull_requests.updated_at THEN ?12 ELSE pull_requests.updated_at END,
+                    last_activity_at = CASE WHEN ?13 > pull_requests.last_activity_at THEN ?13 ELSE pull_requests.last_activity_at END
+                 WHERE id = ?14",
+                params![
+                    pr.state.as_str(),
+                    sql_bool(pr.is_draft),
+                    pr.head_ref,
+                    pr.base_ref,
+                    pr.head_sha,
+                    pr.review_decision.map(|value| value.as_str().to_owned()),
+                    pr.checks.as_str(),
+                    pr.mergeable.as_str(),
+                    pr.merge_state.as_str(),
+                    pr.unresolved_threads,
+                    pr.total_threads,
+                    format_ts(pr.updated_at),
+                    format_ts(pr.last_activity_at),
+                    pr.id.0,
+                ],
+            )
+            .map_err(db)?;
+            replace_reviewers(conn, pr.id.0, &pr)?;
+            replace_assignees(conn, pr.id.0, &pr)?;
+            Ok(())
+        })
+    }
+
+    /// When a live overview last wrote this row. `None` until then.
+    pub fn detail_fetched_at(&self, id: PrId) -> Result<Option<DateTime<Utc>>, CoreError> {
+        self.read(move |conn| {
+            let text: Option<String> = conn
+                .query_row(
+                    "SELECT detail_fetched_at FROM pull_requests WHERE id = ?1",
+                    [id.0],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(db)?
+                .flatten();
+            text.map(|text| parse_ts(&text)).transpose()
+        })
+    }
+
+    /// Marks the list-row fields as coming from a live overview at `at`.
+    pub fn set_detail_fetched_at(&self, id: PrId, at: DateTime<Utc>) -> Result<(), CoreError> {
+        let at = format_ts(at);
+        self.write(move |conn| {
+            conn.execute(
+                "UPDATE pull_requests SET detail_fetched_at = ?1 WHERE id = ?2",
+                params![at, id.0],
+            )
+            .map_err(db)?;
+            Ok(())
         })
     }
 
@@ -381,6 +456,9 @@ fn upsert_pull_request(
     repo_id: i64,
     pr: &PullRequest,
 ) -> Result<PullRequest, CoreError> {
+    let mut pr = pr.clone();
+    protect_fresher_detail(conn, &mut pr)?;
+    let pr = &pr;
     let number = i64::try_from(pr.number)
         .map_err(|_| CoreError::Validation(format!("pr number {} does not fit i64", pr.number)))?;
     let body = cap_body(&pr.body);
@@ -517,28 +595,8 @@ fn upsert_pull_request(
         .map_err(db)?;
     }
 
-    conn.execute("DELETE FROM pr_requested_reviewers WHERE pr_id = ?1", [id])
-        .map_err(db)?;
-    for request in &pr.requested_reviewers {
-        let (kind, org, login_or_slug) = match &request.reviewer {
-            Reviewer::User { login } => ("user", None, login.as_str()),
-            Reviewer::Team(team) => ("team", Some(team.org.as_str()), team.slug.as_str()),
-        };
-        conn.execute(
-            "INSERT INTO pr_requested_reviewers
-                (pr_id, kind, org, login_or_slug, name, avatar_url)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![
-                id,
-                kind,
-                org,
-                login_or_slug,
-                request.name,
-                request.avatar_url
-            ],
-        )
-        .map_err(db)?;
-    }
+    replace_reviewers(conn, id, pr)?;
+    replace_assignees(conn, id, pr)?;
 
     let saved = load_pull_request(conn, PrId(id))?
         .ok_or_else(|| CoreError::Store("upserted pull request disappeared".to_owned()))?;
@@ -624,6 +682,27 @@ fn list_for_account(
             prs[position].requested_reviewers.push(reviewer);
         }
     }
+
+    let mut assignees = conn
+        .prepare(
+            "SELECT g.pr_id, g.login, g.name
+             FROM pr_assignees g
+             JOIN pull_requests pr ON pr.id = g.pr_id
+             JOIN repositories r ON r.id = pr.repo_id
+             WHERE r.account_id = ?1 ORDER BY g.rowid",
+        )
+        .map_err(db)?;
+    let rows = assignees
+        .query_map([account_id.0], |row| {
+            Ok((row.get::<_, i64>("pr_id")?, map_assignee(row)?))
+        })
+        .map_err(db)?;
+    for row in rows {
+        let (pr_id, person) = row.map_err(db)?;
+        if let Some(&position) = index.get(&pr_id) {
+            prs[position].assignees.push(person);
+        }
+    }
     Ok(prs)
 }
 
@@ -676,6 +755,168 @@ pub(super) fn backfill_search_text(conn: &mut Connection) -> Result<usize, CoreE
     Ok(pending.len())
 }
 
+fn replace_reviewers(conn: &Connection, id: i64, pr: &PullRequest) -> Result<(), CoreError> {
+    conn.execute("DELETE FROM pr_requested_reviewers WHERE pr_id = ?1", [id])
+        .map_err(db)?;
+    for request in &pr.requested_reviewers {
+        let (kind, org, login_or_slug) = match &request.reviewer {
+            Reviewer::User { login } => ("user", None, login.as_str()),
+            Reviewer::Team(team) => ("team", Some(team.org.as_str()), team.slug.as_str()),
+        };
+        conn.execute(
+            "INSERT INTO pr_requested_reviewers
+                (pr_id, kind, org, login_or_slug, name, avatar_url)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                id,
+                kind,
+                org,
+                login_or_slug,
+                request.name,
+                request.avatar_url
+            ],
+        )
+        .map_err(db)?;
+    }
+    Ok(())
+}
+
+fn replace_assignees(conn: &Connection, id: i64, pr: &PullRequest) -> Result<(), CoreError> {
+    conn.execute("DELETE FROM pr_assignees WHERE pr_id = ?1", [id])
+        .map_err(db)?;
+    let mut seen = HashSet::new();
+    for person in &pr.assignees {
+        if !seen.insert(person.login.to_ascii_lowercase()) {
+            continue;
+        }
+        conn.execute(
+            "INSERT INTO pr_assignees (pr_id, login, name) VALUES (?1, ?2, ?3)",
+            params![id, person.login, person.name],
+        )
+        .map_err(db)?;
+    }
+    Ok(())
+}
+
+/// A live overview wrote this row, and `incoming` is not a newer document.
+/// Keep the list-row fields the overview stored.
+fn protect_fresher_detail(conn: &Connection, incoming: &mut PullRequest) -> Result<(), CoreError> {
+    let found = conn
+        .query_row(
+            "SELECT id, state, is_draft, head_ref, base_ref, head_sha, review_decision,
+                    checks_state, mergeable, merge_state, unresolved_threads, total_threads,
+                    updated_at, last_activity_at, detail_fetched_at
+             FROM pull_requests WHERE node_id = ?1",
+            [&incoming.remote.id],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, String>(9)?,
+                    row.get::<_, i64>(10)?,
+                    row.get::<_, i64>(11)?,
+                    row.get::<_, String>(12)?,
+                    row.get::<_, String>(13)?,
+                    row.get::<_, Option<String>>(14)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(db)?;
+    let Some((
+        id,
+        state,
+        is_draft,
+        head_ref,
+        base_ref,
+        head_sha,
+        review_decision,
+        checks,
+        mergeable,
+        merge_state,
+        unresolved,
+        total,
+        updated_at,
+        last_activity_at,
+        fetched_at,
+    )) = found
+    else {
+        return Ok(());
+    };
+    if fetched_at.is_none() {
+        return Ok(());
+    }
+    let updated_at = parse_ts(&updated_at)?;
+    let last_activity_at = parse_ts(&last_activity_at)?;
+    if incoming.updated_at > updated_at {
+        conn.execute(
+            "UPDATE pull_requests SET detail_fetched_at = NULL WHERE id = ?1",
+            [id],
+        )
+        .map_err(db)?;
+        return Ok(());
+    }
+    if let Ok(state) = PrState::from_str(&state) {
+        incoming.state = state;
+    }
+    incoming.is_draft = parse_bool(is_draft);
+    incoming.head_ref = head_ref;
+    incoming.base_ref = base_ref;
+    incoming.head_sha = head_sha;
+    incoming.review_decision = review_decision
+        .as_deref()
+        .and_then(|text| text.parse().ok());
+    if let Ok(checks) = checks.parse() {
+        incoming.checks = checks;
+    }
+    if let Ok(mergeable) = mergeable.parse() {
+        incoming.mergeable = mergeable;
+    }
+    if let Ok(merge_state) = merge_state.parse() {
+        incoming.merge_state = merge_state;
+    }
+    incoming.unresolved_threads = u32::try_from(unresolved).unwrap_or(0);
+    incoming.total_threads = u32::try_from(total).unwrap_or(0);
+    if updated_at >= incoming.updated_at {
+        incoming.updated_at = updated_at;
+    }
+    if last_activity_at >= incoming.last_activity_at {
+        incoming.last_activity_at = last_activity_at;
+    }
+    let mut reviewers = conn
+        .prepare(
+            "SELECT kind, org, login_or_slug, name, avatar_url FROM pr_requested_reviewers
+             WHERE pr_id = ?1 ORDER BY rowid",
+        )
+        .map_err(db)?;
+    incoming.requested_reviewers = reviewers
+        .query_map([id], map_reviewer)
+        .map_err(db)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(db)?;
+    let mut assignees = conn
+        .prepare("SELECT login, name FROM pr_assignees WHERE pr_id = ?1 ORDER BY rowid")
+        .map_err(db)?;
+    incoming.assignees = assignees
+        .query_map([id], |row| {
+            Ok(crate::domain::Assignee {
+                login: row.get(0)?,
+                name: row.get(1)?,
+            })
+        })
+        .map_err(db)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(db)?;
+    Ok(())
+}
+
 fn load_pull_request(conn: &Connection, id: PrId) -> Result<Option<PullRequest>, CoreError> {
     let Some(mut pr) = conn
         .query_row(
@@ -710,6 +951,15 @@ fn load_pull_request(conn: &Connection, id: PrId) -> Result<Option<PullRequest>,
         .map_err(db)?;
     pr.requested_reviewers = reviewers
         .query_map([id.0], map_reviewer)
+        .map_err(db)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(db)?;
+
+    let mut assignees = conn
+        .prepare("SELECT login, name FROM pr_assignees WHERE pr_id = ?1 ORDER BY rowid")
+        .map_err(db)?;
+    pr.assignees = assignees
+        .query_map([id.0], map_assignee)
         .map_err(db)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(db)?;
@@ -826,6 +1076,7 @@ fn map_pull_request_at(row: &rusqlite::Row<'_>, cols: &PrColumns) -> rusqlite::R
         mergeable: parse_enum(row.get(cols.mergeable)?)?,
         merge_state: parse_enum(row.get(cols.merge_state)?)?,
         requested_reviewers: Vec::new(),
+        assignees: Vec::new(),
         unresolved_threads: row.get::<_, i64>(cols.unresolved_threads)? as u32,
         total_threads: row.get::<_, i64>(cols.total_threads)? as u32,
         involvement,
@@ -834,6 +1085,13 @@ fn map_pull_request_at(row: &rusqlite::Row<'_>, cols: &PrColumns) -> rusqlite::R
         last_activity_at: ts_col(row.get(cols.last_activity_at)?)?,
         synced_at: ts_col(row.get(cols.synced_at)?)?,
         hidden: parse_bool(row.get(cols.hidden)?),
+    })
+}
+
+fn map_assignee(row: &rusqlite::Row<'_>) -> rusqlite::Result<Assignee> {
+    Ok(Assignee {
+        login: row.get("login")?,
+        name: row.get("name")?,
     })
 }
 

@@ -12,6 +12,7 @@ import {
   boot,
   branchFixtures,
   detail,
+  detailRowId,
   draftOverview,
   draftRowId,
   jiraBaseUrl,
@@ -37,6 +38,7 @@ const branchFor = (id: unknown) => branchFixtures[Number(id)]?.branch ?? branchF
  * (`app/scripts/readme-screenshot.mjs`). Commands not listed return null.
  */
 const stamp = () => new Date().toISOString();
+let agreed = false;
 let nextLink = 100;
 
 /** Mirrors the backend: a browse URL keeps its key, a bare key links once a base URL is set. */
@@ -111,6 +113,22 @@ function sceneWorkspaces() {
   });
 }
 
+function sidebarTree(): boolean {
+  return (globalThis as { __sidebarTree?: boolean }).__sidebarTree === true;
+}
+
+/** One child under My PRs and two under To review, for the sidebar screenshots. */
+function treeViews() {
+  return [
+    { key: "mine", name: "My PRs", query: "is:open author:@me", builtin: true, sort_order: 0 },
+    { key: "custom:1", name: "Drafts", query: "is:draft", builtin: false, sort_order: 3, parent: "mine" },
+    { key: "to_review", name: "To review", query: "is:open review-requested:@me", builtin: true, sort_order: 1 },
+    { key: "custom:2", name: "Web platform", query: "team-review-requested:acme/web-platform", builtin: false, sort_order: 4, parent: "to_review" },
+    { key: "custom:3", name: "Payments", query: "team-review-requested:acme/payments", builtin: false, sort_order: 5, parent: "to_review" },
+    { key: "bumps_due", name: "Bumps due", query: "is:open author:@me bump:due", builtin: true, sort_order: 2 },
+  ];
+}
+
 const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   mcp_settings: () => mcp.mcpSettings(),
   mcp_tools: () => mcp.mcpTools(),
@@ -136,8 +154,44 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     return { ...boot, slack_client_id: "111.222", slack_workspaces: sceneWorkspaces() };
   },
   sync_status: () => boot.sync,
+  activate_reviews: () => boot.sync,
+  load_more_reviews: () => boot.sync,
+  search_reviews: () => boot.sync,
+  filter_reviews: () => boot.sync,
   list_projects: () => projects,
-  list_page: (args) => pageFromRows(rows, projects, args.request as PageRequest),
+  list_sidebar_views: () => (sidebarTree() ? treeViews() : null),
+  save_sidebar_views: (args) => (sidebarTree() ? args.views : null),
+  sidebar_collapse: () => ({ views: false, projects: false, parents: [] }),
+  save_sidebar_collapse: (args) => args.collapse,
+  list_page: (args) => {
+    const scene = (window as { __prLinkScene?: string }).__prLinkScene;
+    const source = scene === "other" ? rows.map((row) => (row.number === 61 ? { ...row, involvement: 2 } : row)) : rows;
+    return pageFromRows(source, projects, args.request as PageRequest);
+  },
+  lookup_pull_request: () => {
+    const scene = (window as { __prLinkScene?: string }).__prLinkScene;
+    if (scene !== "fetch") {
+      return { status: "missing", message: "No pull request acme/widgets#332, or no access." };
+    }
+    const row: ListRow = {
+      ...rows[0],
+      id: 0,
+      number: 332,
+      title: "Add a retry budget",
+      url: "https://github.com/acme/widgets/pull/332",
+      owner: "acme",
+      repo: "acme/widgets",
+      author_login: "lee",
+      head_ref: "feature/retry",
+      state: "open",
+      involvement: 0,
+      project_ids: [],
+      slack: null,
+      starred: false,
+      unread: false,
+    };
+    return { status: "opened", row, overview: { ...overview, head_ref: "feature/retry", fetched_at: "2026-11-20T09:00:00Z" } };
+  },
   load_view_state: () => {
     const scene = (window as { __githubScene?: string }).__githubScene;
     if (!scene) {
@@ -160,8 +214,11 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     }
     return { ok: true, message: "", ids: [2, 13], total: 2, openOnly: false };
   },
-  slack_workspaces: () => {
+  slack_workspaces: (args) => {
     const list = slackScene() ? sceneWorkspaces() : boot.slack_workspaces;
+    if (args.validate === false) {
+      return list;
+    }
     if ((window as { __agentScopes?: boolean }).__agentScopes) {
       return list.map((workspace, index) => ({
         ...workspace,
@@ -182,7 +239,48 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   // `--update` scenes set the answer before the app loads.
   check_update: () => (window as { __update?: unknown }).__update ?? null,
   pr_detail: () => detail,
-  pr_overview: (args) => ({ ...overviewFor(args.id), fetched_at: new Date().toISOString() }),
+  review_teams: () => ({ teams: detail.mandatory_teams, owner_groups: detail.owner_groups, source: "cache" }),
+  review_owners: () => detail,
+  // The stored overview follows the row, the same way `set_pr_draft` refreshes
+  // the cache. A later read must not put a draft flag back onto a PR that
+  // was just marked ready.
+  pr_overview: (args) => {
+    const agree =
+      (window as { __agreeDetail?: boolean }).__agreeDetail &&
+      args.id === detailRowId &&
+      (args.refresh === true || agreed);
+    if (agree) {
+      if (!agreed) {
+        agreed = true;
+        const row = rows.find((item) => item.id === detailRowId);
+        if (row) {
+          row.checks = "success";
+          row.conflicts = false;
+          row.review_decision = "approved";
+          row.pending_reviewers = [];
+          row.reviewers_requested = false;
+          row.is_draft = false;
+          row.updated_at = new Date().toISOString();
+        }
+        boot.sync.revision += 1;
+        void emit(DATA_CHANGED_EVENT);
+      }
+      return {
+        ...mergeableOverview,
+        head_ref: "feature/479",
+        approvals: 1,
+        required_approvals: 1,
+        review_decision: "approved",
+        merge_state: "clean",
+        mergeable: "mergeable",
+        is_draft: false,
+        reviewers: mergeableOverview.reviewers.slice(0, 1),
+        fetched_at: "2026-11-19T12:00:00.000Z",
+      };
+    }
+    const row = rows.find((item) => item.id === args.id);
+    return { ...overviewFor(args.id), ...(row ? { is_draft: row.is_draft } : {}), fetched_at: new Date().toISOString() };
+  },
   merge_pr: (args) => ({ ...overviewFor(args.id), state: "merged", fetched_at: new Date().toISOString() }),
   close_pull_requests: (args) => {
     const ids = Array.isArray(args.ids) ? args.ids : [];
@@ -200,7 +298,10 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
       };
     });
   },
-  pr_branch_status: (args) => branchFor(args.id),
+  pr_branch_status: (args) =>
+    (window as { __agreeDetail?: boolean }).__agreeDetail && args.id === detailRowId
+      ? { ...branchFor(args.id), state: "up_to_date", behind_by: 0 }
+      : branchFor(args.id),
   update_pr_branch: (args) => ({ overview: { ...baseOverviewFor(args.id), fetched_at: new Date().toISOString() }, branch: branchFixtures[1].branch }),
   load_preferences: () => ({
     review_requester: "Ada Park",
@@ -265,7 +366,19 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   list_project_links: (args) =>
     rows.filter((row) => row.project_ids.includes(Number(args.projectId))).map((row) => ({ pr_id: row.id, source: "manual", rule_id: null })),
   rows_by_id: (args) => rows.filter((row) => (args.ids as number[]).includes(row.id)),
-  review_targets: () => reviewChoices,
+  review_targets: (args) => {
+    const timing = (window as { __reviewTiming?: boolean }).__reviewTiming === true;
+    if (args.cachedNames === false && timing) {
+      const renamed = reviewChoices.map((choice) => ({
+        ...choice,
+        target: { ...choice.target, channel_name: "web-reviews-live" },
+      }));
+      return new Promise((resolve) => {
+        (window as { __releaseReviewNames?: () => void }).__releaseReviewNames = () => resolve(renamed);
+      });
+    }
+    return reviewChoices;
+  },
   bulk_preview: (args) => {
     const request = args.request as BulkRequest;
     const picked = rows.filter((item) => request.pr_ids.includes(item.id));
@@ -349,6 +462,19 @@ function draftWarnings(row: ListRow): PrWarning[] {
   return row.state === "open" && row.is_draft
     ? [{ kind: "draft", pr_id: row.id, number: row.number, message: `#${row.number} is still a draft. Reviewers may skip it until it's marked ready.` }]
     : [];
+}
+
+// `--agree` starts #479 stale so a detail refresh can bring the row in line.
+if ((window as { __agreeDetail?: boolean }).__agreeDetail) {
+  const row = rows.find((item) => item.id === detailRowId);
+  if (row) {
+    row.checks = "failure";
+    row.conflicts = true;
+    row.review_decision = "review_required";
+    row.slack = null;
+    row.is_draft = false;
+    row.created_at = new Date(Date.now() - 69 * 60 * 60 * 1000).toISOString();
+  }
 }
 
 // `--slack-draft` scenes turn extra rows into drafts before the app loads.
