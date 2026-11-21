@@ -271,6 +271,9 @@ test("To review filters with a GitHub qualifier go to GitHub; the rest stays loc
     assignees: [],
     unassigned: false,
   });
+  // No team ORs with a named team locally; `team-review-requested:` alone would drop the no-team rows.
+  expect(remoteReviewFilter({ ...defaultFilters(), teams: ["acme/web-platform"], no_team: true })).toBeNull();
+  expect(remoteReviewFilter({ ...defaultFilters(), teams: ["acme/web-platform"], no_team: true, orgs: ["acme"] })?.teams).toEqual([]);
   expect(remoteReviewFilter({ ...defaultFilters(), assignees: ["ada"], unassigned: true })?.assignees).toEqual(["ada"]);
   expect(remoteReviewFilter({ ...defaultFilters(), statuses: ["draft"] })?.draft).toBe(true);
   expect(remoteReviewFilter({ ...defaultFilters(), statuses: ["ready", "blocked"] })?.draft).toBe(false);
