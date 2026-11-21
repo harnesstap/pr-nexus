@@ -65,9 +65,12 @@ import { AccountsSettings } from "../settings/AccountsSettings";
 import { BulkDialog } from "../slack/BulkDialog";
 import { ReviewDialog } from "../slack/ReviewDialog";
 import { cancelReviewPrefetch, scheduleReviewPrefetch } from "../slack/reviewPrefetch";
+import type { McpClient } from "../settings/mcpClients";
 import { SettingsScreen } from "../settings/SettingsScreen";
 import { readSettingsSection, type SettingsSection } from "../settings/tabs";
 import { KeyringBanner } from "../KeyringBanner";
+import { SetupBanners } from "./SetupBanners";
+import { setupProblems, type SetupProblem } from "./setupNotices";
 import { SlackSignInBanner, SyncErrorBanner, SyncPopover } from "./SyncBanners";
 import { MappingHint } from "./Banners";
 import { FOOTER_ICON_BUTTON, FOOTER_ROW } from "./sidebarFooter";
@@ -134,6 +137,9 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
   const [listState, setListState] = useState<{ phase: "loading" } | { phase: "ready" } | { phase: "error"; message: string }>({ phase: "loading" });
   const [attempt, setAttempt] = useState(0);
   const [settingsTab, setSettingsTab] = useState<SettingsSection>(readSettingsSection);
+  const [setupProblemsList, setSetupProblemsList] = useState<SetupProblem[]>([]);
+  const [setupRevision, setSetupRevision] = useState(0);
+  const [mcpFocus, setMcpFocus] = useState<McpClient | null>(null);
   const [mappingHint, setMappingHint] = useState(() => showMappingHint(boot.mapping_count, boot.slack_workspaces.length));
   const [draft, setDraft] = useState<{ name: string; error: string | null; withSelection: boolean } | null>(null);
   /** The list's current selection, offered to the sidebar's new-project field. */
@@ -153,6 +159,30 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
   const openDetailRef = useRef<(row: ListRow) => void>(() => undefined);
   const [reviewRow, setReviewRow] = useState<ListRow | null>(null);
   const [panelDetail, setPanelDetail] = useState<PrDetail | null>(null);
+  useEffect(() => {
+    let cancel = false;
+    const load = () => {
+      const clients = api.mcpClientStates();
+      const spaces = api.slackWorkspaces();
+      void Promise.allSettled([clients, spaces]).then(([clientResult, spaceResult]) => {
+        if (cancel) {
+          return;
+        }
+        setSetupProblemsList(
+          setupProblems({
+            clients: clientResult.status === "fulfilled" ? clientResult.value : [],
+            workspaces: spaceResult.status === "fulfilled" ? spaceResult.value : boot.slack_workspaces,
+          }),
+        );
+      });
+    };
+    load();
+    window.addEventListener("focus", load);
+    return () => {
+      cancel = true;
+      window.removeEventListener("focus", load);
+    };
+  }, [api, boot.slack_workspaces, setupRevision]);
   const panelDetailRef = useRef<PrDetail | null>(null);
   useEffect(() => {
     panelDetailRef.current = null;
@@ -1314,6 +1344,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
                 settingsActive={viewKey === "settings"}
                 onSwitch={(id) => onSwitchProfile?.(id)}
                 onAdd={() => onAddProfile?.()}
+                attention={setupProblemsList.length > 0}
                 onSettings={() => setViewKey("settings")}
                 onAbout={() => {
                   setSettingsTab("app");
@@ -1373,7 +1404,20 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
             }}
           />
         )}
-        <KeyringBanner api={api} initial={boot.keyring} onReady={() => void api.bootstrap().then(onBoot)} />
+        <KeyringBanner api={api} initial={boot.keyring} onReady={() => void api.bootstrap().then(onBoot)}>
+          {viewKey !== "settings" && (
+            <SetupBanners
+              problems={setupProblemsList}
+              onOpen={(problem) => {
+                if (problem.client) {
+                  setMcpFocus(problem.client);
+                }
+                setSettingsTab(problem.target);
+                setViewKey("settings");
+              }}
+            />
+          )}
+        </KeyringBanner>
         {viewKey === "settings" ? (
           <section className="flex min-h-0 flex-1 flex-col overflow-hidden px-6 py-6">
             <h1 className="mb-4 shrink-0 text-lg font-semibold">Settings</h1>
@@ -1387,6 +1431,9 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
               tab={settingsTab}
               onTabChange={setSettingsTab}
               onRerunSetup={() => onRerunSetup?.()}
+              mcpAttention={setupProblemsList.some((problem) => problem.client !== undefined)}
+              mcpFocus={mcpFocus}
+              onSetupChanged={() => setSetupRevision((value) => value + 1)}
               accounts={
                 <AccountsSettings
                   api={api}

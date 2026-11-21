@@ -1,0 +1,3 @@
+kind: Changed
+body: Settings is a shorter list with clearer section labels. Review, Sync, the MCP server, agent activity and About keep every setting, and older links still open the right section. An outdated AI agent config shows once on the list and on Settings until it is updated, in the keychain banner's place so the two never stack. Adding PR Nexus to one AI agent no longer marks the others as adding.
+time: 2026-11-21T01:50:00Z

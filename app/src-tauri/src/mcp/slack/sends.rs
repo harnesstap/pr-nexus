@@ -680,7 +680,7 @@ pub fn decide(state: &AppState, id: u64, approve: bool) -> Result<Proposal, AppE
     if !config::load(&state.store)?.allows(Capability::SlackSends) {
         return Err(AppError::new(
             "forbidden",
-            "Slack sends is turned off in Settings → Agents (MCP).",
+            "Slack sends is turned off in Settings → MCP server.",
         ));
     }
     let qualifier = {
@@ -700,7 +700,7 @@ pub fn decide(state: &AppState, id: u64, approve: bool) -> Result<Proposal, AppE
         .ok_or_else(|| {
             AppError::new(
                 "forbidden",
-                "This workspace is no longer exposed to agents in Settings → Agents.",
+                "This workspace is no longer exposed to agents in Settings → MCP server.",
             )
         })?;
     execute(state, &ws, id)

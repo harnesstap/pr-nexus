@@ -292,7 +292,8 @@ test("the skipped-mapping hint opens Settings → Mappings", async () => {
   const slack = { ...boot, slack_workspaces: [{ id: 1, team_name: "Acme", domain: "acme", user_name: "ada", signed_in: true, needs_sign_in: false, team_id: "T0ACME0002", enabled: true, priority: 1 }] };
   render(<ListScreen api={api([])} boot={slack} onBoot={() => undefined} />);
   fireEvent.click(await screen.findByRole("button", { name: "Map team channels" }));
-  expect(await screen.findByRole("tab", { name: "Mappings" })).toHaveAttribute("aria-selected", "true");
+  expect(await screen.findByRole("tab", { name: "Review" })).toHaveAttribute("aria-selected", "true");
+  expect(await screen.findByRole("heading", { name: "Mappings" })).toBeInTheDocument();
   expect(await screen.findByText("No team channels mapped yet.")).toBeInTheDocument();
 });
 

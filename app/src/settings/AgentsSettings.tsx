@@ -9,22 +9,30 @@ import { McpActivity } from "./McpActivity";
 import { SlackProposals } from "./SlackProposals";
 import { plainText } from "../textInput";
 import { McpClientConfig } from "./McpClientConfig";
+import type { McpClient } from "./mcpClients";
 import { parseExtraHost, parsePort } from "./tabs";
 
 export type AgentsSection = "server" | "permissions" | "client" | "proposals" | "activity";
 
+/** `mcp` is the server page. `activity` is proposals and the log. Omit to show every block. */
+export type AgentsView = "mcp" | "activity";
+
 interface Props {
   api: Pick<Api, "mcpSettings" | "mcpTools" | "saveMcpSettings" | "mcpToken" | "regenerateMcpToken" | "mcpClientStates" | "mcpAddToClient" | "mcpOpenClientConfig" | "mcpActivity" | "clearMcpActivity" | "reviewStats" | "openExternal" | "slackWorkspaces" | "slackConnect" | "mcpSlackProposals" | "decideMcpSlackProposal">;
-  /** Which block to show. Omit to show every block. */
-  section?: AgentsSection;
-  /** Opens another Agents section when only one section is on screen. */
+  /** Which blocks to show. Omit to show every block, in page order. */
+  view?: AgentsView;
+  /** Opens another agents section when it is not on this page. */
   onOpenSection?: (section: AgentsSection) => void;
+  /** Select this AI agent under Add to your agent. */
+  focusClient?: McpClient | null;
+  /** Server settings or an agent config changed. */
+  onChanged?: () => void;
 }
 
 const button = "rounded border border-slate-700 px-3 py-1.5 text-sm hover:bg-slate-800 disabled:opacity-50";
 
-/** Settings → Agents: server, permissions, client, proposals and activity. */
-export function AgentsSettings({ api, section, onOpenSection }: Props) {
+/** Settings → MCP server, or Agent activity. Server, then add to an agent, then permissions. */
+export function AgentsSettings({ api, view: page, onOpenSection, focusClient, onChanged }: Props) {
   const [view, setView] = useState<McpView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -84,7 +92,10 @@ export function AgentsSettings({ api, section, onOpenSection }: Props) {
     setBusy(true);
     setError(null);
     work()
-      .then((next) => setView(next))
+      .then((next) => {
+        setView(next);
+        onChanged?.();
+      })
       .catch((err: unknown) => setError(errorMessage(err)))
       .finally(() => setBusy(false));
   }
@@ -157,17 +168,25 @@ export function AgentsSettings({ api, section, onOpenSection }: Props) {
 
   const { settings, status } = view;
   const url = status.url;
-  const show = (part: AgentsSection) => section === undefined || section === part;
+  const show = (part: AgentsSection) => {
+    if (page === undefined) {
+      return true;
+    }
+    if (page === "mcp") {
+      return part === "server" || part === "client" || part === "permissions";
+    }
+    return part === "proposals" || part === "activity";
+  };
   return (
     <div className="space-y-8 text-sm">
       {show("server") && (
-      <section aria-labelledby="agents-server">
+      <section id="settings-anchor-server" aria-labelledby="agents-server" className="scroll-mt-6">
         <h2 id="agents-server" className="text-base font-semibold">
-          Local MCP server
+          Use PR Nexus from an AI agent (MCP)
         </h2>
         <p className="mt-2 max-w-prose text-slate-300">
-          Lets AI agents on this computer (Claude Code, Cursor, any MCP client) read and, if you allow it, organize your projects and pull requests. It listens
-          on 127.0.0.1 only and every request needs the token below.
+          PR Nexus runs a local MCP server so AI agents like Cursor or Claude can read your PRs and propose actions. Add it to your agent with the config
+          below. It listens on 127.0.0.1 only, and every request needs the token below.
         </p>
         <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2">
           <Switch label="Enable MCP server" checked={settings.enabled} disabled={busy} onChange={(enabled) => save({ enabled })}>
@@ -251,7 +270,7 @@ export function AgentsSettings({ api, section, onOpenSection }: Props) {
               aria-label="Confirm new token"
               className="flex flex-wrap items-center gap-2 rounded border border-amber-700/60 bg-amber-950/30 p-2"
             >
-              <span className="text-amber-100">Agents using the current token stop working until you give them the new one.</span>
+              <span className="text-amber-100">AI agents using the current token stop working until you give them the new one.</span>
               <button
                 type="button"
                 className={`${button} border-amber-600`}
@@ -276,10 +295,32 @@ export function AgentsSettings({ api, section, onOpenSection }: Props) {
       </section>
       )}
 
+      {show("client") && (
+      <section id="settings-anchor-client" aria-labelledby="agents-connect" className="scroll-mt-6">
+        <h2 id="agents-connect" className="text-base font-semibold">
+          Add to your agent
+        </h2>
+        {url && view.token_masked ? (
+          <McpClientConfig
+            url={url}
+            tokenMasked={view.token_masked}
+            fixedPort={settings.port != null}
+            api={api}
+            tokenVersion={view.token_masked}
+            focusClient={focusClient}
+            onChanged={onChanged}
+            onCopy={(label, build) => copy(label, api.mcpToken().then(build))}
+          />
+        ) : (
+          <p className="mt-2 max-w-prose text-slate-400">Turn the server on above to add PR Nexus to an AI agent. The token is created when the server starts.</p>
+        )}
+      </section>
+      )}
+
       {show("permissions") && (
-      <section aria-labelledby="agents-capabilities">
+      <section id="settings-anchor-permissions" aria-labelledby="agents-capabilities" className="scroll-mt-6">
         <h2 id="agents-capabilities" className="text-base font-semibold">
-          What agents may do
+          Permissions
         </h2>
         {toolsError && (
           <p role="alert" className="mt-2 text-xs text-rose-300">
@@ -315,7 +356,7 @@ export function AgentsSettings({ api, section, onOpenSection }: Props) {
               settings.local_writes ? (
                 <p id="agents-writes-note" className="mt-1 text-xs text-slate-400">
                   Agents cannot delete projects. Every call shows under{" "}
-                  <SectionJump label="Activity" target="activity" section={section} onOpen={onOpenSection} inlineFallback="Activity below" />.
+                  <SectionJump label="Activity" target="activity" shown={show("activity")} onOpen={onOpenSection} inlineFallback="Activity below" />.
                 </p>
               ) : null
             }
@@ -409,7 +450,7 @@ export function AgentsSettings({ api, section, onOpenSection }: Props) {
                         Ask in the agent when it supports it
                         <span className="block text-xs text-slate-400">
                           A held write is shown in the agent to confirm; unanswered ones still wait{" "}
-                          <SectionJump label="Proposals" target="proposals" section={section} onOpen={onOpenSection} inlineFallback="here" lead="under " />.
+                          <SectionJump label="Proposals" target="proposals" shown={show("proposals")} onOpen={onOpenSection} inlineFallback="here" lead="under " />.
                         </span>
                       </span>
                     </label>
@@ -432,33 +473,22 @@ export function AgentsSettings({ api, section, onOpenSection }: Props) {
       </section>
       )}
 
-      {show("client") && (
-      <section aria-labelledby="agents-connect">
-        <h2 id="agents-connect" className="text-base font-semibold">
-          Connect a client
-        </h2>
-        {url && view.token_masked ? (
-          <McpClientConfig
-            url={url}
-            tokenMasked={view.token_masked}
-            fixedPort={settings.port != null}
-            api={api}
-            tokenVersion={view.token_masked}
-            onCopy={(label, build) => copy(label, api.mcpToken().then(build))}
-            onFixPort={section !== undefined && onOpenSection ? () => onOpenSection("server") : undefined}
-          />
-        ) : (
-          <p className="mt-2 max-w-prose text-slate-400">Turn the server on to connect a client. The token is on Server.</p>
-        )}
-      </section>
+      {show("proposals") && settings.slack_reads && (
+        <div id="settings-anchor-proposals" className="scroll-mt-6">
+          <SlackProposals api={api} canSend={settings.slack_sends} />
+        </div>
+      )}
+      {show("proposals") && !settings.slack_reads && (
+        <p id="settings-anchor-proposals" className="scroll-mt-6 text-slate-400">
+          Turn on Slack reads under Permissions to see proposals.
+        </p>
       )}
 
-      {show("proposals") && settings.slack_reads && <SlackProposals api={api} canSend={settings.slack_sends} />}
-      {section === "proposals" && !settings.slack_reads && (
-        <p className="text-slate-400">Turn on Slack reads under Permissions to see proposals.</p>
+      {show("activity") && (
+        <div id="settings-anchor-activity" className="scroll-mt-6">
+          <McpActivity api={api} />
+        </div>
       )}
-
-      {show("activity") && <McpActivity api={api} />}
       {copied && (
         <p role="status" className="text-xs text-slate-300">
           Copied {copied}.
@@ -477,26 +507,23 @@ export function AgentsSettings({ api, section, onOpenSection }: Props) {
 function SectionJump({
   label,
   target,
-  section,
+  shown,
   onOpen,
   inlineFallback,
   lead = "",
 }: {
   label: string;
   target: AgentsSection;
-  section?: AgentsSection;
+  shown: boolean;
   onOpen?: (section: AgentsSection) => void;
   inlineFallback: string;
   lead?: string;
 }) {
-  if (section === undefined) {
-    return <>{inlineFallback}</>;
-  }
-  if (!onOpen) {
+  if (shown || !onOpen) {
     return (
       <>
         {lead}
-        {label}
+        {shown ? inlineFallback : label}
       </>
     );
   }

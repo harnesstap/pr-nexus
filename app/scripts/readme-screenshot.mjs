@@ -11,7 +11,7 @@
 // chips, note and star, starred pinned, Starred filter, compact rows, Settings).
 // `--branch <dir>` saves the Branch card states (branch-*.png) into <dir>: one
 // PR per state, the Update branch menu open, and the rebase confirmation.
-// `--agents-tools <dir>` saves Settings → Agents → Permissions tool switches (agents-tools-*.png
+// `--agents-tools <dir>` saves Settings → MCP server → Permissions tool switches (agents-tools-*.png
 // and agents-workspace-signin.png): collapsed, one category with tools off,
 // a category off with its tools greyed, and Sign in again on two workspaces.
 // `--slack-draft <dir>` saves the Slack dialogs' draft warning (slack-draft-*.png):
@@ -42,7 +42,9 @@
 // `--close-pr <dir>` saves Close PR (close-*.png): the detail menu, the
 // confirmation with a comment, the bulk confirmation, and the narrow bar menu.
 // `--settings-nav <dir>` saves the settings rail (settings-nav-*.png): Slack,
-// Requests & bumps, Permissions with Reads expanded, and the section menu below 960px.
+// Review, MCP server with Reads expanded, and the section menu below 960px.
+// `--settings-story <dir>` saves the merged settings pages, the setup notice,
+// and an add left pending on one AI agent.
 // Uses an installed Chrome; set CHROME_PATH to pick another Chromium binary.
 import { mkdirSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -159,6 +161,11 @@ const closePrFlag = process.argv.indexOf("--close-pr");
 const closePrDir = closePrFlag === -1 ? null : process.argv[closePrFlag + 1];
 if (closePrFlag !== -1 && !closePrDir) {
   throw new Error("--close-pr needs an output directory");
+}
+const settingsStoryFlag = process.argv.indexOf("--settings-story");
+const settingsStoryDir = settingsStoryFlag === -1 ? null : process.argv[settingsStoryFlag + 1];
+if (settingsStoryFlag !== -1 && !settingsStoryDir) {
+  throw new Error("--settings-story needs an output directory");
 }
 const settingsNavFlag = process.argv.indexOf("--settings-nav");
 const settingsNavDir = settingsNavFlag === -1 ? null : process.argv[settingsNavFlag + 1];
@@ -641,6 +648,12 @@ try {
     await vite.close();
     process.exit(0);
   }
+  if (settingsStoryDir) {
+    await settingsStoryShots(browser, resolve(settingsStoryDir));
+    await browser.close();
+    await vite.close();
+    process.exit(0);
+  }
   if (settingsNavDir) {
     await settingsNavShots(browser, resolve(settingsNavDir));
     await browser.close();
@@ -912,7 +925,7 @@ async function mergeQueueShots(browser, dir) {
   await page.close();
 }
 
-/** Settings → Agents → Permissions: collapsed, one category edited, one category off. */
+/** Settings → MCP server → Permissions: collapsed, one category edited, one category off. */
 async function agentToolShots(browser, dir) {
   mkdirSync(dir, { recursive: true });
   const page = await browser.newPage({ viewport: { width: 1100, height: 1400 }, deviceScaleFactor: 2, colorScheme: "dark" });
@@ -920,8 +933,8 @@ async function agentToolShots(browser, dir) {
   await page.goto(url);
   await page.getByRole("button", { name: /account menu/ }).click();
   await page.getByRole("menuitem", { name: "Settings" }).click();
-  await page.getByRole("tab", { name: "Permissions" }).click();
-  const section = page.getByRole("region", { name: "What agents may do" });
+  await page.getByRole("tab", { name: "MCP server" }).click();
+  const section = page.getByRole("region", { name: "Permissions" });
   await section.getByRole("button", { name: "Reads: 6 of 6 tools" }).waitFor();
   await section.screenshot({ path: resolve(dir, "agents-tools-collapsed.png") });
   console.log("wrote agents-tools-collapsed.png");
@@ -962,7 +975,7 @@ async function agentToolShots(browser, dir) {
   await scopes.goto(url);
   await scopes.getByRole("button", { name: /account menu/ }).click();
   await scopes.getByRole("menuitem", { name: "Settings" }).click();
-  await scopes.getByRole("tab", { name: "Permissions" }).click();
+  await scopes.getByRole("tab", { name: "MCP server" }).click();
   await scopes.getByRole("switch", { name: "Slack reads" }).click();
   const picker = scopes.getByRole("group", { name: "Workspaces agents may read" });
   const again = picker.getByRole("button", { name: "Sign in again to Acme", exact: true });
@@ -975,7 +988,93 @@ async function agentToolShots(browser, dir) {
   await scopes.close();
 }
 
-/** Settings rail: Slack, Requests & bumps, Permissions with one category open, and the narrow section menu. */
+/** Merged settings pages, the setup notice, and an add that stays pending on one AI agent. */
+async function settingsStoryShots(browser, dir) {
+  mkdirSync(dir, { recursive: true });
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, deviceScaleFactor: 2, colorScheme: "dark" });
+  page.on("pageerror", (err) => console.error("page error:", err.message));
+  await page.addInitScript(() => {
+    localStorage.removeItem("pr-nexus.settings-section");
+    localStorage.removeItem("pr-nexus.setup-notices-dismissed");
+  });
+  await page.goto(url);
+  const banner = page.getByRole("alert").filter({ hasText: "Cursor has an outdated PR Nexus config." });
+  await banner.waitFor();
+  await page.screenshot({ path: resolve(dir, "settings_notice_banner.png") });
+  console.log("wrote settings_notice_banner.png");
+
+  await page.getByRole("button", { name: /account menu/ }).click();
+  await page.getByRole("menuitem", { name: "Settings" }).waitFor();
+  await page.screenshot({ path: resolve(dir, "settings_notice_badge.png") });
+  console.log("wrote settings_notice_badge.png");
+  await page.getByRole("menuitem", { name: "Settings" }).click();
+  await page.getByRole("heading", { name: "Settings", level: 1 }).waitFor();
+
+  const nav = page.getByRole("navigation", { name: "Settings" });
+  await page.getByRole("tab", { name: "Slack" }).click();
+  await page.getByRole("heading", { name: "Slack" }).waitFor();
+  await nav.screenshot({ path: resolve(dir, "settings_sidebar_slack.png") });
+  await page.getByRole("tab", { name: "Profiles" }).hover();
+  await page.waitForTimeout(200);
+  await nav.screenshot({ path: resolve(dir, "settings_sidebar_hover.png") });
+  console.log("wrote settings sidebar");
+
+  await page.setViewportSize({ width: 1280, height: 2200 });
+  async function pageShot(tab, heading, file) {
+    await page.getByRole("tab", { name: tab }).click();
+    await page.getByRole("tabpanel").getByRole("heading", { name: heading }).waitFor();
+    await page.waitForTimeout(250);
+    await page.screenshot({ path: resolve(dir, file) });
+    console.log(`wrote ${file}`);
+  }
+
+  await pageShot("Review", "Requests & bumps", "settings_page_review.png");
+  await pageShot("Sync", "Schedule", "settings_page_sync.png");
+  await pageShot("MCP server", "Use PR Nexus from an AI agent (MCP)", "settings_page_mcp.png");
+  await pageShot("Agent activity", "Activity", "settings_page_activity.png");
+  await pageShot("About", "PR Nexus 0.1.0", "settings_page_about.png");
+  await page.close();
+
+  const pending = await browser.newPage({ viewport: { width: 1100, height: 820 }, deviceScaleFactor: 2, colorScheme: "dark" });
+  pending.on("pageerror", (err) => console.error("page error:", err.message));
+  await pending.addInitScript(() => {
+    localStorage.setItem("pr-nexus.mcp-client-tab", "claude-code");
+    globalThis.__mcpAddHang = "claude-code";
+  });
+  await pending.goto(url);
+  await pending.getByRole("button", { name: /account menu/ }).click();
+  await pending.getByRole("menuitem", { name: "Settings" }).click();
+  await pending.getByRole("tab", { name: "MCP server" }).click();
+  const add = pending.getByRole("button", { name: "Add to Claude Code" });
+  await add.waitFor();
+  await add.click();
+  await pending.getByRole("button", { name: "Adding…" }).waitFor();
+  await pending.getByRole("tab", { name: "Cursor" }).click();
+  const update = pending.getByRole("button", { name: "Update Cursor" });
+  await update.waitFor();
+  if (await update.isDisabled()) {
+    throw new Error("Cursor stayed disabled while Claude Code was adding");
+  }
+  const tabs = pending.getByRole("tablist", { name: "AI agent", exact: true });
+  const tabsBox = await tabs.boundingBox();
+  const updateBox = await update.boundingBox();
+  if (!tabsBox || !updateBox) {
+    throw new Error("could not measure the AI agent tabs");
+  }
+  await pending.screenshot({
+    path: resolve(dir, "settings_mcp_add_pending.png"),
+    clip: {
+      x: Math.max(0, tabsBox.x - 8),
+      y: Math.max(0, tabsBox.y - 28),
+      width: Math.max(tabsBox.width, updateBox.x + updateBox.width - tabsBox.x) + 24,
+      height: updateBox.y + updateBox.height - tabsBox.y + 44,
+    },
+  });
+  console.log("wrote settings_mcp_add_pending.png");
+  await pending.close();
+}
+
+/** Settings rail: Slack, Review, MCP server with one category open, and the narrow section menu. */
 async function settingsNavShots(browser, dir) {
   mkdirSync(dir, { recursive: true });
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, deviceScaleFactor: 2, colorScheme: "dark" });
@@ -997,9 +1096,9 @@ async function settingsNavShots(browser, dir) {
   }
 
   await section("Slack", "Slack", "settings-nav-slack.png");
-  await section("Requests & bumps", "Requests & bumps", "settings-nav-requests.png");
-  await page.getByRole("tab", { name: "Permissions" }).click();
-  await page.getByRole("tabpanel").getByRole("heading", { name: "What agents may do" }).waitFor();
+  await section("Review", "Requests & bumps", "settings-nav-requests.png");
+  await page.getByRole("tab", { name: "MCP server" }).click();
+  await page.getByRole("tabpanel").getByRole("heading", { name: "Permissions" }).waitFor();
   await page.getByRole("button", { name: "Reads: 6 of 6 tools" }).click();
   await page.getByRole("switch", { name: "list_projects", exact: true }).waitFor();
   await page.setViewportSize({ width: 1280, height: 1100 });

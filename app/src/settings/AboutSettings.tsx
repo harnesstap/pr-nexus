@@ -73,7 +73,7 @@ export function AboutSettings({ api, onRerunSetup, section }: Props) {
     <div className="space-y-8 text-sm">
       {show("app") && (
       <>
-      <section aria-labelledby="about-app">
+      <section id="settings-anchor-app" aria-labelledby="about-app" className="scroll-mt-6">
         <h2 id="about-app" className="text-base font-semibold">
           PR Nexus {info.version}
         </h2>
@@ -148,7 +148,7 @@ export function AboutSettings({ api, onRerunSetup, section }: Props) {
       )}
 
       {show("keychain") && (
-      <section aria-labelledby="about-keychain">
+      <section id="settings-anchor-keychain" aria-labelledby="about-keychain" className="scroll-mt-6">
         <h2 id="about-keychain" className="text-base font-semibold">
           {isMac ? "Keychain prompts" : "Credential store"}
         </h2>
@@ -170,7 +170,7 @@ export function AboutSettings({ api, onRerunSetup, section }: Props) {
       )}
 
       {show("setup") && (
-      <section aria-labelledby="about-setup">
+      <section id="settings-anchor-setup" aria-labelledby="about-setup" className="scroll-mt-6">
         <h2 id="about-setup" className="text-base font-semibold">
           Setup
         </h2>

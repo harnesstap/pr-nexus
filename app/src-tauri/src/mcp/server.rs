@@ -151,7 +151,7 @@ impl ServerHandler for NexusMcp {
             });
         };
         if !self.shared.settings().allows(Capability::Reads) {
-            let message = "Reads are turned off in PR Nexus Settings → Agents (MCP).".to_owned();
+            let message = "Reads are turned off in PR Nexus Settings → MCP server.".to_owned();
             audit(
                 Outcome::Denied,
                 format!("prompt {name}"),
@@ -228,7 +228,7 @@ impl ServerHandler for NexusMcp {
         let settings = self.shared.settings();
         if !settings.allows(spec.capability) {
             let message = format!(
-                "{} is turned off in PR Nexus Settings → Agents (MCP).",
+                "{} is turned off in PR Nexus Settings → MCP server.",
                 spec.name
             );
             audit(Outcome::Denied, None, Some(message.clone()));
@@ -240,7 +240,7 @@ impl ServerHandler for NexusMcp {
         }
         if !settings.tool_selected(spec.capability, spec.name) {
             let message = format!(
-                "{} is switched off under What agents may do in PR Nexus Settings → Agents (MCP).",
+                "{} is switched off under Permissions in PR Nexus Settings → MCP server.",
                 spec.name
             );
             audit(Outcome::Denied, None, Some(message.clone()));

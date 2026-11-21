@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { Api, KeyringState, KeyringStatus } from "./api";
 import { every } from "./every";
 
@@ -47,6 +47,11 @@ interface Props {
   /** The keychain became ready after it was not (tokens were read or saved). */
   onReady?: () => void;
   pollMs?: number;
+  /**
+   * Shown in this banner's place while the keychain needs nothing.
+   * A keychain notice replaces it, so the two never stack.
+   */
+  children?: ReactNode;
 }
 
 /**
@@ -54,7 +59,7 @@ interface Props {
  * and polls; a real failure shows its reason and, when it can help, Retry.
  * It never blocks the UI: every call returns without waiting on the keychain.
  */
-export function KeyringBanner({ api, initial, onReady, pollMs = 1000 }: Props) {
+export function KeyringBanner({ api, initial, onReady, pollMs = 1000, children = null }: Props) {
   const [status, setStatus] = useState<KeyringStatus | null>(initial ?? null);
   const [retrying, setRetrying] = useState(false);
   const blocked = useRef(initial ? initial.state !== "ready" : true);
@@ -127,7 +132,7 @@ export function KeyringBanner({ api, initial, onReady, pollMs = 1000 }: Props) {
   }, [state]);
 
   if (!status || status.state === "ready" || !status.message) {
-    return null;
+    return children;
   }
   const waiting = status.state === "waiting";
   const retry = () => {
