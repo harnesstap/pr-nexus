@@ -253,6 +253,7 @@ test("a workspace switched off while sign-in waits stays off when sign-in ends",
   let stored = [{ ...acme }];
   let finish: () => void = () => undefined;
   const reported: SlackWorkspace[][] = [];
+  const reloads: (boolean | undefined)[] = [];
   const api = {
     saveSlack: () => Promise.resolve(),
     slackConnect: () =>
@@ -262,7 +263,10 @@ test("a workspace switched off while sign-in waits stays off when sign-in ends",
           resolve(added);
         };
       }),
-    slackWorkspaces: () => Promise.resolve(stored),
+    slackWorkspaces: (validate?: boolean) => {
+      reloads.push(validate);
+      return Promise.resolve(stored);
+    },
     slackSetWorkspaceEnabled: (teamId: string, enabled: boolean) => {
       stored = stored.map((item) => (item.team_id === teamId ? { ...item, enabled } : item));
       return Promise.resolve(stored);
@@ -293,4 +297,6 @@ test("a workspace switched off while sign-in waits stays off when sign-in ends",
   expect(screen.getByRole("switch", { name: "Use Acme" })).not.toBeChecked();
   expect(screen.getByRole("switch", { name: "Use Beta" })).toBeChecked();
   expect(reported.at(-1)?.find((item) => item.team_id === acme.team_id)?.enabled).toBe(false);
+  // The reload after sign-in must not start token checks (Slack and keychain calls).
+  expect(reloads).toEqual([false]);
 });
