@@ -127,6 +127,30 @@ pub fn note_change(state: &AppState, include_reviews: bool) {
     note_sync(state, include_reviews);
 }
 
+/// After an on-demand review pass (Load more, the To review search, a
+/// GitHub filter): adds the rows it stored to the snapshot without
+/// announcing them, since pull requests already stored are not news.
+pub fn absorb_new(state: &AppState) {
+    let Ok(items) = crate::commands::list_items(state) else {
+        return;
+    };
+    let viewer = state::github_account(&state.store)
+        .ok()
+        .flatten()
+        .map(|account| account.login)
+        .unwrap_or_default();
+    let rows: Vec<WatchedPr> = items
+        .iter()
+        .filter(|item| !item.row.hidden)
+        .map(|item| watched(item, &viewer))
+        .collect();
+    state
+        .notifier
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .absorb(&rows);
+}
+
 fn observe(state: &AppState, include_reviews: bool) -> Option<Observed> {
     let items = match crate::commands::list_items(state) {
         Ok(items) => items,
@@ -432,6 +456,8 @@ pub async fn request_notification_permission(app: AppHandle) -> Result<String, A
 
 #[cfg(test)]
 mod tests {
+    use pr_nexus_core::domain::{PrId, PrState, ProviderRef};
+
     use super::*;
 
     #[test]
@@ -449,5 +475,47 @@ mod tests {
                 .unwrap_or_else(PoisonError::into_inner)
                 .contains_key(&id)
         );
+    }
+
+    /// Load more, the To review search, a GitHub filter and the MCP list
+    /// store review requests pending long before this session (§8.5).
+    #[test]
+    fn a_review_request_stored_on_demand_is_not_announced_by_the_next_sync() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::for_tests(&dir.path().join("pr-nexus.db"), true);
+        crate::demo::seed_if_empty(&state.store).unwrap();
+        // Baseline: a sync that included the review bucket.
+        assert!(observe(&state, true).unwrap().notices.is_empty());
+
+        // What an on-demand review pass writes: an older request.
+        let account = state::github_account(&state.store).unwrap().unwrap();
+        let mut pr = state
+            .store
+            .list_pull_requests_for_account(account.id)
+            .unwrap()
+            .remove(0);
+        let repo = state
+            .store
+            .list_repositories(account.id)
+            .unwrap()
+            .into_iter()
+            .find(|repo| repo.owner == pr.repo.owner && repo.name == pr.repo.name)
+            .unwrap();
+        pr.id = PrId(0);
+        pr.remote = ProviderRef {
+            account: account.id,
+            id: "PR_old_request".into(),
+        };
+        pr.number = 9_001;
+        pr.state = PrState::Open;
+        pr.hidden = false;
+        pr.involvement = Involvement::REVIEW_REQUESTED;
+        pr.updated_at = chrono::Utc::now() - chrono::Duration::days(40);
+        pr.created_at = pr.updated_at;
+        state.store.upsert_pull_request(repo.id, pr).unwrap();
+        absorb_new(&state);
+
+        let next = observe(&state, true).unwrap();
+        assert!(next.notices.is_empty(), "{:?}", next.notices.len());
     }
 }

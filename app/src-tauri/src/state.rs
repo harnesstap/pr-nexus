@@ -938,12 +938,13 @@ pub fn run_reviews(state: &AppState) -> Result<(), AppError> {
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
     let window = lock_status(state).reviews.window;
-    review_pass(
+    let outcome = review_pass(
         state,
         SyncKind::Full,
         sync::BucketPlan::reviews(Some(window)),
-    )
-    .map(|_| ())
+    );
+    crate::presence::absorb_new(state);
+    outcome.map(|_| ())
 }
 
 /// Widens the window by one more [`sync::REVIEW_WINDOW`] and marks
@@ -986,12 +987,13 @@ pub fn search_reviews(state: &AppState, terms: &str) -> Result<(), AppError> {
         .sync_gate
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
-    review_pass(
+    let outcome = review_pass(
         state,
         SyncKind::Manual,
         sync::BucketPlan::review_search(terms),
-    )
-    .map(|_| ())
+    );
+    crate::presence::absorb_new(state);
+    outcome.map(|_| ())
 }
 
 /// What [`filter_reviews`] should do for one request.
@@ -1184,6 +1186,7 @@ pub fn filter_reviews(
     if let Err(err) = &outcome {
         tracing::warn!(error = %err, "review filter failed");
     }
+    crate::presence::absorb_new(state);
     let mut status = lock_status(state);
     finish_filter(&mut status.reviews.filters, &key, &outcome, Utc::now());
     status.revision += 1;

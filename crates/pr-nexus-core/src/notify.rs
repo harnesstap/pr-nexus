@@ -182,6 +182,17 @@ impl Watcher {
         events
     }
 
+    /// Adds the rows the snapshot does not hold yet, as they are, without
+    /// events. Known rows keep their previous state, so their next change
+    /// is still reported. Does nothing before the first snapshot.
+    pub fn absorb(&mut self, rows: &[WatchedPr]) {
+        if let Some(seen) = &mut self.seen {
+            for row in rows {
+                seen.entry(row.id).or_insert_with(|| row.clone());
+            }
+        }
+    }
+
     fn admit(&mut self, event: &NotifyEvent, now_ms: i64) -> bool {
         let key = (event.pr_id, event.kind);
         if let Some(sent) = self.sent_at.get(&key)
@@ -378,6 +389,27 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, NotifyKind::ReviewRequested);
         assert_eq!(events[0].view, "to_review");
+    }
+
+    #[test]
+    fn absorbed_rows_are_not_news_but_known_rows_still_report_changes() {
+        let mut asked = row(2);
+        asked.author = false;
+        asked.review_requested = true;
+
+        let mut before_baseline = Watcher::default();
+        before_baseline.absorb(std::slice::from_ref(&asked));
+        assert!(!before_baseline.ready());
+
+        let mut watcher = Watcher::default();
+        let mine = row(1);
+        watcher.observe(std::slice::from_ref(&mine), true, 0);
+        let mut failing = mine;
+        failing.checks_failing = true;
+        watcher.absorb(&[failing.clone(), asked.clone()]);
+        let events = watcher.observe(&[failing, asked], true, 1_000);
+        let kinds: Vec<_> = events.iter().map(|event| event.kind).collect();
+        assert_eq!(kinds, vec![NotifyKind::CiRed]);
     }
 
     #[test]

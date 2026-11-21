@@ -1,0 +1,3 @@
+kind: Fixed
+body: Review requests loaded by Load more, the To review search, a GitHub filter or an agent's list are no longer announced as new at the next sync.
+time: 2026-11-20T10:10:00Z
