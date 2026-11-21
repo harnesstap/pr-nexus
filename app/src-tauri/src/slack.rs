@@ -349,7 +349,16 @@ pub async fn slack_refresh_workspaces(
     account_id: Option<i64>,
 ) -> Result<Vec<SlackWorkspace>, AppError> {
     let state = app.inner().clone();
-    refresh_grants(&state, slack_mcp::SLACK_WEB_API, account_id, true).await
+    // The account reads and writes around `auth.test` are SQLite.
+    blocking::run(move || {
+        tokio::runtime::Handle::current().block_on(refresh_grants(
+            &state,
+            slack_mcp::SLACK_WEB_API,
+            account_id,
+            true,
+        ))
+    })
+    .await
 }
 
 async fn refresh_grants(
@@ -540,7 +549,12 @@ pub async fn slack_workspaces(
     validate: Option<bool>,
 ) -> Result<Vec<SlackWorkspace>, AppError> {
     let state = app.inner().clone();
-    load_workspaces(&state, validate.unwrap_or(true)).await
+    // The list (and the token check's account writes) are SQLite.
+    blocking::run(move || {
+        tokio::runtime::Handle::current()
+            .block_on(load_workspaces(&state, validate.unwrap_or(true)))
+    })
+    .await
 }
 
 /// Every workspace, in priority order.
@@ -610,26 +624,32 @@ pub async fn slack_connect(
 ) -> Result<SlackWorkspace, AppError> {
     let state = state.inner().clone();
     if state.demo {
-        return demo_connect(&state);
+        return blocking::run(move || demo_connect(&state)).await;
     }
-    let client_id = settings::slack_client_id(&state.store)?.trim().to_owned();
-    let client_secret = if client_id.is_empty() {
-        None
-    } else {
-        state.vault.get(&slack_mcp::client_secret_key(&client_id))?
-    };
-    let config = ConnectConfig {
-        mcp_url: settings::slack_mcp_url(&state.store)?,
-        web_api_base: slack_mcp::SLACK_WEB_API.to_owned(),
-        client_id,
-        client_secret,
-        redirect_uri: settings::slack_redirect_uri(&state.store)?,
-        scopes: slack_mcp::USER_SCOPES
-            .iter()
-            .map(|s| (*s).to_owned())
-            .collect(),
-        timeout: slack_mcp::loopback::CALLBACK_TIMEOUT,
-    };
+    // SQLite, and a keychain read that can wait on a macOS prompt.
+    let reader = state.clone();
+    let config = blocking::run(move || {
+        let state = reader.as_ref();
+        let client_id = settings::slack_client_id(&state.store)?.trim().to_owned();
+        let client_secret = if client_id.is_empty() {
+            None
+        } else {
+            state.vault.get(&slack_mcp::client_secret_key(&client_id))?
+        };
+        Ok(ConnectConfig {
+            mcp_url: settings::slack_mcp_url(&state.store)?,
+            web_api_base: slack_mcp::SLACK_WEB_API.to_owned(),
+            client_id,
+            client_secret,
+            redirect_uri: settings::slack_redirect_uri(&state.store)?,
+            scopes: slack_mcp::USER_SCOPES
+                .iter()
+                .map(|s| (*s).to_owned())
+                .collect(),
+            timeout: slack_mcp::loopback::CALLBACK_TIMEOUT,
+        })
+    })
+    .await?;
     let cancel = CancelHandle::new();
     if let Some(previous) = lock(&state.slack_cancel).replace(cancel.clone()) {
         previous.cancel();
@@ -644,21 +664,24 @@ pub async fn slack_connect(
     .await;
     lock(&state.slack_cancel).take();
     let connected = result.map_err(auth_error)?;
-    let account = state.store.upsert_account(Account {
-        id: AccountId(0),
-        kind: AccountKind::Slack,
-        display_name: connected.team_name.clone(),
-        host: format!("{}.slack.com", connected.domain),
-        external_id: format!("{}:{}", connected.team_id, connected.user_id),
-        slack_workspace: Some(connected.domain.clone()),
-        login: connected.user_name.clone(),
-        auth_mode: AuthMode::SlackMcpOauth,
-        keychain_key: Some(connected.keychain_key.clone()),
-        created_at: Utc::now(),
-    })?;
-    lock(&state.chats).remove(&account.id.0);
-    record_check(&state, account.id.0, TokenState::Valid, "");
-    Ok(workspace_dto(&state, &account))
+    blocking::run(move || {
+        let account = state.store.upsert_account(Account {
+            id: AccountId(0),
+            kind: AccountKind::Slack,
+            display_name: connected.team_name.clone(),
+            host: format!("{}.slack.com", connected.domain),
+            external_id: format!("{}:{}", connected.team_id, connected.user_id),
+            slack_workspace: Some(connected.domain.clone()),
+            login: connected.user_name.clone(),
+            auth_mode: AuthMode::SlackMcpOauth,
+            keychain_key: Some(connected.keychain_key.clone()),
+            created_at: Utc::now(),
+        })?;
+        lock(&state.chats).remove(&account.id.0);
+        record_check(&state, account.id.0, TokenState::Valid, "");
+        Ok(workspace_dto(&state, &account))
+    })
+    .await
 }
 
 #[tauri::command]

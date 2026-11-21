@@ -408,8 +408,12 @@ pub(crate) fn start_reviews(app: &std::sync::Arc<AppState>) {
 pub async fn activate_reviews(
     app: State<'_, std::sync::Arc<AppState>>,
 ) -> Result<SyncDto, AppError> {
-    start_reviews(app.inner());
-    Ok(sync_dto(app.inner()))
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        start_reviews(app.inner());
+        Ok(sync_dto(&app))
+    })
+    .await
 }
 
 /// "Load more": the next [`pr_nexus_core::sync::REVIEW_WINDOW`] review

@@ -94,6 +94,21 @@ mod tests {
         assert!(found[1].2);
     }
 
+    /// Async helpers that also touch SQLite (the Slack workspace list) run
+    /// whole on the blocking pool, awaiting their network calls there.
+    #[test]
+    fn a_blocking_closure_can_await_tasks() {
+        let out = tauri::async_runtime::block_on(super::run(|| {
+            Ok(tokio::runtime::Handle::current().block_on(async {
+                let mut tasks = tokio::task::JoinSet::new();
+                tasks.spawn(async { 7 });
+                tasks.join_next().await.expect("one task").expect("joined")
+            }))
+        }))
+        .unwrap();
+        assert_eq!(out, 7);
+    }
+
     #[test]
     fn every_command_is_async() {
         let mut offenders = Vec::new();
