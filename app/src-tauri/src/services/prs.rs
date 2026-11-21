@@ -408,8 +408,12 @@ pub fn matches_filter(
         return false;
     }
     if let Some(repo) = filter.repo.as_deref().map(str::trim) {
-        let full = format!("{}/{}", row.owner, row.repo);
-        if !repo.eq_ignore_ascii_case(&full) && !repo.eq_ignore_ascii_case(&row.repo) {
+        // `row.repo` is already `owner/name`.
+        let name = row
+            .repo
+            .rsplit_once('/')
+            .map_or(row.repo.as_str(), |(_, name)| name);
+        if !repo.eq_ignore_ascii_case(&row.repo) && !repo.eq_ignore_ascii_case(name) {
             return false;
         }
     }

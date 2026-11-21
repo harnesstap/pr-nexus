@@ -268,6 +268,16 @@ fn list_prs_filters_and_pages() {
     )
     .unwrap();
     assert_eq!(repo.total, all.total);
+    // The schema also takes the bare name.
+    let bare = prs::list_prs(
+        state,
+        &PrFilter {
+            repo: Some("Widgets".into()),
+            ..PrFilter::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(bare.total, all.total);
     let starred = PrFilter {
         starred: Some(true),
         ..PrFilter::default()
