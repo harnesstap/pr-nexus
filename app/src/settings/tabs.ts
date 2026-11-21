@@ -129,9 +129,9 @@ export function sectionAfterKey(current: SettingsSection, key: string): Settings
   }
 }
 
-/** Seconds ↔ whole minutes for the Schedule section. */
-export function toMinutes(seconds: number): number {
-  return Math.max(1, Math.round(seconds / 60));
+/** Seconds ↔ whole minutes for the Schedule section. 0 is a cleared field. */
+export function toMinutes(seconds: number): number | "" {
+  return seconds === 0 ? "" : Math.max(1, Math.round(seconds / 60));
 }
 
 export const MAPPING_FIELDS: Record<string, string> = {

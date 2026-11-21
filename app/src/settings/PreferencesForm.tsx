@@ -198,6 +198,7 @@ export function PreferencesForm({ api, prefs, section, permission, onRequestPerm
             <input {...plainText}
               className={input}
               type="number"
+              required
               min={1}
               max={60}
               value={toMinutes(draft.focused_interval_s)}
@@ -208,6 +209,7 @@ export function PreferencesForm({ api, prefs, section, permission, onRequestPerm
             <input {...plainText}
               className={input}
               type="number"
+              required
               min={1}
               max={1440}
               value={toMinutes(draft.unfocused_interval_s)}
