@@ -2320,6 +2320,20 @@ mod tests {
     }
 
     #[test]
+    fn a_bump_rule_still_lists_due_bumps() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::for_tests(&dir.path().join("pr-nexus.db"), true);
+        crate::demo::seed_if_empty(&state.store).unwrap();
+        settings::put_json(&state.store, settings::BUMP_DUE_HOURS, &1).unwrap();
+        settings::put_json(&state.store, settings::BUMP_DUE_WORKING_DAYS, &false).unwrap();
+        let mut due = request("bumps_due", "");
+        due.view_rule = pr_nexus_core::view_rule::BUMP_QUERY.into();
+        assert_eq!(numbers(&projects::page_for(&state, &due).unwrap()), [1]);
+        due.view_rule = "is:open author:@me".into();
+        assert!(numbers(&projects::page_for(&state, &due).unwrap()).contains(&1));
+    }
+
+    #[test]
     fn search_finds_repos_by_name_owner_partial_and_punctuation() {
         let (_dir, state) = state_with_hyphenated_repo();
         for query in [
