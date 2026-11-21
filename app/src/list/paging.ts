@@ -229,7 +229,8 @@ export function pageFromRows(rows: readonly SearchRow[], projects: readonly Proj
   const due = new Set(request.due_ids ?? []);
   const link = request.pr_link ?? null;
   const exact = link?.exact === true;
-  const nav = exact ? rows.filter((row) => link !== null && linkMatches(row, link)) : rows.filter((row) => inMembership(row, request, githubIds, due, rule, toolbarGithub));
+  const member = (row: SearchRow) => inMembership(row, request, githubIds, due, rule, toolbarGithub);
+  const nav = exact ? rows.filter((row) => link !== null && linkMatches(row, link)) : rows.filter(member);
   const viewed = exact ? nav : nav.filter((row) => scopeRow(row, projects, filters, anyState));
   const scoped = exact ? viewed : viewed.filter((row) => inAttention(row, filters));
   const terms = exact ? [] : normalizeSearch(`${request.query} ${rule.text}`).split(/\s+/).filter((term) => term.length > 0);
@@ -310,7 +311,7 @@ export function pageFromRows(rows: readonly SearchRow[], projects: readonly Proj
     quick,
     attention: attentionCount(scoped, filters, projects, terms, now),
     snoozed_count: snoozedCount(viewed, filters, projects, terms, now),
-    elsewhere: !exact && terms.length > 0 ? elsewhereFor(rows, projects, request, terms, now) : null,
+    elsewhere: !exact && terms.length > 0 ? elsewhereFor(rows, projects, request, terms, now, member) : null,
   };
 }
 
@@ -442,11 +443,12 @@ function repoChoices(scoped: readonly SearchRow[], filters: Filters, projects: r
   return [...counts.values()].sort((left, right) => left.name.toLowerCase().localeCompare(right.name.toLowerCase()) || (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
 }
 
-function elsewhereFor(rows: readonly SearchRow[], projects: readonly ProjectDto[], request: PageRequest, terms: readonly string[], now: Date): Elsewhere {
+/** `member` is the view's own membership, the same test the page uses. */
+function elsewhereFor(rows: readonly SearchRow[], projects: readonly ProjectDto[], request: PageRequest, terms: readonly string[], now: Date, member: (row: SearchRow) => boolean): Elsewhere {
   const filters = request.filters;
   const found = rows.filter((row) => !row.hidden && matchesTerms(row, projects, terms));
   const passes = (row: SearchRow) => passesMenu(row, filters, now) && (!filters.quick || quickMatches(row, filters.quick));
-  const here = rowsForView(found, request.view_key).filter((row) => inAttention(row, filters));
+  const here = found.filter((row) => member(row) && inAttention(row, filters));
   return {
     views: NAV_VIEWS.filter((key) => key !== request.view_key).map((key) => ({
       view_key: key,
