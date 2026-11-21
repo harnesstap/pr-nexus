@@ -6,12 +6,18 @@
 //! it again. A write or delete updates that map, and [`Vault::retry`] is what
 //! asks the keychain again.
 //!
-//! Background calls disable the macOS prompt (`SecKeychainSetUserInteractionAllowed`).
-//! A locked keychain, or Cancel / Deny, is remembered: queued work is dropped
-//! and nothing calls the keychain until [`Vault::retry`] or the window is
-//! opened ([`Vault::note_focus`]). A prompt the user refused is not shown
-//! again on focus. The vault never writes before a successful read, so a
-//! failed read cannot overwrite the stored entry.
+//! The first read is interactive and starts at launch ([`Vault::prompt_at_launch`])
+//! or when the window is opened ([`Vault::note_focus`]). Background callers wait
+//! on that pass: a silent first read is never started, because a locked macOS
+//! keychain with the prompt disabled can stall the worker for tens of seconds
+//! (`SecKeychainSetUserInteractionAllowed`). A write the caller waits on may
+//! also show one prompt, so saving a credential is not stuck behind a silent
+//! call. Background calls otherwise disable the macOS prompt. A locked
+//! keychain, or Cancel / Deny, is remembered: queued work is dropped and
+//! nothing calls the keychain until [`Vault::retry`] or the window is opened.
+//! A prompt the user refused is not shown again on focus. The vault never
+//! writes before a successful read, so a failed read cannot overwrite the
+//! stored entry.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, mpsc};
@@ -199,9 +205,11 @@ impl Shared {
     }
 
     /// One worker pass: read the entry if it was never read, then write any
-    /// change the keychain does not hold yet. A pass that is not a user
-    /// action never shows a prompt. After a failure, a pass that was already
-    /// queued does nothing until [`Vault::retry`] or [`Vault::note_focus`].
+    /// change the keychain does not hold yet. A first read, or a write the
+    /// caller is waiting on, may show one prompt. Other background passes
+    /// never show one, and a silent first read is skipped so it cannot stall
+    /// the worker. After a failure, a pass that was already queued does
+    /// nothing until [`Vault::retry`] or [`Vault::note_focus`].
     fn sync(&self) {
         let Some(backend) = &self.backend else {
             return;
@@ -237,6 +245,14 @@ impl Shared {
             return;
         };
         if !loaded {
+            if !interactive {
+                // A locked keychain with interaction disabled can stall the
+                // worker for tens of seconds before returning
+                // errSecInteractionNotAllowed. Leave the phase as Waiting so
+                // callers share a later interactive pass.
+                return;
+            }
+            tracing::info!(interactive, "keychain access starting");
             let result = backend
                 .read_interactive(interactive)
                 .and_then(|json| decode(json.as_deref()));
@@ -308,6 +324,7 @@ impl Shared {
                     }
                 }
             };
+            tracing::info!(interactive, "keychain write starting");
             match backend.write_interactive(&json, interactive) {
                 Ok(()) => {
                     if let Ok(mut inner) = self.lock() {
@@ -414,7 +431,8 @@ pub fn profile_scope(profile: &str) -> String {
 
 impl Vault {
     /// The system keychain, unless `PR_NEXUS_DISABLE_KEYRING` is set.
-    /// Returns at once: the first read runs on the keyring worker.
+    /// Returns at once: the first read starts from [`Vault::prompt_at_launch`]
+    /// or [`Vault::note_focus`], not here.
     pub fn open() -> Self {
         if std::env::var("PR_NEXUS_DISABLE_KEYRING")
             .ok()
@@ -428,7 +446,9 @@ impl Vault {
     }
 
     /// A vault over `backend`. `timeout` is how long a pending keychain call
-    /// counts as *waiting* before it is reported as timed out.
+    /// counts as *waiting* before it is reported as timed out. The first read
+    /// is not started here; call [`Vault::prompt_at_launch`] or
+    /// [`Vault::note_focus`].
     pub fn with_backend(backend: Box<dyn KeyringBackend>, timeout: Duration) -> Self {
         let shared = Arc::new(Shared {
             inner: Mutex::new(Inner::fresh(
@@ -476,7 +496,6 @@ impl Vault {
                 ));
             }
         };
-        vault.kick();
         vault
     }
 
@@ -685,6 +704,31 @@ impl Vault {
         }
     }
 
+    /// Start the first keychain read as a user-visible prompt. Call this once
+    /// at app start, before background sync or token work. Background callers
+    /// wait on this pass instead of starting a silent read.
+    pub fn prompt_at_launch(&self) {
+        if self.jobs.is_none() {
+            return;
+        }
+        let kick = {
+            let Ok(mut inner) = self.shared.lock() else {
+                return;
+            };
+            if inner.loaded
+                || inner.prompt_open
+                || matches!(inner.phase, Phase::Ready | Phase::Disabled { .. })
+            {
+                return;
+            }
+            inner.allow_prompt = true;
+            true
+        };
+        if kick {
+            self.kick();
+        }
+    }
+
     /// Block until `n` [`Vault::get`] calls are waiting on the in-flight read.
     #[cfg(test)]
     fn wait_until_getters(&self, n: usize) {
@@ -719,11 +763,13 @@ impl Vault {
     }
 
     /// Saves `value` in memory at once, then in the keychain. When the
-    /// keychain is ready this waits for the write. While a keychain call is
-    /// pending the value is written once it answers; after a failure (Deny,
-    /// no keychain, an error) it stays in memory until [`Vault::retry`]
-    /// succeeds, and no keychain call is made, so no prompt is shown. A
-    /// failed write shows in [`Vault::status`], not as an error.
+    /// keychain is ready this waits for the write and may show one prompt: a
+    /// silent write can stall the worker for tens of seconds when the
+    /// keychain is locked. While a keychain call is pending the value is
+    /// written once it answers; after a failure (Deny, no keychain, an
+    /// error) it stays in memory until [`Vault::retry`] succeeds, and no
+    /// keychain call is made, so no prompt is shown. A failed write shows
+    /// in [`Vault::status`], not as an error.
     pub fn set(&self, key: &str, value: &str) -> Result<(), CoreError> {
         self.change(key, Some(value))
     }
@@ -751,6 +797,14 @@ impl Vault {
         // bring back the prompt the user just refused.
         if self.jobs.is_none() || !ready {
             return Ok(());
+        }
+        // The caller waits for this write. A silent keychain write can stall
+        // the worker for tens of seconds when the keychain is locked; allow
+        // one prompt instead.
+        if let Ok(mut inner) = self.shared.lock() {
+            if !inner.prompt_open {
+                inner.allow_prompt = true;
+            }
         }
         self.kick();
         self.shared.wait_for_write(revision)
@@ -1054,6 +1108,7 @@ mod tests {
         );
         assert!(!status.can_retry);
         assert_eq!(vault.peek("github:U_1").unwrap(), None);
+        vault.prompt_at_launch();
         script.reads.send(Ok(())).unwrap();
         assert_eq!(vault.get("github:U_1").unwrap().as_deref(), Some("saved"));
         assert!(vault.available());
@@ -1064,6 +1119,7 @@ mod tests {
     fn a_slow_prompt_times_out_then_a_late_allow_saves_the_session_tokens() {
         let (backend, script) = fake(Some(r#"{"github:U_1":"old","slack:T0:U0":"kept"}"#));
         let vault = Vault::with_backend(Box::new(backend), Duration::from_millis(50));
+        vault.prompt_at_launch();
         wait_until(&vault, KeyringState::TimedOut);
         let status = vault.status();
         assert!(status.can_retry);
@@ -1100,6 +1156,7 @@ mod tests {
         let original = r#"{"slack:T0:U0":"kept"}"#;
         let (backend, script) = fake(Some(original));
         let vault = Vault::with_backend(Box::new(backend), PROMPT_TIMEOUT);
+        vault.prompt_at_launch();
         script
             .reads
             .send(Err(KeyringError::Denied(
@@ -1145,6 +1202,7 @@ mod tests {
     fn a_denied_write_is_not_asked_again_until_retry() {
         let (backend, script) = fake(None);
         let vault = Vault::with_backend(Box::new(backend), PROMPT_TIMEOUT);
+        vault.prompt_at_launch();
         script.reads.send(Ok(())).unwrap();
         vault.flush();
         assert_eq!(vault.status().state, KeyringState::Ready);
@@ -1204,6 +1262,7 @@ mod tests {
         for (error, state, text) in cases {
             let (backend, script) = fake(None);
             let vault = Vault::with_backend(Box::new(backend), PROMPT_TIMEOUT);
+            vault.prompt_at_launch();
             script.reads.send(Err(error)).unwrap();
             wait_until(&vault, state);
             assert!(
@@ -1219,6 +1278,7 @@ mod tests {
     fn a_failed_write_is_reported_and_retried() {
         let (backend, script) = fake(None);
         let vault = Arc::new(Vault::with_backend(Box::new(backend), PROMPT_TIMEOUT));
+        vault.prompt_at_launch();
         script.reads.send(Ok(())).unwrap();
         wait_until(&vault, KeyringState::Ready);
         script
@@ -1276,12 +1336,12 @@ mod tests {
     fn get_waits_for_the_prompt_but_peek_does_not() {
         let (backend, script) = fake(Some(r#"{"github:U_1":"saved"}"#));
         let vault = Arc::new(Vault::with_backend(Box::new(backend), PROMPT_TIMEOUT));
+        vault.prompt_at_launch();
         let reader = {
             let vault = Arc::clone(&vault);
             thread::spawn(move || vault.get("github:U_1").unwrap())
         };
-        thread::sleep(Duration::from_millis(50));
-        assert!(!reader.is_finished());
+        vault.wait_until_getters(1);
         assert_eq!(vault.peek("github:U_1").unwrap(), None);
         script.reads.send(Ok(())).unwrap();
         assert_eq!(reader.join().unwrap().as_deref(), Some("saved"));
@@ -1365,6 +1425,8 @@ mod tests {
         entered: Arc<(Mutex<bool>, Condvar)>,
         release: Arc<(Mutex<bool>, Condvar)>,
         hold_first: bool,
+        interactive_reads: Arc<Mutex<Vec<bool>>>,
+        interactive_writes: Arc<Mutex<Vec<bool>>>,
     }
 
     impl Count {
@@ -1380,6 +1442,8 @@ mod tests {
                     entered: Arc::new((Mutex::new(false), Condvar::new())),
                     release: Arc::new((Mutex::new(!hold_first), Condvar::new())),
                     hold_first,
+                    interactive_reads: Arc::new(Mutex::new(Vec::new())),
+                    interactive_writes: Arc::new(Mutex::new(Vec::new())),
                 },
                 reads,
                 writes,
@@ -1413,6 +1477,22 @@ mod tests {
             self.writes.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
+
+        fn read_interactive(&self, interactive: bool) -> Result<Option<String>, KeyringError> {
+            self.interactive_reads
+                .lock()
+                .expect("interactive reads")
+                .push(interactive);
+            self.read()
+        }
+
+        fn write_interactive(&self, json: &str, interactive: bool) -> Result<(), KeyringError> {
+            self.interactive_writes
+                .lock()
+                .expect("interactive writes")
+                .push(interactive);
+            self.write(json)
+        }
     }
 
     #[test]
@@ -1421,6 +1501,7 @@ mod tests {
         let entered = Arc::clone(&backend.entered);
         let release = Arc::clone(&backend.release);
         let vault = Arc::new(Vault::with_backend(Box::new(backend), PROMPT_TIMEOUT));
+        vault.prompt_at_launch();
         {
             let (lock, cv) = &*entered;
             let mut guard = lock.lock().expect("entered");
@@ -1466,8 +1547,11 @@ mod tests {
             .expect("answers")
             .push(Err(KeyringError::Denied("errSecUserCanceled -128".into())));
         // `pop` takes the last item, so the denial has to be the only answer
-        // and the startup read has to run before we push a success.
+        // and the launch read has to run before we push a success.
         let vault = Arc::new(Vault::with_backend(Box::new(backend), PROMPT_TIMEOUT));
+        vault.flush();
+        assert_eq!(reads.load(Ordering::SeqCst), 0, "construct starts no read");
+        vault.prompt_at_launch();
         vault.flush();
         assert_eq!(reads.load(Ordering::SeqCst), 1);
         assert!(
@@ -1511,29 +1595,28 @@ mod tests {
         let (backend, reads, writes) = Count::open(r#"{"acme":"token"}"#, false);
         {
             let mut answers = backend.answers.lock().expect("answers");
-            // pop() reads from the back: cancel on focus, then the locked startup read.
+            // pop() reads from the back: cancel on the first focus prompt.
             answers.push(Err(KeyringError::Denied("errSecUserCanceled -128".into())));
-            answers.push(Err(KeyringError::Locked(
-                "errSecInteractionNotAllowed -25308".into(),
-            )));
         }
         let vault = Arc::new(Vault::with_backend(Box::new(backend), PROMPT_TIMEOUT));
         vault.flush();
-        assert_eq!(reads.load(Ordering::SeqCst), 1);
-        let status = vault.status();
-        assert_eq!(status.state, KeyringState::Denied);
-        assert!(status.can_retry);
-        assert!(status.message.unwrap().contains("Keychain access needed"));
+        assert_eq!(reads.load(Ordering::SeqCst), 0, "construct starts no read");
+        assert_eq!(vault.status().state, KeyringState::Waiting);
 
         vault.set("acme", "local").unwrap();
         vault.flush();
         assert_eq!(writes.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            reads.load(Ordering::SeqCst),
+            0,
+            "a save before the first read does not call the keychain"
+        );
 
         vault.note_focus(true);
         vault.flush();
         assert_eq!(
             reads.load(Ordering::SeqCst),
-            2,
+            1,
             "opening the window asks once"
         );
         vault.note_focus(true);
@@ -1542,14 +1625,14 @@ mod tests {
         vault.flush();
         assert_eq!(
             reads.load(Ordering::SeqCst),
-            2,
+            1,
             "a refused prompt is not shown again on focus"
         );
         assert_eq!(writes.load(Ordering::SeqCst), 0);
 
         vault.retry();
         vault.flush();
-        assert_eq!(reads.load(Ordering::SeqCst), 3);
+        assert_eq!(reads.load(Ordering::SeqCst), 2);
         assert_eq!(vault.get("acme").unwrap().as_deref(), Some("local"));
     }
 
@@ -1559,6 +1642,7 @@ mod tests {
         let entered = Arc::clone(&backend.entered);
         let release = Arc::clone(&backend.release);
         let vault = Arc::new(Vault::with_backend(Box::new(backend), PROMPT_TIMEOUT));
+        vault.prompt_at_launch();
         wait_entered_arc(&entered);
         for _ in 0..50 {
             vault.retry();
@@ -1573,6 +1657,71 @@ mod tests {
         let calls = reads.load(Ordering::SeqCst);
         assert!(calls <= 2, "keychain calls: {calls}");
         assert!(calls >= 1);
+    }
+
+    #[test]
+    fn background_callers_wait_for_an_interactive_first_read() {
+        let (backend, reads, writes) = Count::open(r#"{"acme":"token"}"#, true);
+        let entered = Arc::clone(&backend.entered);
+        let release = Arc::clone(&backend.release);
+        let interactive_reads = Arc::clone(&backend.interactive_reads);
+        let vault = Arc::new(Vault::with_backend(Box::new(backend), PROMPT_TIMEOUT));
+        vault.flush();
+        assert_eq!(reads.load(Ordering::SeqCst), 0);
+
+        let readers: Vec<_> = (0..20)
+            .map(|_| {
+                let vault = Arc::clone(&vault);
+                thread::spawn(move || vault.get("acme").unwrap())
+            })
+            .collect();
+        vault.wait_until_getters(20);
+        vault.flush();
+        assert_eq!(
+            reads.load(Ordering::SeqCst),
+            0,
+            "background getters must not start a silent first read"
+        );
+
+        vault.prompt_at_launch();
+        wait_entered_arc(&entered);
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            *interactive_reads.lock().expect("interactive reads"),
+            vec![true],
+            "the first read must be allowed to prompt"
+        );
+        {
+            let (lock, cv) = &*release;
+            *lock.lock().expect("hold") = true;
+            cv.notify_all();
+        }
+        for reader in readers {
+            assert_eq!(reader.join().unwrap().as_deref(), Some("token"));
+        }
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+        assert_eq!(writes.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_waiting_write_is_allowed_to_prompt() {
+        let (backend, reads, writes) = Count::open(r#"{"acme":"old"}"#, false);
+        let interactive_writes = Arc::clone(&backend.interactive_writes);
+        let vault = Vault::with_backend(Box::new(backend), PROMPT_TIMEOUT);
+        vault.prompt_at_launch();
+        vault.flush();
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+        assert_eq!(vault.status().state, KeyringState::Ready);
+
+        vault.set("acme", "fresh").unwrap();
+        vault.flush();
+        assert_eq!(writes.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            *interactive_writes.lock().expect("interactive writes"),
+            vec![true],
+            "a write the caller waits on must be allowed to prompt"
+        );
+        assert_eq!(vault.get("acme").unwrap().as_deref(), Some("fresh"));
     }
 
     fn wait_entered_arc(entered: &(Mutex<bool>, Condvar)) {
