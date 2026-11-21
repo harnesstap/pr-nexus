@@ -57,6 +57,9 @@ pub fn run() {
                 logs,
             });
             let shared = Arc::new(state::AppState::open(path)?);
+            // First keychain read is interactive and starts now, before
+            // background sync or Slack work can queue a silent one.
+            shared.vault.prompt_at_launch();
             state::spawn_scheduler(Arc::clone(&shared));
             live::spawn(Arc::clone(&shared));
             let tokens = Arc::clone(&shared);

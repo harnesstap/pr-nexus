@@ -116,6 +116,7 @@ mod tests {
             r#"{"github.token":"gho_acme"}"#.into(),
         ))));
         let vault = Vault::with_backend(Box::new(entry.clone()), Duration::from_secs(5));
+        vault.prompt_at_launch();
         let first = ensure(&vault).unwrap();
         let second = regenerate(&vault).unwrap();
         let wait = std::time::Instant::now();
