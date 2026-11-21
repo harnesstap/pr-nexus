@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { tauriApi, type Api, type Bootstrap } from "./api";
 import { KeyringBanner } from "./KeyringBanner";
+import { forgetDraftRecords } from "./detail/draftRecord";
 import { ListScreen } from "./list/ListScreen";
+import { resetReviewPrefetch } from "./slack/reviewPrefetch";
 import { Wizard } from "./wizard/Wizard";
 import { ProfileReuse } from "./wizard/ProfileReuse";
 
@@ -52,7 +54,12 @@ export default function App({ api = tauriApi }: Props) {
     setSwitching(true);
     void api
       .switchProfile(id)
-      .then(reload)
+      .then(() => {
+        // Both caches are keyed by PR id, and every profile has its own store.
+        forgetDraftRecords();
+        resetReviewPrefetch();
+        return reload();
+      })
       .finally(() => setSwitching(false));
   };
   const profileKey = boot.profiles?.find((profile) => profile.active)?.id ?? "default";
