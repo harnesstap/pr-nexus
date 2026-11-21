@@ -370,22 +370,20 @@ pub(crate) fn sync_dto(state: &AppState) -> SyncDto {
     }
 }
 
-/// Open, visible review requests in the store.
+/// Open, visible review requests in the store. Read from the list rows
+/// cached per store revision, since the sync status is polled.
 fn loaded_reviews(state: &AppState) -> usize {
-    let Ok(Some(account)) = state::github_account(&state.store) else {
-        return 0;
-    };
-    state
-        .store
-        .list_pull_requests_for_account(account.id)
-        .map(|prs| {
-            prs.iter()
-                .filter(|pr| {
-                    pr.state == pr_nexus_core::domain::PrState::Open
-                        && !pr.hidden
-                        && pr
-                            .involvement
-                            .contains(pr_nexus_core::domain::Involvement::REVIEW_REQUESTED)
+    list_items(state)
+        .map(|items| {
+            items
+                .iter()
+                .filter(|item| {
+                    item.row.state == "open"
+                        && !item.row.hidden
+                        && pr_nexus_core::domain::Involvement::from_bits_truncate(
+                            item.row.involvement,
+                        )
+                        .contains(pr_nexus_core::domain::Involvement::REVIEW_REQUESTED)
                 })
                 .count()
         })
@@ -2569,5 +2567,34 @@ mod tests {
         ));
         assert!(!external_url_allowed("http://team.slack.com/x"));
         assert!(!external_url_allowed("javascript:alert(1)"));
+    }
+
+    #[test]
+    fn loaded_reviews_counts_open_visible_requests_and_follows_writes() {
+        let (_dir, state) = state_with_hyphenated_repo();
+        let account = state::github_account(&state.store).unwrap().unwrap();
+        let prs = state
+            .store
+            .list_pull_requests_for_account(account.id)
+            .unwrap();
+        let open_requests = |prs: &[PullRequest]| {
+            prs.iter()
+                .filter(|pr| {
+                    pr.state == PrState::Open
+                        && !pr.hidden
+                        && pr.involvement.contains(Involvement::REVIEW_REQUESTED)
+                })
+                .count()
+        };
+        let expected = open_requests(&prs);
+        assert!(expected > 0);
+        assert_eq!(sync_dto(&state).reviews.loaded, expected);
+        let target = prs
+            .iter()
+            .find(|pr| pr.remote.id == "PR_ssp_124")
+            .unwrap()
+            .id;
+        state.store.set_pull_request_hidden(target, true).unwrap();
+        assert_eq!(sync_dto(&state).reviews.loaded, expected - 1);
     }
 }

@@ -8,7 +8,7 @@ use std::thread;
 use std::time::{Duration, SystemTime};
 
 use chrono::{DateTime, Utc};
-use pr_nexus_core::domain::{Account, AccountKind, ChecksState, PrId};
+use pr_nexus_core::domain::{Account, AccountKind, ChecksState, PrId, PullRequest};
 use pr_nexus_core::onboarding::{self, OnboardingState, StepValidity};
 use pr_nexus_core::providers::{ChatProvider, SearchBucket};
 use pr_nexus_core::providers::{ProviderRegistry, SetupStep};
@@ -603,13 +603,14 @@ fn resolve_sync_hint(state: &AppState, input: &SyncHintInput) -> sync::SyncHint 
     };
     let stored = state
         .store
-        .list_pull_requests_for_account(account.id)
+        .list_pull_requests_for_account_slim(account.id)
         .unwrap_or_default();
+    let by_id: HashMap<PrId, &PullRequest> = stored.iter().map(|pr| (pr.id, pr)).collect();
     let mut remote_ids = Vec::new();
     let mut repos = Vec::new();
     let mut visible = Vec::new();
     for id in &input.pr_ids {
-        let Some(pr) = stored.iter().find(|pr| pr.id == PrId(*id)) else {
+        let Some(&pr) = by_id.get(&PrId(*id)) else {
             continue;
         };
         remote_ids.push(pr.remote.id.clone());
