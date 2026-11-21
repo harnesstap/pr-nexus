@@ -226,8 +226,12 @@ impl LivePoller {
             return Ok(out);
         }
         if let Some(budget) = settings::rate_budget(input.store)?
-            && sync::scheduled_poll_paused(&budget, input.now)
+            && let Some(resume) = sync::resume_at(&budget, input.now)
         {
+            // Sleep until the limit resets, and push the skipped checks
+            // refresh along, instead of waking every second.
+            self.next_poll = Some(resume);
+            self.checks_at = Some(input.now);
             return Ok(out);
         }
         let now = input.now;
@@ -1242,6 +1246,36 @@ mod tests {
         assert_eq!(tick.changed, 1);
         let rows = store.list_pull_requests_for_account(account).unwrap();
         assert_eq!(rows[0].checks, ChecksState::Success);
+    }
+
+    #[test]
+    fn a_low_budget_pauses_live_polling_only_until_it_resets() {
+        let (_dir, store, account) = open_store();
+        settings::set_rate_budget(
+            &store,
+            &RateBudget {
+                limit: 5000,
+                remaining: 100,
+                reset_at: ts(0),
+                cost: 1,
+                secondary_until: None,
+            },
+        )
+        .unwrap();
+        let fake = Fake::default();
+        let mut poller = LivePoller::new();
+        // Before the reset: no poll, and the poller sleeps until the reset.
+        let paused = poller
+            .tick(&input(&store, &fake, account, ts(-600)))
+            .unwrap();
+        assert!(!paused.polled);
+        let due = poller.next_due(true, ts(-600));
+        assert!(due > ts(-600) && due <= ts(0), "{due}");
+        // Two hours later the stale low reading no longer holds polling back.
+        let resumed = poller
+            .tick(&input(&store, &fake, account, ts(7200)))
+            .unwrap();
+        assert!(resumed.polled);
     }
 
     #[test]
