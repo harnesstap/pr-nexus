@@ -1569,14 +1569,41 @@ pub async fn pr_overview(
                 .map(|overview| present_overview(state, overview))
                 .transpose();
         }
-        let pr = stored_pr(state, PrId(id))?;
-        let overview = with_vcs(state, |provider| {
-            overview::refresh(&state.store, provider, &pr)
-        })?;
-        state::note_list_changed(state);
+        let overview = refresh_overview(state, PrId(id))?;
         Ok(Some(present_overview(state, overview)?))
     })
     .await
+}
+
+/// Reads the live overview and bumps the list revision only when the row it
+/// feeds changed. The open detail re-reads on every revision, so an
+/// unconditional bump would refetch it from GitHub on every idle poll.
+fn refresh_overview(state: &AppState, id: PrId) -> Result<PrOverview, AppError> {
+    let pr = stored_pr(state, id)?;
+    let before = row_inputs(state, id)?;
+    let overview = with_vcs(state, |provider| {
+        overview::refresh(&state.store, provider, &pr)
+    })?;
+    if row_inputs(state, id)? != before {
+        state::note_list_changed(state);
+    }
+    Ok(overview)
+}
+
+/// What a live overview writes that the list row shows: the row, its merge
+/// queue and its bot-comment count.
+type RowInputs = (
+    Option<PullRequest>,
+    Option<pr_nexus_core::merge_queue::MergeQueueSnapshot>,
+    Option<u32>,
+);
+
+fn row_inputs(state: &AppState, id: PrId) -> Result<RowInputs, AppError> {
+    Ok((
+        state.store.get_pull_request(id)?,
+        state.store.merge_queue(id)?,
+        state.store.bot_comment_counts()?.get(&id).copied(),
+    ))
 }
 
 /// A pull request named by a URL in the search field.
@@ -2361,6 +2388,34 @@ mod tests {
             let row = state.store.get_pull_request(pr.id).unwrap().unwrap();
             assert_eq!(row.is_draft, draft);
         }
+    }
+
+    #[test]
+    fn an_unchanged_live_overview_leaves_the_list_revision() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::for_tests(&dir.path().join("pr-nexus.db"), true);
+        crate::demo::seed_if_empty(&state.store).unwrap();
+        let account = state::github_account(&state.store).unwrap().unwrap();
+        let pr = state
+            .store
+            .list_pull_requests_for_account(account.id)
+            .unwrap()
+            .remove(0);
+        let revision = || state.sync.lock().unwrap().revision;
+
+        let start = revision();
+        refresh_overview(&state, pr.id).unwrap();
+        assert_eq!(
+            revision(),
+            start + 1,
+            "the first read adds the bot-comment count the row shows"
+        );
+        refresh_overview(&state, pr.id).unwrap();
+        assert_eq!(
+            revision(),
+            start + 1,
+            "a second read with the same answer must not reload the list"
+        );
     }
 
     #[test]
