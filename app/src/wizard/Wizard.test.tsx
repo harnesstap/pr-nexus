@@ -505,3 +505,41 @@ test("a successful first sync shows no Retry sync button", async () => {
   expect(await screen.findByText(/First sync: Synced · 0 pull requests/)).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Retry sync" })).not.toBeInTheDocument();
 });
+
+const devicePrompt = () =>
+  Promise.resolve({ user_code: "WDJB-MJHT", verification_uri: "https://github.com/login/device", expires_in: 900, interval: 5 });
+
+test("Copy & open copies the device code before opening GitHub", async () => {
+  const writeText = vi.fn(() => Promise.resolve());
+  Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+  const opened: string[] = [];
+  render(
+    <Wizard
+      api={api({ startDevice: devicePrompt, openExternal: (url: string) => { opened.push(url); return Promise.resolve(); } })}
+      boot={{ ...boot, oauth_client_configured: true, resume_step: "connect_vcs" }}
+      onFinished={() => undefined}
+    />,
+  );
+  fireEvent.click(screen.getByRole("radio", { name: /device flow/ }));
+  fireEvent.click(screen.getByRole("button", { name: /Copy & open/ }));
+  await waitFor(() => expect(opened).toEqual(["https://github.com/login/device"]));
+  expect(writeText).toHaveBeenCalledWith("WDJB-MJHT");
+});
+
+test("I've authorized says so when GitHub has not confirmed yet", async () => {
+  render(
+    <Wizard
+      api={api({
+        startDevice: devicePrompt,
+        openExternal: () => Promise.resolve(),
+        pollDevice: () => Promise.resolve({ status: "pending", login: null }),
+      })}
+      boot={{ ...boot, oauth_client_configured: true, resume_step: "connect_vcs" }}
+      onFinished={() => undefined}
+    />,
+  );
+  fireEvent.click(screen.getByRole("radio", { name: /device flow/ }));
+  fireEvent.click(screen.getByRole("button", { name: /Copy & open/ }));
+  fireEvent.click(await screen.findByRole("button", { name: /I've authorized/ }));
+  expect(await screen.findByText("GitHub hasn't confirmed yet. Finish in the browser and try again.")).toBeInTheDocument();
+});

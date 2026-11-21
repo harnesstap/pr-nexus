@@ -49,6 +49,7 @@ export function Wizard({ api, boot, onFinished, onCancel, cancelLabel }: Props) 
   const [chosenMode, setChosenMode] = useState<"gh_cli" | "pat" | "device" | null>(null);
   const [pat, setPat] = useState("");
   const [deviceCode, setDeviceCode] = useState<string | null>(null);
+  const [devicePending, setDevicePending] = useState(false);
   const [slackFields, setSlackFields] = useState<SlackFields>({
     clientId: boot.slack_client_id,
     clientSecret: "",
@@ -293,6 +294,8 @@ export function Wizard({ api, boot, onFinished, onCancel, cancelLabel }: Props) 
       if (mode === "device") {
         const prompt = await api.startDevice();
         setDeviceCode(prompt.user_code);
+        setDevicePending(false);
+        await navigator.clipboard?.writeText(prompt.user_code).catch(() => undefined);
         await api.openExternal(prompt.verification_uri);
         return;
       }
@@ -318,10 +321,20 @@ export function Wizard({ api, boot, onFinished, onCancel, cancelLabel }: Props) 
     setError(null);
     try {
       const result = await api.pollDevice();
-      if (result.status === "connected" && result.login) {
-        setGithubConnected(true);
-        setLogin(result.login);
-        setDeviceCode(null);
+      switch (result.status) {
+        case "connected":
+          setGithubConnected(true);
+          setLogin(result.login ?? "");
+          setDeviceCode(null);
+          setDevicePending(false);
+          break;
+        case "pending":
+          setDevicePending(true);
+          break;
+        default: {
+          const unreachable: never = result.status;
+          return unreachable;
+        }
       }
     } catch (err) {
       setError(errorMessage(err));
@@ -452,6 +465,11 @@ export function Wizard({ api, boot, onFinished, onCancel, cancelLabel }: Props) 
                 </button>
               )}
             </div>
+            {mode === "device" && deviceCode && devicePending && (
+              <p className="text-sm text-slate-400">
+                GitHub hasn't confirmed yet. Finish in the browser and try again.
+              </p>
+            )}
             {blocked && !githubConnected && (
               <details className="text-sm text-slate-400">
                 <summary className="cursor-pointer text-slate-300">Why is this disabled?</summary>
