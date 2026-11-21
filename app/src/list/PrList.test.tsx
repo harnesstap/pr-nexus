@@ -666,6 +666,26 @@ test("with the detail panel open, arrows and clicks switch the PR it shows", asy
   expect(onDetails).toHaveBeenCalledTimes(3);
 });
 
+test("keys inside an open menu or popover dialog do not move the list", async () => {
+  const onDetails = vi.fn();
+  await show(<Harness rows={rows} onDetails={onDetails} detailId={999} />);
+  const start = focused();
+  for (const role of ["menu", "dialog"]) {
+    // A sidebar context menu or popover lives outside the list and handles its own arrows.
+    const popup = document.createElement("div");
+    popup.setAttribute("role", role);
+    const item = document.createElement("button");
+    popup.append(item);
+    document.body.append(popup);
+    item.focus();
+    fireEvent.keyDown(item, { key: "ArrowDown" });
+    fireEvent.keyDown(item, { key: "Escape" });
+    popup.remove();
+  }
+  expect(focused()).toBe(start);
+  expect(onDetails).not.toHaveBeenCalled();
+});
+
 function focused(): string | null {
   return document.querySelector('article[aria-current="true"]')?.getAttribute("aria-label") ?? null;
 }

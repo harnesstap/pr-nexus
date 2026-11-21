@@ -716,7 +716,8 @@ export function PrList({
     function onKey(event: KeyboardEvent) {
       const target = event.target instanceof HTMLElement ? event.target : null;
       const typing = isTypingTarget(target);
-      if (document.querySelector('[role="dialog"][aria-modal="true"]')) {
+      // A menu or popover (the sidebar's context menus, the move confirm) owns its arrows and Esc.
+      if (document.querySelector('[role="dialog"][aria-modal="true"]') || target?.closest('[role="menu"],[role="dialog"]')) {
         return;
       }
       const id = matchShortcut(event);
