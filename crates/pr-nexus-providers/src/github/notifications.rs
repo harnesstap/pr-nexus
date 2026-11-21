@@ -70,9 +70,7 @@ pub(crate) fn fetch(
     {
         builder = builder.header("If-Modified-Since", since);
     }
-    let response = builder
-        .send()
-        .map_err(|err| ProviderError::Network(err.to_string()))?;
+    let response = builder.send().map_err(http::network)?;
     let status = response.status().as_u16();
     let header = |name: &str| {
         response
@@ -90,9 +88,7 @@ pub(crate) fn fetch(
     if status == 304 {
         return Ok(NotificationsPage::NotModified { poll_interval });
     }
-    let body = response
-        .text()
-        .map_err(|err| ProviderError::Network(err.to_string()))?;
+    let body = response.text().map_err(http::network)?;
     if !(200..300).contains(&status) {
         let err = http::classify(
             status,

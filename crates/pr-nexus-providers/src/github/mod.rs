@@ -123,7 +123,7 @@ impl GithubClient {
             .user_agent("pr-nexus")
             .timeout(REQUEST_TIMEOUT)
             .build()
-            .map_err(|err| ProviderError::Network(err.to_string()))?;
+            .map_err(http::network)?;
         Ok(Self {
             inner: Arc::new(GithubInner {
                 http,
@@ -182,7 +182,7 @@ impl GithubClient {
             .header("Accept", "application/json")
             .json(&json!({ "query": query, "variables": variables }))
             .send()
-            .map_err(|err| ProviderError::Network(err.to_string()))?;
+            .map_err(http::network)?;
         let status = response.status().as_u16();
         let retry = response
             .headers()
@@ -194,9 +194,7 @@ impl GithubClient {
             .get("x-github-sso")
             .and_then(|value| value.to_str().ok())
             .map(str::to_owned);
-        let body = response
-            .text()
-            .map_err(|err| ProviderError::Network(err.to_string()))?;
+        let body = response.text().map_err(http::network)?;
         if !(200..300).contains(&status) {
             let err = http::classify(
                 status,
@@ -303,7 +301,7 @@ impl GithubClient {
             .bearer_auth(&self.token)
             .header("Accept", "application/vnd.github+json")
             .send()
-            .map_err(|err| ProviderError::Network(err.to_string()))?;
+            .map_err(http::network)?;
         let status = response.status().as_u16();
         let retry = response
             .headers()
@@ -315,9 +313,7 @@ impl GithubClient {
             .get("x-github-sso")
             .and_then(|value| value.to_str().ok())
             .map(str::to_owned);
-        let body = response
-            .text()
-            .map_err(|err| ProviderError::Network(err.to_string()))?;
+        let body = response.text().map_err(http::network)?;
         if !(200..300).contains(&status) {
             let err = http::classify(
                 status,
