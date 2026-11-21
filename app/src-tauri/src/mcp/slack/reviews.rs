@@ -356,7 +356,7 @@ fn propose(state: &AppState, ws: &Exposed, request: &BulkRequest, card: BulkCard
         channel_name: Some(card.target.channel_name.clone()).filter(|n| !n.is_empty()),
         session: caller.session.clone(),
         review: Some(Card {
-            request: request.clone(),
+            request: bulk::card_request(request, &card),
             fingerprint: card.fingerprint.clone(),
         }),
     });

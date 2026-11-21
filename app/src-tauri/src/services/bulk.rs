@@ -249,6 +249,20 @@ pub fn send_card(
     send_plan(state, chats, plan, &prs, &[fingerprint.to_owned()])
 }
 
+/// `request` narrowed to the pull requests on `card`, so sending that one
+/// card resolves only its own owners. A card's plan (and fingerprint)
+/// depends only on its own pull requests, so it plans the same.
+pub fn card_request(request: &BulkRequest, card: &BulkCard) -> BulkRequest {
+    let on_card: BTreeSet<i64> = card
+        .messages
+        .iter()
+        .flat_map(|message| message.prs.iter().map(|pr| pr.pr_id))
+        .collect();
+    let mut narrowed = request.clone();
+    narrowed.pr_ids.retain(|id| on_card.contains(id));
+    narrowed
+}
+
 fn send_plan(
     state: &AppState,
     chats: &dyn ChatSource,
