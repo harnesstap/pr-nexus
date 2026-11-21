@@ -8,7 +8,7 @@ use std::thread;
 use std::time::{Duration, SystemTime};
 
 use chrono::{DateTime, Utc};
-use pr_nexus_core::domain::{Account, AccountKind, ChecksState, PrId, PullRequest};
+use pr_nexus_core::domain::{Account, AccountKind, AuthMode, ChecksState, PrId, PullRequest};
 use pr_nexus_core::onboarding::{self, OnboardingState, StepValidity};
 use pr_nexus_core::providers::{ChatProvider, SearchBucket};
 use pr_nexus_core::providers::{ProviderRegistry, SetupStep};
@@ -19,7 +19,7 @@ use pr_nexus_core::sync::{self, SyncKind};
 use pr_nexus_providers::github::{self, GithubClient};
 use pr_nexus_providers::slack_mcp::CancelHandle;
 use pr_nexus_providers::slack_mcp::TokenState;
-use pr_nexus_providers::vault::Vault;
+use pr_nexus_providers::vault::{KeyringState, Vault};
 use tauri::Manager;
 
 use crate::error::AppError;
@@ -426,11 +426,7 @@ pub fn resolve_github_token(
             github::GhProbe::Unavailable { reason } => Err(AppError::new("unauthorized", reason)),
         },
         pr_nexus_core::domain::AuthMode::Pat | pr_nexus_core::domain::AuthMode::OauthDevice => {
-            let key = account
-                .keychain_key
-                .clone()
-                .unwrap_or_else(|| format!("github:{}", account.external_id));
-            state.vault.get(&key)?.ok_or_else(|| {
+            state.vault.get(&github_key(account))?.ok_or_else(|| {
                 AppError::new(
                     "unauthorized",
                     "GitHub token is not in the keychain. Reconnect, or set PR_NEXUS_GITHUB_TOKEN.",
@@ -444,6 +440,14 @@ pub fn resolve_github_token(
     }
 }
 
+/// The vault key of a GitHub account's stored token.
+fn github_key(account: &Account) -> String {
+    account
+        .keychain_key
+        .clone()
+        .unwrap_or_else(|| format!("github:{}", account.external_id))
+}
+
 pub fn validity(state: &AppState, saved: &OnboardingState) -> Result<StepValidity, AppError> {
     let (vcs, chat) = settings::provider_kinds(&state.store)?;
     let account = github_account(&state.store)?;
@@ -451,8 +455,22 @@ pub fn validity(state: &AppState, saved: &OnboardingState) -> Result<StepValidit
     let personal = settings::include_personal_repos(&state.store)?;
     // After setup the token is checked by each sync, which reports a lost
     // one; reading it here would run `gh` on every launch.
-    let github_verified = account.is_some()
-        && (saved.finished_at.is_some() || resolve_github_token(state, account.as_ref()).is_ok());
+    let github_verified = match account.as_ref() {
+        None => false,
+        Some(_) if saved.finished_at.is_some() => true,
+        // Display path (§9): never wait on the keychain. A first read still
+        // behind a prompt is not a failure.
+        Some(account)
+            if matches!(account.auth_mode, AuthMode::Pat | AuthMode::OauthDevice)
+                && github::github_token_from_env().is_none() =>
+        {
+            matches!(
+                state.vault.status().state,
+                KeyringState::Waiting | KeyringState::TimedOut
+            ) || state.vault.peek(&github_key(account))?.is_some()
+        }
+        Some(account) => resolve_github_token(state, Some(account)).is_ok(),
+    };
     let slack_completed = saved
         .completed
         .iter()
@@ -1259,6 +1277,8 @@ pub fn registry_steps() -> Vec<SetupStep> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pr_nexus_core::domain::AccountId;
+    use pr_nexus_providers::vault::{KeyringBackend, KeyringError};
 
     fn report(fetched: usize, total: u64) -> sync::SyncReport {
         sync::SyncReport {
@@ -1276,6 +1296,89 @@ mod tests {
 
     fn at(minute: i64) -> DateTime<Utc> {
         DateTime::<Utc>::from_timestamp(1_800_000_000 + minute * 60, 0).unwrap()
+    }
+
+    /// A keychain whose prompt the user has not answered yet: a read
+    /// returns once the test drops the sender.
+    struct PendingKeychain(Mutex<std::sync::mpsc::Receiver<()>>);
+
+    impl KeyringBackend for PendingKeychain {
+        fn read(&self) -> Result<Option<String>, KeyringError> {
+            let _ = self.0.lock().unwrap_or_else(PoisonError::into_inner).recv();
+            Ok(None)
+        }
+        fn write(&self, _json: &str) -> Result<(), KeyringError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn setup_validity_does_not_wait_for_a_pending_keychain_prompt() {
+        let dir = std::env::temp_dir().join(format!("prn-validity-kc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let profiles =
+            Arc::new(crate::profiles::ProfileManager::open(dir.join("pr-nexus.db")).unwrap());
+        let (answer, pending) = std::sync::mpsc::channel::<()>();
+        // Far longer than the test: waiting for the read would time out
+        // first and then fail the check below.
+        let vault = Vault::with_backend(
+            Box::new(PendingKeychain(Mutex::new(pending))),
+            Duration::from_secs(60),
+        );
+        let state = AppState::build(
+            profiles,
+            pr_nexus_core::profiles::DEFAULT_ID,
+            Arc::new(vault),
+            false,
+        )
+        .unwrap();
+        state
+            .store
+            .upsert_account(Account {
+                id: AccountId(0),
+                kind: AccountKind::GitHub,
+                display_name: "alice".into(),
+                host: "github.com".into(),
+                external_id: "A".into(),
+                slack_workspace: None,
+                login: "alice".into(),
+                auth_mode: AuthMode::Pat,
+                keychain_key: Some("github:A".into()),
+                created_at: Utc::now(),
+            })
+            .unwrap();
+        // Setup not finished: what `bootstrap` computes before the window draws.
+        let validity = validity(&state, &OnboardingState::fresh()).unwrap();
+        // It returned while the prompt is still unanswered.
+        assert_eq!(state.vault.status().state, KeyringState::Waiting);
+        // A pending prompt is not a failure (§9): the wizard stays past GitHub.
+        assert!(validity.github_verified);
+        drop(answer);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn setup_validity_reads_the_loaded_vault_for_the_github_token() {
+        let dir = std::env::temp_dir().join(format!("prn-validity-loaded-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = AppState::for_tests(&dir.join("pr-nexus.db"), false);
+        let account = Account {
+            id: AccountId(0),
+            kind: AccountKind::GitHub,
+            display_name: "alice".into(),
+            host: "github.com".into(),
+            external_id: "A".into(),
+            slack_workspace: None,
+            login: "alice".into(),
+            auth_mode: AuthMode::Pat,
+            keychain_key: Some("github:A".into()),
+            created_at: Utc::now(),
+        };
+        state.store.upsert_account(account).unwrap();
+        let saved = OnboardingState::fresh();
+        assert!(!validity(&state, &saved).unwrap().github_verified);
+        state.vault.set("github:A", "tok").unwrap();
+        assert!(validity(&state, &saved).unwrap().github_verified);
     }
 
     #[test]
