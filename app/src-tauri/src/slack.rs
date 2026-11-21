@@ -701,26 +701,28 @@ pub async fn slack_cancel_connect(app: Shared<'_>) -> Result<(), AppError> {
 #[tauri::command]
 pub async fn slack_remove_workspace(app: Shared<'_>, id: i64) -> Result<(), AppError> {
     let app = blocking::Handle::new(&app);
-    blocking::run(move || {
-        let state = app.inner().as_ref();
-        let account = state
-            .store
-            .get_account(AccountId(id))?
-            .filter(|account| account.kind == AccountKind::Slack)
-            .ok_or_else(|| AppError::new("not_found", "Slack workspace not found"))?;
-        lock(&state.chats).remove(&id);
-        if let Some(key) = &account.keychain_key {
-            state.vault.remove(key)?;
-        }
-        if state.store.delete_account(account.id).is_err() {
-            state.store.upsert_account(Account {
-                keychain_key: None,
-                ..account
-            })?;
-        }
-        Ok(())
-    })
-    .await
+    blocking::run(move || remove_workspace(app.inner().as_ref(), id)).await
+}
+
+fn remove_workspace(state: &AppState, id: i64) -> Result<(), AppError> {
+    let account = state
+        .store
+        .get_account(AccountId(id))?
+        .filter(|account| account.kind == AccountKind::Slack)
+        .ok_or_else(|| AppError::new("not_found", "Slack workspace not found"))?;
+    lock(&state.chats).remove(&id);
+    // A kept row has no key, so no later check would replace a "connected".
+    lock(&state.slack_tokens).remove(&id);
+    if let Some(key) = &account.keychain_key {
+        state.vault.remove(key)?;
+    }
+    if state.store.delete_account(account.id).is_err() {
+        state.store.upsert_account(Account {
+            keychain_key: None,
+            ..account
+        })?;
+    }
+    Ok(())
 }
 
 /// Channels for the PR: active requests first, then the mapping rows of
@@ -1751,6 +1753,7 @@ pub(crate) fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pr_nexus_core::domain::{ReviewMessage, ReviewMessageKind, ReviewMessageOrigin};
 
     fn target(workspace: &str, id: &str, name: &str) -> ReviewTarget {
         ReviewTarget {
@@ -2235,6 +2238,49 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.kind, "not_found");
+    }
+
+    #[tokio::test]
+    async fn a_removed_workspace_kept_for_history_reads_signed_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::for_tests(&dir.path().join("test.db"), false);
+        let account = state
+            .store
+            .upsert_account(slack_account("Acme", "acme", "T0ACME0001", "U0ADA"))
+            .unwrap();
+        state
+            .vault
+            .set(
+                account.keychain_key.as_deref().unwrap(),
+                &grant("xoxp-acme"),
+            )
+            .unwrap();
+        record_check(&state, account.id.0, TokenState::Valid, "");
+        // A posted message keeps the row (its links stay in history).
+        state
+            .store
+            .insert_review_message(ReviewMessage {
+                id: 0,
+                slack_account_id: account.id,
+                channel_id: "C0123456789".into(),
+                channel_name: "team-reviews".into(),
+                ts: "1.0".into(),
+                thread_root_ts: None,
+                kind: ReviewMessageKind::Request,
+                origin: ReviewMessageOrigin::Posted,
+                permalink: None,
+                text: "review".into(),
+                batch_id: None,
+                posted_at: Utc::now(),
+            })
+            .unwrap();
+        remove_workspace(&state, account.id.0).unwrap();
+        let list = refresh_grants(&state, "http://127.0.0.1:1", None, true)
+            .await
+            .unwrap();
+        let row = list.iter().find(|ws| ws.id == account.id.0).unwrap();
+        assert!(!row.signed_in);
+        assert_ne!(row.check, "connected");
     }
 
     #[tokio::test]
