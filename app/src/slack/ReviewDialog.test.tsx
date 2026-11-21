@@ -1049,3 +1049,63 @@ test("failing owners are explained instead of an empty list", async () => {
   render(<ReviewDialog api={api} row={row} onClose={() => undefined} onOpen={() => undefined} onSent={() => undefined} />);
   expect(await screen.findByText(/Couldn't read this PR's code owners/)).toBeInTheDocument();
 });
+
+test("a grouped send that fails on the second card drops the posted card, and a retry sends only what is left", async () => {
+  const channel = (channel_id: string, channel_name: string): ReviewTarget => ({ workspace: "acme", channel_id, channel_name });
+  const indicators: SlackIndicator[] = [];
+  let failSecond = true;
+  const card = (target: ReviewTarget) => ({
+    target,
+    messages: [{ action: "request" as const, prs: [{ pr_id: 7, number: 42, title: "t", repo: "acme/widgets" }], text: `Please review in #${target.channel_name}`, permalink: null }],
+    warnings: [],
+    signed_in: true,
+    single_top_level: false,
+    can_switch: false,
+    fingerprint: target.channel_id,
+  });
+  const lines = [
+    { pr_id: 7, number: 42, group_id: "a", pattern: "/a/", teams: ["acme/team-a"], selected: "acme/team-a", hint: null, channel_id: "C0ACME0001", workspace: "acme" },
+    { pr_id: 7, number: 42, group_id: "c", pattern: "/c/", teams: ["acme/team-c"], selected: "acme/team-c", hint: null, channel_id: "C0ACME0003", workspace: "acme" },
+  ];
+  const names: Record<string, string> = { C0ACME0001: "team-a", C0ACME0003: "team-c" };
+  const { api, calls } = fake({
+    prDetail: () =>
+      Promise.resolve({
+        ...detail,
+        owner_groups: [
+          { id: "a", pattern: "/a/", teams: ["acme/team-a"], users: [], satisfied: false },
+          { id: "c", pattern: "/c/", teams: ["acme/team-c"], users: [], satisfied: false },
+        ],
+      }),
+    bulkPreview: (request: BulkRequest): Promise<BulkPreview> => {
+      const skipped = new Set((request.skipped_groups ?? []).map((item) => item.group_id));
+      const left = lines.filter((line) => !skipped.has(line.group_id));
+      return Promise.resolve({
+        cards: left.map((line) => card(channel(line.channel_id, names[line.channel_id]))),
+        skipped: [],
+        pr_warnings: [],
+        groups: left,
+      } as unknown as BulkPreview);
+    },
+    sendReview: (_id: number, target: ReviewTarget, teams: string[]): Promise<SlackIndicator> => {
+      calls.sent.push([target, teams]);
+      if (target.channel_id === "C0ACME0003" && failSecond) {
+        return Promise.reject({ kind: "slack", message: "channel_not_found" });
+      }
+      return Promise.resolve({ requested_at: "2026-10-26T12:00:00Z", last_bumped_at: null, bump_count: 0, workspace: "acme", channel_id: target.channel_id, channel_name: target.channel_name, permalink: null, root_ts: "1.0", source: "app" } as SlackIndicator);
+    },
+  });
+  render(<ReviewDialog api={api} row={row} onClose={() => undefined} onOpen={() => undefined} onSent={(indicator) => indicators.push(indicator)} />);
+  fireEvent.click(await screen.findByRole("button", { name: "Send 2 messages" }));
+  expect(await screen.findByText("channel_not_found")).toBeInTheDocument();
+  expect(calls.sent.map(([target]) => target.channel_id)).toEqual(["C0ACME0001", "C0ACME0003"]);
+  // The posted card is gone; only the failed one is left, and the error stays.
+  await waitFor(() => expect(screen.queryByRole("region", { name: "#team-a" })).toBeNull());
+  expect(await screen.findByRole("region", { name: "#team-c" })).toBeInTheDocument();
+  expect(screen.getByText("channel_not_found")).toBeInTheDocument();
+  failSecond = false;
+  fireEvent.click(await screen.findByRole("button", { name: "Send request" }));
+  await waitFor(() => expect(indicators).toHaveLength(1));
+  expect(calls.sent.map(([target]) => target.channel_id)).toEqual(["C0ACME0001", "C0ACME0003", "C0ACME0003"]);
+  expect(indicators[0].channel_id).toBe("C0ACME0003");
+});

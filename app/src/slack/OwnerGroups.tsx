@@ -536,12 +536,15 @@ export function GroupedRequest({ api, row, onClose, onSent, onOpen, onReady, onN
     }
     setSending(true);
     setError(null);
+    const posted: BulkGroup[] = [];
     try {
       await saveChosenChannels(api, preview, channels, saveFor);
       let last: SlackIndicator | null = null;
       for (const card of preview.cards) {
-        const teams = (preview.groups ?? []).filter((group) => groupOnCard(group, card.target) && group.selected).map((group) => group.selected as string);
+        const mine = (preview.groups ?? []).filter((group) => groupOnCard(group, card.target));
+        const teams = mine.filter((group) => group.selected).map((group) => group.selected as string);
         last = await api.sendReview(row.id, card.target, teams, note);
+        posted.push(...mine);
       }
       if (last) {
         onSent(last);
@@ -550,6 +553,10 @@ export function GroupedRequest({ api, row, onClose, onSent, onOpen, onReady, onN
       if (err && typeof err === "object" && (err as { kind?: unknown }).kind === "sent_unconfirmed") {
         setUnconfirmed(errorMessage(err));
       } else {
+        // Cards already posted leave the plan, so a retry does not post them again.
+        if (posted.length > 0) {
+          removeGroups(posted);
+        }
         setError(errorMessage(err));
       }
       setSending(false);
