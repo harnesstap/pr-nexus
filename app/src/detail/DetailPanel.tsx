@@ -377,7 +377,7 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
                       api={api}
                       prId={row.id}
                       overview={overview}
-                      onChange={setOverview}
+                      onChange={(next, observed) => offerOverview(row.id, next, observed) && setOverview(next)}
                       onNotice={onNotice}
                       onMerged={onMerged}
                       onQueueChange={onQueueChange}
