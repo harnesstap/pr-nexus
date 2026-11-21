@@ -1,0 +1,3 @@
+kind: Fixed
+body: Marking read, snoozing, unsnoozing or muting pull requests updates the menu bar counts and dock badge at once instead of at the next sync.
+time: 2026-11-20T17:15:00Z

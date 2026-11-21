@@ -188,6 +188,8 @@ fn pr_ids(ids: &[i64]) -> Vec<PrId> {
 /// Records the current activity as seen, so the unread dot clears.
 pub fn mark_prs_read(state: &AppState, ids: &[i64]) -> Result<(), AppError> {
     state.store.mark_attention_read(&pr_ids(ids), Utc::now())?;
+    // The tray title, menu counts and dock badge follow at once, not at the next sync.
+    crate::presence::refresh_counts(state);
     Ok(())
 }
 
@@ -197,6 +199,8 @@ pub fn set_prs_snooze(state: &AppState, ids: &[i64], choice: &str) -> Result<(),
     state
         .store
         .set_attention_snooze(&pr_ids(ids), choice, Utc::now())?;
+    // The tray title, menu counts and dock badge follow at once, not at the next sync.
+    crate::presence::refresh_counts(state);
     Ok(())
 }
 
@@ -205,5 +209,7 @@ pub fn set_prs_muted(state: &AppState, ids: &[i64], muted: bool) -> Result<(), A
     state
         .store
         .set_attention_muted(&pr_ids(ids), muted, Utc::now())?;
+    // The tray title, menu counts and dock badge follow at once, not at the next sync.
+    crate::presence::refresh_counts(state);
     Ok(())
 }
