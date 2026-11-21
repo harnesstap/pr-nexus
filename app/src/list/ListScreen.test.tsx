@@ -1,4 +1,5 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { Profiler } from "react";
 import { expect, test, vi } from "vitest";
 import type { Api, Bootstrap, ProjectDto, ReviewTarget, SyncHint } from "../api";
 import type { SearchRow } from "./paging";
@@ -495,6 +496,53 @@ test("a failed Sync now does not stay on the optimistic Syncing…", async () =>
   render(<ListScreen api={{ ...fake, syncNow, syncStatus }} boot={boot} onBoot={() => {}} />);
   fireEvent.click(await screen.findByRole("button", { name: "Refresh" }));
   expect(await screen.findByRole("button", { name: /^Sync failed · network down, sync details/ })).toBeInTheDocument();
+});
+
+test("the clock skips ticks while the window is hidden and catches up when shown", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    const synced = { ...boot.sync, synced_at: new Date().toISOString() };
+    render(<ListScreen api={{ ...api([]), syncStatus: () => Promise.resolve(synced) }} boot={{ ...boot, sync: synced }} onBoot={() => {}} />);
+    expect(await screen.findByRole("button", { name: /^Synced · just now, sync details/ })).toBeInTheDocument();
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => true });
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(screen.getByRole("button", { name: /^Synced · just now, sync details/ })).toBeInTheDocument();
+    Reflect.deleteProperty(document, "hidden");
+    act(() => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    expect(screen.getByRole("button", { name: /^Synced · 2m ago, sync details/ })).toBeInTheDocument();
+  } finally {
+    Reflect.deleteProperty(document, "hidden");
+    vi.useRealTimers();
+  }
+});
+
+test("an unchanged status while syncing does not re-render the screen", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    const running = { ...boot.sync, phase: "syncing", message: "Syncing… 911 so far" };
+    let status = running;
+    const syncStatus = vi.fn(() => Promise.resolve({ ...status }));
+    let commits = 0;
+    render(
+      <Profiler id="list" onRender={() => (commits += 1)}>
+        <ListScreen api={{ ...api([]), syncStatus }} boot={{ ...boot, sync: running }} onBoot={() => {}} />
+      </Profiler>,
+    );
+    expect(await screen.findByRole("button", { name: /Syncing… 911 so far, sync details/ })).toBeInTheDocument();
+    await vi.advanceTimersByTimeAsync(1_000);
+    commits = 0;
+    const polls = syncStatus.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(syncStatus.mock.calls.length).toBeGreaterThan(polls);
+    expect(commits).toBe(0);
+    status = { ...running, message: "Syncing… 950 so far" };
+    await vi.advanceTimersByTimeAsync(600);
+    expect(await screen.findByRole("button", { name: /Syncing… 950 so far, sync details/ })).toBeInTheDocument();
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test("opening To review starts the review sync once and offers more", async () => {

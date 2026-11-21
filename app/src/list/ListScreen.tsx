@@ -356,7 +356,20 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
   const githubTotal = githubShown?.total ?? 0;
   const needsOrgs = orgs.length === 0 && !personal;
 
-  useEffect(() => every(30_000, () => setNow(new Date())), []);
+  useEffect(() => {
+    // A hidden window skips the tick and catches up when shown again.
+    const tick = () => {
+      if (!document.hidden) {
+        setNow(new Date());
+      }
+    };
+    const stop = every(30_000, tick);
+    document.addEventListener("visibilitychange", tick);
+    return () => {
+      stop();
+      document.removeEventListener("visibilitychange", tick);
+    };
+  }, []);
 
   useEffect(() => {
     if (flash === null) {
@@ -538,7 +551,8 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
         if (cancel) {
           return;
         }
-        setSync(status);
+        // An unchanged status would still re-render the whole screen every poll.
+        setSync((current) => (JSON.stringify(current) === JSON.stringify(status) ? current : status));
         noteRevision(status.revision);
         if (status.phase !== "syncing") {
           void api.listProjects().then((next) => !cancel && setProjects(next));
