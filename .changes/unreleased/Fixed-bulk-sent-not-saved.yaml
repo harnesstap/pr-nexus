@@ -1,0 +1,3 @@
+kind: Fixed
+body: A bulk Slack message that was posted but could not be saved for one pull request is now reported as sent, and the other pull requests in it stay tracked, so Retry failed no longer posts it again.
+time: 2026-11-20T10:10:00Z
