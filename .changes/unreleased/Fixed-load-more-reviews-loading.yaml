@@ -1,0 +1,3 @@
+kind: Fixed
+body: Load more review requests keeps To review loading until the new rows arrive, instead of showing them up to 15 seconds late.
+time: 2026-11-20T10:40:00Z
