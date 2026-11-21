@@ -481,6 +481,26 @@ fn review_request_constraints() {
         .unwrap();
     assert_eq!(bumped.status, RequestStatus::Closed(CloseReason::PrMerged));
     assert_eq!(bumped.closed_at, Some(at()));
+
+    // Sync closing a finished pull request's requests closes the active ones
+    // and leaves one something else already closed alone: no error that
+    // would fail the sync.
+    let active = store
+        .list_review_requests(first.pr)
+        .unwrap()
+        .iter()
+        .filter(|request| request.status == RequestStatus::Active)
+        .count();
+    let swept = store
+        .close_active_requests(vec![(first.pr, CloseReason::PrClosed)], at())
+        .unwrap();
+    assert_eq!(swept, active);
+    let kept = store.get_review_request(first.id).unwrap().unwrap();
+    assert_eq!(kept.status, RequestStatus::Closed(CloseReason::PrMerged));
+    let again = store
+        .close_active_requests(vec![(first.pr, CloseReason::PrClosed)], at())
+        .unwrap();
+    assert_eq!(again, 0);
 }
 
 #[test]
