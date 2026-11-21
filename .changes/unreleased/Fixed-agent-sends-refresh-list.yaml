@@ -1,0 +1,3 @@
+kind: Fixed
+body: The list refreshes after an agent sends Slack review requests, whether auto-sent, approved in the agent, or approved in PR Nexus.
+time: 2026-11-20T10:30:00Z

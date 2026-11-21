@@ -1232,9 +1232,10 @@ impl crate::mcp::audit::AuditSink for Kept {
 }
 
 /// Send `hi()` through the HTTP server as an agent answering `action`.
+/// Also whether the call bumped the list revision.
 async fn send_over_http(
     action: rmcp::model::ElicitationAction,
-) -> (Value, Calls, Vec<crate::mcp::audit::AuditEvent>) {
+) -> (Value, Calls, Vec<crate::mcp::audit::AuditEvent>, bool) {
     use rmcp::ServiceExt;
     use rmcp::transport::StreamableHttpClientTransport;
     use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
@@ -1253,22 +1254,25 @@ async fn send_over_http(
         StreamableHttpClientTransportConfig::with_uri(url).auth_header(token),
     );
     let client = Agent(action).serve(transport).await.unwrap();
+    let revision = env.state.sync.lock().unwrap().revision;
     let mut request = rmcp::model::CallToolRequestParams::new("slack_send_message");
     request.arguments = hi().as_object().cloned();
     let reply = client.call_tool(request).await.unwrap();
     let out = reply.structured_content.clone().expect("structured reply");
+    let bumped = env.state.sync.lock().unwrap().revision > revision;
     client.cancel().await.unwrap();
     let mut off = config::load(&env.state.store).unwrap();
     off.enabled = false;
     control.update(off).await.unwrap();
     drop(env);
     let events = kept.0.lock().unwrap().clone();
-    (out, calls, events)
+    (out, calls, events, bumped)
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn an_agent_with_elicitation_approves_over_http() {
-    let (out, calls, events) = send_over_http(rmcp::model::ElicitationAction::Accept).await;
+    let (out, calls, events, bumped) = send_over_http(rmcp::model::ElicitationAction::Accept).await;
+    assert!(bumped, "a sent message refreshes the list");
     let event = events
         .iter()
         .find(|event| event.tool == "slack_send_message")
@@ -1288,7 +1292,9 @@ async fn an_agent_with_elicitation_approves_over_http() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn an_agent_with_elicitation_declines_over_http() {
-    let (out, calls, events) = send_over_http(rmcp::model::ElicitationAction::Decline).await;
+    let (out, calls, events, bumped) =
+        send_over_http(rmcp::model::ElicitationAction::Decline).await;
+    assert!(!bumped);
     assert!(events.iter().all(|event| event.link.is_none()));
     assert_eq!(out["status"], "rejected", "{out}");
     assert!(writes(&calls).is_empty());
@@ -1316,7 +1322,9 @@ async fn the_in_app_approval_says_where_it_went() {
     let approve = async |arguments: Value| {
         let out = call(&env, "slack_send_message", arguments).unwrap();
         let id = out["proposal_id"].as_u64().unwrap();
+        let revision = env.state.sync.lock().unwrap().revision;
         control.decide(id, true).await.unwrap();
+        assert!(env.state.sync.lock().unwrap().revision > revision);
         let summary = kept.0.lock().unwrap().last().unwrap().summary.clone();
         (id, summary)
     };

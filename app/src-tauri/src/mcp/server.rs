@@ -57,7 +57,7 @@ impl Shared {
 
     /// After an agent write: the list's idle poll sees a new revision, and
     /// the window (when there is one) is told at once.
-    fn wrote(&self) {
+    pub(super) fn wrote(&self) {
         self.state.sync.lock().expect("sync status").revision += 1;
         if let Some(notify) = &self.on_write {
             notify();
@@ -299,7 +299,10 @@ impl ServerHandler for NexusMcp {
         Ok(match result {
             Ok(value) => {
                 audit(Outcome::Ok, Some(&value), None);
-                if spec.capability == Capability::LocalWrites {
+                // A Slack send records review requests the list shows.
+                let sent = spec.capability == Capability::SlackSends
+                    && matches!(value["status"].as_str(), Some("sent" | "partial"));
+                if spec.capability == Capability::LocalWrites || sent {
                     self.shared.wrote();
                 }
                 CallToolResult::structured(value)

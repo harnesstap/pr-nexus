@@ -219,6 +219,12 @@ impl McpControl {
         let state = Arc::clone(&self.shared.state);
         let started = std::time::Instant::now();
         let decided = blocking::run(move || sends::decide(&state, id, approve)).await;
+        if decided
+            .as_ref()
+            .is_ok_and(|proposal| proposal.status == Status::Sent)
+        {
+            self.shared.wrote();
+        }
         let verb = if approve { "approved" } else { "rejected" };
         let link = decided
             .as_ref()
