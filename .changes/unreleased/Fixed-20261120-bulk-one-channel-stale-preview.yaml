@@ -1,0 +1,3 @@
+kind: Fixed
+body: Choosing All to one channel in the bulk dialog while channel names are still loading no longer brings back the per-team cards with Send enabled.
+time: 2026-11-20T06:10:00Z

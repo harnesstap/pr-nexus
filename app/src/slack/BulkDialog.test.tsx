@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { expect, test, vi } from "vitest";
 import type { Toast } from "../list/model";
 import type { Api, BulkCard, BulkPreview, BulkRequest, BulkResult } from "../api";
@@ -383,6 +383,30 @@ test("draws the cards from cached names at once, then swaps in Slack's names bef
   expect(await screen.findByText(/#platform/)).toBeInTheDocument();
   expect(screen.queryByText(/#old-name/)).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Send 2 messages" })).toBeEnabled();
+});
+
+test("picking All to one channel while Slack names load keeps the team cards away and Send off", async () => {
+  const { api, calls } = fake();
+  let finishNames: (planned: BulkPreview) => void = () => undefined;
+  const slow: Api = {
+    ...api,
+    bulkPreview: (request: BulkRequest) =>
+      request.cached_names
+        ? Promise.resolve({ cards: [card(false)], skipped: [], pr_warnings: [], names_pending: true })
+        : new Promise<BulkPreview>((resolve) => {
+            finishNames = resolve;
+          }),
+  };
+  render(<BulkDialog api={slow} prIds={[1, 2]} onClose={() => undefined} onSent={() => undefined} onOpen={() => undefined} />);
+  expect(await screen.findByText("Bump #42")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("radio", { name: "All to one channel" }));
+  expect(screen.queryByText("Bump #42")).not.toBeInTheDocument();
+  await act(async () => finishNames({ cards: [card(false)], skipped: [], pr_warnings: [] }));
+  expect(screen.getByRole("radio", { name: "All to one channel" })).toBeChecked();
+  expect(screen.queryByText("Bump #42")).not.toBeInTheDocument();
+  expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /^Send/ })).toBeDisabled();
+  expect(calls.sends).toHaveLength(0);
 });
 
 test("a CODEOWNERS line can switch teams, and a line with no channel is a card", async () => {
