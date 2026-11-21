@@ -406,7 +406,7 @@ fn review_request_then_bump_post_through_the_fake() {
         "preview posts nothing"
     );
 
-    let sent = review::send(state, &slack, pr, channel(), &[], Some("Thanks!")).unwrap();
+    let sent = review::send(state, &slack, pr, channel(), &[], Some("Thanks!"), None).unwrap();
     assert_eq!(sent.channel_id, "C0ACME0001");
     {
         let posts = slack.posts.lock().unwrap();
@@ -1280,6 +1280,7 @@ fn remapped_team_gets_a_new_request_in_the_mapped_channel() {
         old.clone(),
         std::slice::from_ref(&team),
         None,
+        None,
     )
     .unwrap();
     map_team(state, &team, "C0ACME0002", "new-channel");
@@ -1345,6 +1346,7 @@ fn remapped_team_keeps_the_old_thread_as_an_explicit_pick() {
         old.clone(),
         std::slice::from_ref(&team),
         None,
+        None,
     )
     .unwrap();
     map_team(state, &team, "C0ACME0002", "new-channel");
@@ -1369,7 +1371,16 @@ fn remapped_team_keeps_the_old_thread_as_an_explicit_pick() {
     let bump = review::preview(state, pr, choices[1].target.clone()).unwrap();
     assert_eq!(bump.action, "bump");
     assert_eq!(bump.target.channel_name, "old-channel");
-    review::send(state, &slack, pr, choices[1].target.clone(), &[team], None).unwrap();
+    review::send(
+        state,
+        &slack,
+        pr,
+        choices[1].target.clone(),
+        &[team],
+        None,
+        None,
+    )
+    .unwrap();
     let posts = slack.posts.lock().unwrap();
     assert_eq!(posts[before].0, "C0ACME0001");
     assert!(posts[before].1.is_some(), "a reply in the old thread");
@@ -1390,6 +1401,7 @@ fn unchanged_mapping_still_bumps_the_tracked_thread() {
         pr,
         channel(),
         std::slice::from_ref(&team),
+        None,
         None,
     )
     .unwrap();
@@ -1907,11 +1919,11 @@ fn a_typed_channel_id_bumps_the_open_thread_in_that_channel() {
     connect_fake_workspace(state);
     let slack = Arc::new(FakeSlack::default());
     let pr = pr_id(state, 1);
-    review::send(state, &slack, pr, channel(), &[], None).unwrap();
+    review::send(state, &slack, pr, channel(), &[], None, None).unwrap();
 
     let preview = review::preview_with(state, &slack, pr, typed_channel_id()).unwrap();
     assert_eq!(preview.action, "bump");
-    review::send(state, &slack, pr, typed_channel_id(), &[], None).unwrap();
+    review::send(state, &slack, pr, typed_channel_id(), &[], None, None).unwrap();
     let posts = slack.posts.lock().unwrap().clone();
     assert_eq!(posts.len(), 2);
     assert!(posts[1].1.is_some(), "the second post is a thread reply");
@@ -1924,7 +1936,7 @@ fn all_to_one_typed_channel_id_bumps_the_open_thread() {
     connect_fake_workspace(state);
     let slack = Arc::new(FakeSlack::default());
     let pr = pr_id(state, 1);
-    review::send(state, &slack, pr, channel(), &[], None).unwrap();
+    review::send(state, &slack, pr, channel(), &[], None, None).unwrap();
     let request: BulkRequest = serde_json::from_value(serde_json::json!({
         "pr_ids": [pr],
         "target": {"workspace": "", "channel_id": "C0ACME0001", "channel_name": ""},
@@ -1962,7 +1974,26 @@ fn single_send_refuses_a_pr_merged_since_the_preview() {
     row.state = PrState::Merged;
     replace_pr(state, row);
 
-    let err = review::send(state, &slack, pr, channel(), &[], None).unwrap_err();
+    let err = review::send(state, &slack, pr, channel(), &[], None, None).unwrap_err();
     assert_eq!(err.kind, "conflict");
     assert!(slack.posts.lock().unwrap().is_empty());
+}
+
+#[test]
+fn single_send_refuses_an_action_other_than_the_preview() {
+    let fx = fixture("send-preview-drift");
+    let state = &fx.state;
+    connect_fake_workspace(state);
+    let slack = Arc::new(FakeSlack::default());
+    let pr = pr_id(state, 1);
+    let shown = review::preview_with(state, &slack, pr, channel()).unwrap();
+    assert_eq!(shown.action, "request");
+    // Another window sends the same request after this preview.
+    review::send(state, &slack, pr, channel(), &[], None, Some("request")).unwrap();
+
+    let err = review::send(state, &slack, pr, channel(), &[], None, Some("request")).unwrap_err();
+    assert_eq!(err.kind, "conflict");
+    let posts = slack.posts.lock().unwrap();
+    assert_eq!(posts.len(), 1, "the stale preview posts nothing");
+    assert_eq!(posts[0].2, shown.text);
 }

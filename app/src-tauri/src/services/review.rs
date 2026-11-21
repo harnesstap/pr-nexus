@@ -107,7 +107,8 @@ pub(crate) fn preview_named(
 
 /// Plans again (the state may have moved since the preview) and posts: a new
 /// request routed to the first workspace that sees the channel, or a bump in
-/// the active request's thread.
+/// the active request's thread. `previewed` is the action the preview showed
+/// (`request` or `bump`); a plan that no longer matches it posts nothing.
 pub fn send(
     state: &AppState,
     chats: &dyn ChatSource,
@@ -115,6 +116,7 @@ pub fn send(
     target: ReviewTarget,
     teams: &[String],
     note: Option<&str>,
+    previewed: Option<&str>,
 ) -> Result<SlackIndicator, AppError> {
     let pr = load_pr(&state.store, pr_id)?;
     recheck(state, &pr)?;
@@ -122,6 +124,16 @@ pub fn send(
     fill_open_request(state, &pr, &mut target)?;
     let target = crate::slack::resolve_target(state, chats, target);
     let plan = lifecycle::with_note(plan(state, &pr, &target)?, note);
+    let action = match plan.action {
+        Action::Request => "request",
+        Action::Bump { .. } => "bump",
+    };
+    if previewed.is_some_and(|previewed| previewed != action) {
+        return Err(AppError::new(
+            "conflict",
+            "This review request changed since the preview; nothing was sent. Preview again.",
+        ));
+    }
     let teams_json = serde_json::to_string(teams).unwrap_or_else(|_| "[]".into());
     let mut send = |chat: &dyn ChatProvider, target: &Target| {
         let plan = lifecycle::Plan {

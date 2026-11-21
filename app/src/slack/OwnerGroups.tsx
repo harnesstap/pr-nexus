@@ -543,7 +543,7 @@ export function GroupedRequest({ api, row, onClose, onSent, onOpen, onReady, onN
       for (const card of preview.cards) {
         const mine = (preview.groups ?? []).filter((group) => groupOnCard(group, card.target));
         const teams = mine.filter((group) => group.selected).map((group) => group.selected as string);
-        last = await api.sendReview(row.id, card.target, teams, note);
+        last = await api.sendReview(row.id, card.target, teams, note, card.messages[0]?.action);
         posted.push(...mine);
       }
       if (last) {

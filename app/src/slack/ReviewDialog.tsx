@@ -358,7 +358,7 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNot
     setSending(true);
     setError(null);
     try {
-      onSent(await api.sendReview(row.id, preview.target, chosen?.teams.length ? chosen.teams : teams, note));
+      onSent(await api.sendReview(row.id, preview.target, chosen?.teams.length ? chosen.teams : teams, note, preview.action));
     } catch (err) {
       if (err && typeof err === "object" && (err as { kind?: unknown }).kind === "sent_unconfirmed") {
         setUnconfirmed(errorMessage(err));

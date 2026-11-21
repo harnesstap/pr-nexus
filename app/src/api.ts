@@ -1174,8 +1174,11 @@ export interface Api {
   searchSlackTargets(query: string): Promise<TargetMatch[]>;
   /** Current Slack name of each channel id, in order; null when Slack can't say. Read-only. */
   slackChannelNames(channels: ChannelRef[]): Promise<(string | null)[]>;
-  /** `note` is appended after a blank line; see `withNote`. */
-  sendReview(prId: number, target: ReviewTarget, teams: string[], note?: string): Promise<SlackIndicator>;
+  /**
+   * `note` is appended after a blank line; see `withNote`. `action` is what the
+   * preview showed: the send refuses (`conflict`) when the plan no longer matches.
+   */
+  sendReview(prId: number, target: ReviewTarget, teams: string[], note?: string, action?: string): Promise<SlackIndicator>;
   bulkPreview(request: BulkRequest): Promise<BulkPreview>;
   sendBulk(request: BulkRequest, fingerprints: string[]): Promise<BulkResult>;
   /** Pull requests whose bump is due. Does not post. */
@@ -1388,7 +1391,8 @@ export const tauriApi: Api = {
     invoke("review_preview", { prId, target, ...(cachedNames === undefined ? {} : { cachedNames }) }),
   searchSlackTargets: (query) => invoke("slack_search_targets", { query }),
   slackChannelNames: (channels) => invoke("slack_channel_names", { channels }),
-  sendReview: (prId, target, teams, note) => invoke("send_review", { prId, target, teams, note: note?.trim() ? note : null }),
+  sendReview: (prId, target, teams, note, action) =>
+    invoke("send_review", { prId, target, teams, note: note?.trim() ? note : null, action: action ?? null }),
   bulkPreview: (request) => invoke("bulk_preview", { request }),
   sendBulk: (request, fingerprints) => invoke("send_bulk", { request, fingerprints }),
   dueBumps: () => invoke("due_bumps"),
