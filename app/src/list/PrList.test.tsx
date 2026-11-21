@@ -167,6 +167,21 @@ const rows = [
   row({ id: 3, number: 23, title: "Fix tax rounding", project_ids: [] }),
 ];
 
+test("a refresh re-renders only the rows that changed", async () => {
+  const rowsRef = { current: [row({ id: 1, title: "Latch the cache" }), row({ id: 2, title: "Add passkeys" })] };
+  // IPC hands back fresh objects on every call.
+  const loadPage = (request: PageRequest) =>
+    Promise.resolve(JSON.parse(JSON.stringify(pageFromRows(rowsRef.current, [auth, billing], request))) as PageDto);
+  const shown = await show(<Harness rows={[]} loadPage={loadPage} version={0} />);
+  expect(screen.getByText("Add passkeys")).toBeInTheDocument();
+  prRowRenderCountRef.current = 0;
+  rowsRef.current = [rowsRef.current[0], row({ id: 2, title: "Rename passkeys" })];
+  shown.rerender(<Harness rows={[]} loadPage={loadPage} version={1} />);
+  await settle();
+  expect(screen.getByText("Rename passkeys")).toBeInTheDocument();
+  expect(prRowRenderCountRef.current).toBe(1);
+});
+
 test("a clock tick updates relative time without re-rendering the row", async () => {
   const prior = globalThis.ResizeObserver;
   class SilentObserver {
@@ -664,6 +679,26 @@ test("with the detail panel open, arrows and clicks switch the PR it shows", asy
   fireEvent.click(order[2]);
   expect(onDetails).toHaveBeenLastCalledWith(expect.objectContaining({ id: idOf(order[2]) }));
   expect(onDetails).toHaveBeenCalledTimes(3);
+});
+
+test("keys inside an open menu or popover dialog do not move the list", async () => {
+  const onDetails = vi.fn();
+  await show(<Harness rows={rows} onDetails={onDetails} detailId={999} />);
+  const start = focused();
+  for (const role of ["menu", "dialog"]) {
+    // A sidebar context menu or popover lives outside the list and handles its own arrows.
+    const popup = document.createElement("div");
+    popup.setAttribute("role", role);
+    const item = document.createElement("button");
+    popup.append(item);
+    document.body.append(popup);
+    item.focus();
+    fireEvent.keyDown(item, { key: "ArrowDown" });
+    fireEvent.keyDown(item, { key: "Escape" });
+    popup.remove();
+  }
+  expect(focused()).toBe(start);
+  expect(onDetails).not.toHaveBeenCalled();
 });
 
 function focused(): string | null {

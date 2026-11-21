@@ -5,7 +5,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError, TryLockError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use chrono::{DateTime, Utc};
 use pr_nexus_core::domain::{Account, AccountKind, ChecksState, PrId};
@@ -1149,6 +1149,8 @@ pub fn filter_reviews(
 /// network work: it only flips flags and wakes the background threads.
 pub fn set_focused(state: &AppState, focused: bool) {
     state.focused.store(focused, Ordering::Relaxed);
+    // Opening the window may show one keychain prompt. A memory vault no-ops.
+    state.vault.note_focus(focused);
     if state.demo {
         return;
     }
@@ -1172,15 +1174,27 @@ pub fn spawn_scheduler(state: Arc<AppState>) {
                 let _ = run_sync(&state, SyncKind::Full);
             }
             loop {
-                let interval = interval_secs(&state);
+                let interval = Duration::from_secs(interval_secs(&state));
+                let started = SystemTime::now();
                 let (lock, cv) = &*state.wake;
                 let guard = lock.lock().expect("sync wake");
-                let (mut guard, wait) = cv
-                    .wait_timeout(guard, Duration::from_secs(interval))
-                    .expect("sync wake");
-                let manual = *guard || !wait.timed_out();
+                let (mut guard, wait) = cv.wait_timeout(guard, interval).expect("sync wake");
+                let poked = *guard;
                 *guard = false;
                 drop(guard);
+                // Wall time, so a sleep shows up as one long wait. A timeout
+                // that lands a little early still counts as one interval.
+                // `runs_due` is 0 or 1: many missed intervals are one pass.
+                let elapsed = started.elapsed().unwrap_or(interval);
+                let manual = poked || !wait.timed_out();
+                let due = if manual {
+                    1
+                } else {
+                    crate::schedule::runs_due(elapsed.max(interval), interval)
+                };
+                if due == 0 {
+                    continue;
+                }
                 let finished = onboarding::load(&state.store)
                     .ok()
                     .is_some_and(|saved| saved.is_finished());

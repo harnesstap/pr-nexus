@@ -4,6 +4,9 @@ import App from "./App";
 import type { Api, Bootstrap, ReviewTarget } from "./api";
 import { memoryProjectApi } from "./memoryProjects";
 import { fakeSettingsApi } from "./settings/fakes";
+import { draftRecord, offerOverview, takeGeneration } from "./detail/draftRecord";
+import { mockOverview } from "./detail/mock";
+import { peekReviewPrefetch, rememberReviewSeed } from "./slack/reviewPrefetch";
 
 const boot: Bootstrap = {
   onboarding: {
@@ -195,4 +198,29 @@ test("switching profiles reloads the list for the new profile and adding one sta
   expect(await screen.findAllByRole("group", { name: /Copy from/ })).toHaveLength(2);
   fireEvent.click(screen.getByRole("button", { name: "Back to PR Nexus" }));
   await waitFor(() => expect(screen.getByRole("button", { name: "Profile Side projects, account menu" })).toBeInTheDocument());
+});
+
+test("switching profiles forgets the old profile's draft facts and review prefetch, whose PR ids can collide", async () => {
+  const done = { ...boot.onboarding, step: "done" as const, finished_at: "2026-10-26T00:00:00Z" };
+  const work = { id: "default", name: "Work", active: true, githubLogin: null, isDefault: true };
+  const side = { id: "side", name: "Side projects", active: false, githubLogin: null, isDefault: false };
+  let active = "default";
+  const profiles = () => [work, side].map((profile) => ({ ...profile, active: profile.id === active }));
+  const fake: Api = {
+    ...api(),
+    bootstrap: () => Promise.resolve({ ...boot, onboarding: done, resume_step: "done" as const, tracked_orgs: ["acme"], github_connected: true, profiles: profiles() }),
+    switchProfile: (id) => {
+      active = id;
+      return Promise.resolve(profiles());
+    },
+  };
+  render(<App api={fake} />);
+  fireEvent.click(await screen.findByRole("button", { name: "Profile Work, account menu" }));
+  // Profile Work opened its PR id 7.
+  offerOverview(7, mockOverview({ fetched_at: "2026-11-20T10:00:00Z" }), takeGeneration());
+  rememberReviewSeed({ prId: 7, teams: [], choices: [], choice: null, target: null, preview: null, generation: 1 });
+  fireEvent.click(screen.getByRole("menuitemradio", { name: /Side projects/ }));
+  expect(await screen.findByRole("button", { name: "Profile Side projects, account menu" })).toBeInTheDocument();
+  expect(draftRecord(7)).toBeNull();
+  expect(peekReviewPrefetch(7)).toBeNull();
 });

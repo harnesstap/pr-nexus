@@ -10,6 +10,8 @@ import { Tooltip } from "../Tooltip";
 interface Props {
   api: Api;
   prId: number;
+  /** The list version: a send or bump bumps it, so the card reloads. */
+  version?: number;
   /** Settings → minimum hours between bumps; 0 means no limit. */
   minBumpHours?: number;
   onOpen: (url: string) => void;
@@ -59,7 +61,7 @@ export function bumpView(thread: Pick<ContextThread, "last_bumped_at" | "request
  * request exists, then the latest request with its newest replies and a Bump button.
  * Both open the preview, where another channel can still get a new request.
  */
-export function SlackLine({ api, prId, minBumpHours = 0, onOpen, onRequest, workspaces = [] }: Props) {
+export function SlackLine({ api, prId, version = 0, minBumpHours = 0, onOpen, onRequest, workspaces = [] }: Props) {
   const [threads, setThreads] = useState<ContextThread[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -72,7 +74,7 @@ export function SlackLine({ api, prId, minBumpHours = 0, onOpen, onRequest, work
     return () => {
       cancel = true;
     };
-  }, [api, prId]);
+  }, [api, prId, version]);
 
   if (!threads && !error) {
     return <div className="h-10 animate-pulse rounded-lg bg-slate-800/70" aria-label="Loading Slack" />;

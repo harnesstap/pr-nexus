@@ -410,10 +410,12 @@ test("files and details start collapsed and open with plain sentences", async ()
 });
 
 test("auto-merge turns on with the chosen method and shows a toast", async () => {
-  const enabled = mockOverview({
-    auto_merge: { method: "merge", enabled_by: "ada", enabled_at: null },
-  });
-  const api = fakeApi({ setAutoMerge: vi.fn(() => Promise.resolve(enabled)) });
+  // Stamped when the call returns, like the backend does.
+  const enabled = () =>
+    mockOverview({
+      auto_merge: { method: "merge", enabled_by: "ada", enabled_at: null },
+    });
+  const api = fakeApi({ setAutoMerge: vi.fn(() => Promise.resolve(enabled())) });
   const { onNotice } = renderPanel(api);
   const method = await screen.findByRole("combobox", { name: "Merge method" });
   expect((method as HTMLSelectElement).value).toBe("squash");
@@ -427,6 +429,25 @@ test("auto-merge turns on with the chosen method and shows a toast", async () =>
   await screen.findByText(/Auto-merge on · Merge commit · by @ada/);
   expect(api.setAutoMerge).toHaveBeenCalledWith(7, "merge");
   expect(onNotice).toHaveBeenCalledWith("Auto-merge on: it will merge commit when ready.");
+});
+
+test("an opening read that lands after Enable auto-merge does not turn the switch back off", async () => {
+  let releaseFresh: (value: PrOverview) => void = () => undefined;
+  const api = fakeApi({
+    prOverview: vi.fn((_id: number, refresh: boolean) =>
+      refresh ? new Promise<PrOverview>((resolve) => (releaseFresh = resolve)) : Promise.resolve(mockOverview({ fetched_at: "2026-11-20T10:00:00Z" })),
+    ),
+    setAutoMerge: vi.fn(() =>
+      Promise.resolve(mockOverview({ auto_merge: { method: "squash", enabled_by: "ada", enabled_at: null }, fetched_at: "2026-11-20T10:00:03Z" })),
+    ),
+  });
+  renderPanel(api);
+  fireEvent.click(await screen.findByRole("button", { name: "Enable auto-merge" }));
+  expect(await screen.findByText(/Auto-merge on/)).toBeInTheDocument();
+  // GitHub answered the panel's opening read before the mutation landed.
+  await act(async () => releaseFresh(mockOverview({ fetched_at: "2026-11-20T10:00:02Z" })));
+  expect(screen.getByText(/Auto-merge on/)).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Enable auto-merge" })).toBeNull();
 });
 
 test("auto-merge errors become a toast and unavailable controls explain why", async () => {

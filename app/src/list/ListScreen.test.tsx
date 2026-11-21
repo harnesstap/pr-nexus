@@ -415,6 +415,24 @@ test("details open beside the list, follow the clicked row, and close on Esc", a
   await waitFor(() => expect(screen.queryByTestId("detail-panel")).not.toBeInTheDocument());
 });
 
+test("a pull request opened from a notification is marked read like a clicked one", async () => {
+  const unread = { ...listRow(1, "Migrate login"), unread: true };
+  const fake = api([], [unread]);
+  fake.prDetail = (id: number) => Promise.resolve(mockDetail(id));
+  fake.prOverview = () => Promise.resolve(mockOverview());
+  fake.markPrsRead = vi.fn(() => Promise.resolve());
+  let open: ((payload: unknown) => void) | undefined;
+  fake.onOpenRequest = (onOpen) => {
+    open = onOpen;
+    return () => undefined;
+  };
+  render(<ListScreen api={fake} boot={boot} onBoot={() => undefined} />);
+  await screen.findByText("Migrate login");
+  open?.({ view: "mine", pr_id: 1 });
+  await screen.findByTestId("detail-panel");
+  await waitFor(() => expect(fake.markPrsRead).toHaveBeenCalledWith([1]));
+});
+
 test("the sync details offer a full resync that calls the full command", async () => {
   const fake = api([]);
   const fullResync = vi.fn(() => Promise.resolve({ ...boot.sync, revision: 1 }));
@@ -537,6 +555,24 @@ test("a child view publishes the parent rule and its own rule as the sync hint",
     const hints = setSyncHint.mock.calls.map((call) => call[0]);
     expect(hints).toContainEqual({ view_key: "custom:1", query: "is:open review-requested:@me is:draft", pr_ids: [] });
   });
+});
+
+test("deleting the open view returns to its parent instead of an empty rule", async () => {
+  const fake = api([]);
+  fake.listSidebarViews = () =>
+    Promise.resolve([
+      { key: "mine", name: "My PRs", query: "is:open author:@me", builtin: true, sort_order: 0 },
+      { key: "to_review", name: "To review", query: "is:open review-requested:@me", builtin: true, sort_order: 1 },
+      { key: "bumps_due", name: "Bumps due", query: "is:open author:@me bump:due", builtin: true, sort_order: 2 },
+      { key: "custom:1", name: "Drafts", query: "is:draft", builtin: false, sort_order: 3, parent: "to_review" },
+    ]);
+  render(<ListScreen api={fake} boot={boot} onBoot={() => undefined} />);
+  fireEvent.click(await screen.findByRole("button", { name: "Drafts" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Drafts" })).toHaveAttribute("aria-current", "page"));
+  fireEvent.contextMenu(screen.getByRole("button", { name: "Drafts" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
+  fireEvent.click(within(screen.getByRole("dialog", { name: "Delete view" })).getByRole("button", { name: "Delete" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "To review" })).toHaveAttribute("aria-current", "page"));
 });
 
 test("a pull request URL opens a pull request from another view", async () => {

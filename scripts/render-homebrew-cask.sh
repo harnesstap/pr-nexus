@@ -48,7 +48,9 @@ if ! printf '%s' "$APP_NAME" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9 ._-]*$'; then
 fi
 
 suffix="_${VERSION}_aarch64.dmg"
-mapfile -t matches < <(jq -r --arg s "$suffix" '.assets[] | select(.name | endswith($s)) | "\(.name)\t\(.digest // "")"' "$ASSETS_JSON")
+# No mapfile: macOS /bin/bash is 3.2.
+matches=()
+while IFS= read -r match; do matches+=("$match"); done < <(jq -r --arg s "$suffix" '.assets[] | select(.name | endswith($s)) | "\(.name)\t\(.digest // "")"' "$ASSETS_JSON")
 if [ "${#matches[@]}" -ne 1 ]; then
   echo "Homebrew cask: expected one *${suffix} asset, found ${#matches[@]}." >&2
   exit 1

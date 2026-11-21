@@ -250,6 +250,29 @@ test("a searched member replaces the mapped channel and the request keeps the PR
   expect(calls.sent[0]).toEqual([{ workspace: "acme", channel_id: "U0ACME0002", channel_name: "Grace Hopper" }, ["@acme/platform"]]);
 });
 
+test("a newly picked target whose preview fails cannot send to the previous channel", async () => {
+  const { api, calls } = fake({
+    searchSlackTargets: (query: string) =>
+      Promise.resolve(
+        query === "@grace" ? [{ kind: "member" as const, target: { workspace: "acme", channel_id: "U0ACME0002", channel_name: "Grace Hopper" } }] : [],
+      ),
+  });
+  const preview = api.reviewPreview.bind(api);
+  api.reviewPreview = (id: number, target: ReviewTarget) =>
+    target.channel_id === "U0ACME0002" ? Promise.reject(new Error("cannot DM")) : preview(id, target);
+  render(<ReviewDialog api={api} row={row} onClose={() => undefined} onOpen={() => undefined} onSent={() => undefined} />);
+  await screen.findByLabelText("Message preview");
+  const box = screen.getByRole("combobox", { name: "Channel or person" });
+  fireEvent.focus(box);
+  fireEvent.change(box, { target: { value: "@grace" } });
+  fireEvent.click(await screen.findByRole("option", { name: /@Grace Hopper/ }));
+  expect(await screen.findByText(/cannot DM/)).toBeInTheDocument();
+  const send = screen.getByRole("button", { name: /Send/ });
+  expect(send).toBeDisabled();
+  fireEvent.click(send);
+  expect(calls.sent).toHaveLength(0);
+});
+
 const draftRow = { ...row, state: "open", is_draft: true } as ListRow;
 
 test("a draft PR warns at the top and can still be sent", async () => {

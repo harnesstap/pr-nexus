@@ -5,6 +5,7 @@ import {
   beginDraftFlip,
   draftPhase,
   draftRecord,
+  forgetDraftRecords,
   offerOverview,
   offerPreviewDraft,
   resetDraftRecords,
@@ -53,4 +54,14 @@ test("with no record the row decides, and a preview can reveal a draft", () => {
   expect(draftPhase(null, false)).toBe("ready");
   expect(offerPreviewDraft(3, takeGeneration())).toBe(true);
   expect(draftPhase(draftRecord(3), false)).toBe("draft");
+});
+
+test("forgetting the records keeps the generation, so a read started before loses", () => {
+  const before = takeGeneration();
+  offerOverview(7, mockOverview({ fetched_at: "2026-11-17T12:00:00Z" }), before);
+  forgetDraftRecords();
+  expect(draftRecord(7)).toBeNull();
+  const after = takeGeneration();
+  expect(offerOverview(7, mockOverview({ fetched_at: "2026-11-17T11:00:00Z" }), after)).toBe(true);
+  expect(offerOverview(7, mockOverview({ fetched_at: "2026-11-17T11:30:00Z" }), before)).toBe(false);
 });

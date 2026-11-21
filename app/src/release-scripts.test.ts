@@ -308,7 +308,8 @@ test("release asset check requires every platform installer", async () => {
 
 test("release dry run checks the version without calling gh", async () => {
   const result = await execFileAsync("/bin/bash", [prepareScript], {
-    env: { ...cleanEnv(), DRY_RUN: "1", PREPARE_RELEASE_ROOT: repoRoot },
+    // The release job runs this on Linux, where reseal skips; a Mac host would reseal for real.
+    env: { ...cleanEnv(), DRY_RUN: "1", PREPARE_RELEASE_ROOT: repoRoot, RESEAL_UNAME: "Linux" },
   });
   expect(result.stdout).toContain("dry_run=true");
   expect(result.stdout).toContain("skip=true");

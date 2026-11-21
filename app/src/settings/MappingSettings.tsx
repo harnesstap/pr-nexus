@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type Dispatch, type SetStateAction } from "react";
 import type { Api, ExportMode, ImportMode, ImportPreview, MappingEntry, MappingFile, MappingRow, ReviewTarget, SlackWorkspace } from "../api";
 import { errorMessage } from "../api";
 import { MappingFileButton } from "../mapping/MappingFileButton";
@@ -9,6 +9,10 @@ import { chosenWorkspace, csvHasWorkspaceColumn, rememberWorkspace } from "../sl
 import { MAPPING_FIELDS, matchesMapping } from "./tabs";
 import { plainText } from "../textInput";
 import { Tooltip } from "../Tooltip";
+
+function sameChannel(a: MappingRow, b: MappingRow): boolean {
+  return a.slack_workspace === b.slack_workspace && a.slack_channel_id === b.slack_channel_id;
+}
 
 interface Props {
   api: Api;
@@ -339,7 +343,7 @@ function EditRow({
   workspaces: SlackWorkspace[];
   onConnectSlack?: () => void;
   error: string | null;
-  onChange: (next: { row: MappingRow; disabled: boolean; isNew: boolean }) => void;
+  onChange: Dispatch<SetStateAction<{ row: MappingRow; disabled: boolean; isNew: boolean } | null>>;
   onSave: () => void;
   onCancel: () => void;
 }) {
@@ -361,7 +365,13 @@ function EditRow({
       .slackChannelNames([channelRef(next.row)])
       .then(([name]) => {
         if (name) {
-          onChange({ ...next, row: { ...next.row, slack_channel_name: name } });
+          // Only into the row still being edited with this channel: edits made
+          // meanwhile stay, and a row closed meanwhile stays closed.
+          onChange((current) =>
+            current && !current.row.slack_channel_name && sameChannel(current.row, next.row)
+              ? { ...current, row: { ...current.row, slack_channel_name: name } }
+              : current,
+          );
           setLookup(null);
         } else {
           setLookup("Slack did not name this channel; messages still go to this ID.");

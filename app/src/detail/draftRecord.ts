@@ -43,6 +43,11 @@ export function resetDraftRecords(): void {
   listeners.clear();
 }
 
+/** Drops every record, e.g. on a profile switch, where PR ids can collide. The generation keeps counting, so a late read from before loses. */
+export function forgetDraftRecords(): void {
+  records.clear();
+}
+
 function notify(prId: number): void {
   const set = listeners.get(prId);
   if (!set) return;

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, expect, test } from "vitest";
 import type { Api, Bootstrap, MappingEntry, Preferences, SlackWorkspace } from "../api";
 import { DEFAULT_PREFERENCES, fakeMcp, fakeSettingsApi } from "./fakes";
@@ -268,6 +268,26 @@ test("Mappings: a failed save keeps the row open with the error", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
   expect(await screen.findByRole("alert")).toHaveTextContent(/must look like/);
   expect(screen.getByRole("combobox", { name: "Slack channel" })).toBeInTheDocument();
+});
+
+test("Mappings: a channel name that arrives after Cancel does not reopen the row", async () => {
+  let answer: (names: (string | null)[]) => void = () => undefined;
+  const api = fakeSettingsApi({
+    listMappings: () => Promise.resolve([entry({ slug: "web" })]),
+    slackChannelNames: () =>
+      new Promise((resolve) => {
+        answer = resolve;
+      }),
+  }) as Api;
+  render(<Harness api={api} start="mappings" />);
+  fireEvent.click(await screen.findByRole("button", { name: "Edit acme/web" }));
+  fireEvent.click(screen.getByRole("button", { name: "Enter an ID" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Channel ID" }), { target: { value: "C0ACME0002" } });
+  fireEvent.click(screen.getByRole("button", { name: "Use ID" }));
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(screen.queryByRole("combobox", { name: "Slack channel" })).not.toBeInTheDocument();
+  await act(async () => answer(["web-team"]));
+  expect(screen.queryByRole("combobox", { name: "Slack channel" })).not.toBeInTheDocument();
 });
 
 test("Mappings: a saved name that is not the id's channel is flagged, not rewritten", async () => {

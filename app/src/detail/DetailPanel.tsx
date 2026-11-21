@@ -377,7 +377,7 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
                       api={api}
                       prId={row.id}
                       overview={overview}
-                      onChange={setOverview}
+                      onChange={(next, observed) => offerOverview(row.id, next, observed) && setOverview(next)}
                       onNotice={onNotice}
                       onMerged={onMerged}
                       onQueueChange={onQueueChange}
@@ -389,7 +389,7 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
               </section>
             )}
             {/* The one primary action, right under "can I merge": asking for review is what unblocks it. */}
-            {!ephemeral && <SlackLine api={api} prId={row.id} minBumpHours={minBumpHours} onOpen={onOpen} onRequest={onRequestReview} workspaces={slack?.workspaces} />}
+            {!ephemeral && <SlackLine api={api} prId={row.id} version={version} minBumpHours={minBumpHours} onOpen={onOpen} onRequest={onRequestReview} workspaces={slack?.workspaces} />}
             {overviewError && (
               <p className="text-xs text-amber-200">
                 Showing the copy from {ago(overview.fetched_at, new Date())}; refreshing failed: {overviewError}
@@ -403,7 +403,7 @@ export function DetailPanel({ api, row, version, onClose, onOpen, onRequestRevie
           </>
         )}
         {!overview && !ephemeral && (
-          <SlackLine api={api} prId={row.id} minBumpHours={minBumpHours} onOpen={onOpen} onRequest={onRequestReview} workspaces={slack?.workspaces} />
+          <SlackLine api={api} prId={row.id} version={version} minBumpHours={minBumpHours} onOpen={onOpen} onRequest={onRequestReview} workspaces={slack?.workspaces} />
         )}
         {!ephemeral && <NoteSection api={api} prId={row.id} />}
         {!ephemeral && <div>
