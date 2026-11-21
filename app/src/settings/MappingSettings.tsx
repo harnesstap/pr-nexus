@@ -400,7 +400,8 @@ function EditRow({
           className={`${box} w-44`}
           workspaces={workspaces}
           value={editing.row.slack_workspace}
-          onChange={(domain) => set("slack_workspace", domain)}
+          // Routing prefers the team id, so the old workspace's must go.
+          onChange={(domain) => onChange({ ...editing, row: { ...editing.row, slack_workspace: domain, slack_team_id: undefined } })}
           onConnect={onConnectSlack}
           allowUnlisted
         />
