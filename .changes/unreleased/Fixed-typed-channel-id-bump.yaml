@@ -1,0 +1,3 @@
+kind: Fixed
+body: A Slack channel entered by its ID now bumps the open review thread in that channel instead of posting a second request that then fails to save.
+time: 2026-11-20T10:00:00Z

@@ -599,6 +599,17 @@ fn plan_request(
             prs.push(load_pr(&state.store, id)?);
         }
     }
+    // A typed id with no workspace bumps the open thread in that channel:
+    // take the workspace of the first selected PR requested there.
+    let override_target = match override_target {
+        Some(mut target) => {
+            for pr in &prs {
+                fill_open_request(state, pr, &mut target)?;
+            }
+            Some(target)
+        }
+        None => None,
+    };
     let eligible = |pr: &PullRequest| -> Result<(), String> {
         if pr.state != PrState::Open {
             return Err("Not open".into());
@@ -1178,7 +1189,7 @@ fn absorb_route(routes: &mut Vec<Route>, route: Route) {
 }
 
 /// An id typed with no workspace still bumps the open thread in that channel.
-fn fill_open_request(
+pub(crate) fn fill_open_request(
     state: &AppState,
     pr: &PullRequest,
     target: &mut ReviewTarget,
