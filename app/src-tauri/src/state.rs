@@ -671,6 +671,15 @@ fn lock_status(state: &AppState) -> std::sync::MutexGuard<'_, SyncStatus> {
 }
 
 fn sync_once(state: &AppState, kind: SyncKind) -> Result<sync::SyncReport, AppError> {
+    sync_once_from(state, kind, state.profiles.generation())
+}
+
+/// `generation` is the profile generation this sync started under.
+fn sync_once_from(
+    state: &AppState,
+    kind: SyncKind,
+    generation: u64,
+) -> Result<sync::SyncReport, AppError> {
     if state.demo {
         *state.sync.lock().expect("sync status") = SyncStatus::demo();
         crate::presence::refresh_counts(state);
@@ -681,7 +690,6 @@ fn sync_once(state: &AppState, kind: SyncKind) -> Result<sync::SyncReport, AppEr
     }
     // A profile switch during the reviews-first pass unwinds it, but its
     // error is swallowed below; the My PRs pass must not start after it.
-    let generation = state.profiles.generation();
     // The view on screen goes first when its bucket is one this sync
     // would run anyway. Reviews stay lazy: a hint never starts that pass.
     let reviews_first = current_hint(state).lead == Some(SearchBucket::ReviewRequested)
@@ -1668,7 +1676,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
-
     /// Regression: a switch during the reviews-first pass went on into a
     /// whole My PRs pass that could not be cancelled, with the gate held.
     #[test]
@@ -1679,12 +1686,18 @@ mod tests {
         let state = Arc::new(state);
         let mut hint = state.sync_hint.lock().unwrap();
         hint.lead = Some(SearchBucket::ReviewRequested);
+        let started = Arc::new(std::sync::Barrier::new(2));
         let sync = {
             let state = Arc::clone(&state);
-            thread::spawn(move || run_sync(&state, SyncKind::Manual))
+            let started = Arc::clone(&started);
+            thread::spawn(move || {
+                let generation = state.profiles.generation();
+                started.wait();
+                // Blocks on the hint until the switch below has happened.
+                sync_once_from(&state, SyncKind::Manual, generation)
+            })
         };
-        // The sync has read the generation and waits on the hint.
-        thread::sleep(Duration::from_millis(100));
+        started.wait();
         state.profiles.bump();
         drop(hint);
         let err = sync.join().unwrap().unwrap_err();
