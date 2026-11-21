@@ -256,7 +256,8 @@ pub struct BranchUpdate {
 
 /// Brings the base into the head with `method`, guarded by the head SHA the
 /// user last saw (the cached overview's), then refreshes both cards. A head
-/// that moved meanwhile fails with `head_moved` and nothing changes.
+/// that moved meanwhile fails with `head_moved` and nothing changes. A failed
+/// refresh after the update returns the seen overview as still checking.
 pub fn update(
     store: &Store,
     provider: &dyn VcsProvider,
@@ -273,7 +274,13 @@ pub fn update(
         .update_branch(pr, &expected, method)
         .map_err(classify_update_error)?;
     cache.forget(pr.id);
-    let fresh = overview::refresh(store, provider, pr)?;
+    // The update already happened. A failed read shows the card as checking,
+    // which polls for the new head instead of offering the old one again.
+    let fresh = overview::refresh(store, provider, pr).unwrap_or_else(|_| PrOverview {
+        mergeable: "unknown".into(),
+        merge_state: "unknown".into(),
+        ..seen
+    });
     let branch = status_from(provider, cache, pr, &fresh);
     Ok(BranchUpdate {
         overview: fresh,
@@ -309,4 +316,4 @@ fn classify_update_error(err: ProviderError) -> ProviderError {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

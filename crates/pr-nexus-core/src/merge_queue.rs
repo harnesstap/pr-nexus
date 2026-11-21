@@ -272,7 +272,7 @@ fn enqueue_one(store: &Store, provider: &dyn VcsProvider, id: crate::domain::PrI
     match provider.enqueue_pull_request(&pr, &pr.head_sha) {
         Ok(snapshot) => {
             remember(store, pr.id, &snapshot);
-            let _ = refresh_keeping(store, provider, &pr, &snapshot);
+            let _ = refresh_keeping(store, provider, &pr, &snapshot, ADDED_UNREAD);
             added(&pr)
         }
         Err(err) => QueueReport {
@@ -301,7 +301,7 @@ pub fn enqueue(
         .enqueue_pull_request(pr, &pr.head_sha)
         .map_err(CoreError::from)?;
     remember(store, pr.id, &snapshot);
-    refresh_keeping(store, provider, pr, &snapshot)
+    refresh_keeping(store, provider, pr, &snapshot, ADDED_UNREAD)
 }
 
 /// Removes one pull request from the queue and returns the refreshed overview.
@@ -323,27 +323,36 @@ pub fn dequeue(
         reason: None,
     };
     remember(store, pr.id, &removed);
-    refresh_keeping(store, provider, pr, &removed)
+    refresh_keeping(
+        store,
+        provider,
+        pr,
+        &removed,
+        "Removed from the merge queue, but the updated pull request could not be read.",
+    )
 }
 
 fn remember(store: &Store, id: crate::domain::PrId, queue: &MergeQueueSnapshot) {
     let _ = store.set_merge_queue(id, queue);
 }
 
+const ADDED_UNREAD: &str =
+    "Added to the merge queue, but the updated pull request could not be read.";
+
 /// Refresh, but keep `fallback` when GitHub's read has not caught up yet.
+/// With no read and nothing cached, fails with `unread`, which names the
+/// change that did happen.
 fn refresh_keeping(
     store: &Store,
     provider: &dyn VcsProvider,
     pr: &PullRequest,
     fallback: &MergeQueueSnapshot,
+    unread: &str,
 ) -> Result<PrOverview, CoreError> {
     let mut overview = match overview::refresh(store, provider, pr) {
         Ok(overview) => overview,
-        Err(_) => overview::cached(store, pr.id)?.ok_or_else(|| {
-            CoreError::Provider(ProviderError::Network(
-                "Added to the merge queue, but the updated pull request could not be read.".into(),
-            ))
-        })?,
+        Err(_) => overview::cached(store, pr.id)?
+            .ok_or_else(|| CoreError::Provider(ProviderError::Network(unread.into())))?,
     };
     if queue_read_is_stale(overview.merge_queue.as_ref(), fallback) {
         overview.merge_queue = Some(fallback.clone());
@@ -405,6 +414,7 @@ fn plain(err: &ProviderError) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::branch::tests::{Fake, overview, seed};
     use crate::domain::{AccountId, ChecksState, Involvement, PrId, ProviderRef, RepoRef};
     use chrono::{TimeZone, Utc};
 
@@ -662,5 +672,30 @@ mod tests {
         .unwrap();
         assert!(snap.required);
         assert!(snap.phase.is_none());
+    }
+
+    #[test]
+    fn a_dequeue_whose_read_fails_does_not_report_an_enqueue() {
+        let (_dir, store, pr) = seed();
+        store
+            .set_merge_queue(pr.id, &required(Some(MergeQueuePhase::Queued)))
+            .unwrap();
+        let fake = Fake::new(overview("mergeable", "clean"));
+        *fake.read_fails.lock().unwrap() = true;
+        let err = dequeue(&store, &fake, &pr).unwrap_err().to_string();
+        assert!(err.contains("Removed from the merge queue"), "{err}");
+
+        // With a stored overview, the removal shows instead of an error.
+        *fake.read_fails.lock().unwrap() = false;
+        overview::refresh(&store, &fake, &pr).unwrap();
+        store
+            .set_merge_queue(pr.id, &required(Some(MergeQueuePhase::Queued)))
+            .unwrap();
+        *fake.read_fails.lock().unwrap() = true;
+        let shown = dequeue(&store, &fake, &pr).unwrap();
+        assert_eq!(
+            shown.merge_queue.and_then(|queue| queue.phase),
+            Some(MergeQueuePhase::Removed)
+        );
     }
 }

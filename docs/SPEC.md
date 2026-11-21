@@ -1346,7 +1346,7 @@ Keyboard: `j/k` move, `x` toggle select, `Shift+x` toggle the focused row's sect
 - Slack: "Slack: no request yet · Request" when there is none; otherwise the latest request's root message and its last two replies. The full §7.10 view stays available as a collapsed section.
 - **Stack**, when this pull request is in a stack of two or more (see **Stacks** above): the chain from bottom to top, with CI, review, and mergeability. The bottom row is marked **Merge first**. Clicking a row opens that pull request. The merge card's grey line, when the parent is still open, says a merge would land on the parent branch and does not block Merge.
 - Collapsed sections: **Files changed (n)** with their code-owner teams, and **Details**, the ownership and readiness reasons as plain sentences.
-- Data: `pr_overview(id, refresh)` returns the cached copy (`pr_overview_cache`) first, then GitHub's; the panel refetches after each sync. A skeleton shows until the first copy arrives.
+- Data: `pr_overview(id, refresh)` returns the cached copy (`pr_overview_cache`) first, then GitHub's; the panel refetches after each sync. A skeleton shows until the first copy arrives. A write GitHub accepted (mark ready or draft, auto-merge, merge, add to or remove from the merge queue, update branch) is never reported as failed because the read after it failed: the panel keeps the cached copy with that change applied, and after a branch update the Branch card shows Checking… and polls until GitHub's read catches up. Only with no cached copy does the read's error show.
 
 **Slack preview modal** (approved design, centered; see `docs/ui/slack-preview.jpg`):
 
