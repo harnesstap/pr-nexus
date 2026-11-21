@@ -4,6 +4,7 @@ import type { Api, Bootstrap, ListRow, PrDetail, PrOverview, ProjectDto, RemoteR
 import { CloseDialog, type CloseTarget } from "../detail/CloseDialog";
 import { MergeQueueDialog } from "../detail/MergeQueueDialog";
 import { errorMessage } from "../api";
+import { every } from "../every";
 import { CloseIcon, FolderIcon, LogoIcon, PlusIcon, RefreshIcon } from "../icons";
 import { parseOpenRequest } from "./openRequest";
 import { Tooltip } from "../Tooltip";
@@ -351,10 +352,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
   const githubTotal = githubShown?.total ?? 0;
   const needsOrgs = orgs.length === 0 && !personal;
 
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(new Date()), 30_000);
-    return () => window.clearInterval(timer);
-  }, []);
+  useEffect(() => every(30_000, () => setNow(new Date())), []);
 
   useEffect(() => {
     if (flash === null) {
@@ -531,7 +529,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
       return;
     }
     let cancel = false;
-    const timer = window.setInterval(() => {
+    const stop = every(SYNC_POLL_MS, () => {
       void api.syncStatus().then((status) => {
         if (cancel) {
           return;
@@ -542,10 +540,10 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
           void api.listProjects().then((next) => !cancel && setProjects(next));
         }
       });
-    }, SYNC_POLL_MS);
+    });
     return () => {
       cancel = true;
-      window.clearInterval(timer);
+      stop();
     };
   }, [api, polling, noteRevision]);
 
@@ -556,7 +554,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
       return;
     }
     let cancel = false;
-    const timer = window.setInterval(() => {
+    const stop = every(IDLE_POLL_MS, () => {
       void api.syncStatus().then((status) => {
         if (cancel) {
           return;
@@ -571,10 +569,10 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
           void api.listProjects().then((next) => !cancel && setProjects(next));
         }
       });
-    }, IDLE_POLL_MS);
+    });
     return () => {
       cancel = true;
-      window.clearInterval(timer);
+      stop();
     };
   }, [api, polling, noteRevision]);
 

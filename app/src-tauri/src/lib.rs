@@ -18,6 +18,7 @@ mod preferences;
 mod presence;
 mod profiles;
 mod project_info;
+mod schedule;
 pub mod services;
 mod slack;
 mod slack_link;
@@ -76,6 +77,7 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move { agents.apply().await });
             }
             app.manage(agents);
+            let ui = Arc::clone(&shared);
             app.manage(shared);
             if let Err(err) = presence::install(app.handle()) {
                 tracing::warn!(error = %err, "menu bar icon unavailable");
@@ -86,6 +88,10 @@ pub fn run() {
                     // First launch: open maximized (§7.1). Later launches restore the last geometry.
                     let _ = window.maximize();
                 }
+                // A visible window may ask the keychain once. Background work
+                // stays silent until then.
+                let visible = window.is_visible().unwrap_or(true);
+                state::set_focused(&ui, visible);
             }
             Ok(())
         })

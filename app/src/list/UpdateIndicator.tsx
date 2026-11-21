@@ -4,6 +4,7 @@ import { ArrowUpCircleIcon, CopyIcon, ExternalIcon } from "../icons";
 import { Tooltip } from "../Tooltip";
 import { FOOTER_ICON_BUTTON } from "./sidebarFooter";
 import { dismissUpdate, updateDismissed } from "./hints";
+import { every } from "../every";
 
 /** Re-check this often while the app stays open (plus once at startup). */
 export const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
@@ -40,10 +41,10 @@ export function UpdateIndicator({ api }: { api: Api }) {
         })
         .catch((err: unknown) => console.warn("update check failed", err));
     void check();
-    const timer = window.setInterval(() => void check(), UPDATE_CHECK_INTERVAL_MS);
+    const stop = every(UPDATE_CHECK_INTERVAL_MS, () => void check());
     return () => {
       cancel = true;
-      window.clearInterval(timer);
+      stop();
     };
   }, [api]);
 
