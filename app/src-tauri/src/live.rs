@@ -228,6 +228,14 @@ fn step(state: &AppState, poller: &mut LivePoller, client: &mut Option<Client>) 
     (due - Utc::now()).num_seconds().clamp(1, MAX_SLEEP_SECS) as u64
 }
 
+/// Wakes the scheduler to look at its interval again (focus or a saved
+/// setting), without asking for a sync.
+pub fn wake_scheduler(state: &AppState) {
+    let (lock, cv) = &*state.wake;
+    let _guard = lock.lock().expect("sync wake");
+    cv.notify_all();
+}
+
 /// Wakes the scheduler for an incremental pass, as Sync now does.
 pub fn request_sync(state: &AppState) {
     let (lock, cv) = &*state.wake;

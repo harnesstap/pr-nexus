@@ -1219,6 +1219,8 @@ pub fn set_focused(state: &AppState, focused: bool) {
     }
     if crate::live::note_focus(state, focused, Utc::now()) {
         crate::live::request_sync(state);
+    } else {
+        crate::live::wake_scheduler(state);
     }
 }
 
@@ -1236,43 +1238,55 @@ pub fn spawn_scheduler(state: Arc<AppState>) {
                 // App start: a full reconcile (§6).
                 let _ = run_sync(&state, SyncKind::Full);
             }
+            let mut last_end = SystemTime::now();
             loop {
-                let interval = Duration::from_secs(interval_secs(&state));
-                let started = SystemTime::now();
                 let (lock, cv) = &*state.wake;
-                let guard = lock.lock().expect("sync wake");
-                let (mut guard, wait) = cv.wait_timeout(guard, interval).expect("sync wake");
-                let poked = *guard;
+                let mut guard = lock.lock().expect("sync wake");
+                // Read under the lock, so a wake that follows a focus or
+                // settings change cannot slip in before the wait.
+                let interval = Duration::from_secs(interval_secs(&state));
+                if let Some(wait) = until_due(last_end, interval, SystemTime::now()) {
+                    if !*guard {
+                        guard = cv.wait_timeout(guard, wait).expect("sync wake").0;
+                    }
+                    // Timed out, or woken by a focus or settings change:
+                    // check the interval again. Only Sync now sets the flag.
+                    // Wall time: a sleep past the due instant is one run.
+                    if !*guard {
+                        let elapsed = last_end.elapsed().unwrap_or(Duration::ZERO);
+                        if crate::schedule::runs_due(elapsed, interval) == 0 {
+                            continue;
+                        }
+                    }
+                }
+                let manual = *guard;
                 *guard = false;
                 drop(guard);
-                // Wall time, so a sleep shows up as one long wait. A timeout
-                // that lands a little early still counts as one interval.
-                // `runs_due` is 0 or 1: many missed intervals are one pass.
-                let elapsed = started.elapsed().unwrap_or(interval);
-                let manual = poked || !wait.timed_out();
-                let due = if manual {
-                    1
-                } else {
-                    crate::schedule::runs_due(elapsed.max(interval), interval)
-                };
-                if due == 0 {
-                    continue;
-                }
                 let finished = onboarding::load(&state.store)
                     .ok()
                     .is_some_and(|saved| saved.is_finished());
-                if !finished {
-                    continue;
+                if finished {
+                    let kind = if manual {
+                        SyncKind::Manual
+                    } else {
+                        SyncKind::Scheduled
+                    };
+                    let _ = run_sync(&state, kind);
                 }
-                let kind = if manual {
-                    SyncKind::Manual
-                } else {
-                    SyncKind::Scheduled
-                };
-                let _ = run_sync(&state, kind);
+                last_end = SystemTime::now();
             }
         })
         .expect("sync scheduler");
+}
+
+/// How long the scheduler still waits before the sync due `interval` after
+/// the last one ended, or `None` when it is due. Uses wall time so a sleep
+/// that jumps past the due instant counts as one run.
+fn until_due(last_end: SystemTime, interval: Duration, now: SystemTime) -> Option<Duration> {
+    last_end
+        .checked_add(interval)
+        .and_then(|due| due.duration_since(now).ok())
+        .filter(|left| !left.is_zero())
 }
 
 fn interval_secs(state: &AppState) -> u64 {
@@ -1471,6 +1485,27 @@ mod tests {
         );
         assert_eq!(cache.current, None);
         assert!(cache.entries.contains_key("k"));
+    }
+
+    #[test]
+    fn the_next_sync_follows_the_current_interval_from_the_last_one() {
+        let last = SystemTime::UNIX_EPOCH;
+        let minutes = |n: u64| Duration::from_secs(n * 60);
+        // 5 minutes after a sync, unfocused (15 min): 10 minutes to go.
+        assert_eq!(
+            until_due(last, minutes(15), last + minutes(5)),
+            Some(minutes(10))
+        );
+        // Focus or a saved setting drops it to 3 minutes: due now.
+        assert_eq!(until_due(last, minutes(3), last + minutes(5)), None);
+        assert_eq!(until_due(last, minutes(5), last + minutes(5)), None);
+        // Raised to 30 minutes: the wait grows instead of firing early.
+        assert_eq!(
+            until_due(last, minutes(30), last + minutes(5)),
+            Some(minutes(25))
+        );
+        // A sleep that jumps past the due instant is one run, not a new wait.
+        assert_eq!(until_due(last, minutes(15), last + minutes(60)), None);
     }
 
     #[test]

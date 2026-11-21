@@ -40,8 +40,12 @@ pub async fn save_preferences(
     let app = blocking::Handle::new(&app);
     blocking::run(move || {
         let saved = settings::save_preferences(&app.inner().store, &prefs)?;
-        // The live toggle applies now, not at the next due poll.
+        // The live toggle and the sync intervals apply now, not at the
+        // next due poll or sync.
         app.inner().live.nudge();
+        crate::live::wake_scheduler(app.inner());
+        // The review SLA and the blocked-review rule change the counts.
+        crate::presence::refresh_counts(app.inner());
         tracing::info!("settings saved");
         Ok(saved)
     })
