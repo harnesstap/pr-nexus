@@ -106,6 +106,16 @@ impl McpControl {
         }
     }
 
+    /// [`McpControl::view`] with the settings read again, so the send
+    /// policy is the active profile's after a switch and a save from
+    /// Settings does not carry the previous one over.
+    pub async fn current_view(&self) -> Result<McpView, AppError> {
+        let state = Arc::clone(&self.shared.state);
+        let settings = blocking::run(move || config::load(&state.store)).await?;
+        *self.shared.settings.write().expect("mcp settings") = settings;
+        Ok(self.view())
+    }
+
     /// Saves `settings` and brings the server in line with them.
     pub async fn update(&self, settings: McpSettings) -> Result<McpView, AppError> {
         let state = Arc::clone(&self.shared.state);
@@ -306,7 +316,8 @@ impl McpControl {
 /// Settings, server status and the masked token.
 #[tauri::command]
 pub async fn mcp_settings(mcp: State<'_, Arc<McpControl>>) -> Result<McpView, AppError> {
-    Ok(mcp.view())
+    let mcp = Arc::clone(&mcp);
+    mcp.current_view().await
 }
 
 /// The tools Settings lists under each capability: name, one-line
