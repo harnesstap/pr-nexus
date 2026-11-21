@@ -1150,6 +1150,10 @@ async fn every_write_tool_changes_the_store() {
         ),
         "not_found"
     );
+    // §10.1.1: the audit row names the failure, never the argument value.
+    let failed = h.store().mcp_audit(None, 1).unwrap();
+    let error = failed[0].error.as_deref().unwrap();
+    assert!(!error.contains("ACME-2"), "{error}");
     let keys: Vec<String> = h
         .store()
         .list_jira_links(ProjectId(id))
