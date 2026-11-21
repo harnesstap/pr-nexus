@@ -151,9 +151,11 @@ impl McpSettings {
             && match capability {
                 Capability::Reads => self.reads,
                 Capability::LocalWrites => self.local_writes,
-                Capability::SlackSends => self.slack_sends,
+                // §10.1.2 and §10.1.3: both need Slack reads. Turning reads
+                // off saves only that switch and leaves these as they were.
+                Capability::SlackSends => self.slack_reads && self.slack_sends,
                 Capability::SlackReads => self.slack_reads,
-                Capability::SlackPrivateSearch => self.slack_private_search,
+                Capability::SlackPrivateSearch => self.slack_reads && self.slack_private_search,
             }
     }
 
@@ -298,6 +300,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn private_search_and_sends_stop_when_slack_reads_is_off() {
+        let on = McpSettings {
+            slack_reads: true,
+            slack_private_search: true,
+            slack_sends: true,
+            ..McpSettings::default()
+        };
+        assert!(on.allows(Capability::SlackPrivateSearch));
+        assert!(on.allows(Capability::SlackSends));
+        let reads_off = McpSettings {
+            slack_reads: false,
+            ..on
+        };
+        assert!(!reads_off.allows(Capability::SlackPrivateSearch));
+        assert!(!reads_off.allows(Capability::SlackSends));
+    }
+
+    #[test]
     fn older_saves_keep_the_allowlist_mode_and_channels() {
         let saved: McpSettings = serde_json::from_str(
             r#"{"enabled":true,"slack_sends":true,"slack_auto_send_channels":["T0ACME0001/C0123456789"]}"#,
@@ -346,8 +366,10 @@ mod tests {
 
     #[test]
     fn older_saves_leave_tools_on_and_new_slack_sends_default_off() {
-        let saved: McpSettings =
-            serde_json::from_str(r#"{"enabled":true,"reads":true,"slack_sends":true}"#).unwrap();
+        let saved: McpSettings = serde_json::from_str(
+            r#"{"enabled":true,"reads":true,"slack_reads":true,"slack_sends":true}"#,
+        )
+        .unwrap();
         let saved = saved.normalized();
         assert!(saved.disabled_tools.is_empty());
         assert!(saved.enabled_slack_send_tools.is_empty());
@@ -359,6 +381,7 @@ mod tests {
 
         let picked = McpSettings {
             enabled: true,
+            slack_reads: true,
             slack_sends: true,
             enabled_slack_send_tools: vec!["slack_future_send".into()],
             ..McpSettings::default()
