@@ -142,10 +142,15 @@ fn observe(state: &AppState, include_reviews: bool) -> Option<Observed> {
     let now = chrono::Utc::now().timestamp_millis();
     let (sla, offset) = review_clock(state);
     let counts = listing::attention_counts(&items, now, &sla, offset);
+    let viewer = state::github_account(&state.store)
+        .ok()
+        .flatten()
+        .map(|account| account.login)
+        .unwrap_or_default();
     let rows: Vec<WatchedPr> = items
         .iter()
         .filter(|item| !item.row.hidden)
-        .map(watched)
+        .map(|item| watched(item, &viewer))
         .collect();
     let events = {
         let mut watcher = state
@@ -169,7 +174,8 @@ fn review_clock(state: &AppState) -> (ReviewSla, i32) {
     (sla, sla::local_offset_east_minutes())
 }
 
-fn watched(item: &Item) -> WatchedPr {
+/// Mirrors [`WatchedPr::from_pull_request`] on a list row.
+fn watched(item: &Item, viewer: &str) -> WatchedPr {
     WatchedPr {
         id: item.row.id,
         number: i64::try_from(item.row.number).unwrap_or(i64::MAX),
@@ -179,7 +185,12 @@ fn watched(item: &Item) -> WatchedPr {
         open: item.row.state == "open",
         author: Involvement::from_bits_truncate(item.row.involvement).contains(Involvement::AUTHOR),
         review_requested: Involvement::from_bits_truncate(item.row.involvement)
-            .contains(Involvement::REVIEW_REQUESTED),
+            .contains(Involvement::REVIEW_REQUESTED)
+            && item
+                .row
+                .pending_reviewers
+                .iter()
+                .any(|r| r.kind == "team" || r.login.eq_ignore_ascii_case(viewer)),
         checks_failing: item.row.checks == "failure" || item.row.checks == "error",
         decision: decision(item.row.review_decision.as_deref()),
         total_threads: i64::from(item.row.total_threads),

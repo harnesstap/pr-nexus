@@ -6,7 +6,9 @@
 
 use std::collections::HashMap;
 
-use crate::domain::{ChecksState, Involvement, PrState, PullRequest, ReviewDecision};
+use crate::domain::{
+    ChecksState, Involvement, PrState, PullRequest, RequestedReviewer, ReviewDecision, Reviewer,
+};
 
 /// One open pull request, reduced to the fields a notification can change on.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,6 +20,9 @@ pub struct WatchedPr {
     pub url: String,
     pub open: bool,
     pub author: bool,
+    /// The review search returned it and GitHub still lists the viewer, or
+    /// a team, as a pending reviewer. A review drops the viewer from that
+    /// list, so a later re-request turns this back on.
     pub review_requested: bool,
     pub checks_failing: bool,
     pub decision: Option<ReviewDecision>,
@@ -25,7 +30,7 @@ pub struct WatchedPr {
 }
 
 impl WatchedPr {
-    pub fn from_pull_request(pr: &PullRequest) -> Self {
+    pub fn from_pull_request(pr: &PullRequest, viewer_login: &str) -> Self {
         Self {
             id: pr.id.0,
             number: i64::try_from(pr.number).unwrap_or(i64::MAX),
@@ -34,12 +39,22 @@ impl WatchedPr {
             url: pr.url.clone(),
             open: pr.state == PrState::Open,
             author: pr.involvement.contains(Involvement::AUTHOR),
-            review_requested: pr.involvement.contains(Involvement::REVIEW_REQUESTED),
+            review_requested: pr.involvement.contains(Involvement::REVIEW_REQUESTED)
+                && awaits_viewer(&pr.requested_reviewers, viewer_login),
             checks_failing: matches!(pr.checks, ChecksState::Failure | ChecksState::Error),
             decision: pr.review_decision,
             total_threads: i64::from(pr.total_threads),
         }
     }
+}
+
+/// Whether `viewer_login` is a pending reviewer. The viewer's teams are not
+/// known, so any pending team counts.
+pub fn awaits_viewer(requested: &[RequestedReviewer], viewer_login: &str) -> bool {
+    requested.iter().any(|request| match &request.reviewer {
+        Reviewer::User { login } => login.eq_ignore_ascii_case(viewer_login),
+        Reviewer::Team(_) => true,
+    })
 }
 
 /// Why a pull request is worth a notification.
@@ -547,7 +562,9 @@ mod tests {
             checks: ChecksState::Error,
             mergeable: Mergeable::Mergeable,
             merge_state: MergeStateStatus::Clean,
-            requested_reviewers: Vec::new(),
+            requested_reviewers: vec![RequestedReviewer::bare(Reviewer::User {
+                login: "Ada".into(),
+            })],
             assignees: Vec::new(),
             unresolved_threads: 1,
             total_threads: 2,
@@ -558,7 +575,8 @@ mod tests {
             synced_at: at,
             hidden: false,
         };
-        let watched = WatchedPr::from_pull_request(&pr);
+        assert!(!WatchedPr::from_pull_request(&pr, "grace").review_requested);
+        let watched = WatchedPr::from_pull_request(&pr, "ada");
         assert_eq!(watched.repo, "acme/widgets");
         assert!(watched.open && watched.author && watched.review_requested);
         assert!(watched.checks_failing);

@@ -1419,9 +1419,10 @@ mod tests {
     use super::*;
     use crate::domain::{
         Account, AuthMode, ChecksState, Involvement, MergeStateStatus, Mergeable, RepoRef,
-        RequestStatus,
+        RequestStatus, RequestedReviewer, Reviewer,
     };
     use crate::error::ProviderError;
+    use crate::notify::{NotifyKind, WatchedPr, Watcher};
     use chrono::TimeZone;
 
     fn ts(mins: i64) -> DateTime<Utc> {
@@ -1897,6 +1898,57 @@ mod tests {
             vec![SearchBucket::Mine, SearchBucket::ReviewRequested]
         );
         assert_eq!(fake.status_asked.lock().unwrap().len(), 30);
+    }
+
+    /// Reviewing drops the viewer from GitHub's requested reviewers while the
+    /// stored review flag stays on; a re-request is still announced.
+    #[test]
+    fn a_re_requested_review_is_announced_again() {
+        let (_dir, store, account) = open_store();
+        let snapshot = |store: &Store| -> Vec<WatchedPr> {
+            store
+                .list_pull_requests_for_account(account)
+                .unwrap()
+                .iter()
+                .map(|pr| WatchedPr::from_pull_request(pr, "ada"))
+                .collect()
+        };
+        let mut asked = pr("R1", "acme", 1, Involvement::REVIEW_REQUESTED);
+        asked.pull_request.author_login = "grace".into();
+        asked.pull_request.requested_reviewers = vec![RequestedReviewer::bare(Reviewer::User {
+            login: "ada".into(),
+        })];
+        let requested = Fake {
+            review: vec![asked],
+            ..fake(Vec::new(), Vec::new())
+        };
+        let mut watcher = Watcher::default();
+        sync_account(&store, &requested, account, SyncKind::Full, ts(30)).unwrap();
+        assert!(watcher.observe(&snapshot(&store), true, 0).is_empty());
+        // After the review the search no longer returns it; the recheck reads
+        // no pending reviewers.
+        let reviewed = Fake {
+            refresh: vec![pr("R1", "acme", 1, Involvement::empty())],
+            ..fake(Vec::new(), Vec::new())
+        };
+        sync_account(&store, &reviewed, account, SyncKind::Full, ts(40)).unwrap();
+        assert!(
+            row(&store, account, 1)
+                .involvement
+                .contains(Involvement::REVIEW_REQUESTED)
+        );
+        assert!(watcher.observe(&snapshot(&store), true, 600_000).is_empty());
+        sync_account(&store, &requested, account, SyncKind::Full, ts(50)).unwrap();
+        let events = watcher.observe(&snapshot(&store), true, 1_200_000);
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0].kind, NotifyKind::ReviewRequested);
+        // Still requested on the next sync: no repeat.
+        sync_account(&store, &requested, account, SyncKind::Full, ts(60)).unwrap();
+        assert!(
+            watcher
+                .observe(&snapshot(&store), true, 1_800_000)
+                .is_empty()
+        );
     }
 
     /// A sync of authored pull requests alone leaves review-only rows as
