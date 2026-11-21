@@ -484,19 +484,16 @@ impl Vault {
                     }
                 }
             });
-        let vault = match spawned {
+        match spawned {
             Ok(_) => Self {
                 shared,
                 jobs: Some(tx),
                 scope: Default::default(),
             },
-            Err(err) => {
-                return Self::memory(&format!(
-                    "Keyring unavailable (could not start its worker: {err}). Tokens stay in memory for this session and are lost when the app quits."
-                ));
-            }
-        };
-        vault
+            Err(err) => Self::memory(&format!(
+                "Keyring unavailable (could not start its worker: {err}). Tokens stay in memory for this session and are lost when the app quits."
+            )),
+        }
     }
 
     /// An in-memory vault that never touches a keychain.
@@ -801,10 +798,10 @@ impl Vault {
         // The caller waits for this write. A silent keychain write can stall
         // the worker for tens of seconds when the keychain is locked; allow
         // one prompt instead.
-        if let Ok(mut inner) = self.shared.lock() {
-            if !inner.prompt_open {
-                inner.allow_prompt = true;
-            }
+        if let Ok(mut inner) = self.shared.lock()
+            && !inner.prompt_open
+        {
+            inner.allow_prompt = true;
         }
         self.kick();
         self.shared.wait_for_write(revision)
