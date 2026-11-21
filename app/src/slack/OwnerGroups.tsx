@@ -11,9 +11,18 @@ import { Mrkdwn } from "./mrkdwn";
 import { TargetCombobox } from "./TargetCombobox";
 import { expiredSignIn } from "./workspaces";
 
-function withNote(text: string, note: string): string {
+/** `message::slack_bullets`: a leading `- ` or `* ` becomes `• `, so Slack shows what the preview shows. */
+function slackBullets(text: string): string {
+  return text.replace(/^([ \t]*)[-*] /gm, "$1• ");
+}
+
+/**
+ * The note as the backend appends it (`lifecycle::with_note`): after a blank
+ * line, trimmed, with Slack bullets, and only when it isn't blank.
+ */
+export function withNote(text: string, note: string): string {
   const trimmed = note.trim();
-  return trimmed ? `${text.trimEnd()}\n\n${trimmed}\n` : text;
+  return trimmed ? `${text.trimEnd()}\n\n${slackBullets(trimmed)}\n` : text;
 }
 
 /** More than one pending line, or a line that is not exactly one team. */

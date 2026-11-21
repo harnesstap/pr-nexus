@@ -8,7 +8,7 @@ import type { Toast } from "../list/model";
 import { CopyMessageButton } from "./CopyMessageButton";
 import { DraftWarning } from "./DraftWarning";
 import { Mrkdwn } from "./mrkdwn";
-import { CheckNotes, GroupedRequest, needsGroupSends } from "./OwnerGroups";
+import { CheckNotes, GroupedRequest, needsGroupSends, withNote } from "./OwnerGroups";
 import { peekReviewPrefetch } from "./reviewPrefetch";
 import { TargetCombobox } from "./TargetCombobox";
 import { expiredSignIn } from "./workspaces";
@@ -56,15 +56,6 @@ interface Painted {
   found: TargetChoice[];
   first: TargetChoice;
   mine: number;
-}
-
-/**
- * The note as the backend appends it (`lifecycle::with_note`): after a blank
- * line, trimmed, and only when it isn't blank.
- */
-export function withNote(text: string, note: string): string {
-  const trimmed = note.trim();
-  return trimmed ? `${text.trimEnd()}\n\n${trimmed}\n` : text;
 }
 
 function hasDraft(preview: ReviewPreview): boolean {

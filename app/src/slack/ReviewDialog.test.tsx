@@ -3,7 +3,8 @@ import { beforeEach, expect, test, vi } from "vitest";
 import type { Toast } from "../list/model";
 import type { Api, BulkPreview, BulkRequest, ListRow, MappingRow, PrDetail, ReviewPreview, ReviewTarget, SlackIndicator, SlackWorkspace, TargetChoice } from "../api";
 import { beginDraftFlip, resetDraftRecords, settleDraftFlip, takeGeneration } from "../detail/draftRecord";
-import { ReviewDialog, withNote } from "./ReviewDialog";
+import { withNote } from "./OwnerGroups";
+import { ReviewDialog } from "./ReviewDialog";
 import { rememberReviewSeed, resetReviewPrefetch } from "./reviewPrefetch";
 
 beforeEach(() => {
@@ -504,6 +505,7 @@ test("the preview renders like Slack and shows the optional note, which is sent"
 test("withNote mirrors the backend: blank line, trimmed, blank ignored", () => {
   expect(withNote("Hello\n", "  hi  ")).toBe("Hello\n\nhi\n");
   expect(withNote("Hello\n", "   ")).toBe("Hello\n");
+  expect(withNote("Hello\n", "Context:\n- first\n  * second")).toBe("Hello\n\nContext:\n• first\n  • second\n");
 });
 
 test("a title with underscores previews as inline code with no Markdown warning", async () => {
