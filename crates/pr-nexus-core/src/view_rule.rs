@@ -293,6 +293,9 @@ pub fn save_views(store: &Store, views: Vec<SidebarView>) -> Result<Vec<SidebarV
         key: CATALOG_KEY.to_owned(),
         value_json,
     })?;
+    // A deleted view's key can be handed out again (`custom:N` is the highest
+    // plus one), so its sort, grouping and filters must not outlive it.
+    store.delete_custom_view_states_except(stored.iter().map(|view| view.key.clone()).collect())?;
     Ok(stored)
 }
 
@@ -741,6 +744,48 @@ mod tests {
         let again = load_views(&store).unwrap();
         assert_eq!(again[0].name, "Mine");
         assert!(again.iter().any(|view| view.key == "custom:1"));
+    }
+
+    #[test]
+    fn deleting_a_custom_view_drops_its_saved_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("pr-nexus.db")).unwrap();
+        let custom = |key: &str| SidebarView {
+            key: key.to_owned(),
+            name: key.to_owned(),
+            query: String::new(),
+            builtin: false,
+            sort_order: 9,
+            parent: None,
+        };
+        let mut views = defaults();
+        views.extend([custom("custom:1"), custom("custom:2")]);
+        save_views(&store, views.clone()).unwrap();
+        for key in ["mine", "custom:1", "custom:2"] {
+            store
+                .put_view_state(crate::domain::ViewState {
+                    view_key: key.to_owned(),
+                    state_json: r#"{"filters":{"search":"old"}}"#.to_owned(),
+                    updated_at: chrono::Utc::now(),
+                })
+                .unwrap();
+        }
+        views.retain(|view| view.key != "custom:2");
+        save_views(&store, views).unwrap();
+        // custom:2 is the next key handed out again: it must start clean.
+        assert!(
+            store
+                .get_view_state("custom:2".to_owned())
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            store
+                .get_view_state("custom:1".to_owned())
+                .unwrap()
+                .is_some()
+        );
+        assert!(store.get_view_state("mine".to_owned()).unwrap().is_some());
     }
 
     #[test]
