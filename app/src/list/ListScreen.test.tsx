@@ -415,6 +415,24 @@ test("details open beside the list, follow the clicked row, and close on Esc", a
   await waitFor(() => expect(screen.queryByTestId("detail-panel")).not.toBeInTheDocument());
 });
 
+test("a pull request opened from a notification is marked read like a clicked one", async () => {
+  const unread = { ...listRow(1, "Migrate login"), unread: true };
+  const fake = api([], [unread]);
+  fake.prDetail = (id: number) => Promise.resolve(mockDetail(id));
+  fake.prOverview = () => Promise.resolve(mockOverview());
+  fake.markPrsRead = vi.fn(() => Promise.resolve());
+  let open: ((payload: unknown) => void) | undefined;
+  fake.onOpenRequest = (onOpen) => {
+    open = onOpen;
+    return () => undefined;
+  };
+  render(<ListScreen api={fake} boot={boot} onBoot={() => undefined} />);
+  await screen.findByText("Migrate login");
+  open?.({ view: "mine", pr_id: 1 });
+  await screen.findByTestId("detail-panel");
+  await waitFor(() => expect(fake.markPrsRead).toHaveBeenCalledWith([1]));
+});
+
 test("the sync details offer a full resync that calls the full command", async () => {
   const fake = api([]);
   const fullResync = vi.fn(() => Promise.resolve({ ...boot.sync, revision: 1 }));
