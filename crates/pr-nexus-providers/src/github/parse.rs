@@ -118,7 +118,7 @@ pub(crate) fn parse_budget(body: &Value) -> Option<RateBudget> {
 
 pub(crate) fn graphql_failure(body: &Value) -> Option<ProviderError> {
     let errors = body.get("errors")?.as_array()?;
-    if errors.is_empty() {
+    if errors.is_empty() || only_missing_nodes(body, errors) {
         return None;
     }
     let message = errors
@@ -146,6 +146,21 @@ pub(crate) fn graphql_failure(body: &Value) -> Option<ProviderError> {
         code: "graphql".into(),
         message,
     })
+}
+
+/// A `nodes(ids:)` answer where some ids are deleted, transferred, or behind
+/// SAML: those entries are null with a NOT_FOUND or FORBIDDEN error at
+/// `["nodes", i, ..]`, and the rest of the data is good. Mutation errors sit
+/// at the mutation's own path, so they still fail.
+fn only_missing_nodes(body: &Value, errors: &[Value]) -> bool {
+    body.get("data").is_some_and(|data| !data.is_null())
+        && errors.iter().all(|error| {
+            let kind = error.get("type").and_then(Value::as_str).unwrap_or("");
+            let path = error.get("path").and_then(Value::as_array);
+            matches!(kind, "NOT_FOUND" | "FORBIDDEN")
+                && path
+                    .is_some_and(|path| path.len() >= 2 && path[0] == "nodes" && path[1].is_u64())
+        })
 }
 
 fn parse_pr(
@@ -507,6 +522,33 @@ pub(crate) fn merge_orgs(user: &mut VcsUser, rest: Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_null_nodes_errors_pass() {
+        let gone = serde_json::json!({
+            "data": { "nodes": [{ "id": "PR_1" }, null, null] },
+            "errors": [
+                { "type": "NOT_FOUND", "path": ["nodes", 1], "message": "gone" },
+                { "type": "FORBIDDEN", "path": ["nodes", 2], "message": "saml" }
+            ]
+        });
+        assert!(graphql_failure(&gone).is_none());
+        let mutation = serde_json::json!({
+            "data": { "mergePullRequest": null },
+            "errors": [{ "type": "FORBIDDEN", "path": ["mergePullRequest"], "message": "no" }]
+        });
+        assert!(graphql_failure(&mutation).is_some());
+        let null_data = serde_json::json!({
+            "data": null,
+            "errors": [{ "type": "NOT_FOUND", "path": ["nodes", 0], "message": "gone" }]
+        });
+        assert!(graphql_failure(&null_data).is_some());
+        let top_level = serde_json::json!({
+            "data": { "nodes": [null] },
+            "errors": [{ "type": "NOT_FOUND", "message": "gone" }]
+        });
+        assert!(graphql_failure(&top_level).is_some());
+    }
 
     #[test]
     fn assignees_keep_the_first_login_and_skip_a_missing_list() {

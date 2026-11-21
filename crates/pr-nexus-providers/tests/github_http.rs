@@ -530,14 +530,21 @@ fn status_reads_the_slow_fields_by_id_in_small_chunks() {
                     .iter()
                     .map(|id| status_node(id.as_str().unwrap()))
                     .collect();
-                // A pull request that is gone answers null.
+                // A pull request that is gone answers null, with an error
+                // naming its path.
+                let gone = nodes.len();
                 nodes.push(serde_json::Value::Null);
                 ResponseTemplate::new(200).set_body_json(json!({
                     "data": {
                         "rateLimit": { "limit": 5000, "remaining": 4999,
                             "resetAt": "2026-01-01T01:00:00Z", "cost": 1 },
                         "nodes": nodes,
-                    }
+                    },
+                    "errors": [{
+                        "type": "NOT_FOUND",
+                        "path": ["nodes", gone],
+                        "message": "Could not resolve to a node with the global id of 'PR_gone'."
+                    }]
                 }))
             })
             .with_priority(2)
