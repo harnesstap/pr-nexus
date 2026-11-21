@@ -198,11 +198,14 @@ fn effective_base(
 }
 
 /// One head can match several pull requests. The lowest number wins, then the
-/// lowest id, so the parent does not change between runs.
+/// lowest id, so the parent does not change between runs. A head equal to its
+/// base can only come from a fork (GitHub refuses it inside one repository),
+/// so it is not a parent. Other fork heads still match by name: the rows do not
+/// carry `isCrossRepository`.
 fn by_head<'a>(group: &[&'a StackRef], state: StackState) -> HashMap<&'a str, &'a StackRef> {
     let mut out: HashMap<&str, &'a StackRef> = HashMap::new();
     for pr in group {
-        if pr.state != state || pr.head_ref.is_empty() {
+        if pr.state != state || pr.head_ref.is_empty() || pr.head_ref == pr.base_ref {
             continue;
         }
         let keep = out
@@ -405,6 +408,20 @@ mod tests {
             open(2, 11, "feat-b", "feat-a"),
         ]);
         assert!(index.place(2).is_none());
+    }
+
+    #[test]
+    fn a_fork_pull_request_from_main_is_not_a_parent() {
+        // A contributor's fork PR: head `main` into base `main`. Same-repo
+        // PRs into `main` must not stack on it.
+        let index = index(&[
+            open(5, 5, "main", "main"),
+            open(6, 6, "feature", "main"),
+            open(7, 7, "other", "main"),
+        ]);
+        assert!(index.chains().is_empty());
+        assert!(index.place(5).is_none());
+        assert!(index.place(6).is_none());
     }
 
     #[test]
