@@ -411,9 +411,12 @@ pub fn cached_readiness_with(
 }
 
 /// Resolves ownership for open pull requests whose list readiness hinges on an
-/// unknown code-owner review, at most `limit` of them.
+/// unknown code-owner review, probing at most `limit` of them. A pull request
+/// already resolved for its head and base is skipped, even when the answer was
+/// unknown, until either moves.
 ///
-/// Rate limits and lost auth stop the pass. Other failures skip the pull request.
+/// Returns how many list rows changed. Rate limits and lost auth stop the
+/// pass. Other failures skip the pull request.
 pub fn resolve_unknown_code_owner_reviews(
     store: &Store,
     provider: &dyn VcsProvider,
@@ -422,30 +425,45 @@ pub fn resolve_unknown_code_owner_reviews(
     now: DateTime<Utc>,
     limit: usize,
 ) -> Result<usize, CoreError> {
-    let mut resolved = 0;
+    let mut probed = 0;
+    let mut changed = 0;
     for pr in prs {
-        if resolved >= limit {
+        if probed >= limit {
             break;
         }
         if pr.hidden || pr.state != crate::domain::PrState::Open {
             continue;
         }
+        let entry = store.get_ownership_cache(pr.id)?;
+        if entry
+            .as_ref()
+            .and_then(|entry| CachedOwnership::for_pr(entry, pr))
+            .is_some()
+        {
+            continue;
+        }
+        let before = cached_readiness_with(entry.as_ref(), pr, blocked_review_required_is_ready);
         let waiting = matches!(
-            cached_readiness(store, pr, blocked_review_required_is_ready)?,
+            &before,
             Readiness::Unknown { reasons } if reasons.iter().any(|reason| reason == CODE_OWNER_REVIEW_UNKNOWN)
         );
         if !waiting {
             continue;
         }
+        probed += 1;
         match resolve(store, provider, pr, blocked_review_required_is_ready, now) {
-            Ok(_) => resolved += 1,
+            Ok(_) => {
+                if cached_readiness(store, pr, blocked_review_required_is_ready)? != before {
+                    changed += 1;
+                }
+            }
             Err(CoreError::Provider(
                 err @ (ProviderError::RateLimited { .. } | ProviderError::Unauthorized(_)),
             )) => return Err(err.into()),
             Err(_) => {}
         }
     }
-    Ok(resolved)
+    Ok(changed)
 }
 
 /// The last report for `pr` when its head and base still match a stored

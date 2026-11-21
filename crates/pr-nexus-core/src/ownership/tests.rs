@@ -454,3 +454,36 @@ fn list_rows_read_the_cache_and_the_sync_pass_fills_it() {
     assert_eq!(again, 0);
     assert_eq!(fake.input_calls.load(Ordering::SeqCst), 1);
 }
+
+#[test]
+fn an_unresolvable_code_owner_review_is_probed_once_per_head() {
+    let (_dir, store, pr) = seed();
+    let mut fake = Fake::new();
+    // Not an admin and no ruleset: the requirement stays unknown.
+    fake.rules = Some(false);
+    let repo_id = store.list_repositories(pr.remote.account).unwrap()[0].id;
+    let mut other = pr.clone();
+    other.remote.id = "PR_2".into();
+    other.number = 8;
+    let other = store.upsert_pull_request(repo_id, other).unwrap();
+    let prs = [pr.clone(), other.clone()];
+    let mut changed = Vec::new();
+    for _ in 0..3 {
+        changed
+            .push(resolve_unknown_code_owner_reviews(&store, &fake, &prs, true, now(), 1).unwrap());
+    }
+    assert!(matches!(
+        cached_readiness(&store, &pr, true).unwrap(),
+        Readiness::Unknown { reasons } if reasons.iter().any(|r| r == CODE_OWNER_REVIEW_UNKNOWN)
+    ));
+    // One probe each, then none until the head or base moves.
+    assert_eq!(fake.probe_calls.load(Ordering::SeqCst), 2);
+    assert!(store.get_ownership_cache(other.id).unwrap().is_some());
+    // Still unknown, so the list has nothing new to show.
+    assert_eq!(changed, vec![0, 0, 0]);
+
+    let mut moved = pr.clone();
+    moved.head_sha = "h2".into();
+    resolve_unknown_code_owner_reviews(&store, &fake, &[moved], true, now(), 1).unwrap();
+    assert_eq!(fake.probe_calls.load(Ordering::SeqCst), 3);
+}
