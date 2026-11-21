@@ -726,6 +726,17 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
     };
   }, [api]);
 
+  // A custom view deleted while open would leave a key with no rule, which
+  // lists every pull request. Fall back to the view it was nested under.
+  const knownViews = useRef(new Map<string, string>());
+  useEffect(() => {
+    const fallback = catalog.some((view) => view.key === viewKey) ? undefined : knownViews.current.get(viewKey);
+    knownViews.current = new Map(catalog.map((view) => [view.key, view.parent ?? "mine"]));
+    if (fallback) {
+      setViewKey(fallback);
+    }
+  }, [catalog, viewKey]);
+
   const catalogJson = JSON.stringify(catalog);
   useEffect(() => {
     if (!api.saveSidebarViews) {
