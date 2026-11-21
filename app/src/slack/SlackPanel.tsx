@@ -231,7 +231,8 @@ export function SlackPanel({ api, fields, onFieldsChange, secretSaved, workspace
     try {
       await api.saveSlack(fields.clientId.trim() || savedClientId.trim(), fields.clientSecret, fields.redirectUri);
       const workspace = await api.slackConnect();
-      onWorkspacesChange([...workspaces.filter((item) => item.id !== workspace.id), workspace]);
+      // Sign-in can take minutes; reload so switches and removals made meanwhile stay.
+      onWorkspacesChange(await api.slackWorkspaces());
       setNotice(
         expected && expected.id !== workspace.id
           ? `Connected to ${workspace.team_name}. ${expected.team_name} still needs sign-in: pick it in the Slack browser page.`
