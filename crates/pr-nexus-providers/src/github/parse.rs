@@ -10,6 +10,9 @@ use pr_nexus_core::domain::{
 };
 use pr_nexus_core::error::ProviderError;
 use pr_nexus_core::providers::{PrStatus, RateBudget, SyncedPullRequest, VcsUser};
+use pr_nexus_core::review_clock::{
+    RequestTarget, ReviewClock, ReviewRequestEvent, SubmittedReview,
+};
 use serde_json::Value;
 
 pub(crate) struct SearchPage {
@@ -257,6 +260,7 @@ fn parse_pr(
             .unwrap_or(false),
         merge_queue: status.merge_queue.clone(),
         failing_checks: status.failing_checks.clone(),
+        review_clock: status.review_clock.clone(),
     };
     status.apply_to(&mut synced.pull_request);
     Ok(synced)
@@ -319,7 +323,144 @@ fn parse_status_node(node: &Value) -> Result<PrStatus, ProviderError> {
             .and_then(parse_time),
         merge_queue: super::merge_queue::snapshot_from_node(node),
         failing_checks: failing_checks(node),
+        review_clock: review_clock(node),
     })
+}
+
+/// `None` when this payload has no `reviewClock` field, so the cache stays.
+/// Matches `last: 40` in `status.graphql`.
+const REVIEW_CLOCK_PAGE: usize = 40;
+
+fn review_clock(node: &Value) -> Option<ReviewClock> {
+    let connection = node.get("reviewClock")?;
+    let nodes = connection
+        .get("nodes")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut clock = ReviewClock {
+        truncated: nodes.len() >= REVIEW_CLOCK_PAGE,
+        ..ReviewClock::default()
+    };
+    for item in &nodes {
+        match item.get("__typename").and_then(Value::as_str) {
+            Some("ReadyForReviewEvent") => {
+                if let Some(at) = item
+                    .get("createdAt")
+                    .and_then(Value::as_str)
+                    .and_then(parse_time)
+                    && clock.ready_at.is_none_or(|kept| at > kept)
+                {
+                    clock.ready_at = Some(at);
+                }
+            }
+            Some("ReviewRequestedEvent") => {
+                if let Some(event) = request_event(item) {
+                    clock.requests.push(event);
+                }
+            }
+            Some("PullRequestReview") => {
+                if let Some(review) = submitted_review(item) {
+                    clock.reviews.push(review);
+                }
+            }
+            _ => {}
+        }
+    }
+    Some(clock)
+}
+
+fn request_event(item: &Value) -> Option<ReviewRequestEvent> {
+    let at = item
+        .get("createdAt")
+        .and_then(Value::as_str)
+        .and_then(parse_time)?;
+    let reviewer = item.get("requestedReviewer")?;
+    let target = match reviewer.get("__typename").and_then(Value::as_str) {
+        Some("Team") => {
+            let org = reviewer
+                .pointer("/organization/login")
+                .and_then(Value::as_str)?;
+            let slug = reviewer.get("slug").and_then(Value::as_str)?;
+            if org.is_empty() || slug.is_empty() {
+                return None;
+            }
+            RequestTarget::Team {
+                org: org.to_owned(),
+                slug: slug.to_owned(),
+            }
+        }
+        Some("Bot" | "Mannequin") => return None,
+        _ => {
+            let login = reviewer.get("login").and_then(Value::as_str)?;
+            if login.is_empty() {
+                return None;
+            }
+            RequestTarget::User {
+                login: login.to_owned(),
+            }
+        }
+    };
+    Some(ReviewRequestEvent { at, target })
+}
+
+fn submitted_review(item: &Value) -> Option<SubmittedReview> {
+    let author = item.get("author")?;
+    if matches!(
+        author.get("__typename").and_then(Value::as_str),
+        Some("Bot" | "Mannequin")
+    ) {
+        return None;
+    }
+    let login = author.get("login").and_then(Value::as_str)?;
+    if login.is_empty() {
+        return None;
+    }
+    let at = item
+        .get("submittedAt")
+        .and_then(Value::as_str)
+        .and_then(parse_time)?;
+    Some(SubmittedReview {
+        at,
+        login: login.to_owned(),
+    })
+}
+
+pub(crate) fn parse_viewer_teams(body: &Value) -> Result<Vec<TeamRef>, ProviderError> {
+    let viewer = data(body)?.get("viewer").cloned().unwrap_or(Value::Null);
+    let mut teams = Vec::new();
+    let Some(orgs) = viewer
+        .pointer("/organizations/nodes")
+        .and_then(Value::as_array)
+    else {
+        return Ok(teams);
+    };
+    for org in orgs {
+        let Some(login) = org
+            .get("login")
+            .and_then(Value::as_str)
+            .filter(|login| !login.is_empty())
+        else {
+            continue;
+        };
+        let Some(nodes) = org.pointer("/teams/nodes").and_then(Value::as_array) else {
+            continue;
+        };
+        for team in nodes {
+            let Some(slug) = team
+                .get("slug")
+                .and_then(Value::as_str)
+                .filter(|slug| !slug.is_empty())
+            else {
+                continue;
+            };
+            teams.push(TeamRef {
+                org: login.to_owned(),
+                slug: slug.to_owned(),
+            });
+        }
+    }
+    Ok(teams)
 }
 
 /// Failing checks on the head commit. `None` when this payload has no
@@ -731,5 +872,46 @@ mod tests {
         );
         assert_eq!(status[1].failing_checks.as_deref(), Some(&[][..]));
         assert!(status[2].failing_checks.is_none());
+    }
+
+    #[test]
+    fn status_keeps_the_latest_review_request_for_a_user_or_a_team() {
+        let body = serde_json::json!({
+            "data": { "nodes": [{
+                "id": "PR_1",
+                "reviewClock": { "nodes": [
+                    {"__typename":"ReviewRequestedEvent","createdAt":"2026-11-16T12:00:00Z",
+                     "requestedReviewer":{"__typename":"User","login":"ada"}},
+                    {"__typename":"ReviewRequestedEvent","createdAt":"2026-11-16T13:00:00Z",
+                     "requestedReviewer":{"__typename":"Team","slug":"web","organization":{"login":"acme"}}},
+                    {"__typename":"ReviewRequestedEvent","createdAt":"2026-11-16T14:00:00Z",
+                     "requestedReviewer":{"__typename":"Bot","login":"helper"}},
+                    {"__typename":"ReadyForReviewEvent","createdAt":"2026-11-16T11:00:00Z"},
+                    {"__typename":"PullRequestReview","submittedAt":"2026-11-16T15:00:00Z",
+                     "author":{"__typename":"User","login":"ada"}},
+                    {"__typename":"PullRequestReview","submittedAt":"2026-11-16T15:30:00Z",
+                     "author":{"__typename":"Bot","login":"helper"}}
+                ]}
+            }, {
+                "id": "PR_bare"
+            }] }
+        });
+        let status = parse_status(&body).unwrap();
+        let clock = status[0].review_clock.as_ref().unwrap();
+        assert_eq!(clock.requests.len(), 2);
+        assert_eq!(clock.reviews.len(), 1);
+        assert!(clock.ready_at.is_some());
+        assert!(status[1].review_clock.is_none());
+
+        let teams = parse_viewer_teams(&serde_json::json!({
+            "data": { "viewer": { "organizations": { "nodes": [
+                {"login":"acme","teams":{"nodes":[{"slug":"web"},{"slug":""}]}},
+                {"login":"","teams":{"nodes":[{"slug":"other"}]}}
+            ]}}}
+        }))
+        .unwrap();
+        assert_eq!(teams.len(), 1);
+        assert_eq!(teams[0].org, "acme");
+        assert_eq!(teams[0].slug, "web");
     }
 }

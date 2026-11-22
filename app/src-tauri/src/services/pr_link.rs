@@ -191,6 +191,7 @@ mod tests {
                 repo_archived: false,
                 merge_queue: None,
                 failing_checks: None,
+                review_clock: None,
             }))
         }
 

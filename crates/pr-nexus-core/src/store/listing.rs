@@ -7,6 +7,7 @@ use crate::checks::FailingCheck;
 use crate::domain::{AccountId, OwnershipCacheEntry, PrId, PrProjectLink, ReviewRequest};
 use crate::error::CoreError;
 use crate::merge_queue::MergeQueueSnapshot;
+use crate::review_clock::ReviewClock;
 
 use super::cache::map_ownership;
 use super::project_info::starred_in;
@@ -28,6 +29,8 @@ pub struct ListFacts {
     pub merge_queues: HashMap<PrId, MergeQueueSnapshot>,
     /// Failing check names from the last status read. Missing means not read yet.
     pub failing_checks: HashMap<PrId, Vec<FailingCheck>>,
+    /// Review-request timelines from the last status read. Missing means not read yet.
+    pub clocks: HashMap<PrId, ReviewClock>,
 }
 
 impl Store {
@@ -85,6 +88,7 @@ impl Store {
             facts.starred = starred_in(conn, account_id)?;
             facts.merge_queues = super::merge_queue::merge_queues_for(conn, account_id)?;
             facts.failing_checks = super::failing_checks::failing_checks_for(conn, account_id)?;
+            facts.clocks = super::review_clock::clocks_for(conn, account_id)?;
             Ok(facts)
         })
     }

@@ -25,6 +25,7 @@ pub mod profiles;
 pub mod providers;
 pub mod redact;
 pub mod review;
+pub mod review_clock;
 pub mod review_filter;
 pub mod search;
 pub mod settings;

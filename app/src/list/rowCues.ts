@@ -32,15 +32,21 @@ export function rowPills(row: Pick<ListRow, "is_draft" | "conflicts" | "state">)
 }
 
 /**
- * When an open PR started waiting on review: its Slack request, else its
- * creation (GitHub does not give the request time). Null when nobody is asked
- * to review it, or it is a draft or approved. Mirrors `waiting_since` in
+ * When an open PR started waiting on review: the cached GitHub request, else
+ * its Slack request, else its creation. Null when nobody is asked to review
+ * it, or it is a draft or approved. Mirrors `waiting_since` in
  * `app/src-tauri/src/listing.rs`.
  */
 export function waitingSince(row: ListRow): number | null {
   const asked = row.reviewers_requested || row.slack !== null;
   if (row.state !== "open" || row.is_draft || !asked || row.review_decision === "approved") {
     return null;
+  }
+  if (row.review_wait?.at) {
+    const parsed = Date.parse(row.review_wait.at);
+    if (!Number.isNaN(parsed)) {
+      return parsed;
+    }
   }
   return new Date(row.slack ? row.slack.requested_at : row.created_at).getTime();
 }

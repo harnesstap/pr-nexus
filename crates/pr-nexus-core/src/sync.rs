@@ -666,6 +666,7 @@ pub fn sync_buckets(
     if scope_is_empty(&scope) {
         return Ok(SyncReport::idle(false, "Choose orgs to track".into()));
     }
+    refresh_viewer_teams(store, provider, account_id, &scope.viewer_login)?;
     if kind == SyncKind::Scheduled
         && let Some(budget) = settings::rate_budget(store)?
         && scheduled_poll_paused(&budget, now)
@@ -705,6 +706,24 @@ pub fn sync_buckets(
         format!("{} updated", total.updated)
     };
     Ok(total)
+}
+
+/// Stores the viewer's teams once per sync. A failed lookup keeps the previous list.
+fn refresh_viewer_teams(
+    store: &Store,
+    provider: &dyn VcsProvider,
+    account_id: AccountId,
+    login: &str,
+) -> Result<(), CoreError> {
+    let teams = match provider.viewer_teams(login) {
+        Ok(Some(teams)) => teams,
+        Ok(None) => return Ok(()),
+        Err(err) => {
+            tracing::debug!(error = %err, "viewer teams were not refreshed");
+            return Ok(());
+        }
+    };
+    store.replace_viewer_teams(account_id, &teams)
 }
 
 /// What one sync shares between its buckets.
@@ -1290,6 +1309,7 @@ impl<'a> Writer<'a> {
             repo_archived: repo.is_some_and(|repo| repo.archived),
             merge_queue: None,
             failing_checks: None,
+            review_clock: None,
             pull_request: pr,
         }
     }
@@ -1333,7 +1353,8 @@ impl<'a> Writer<'a> {
         if let Some(pr_id) = unchanged {
             let queue = self.write_queue(pr_id, &id, item.merge_queue.as_ref())?;
             let checks = self.write_failing_checks(pr_id, &id, item.failing_checks.as_deref())?;
-            return Ok(queue || checks);
+            let clock = self.write_review_clock(pr_id, &id, item.review_clock.as_ref())?;
+            return Ok(queue || checks || clock);
         }
         pr.synced_at = self.now;
         let saved = self.store.upsert_pull_request(repo.id, pr)?;
@@ -1346,6 +1367,9 @@ impl<'a> Writer<'a> {
         }
         if let Some(checks) = &item.failing_checks {
             self.store.set_failing_checks(saved.id, checks)?;
+        }
+        if let Some(clock) = &item.review_clock {
+            self.store.set_review_clock(saved.id, clock)?;
         }
         self.changed.insert(id);
         Ok(true)
@@ -1386,6 +1410,25 @@ impl<'a> Writer<'a> {
             return Ok(false);
         }
         self.store.set_failing_checks(pr_id, checks)?;
+        self.changed.insert(remote_id.to_owned());
+        Ok(true)
+    }
+
+    /// The review-request timeline can arrive without any other field changing.
+    /// `None` means this payload did not ask, so the stored slice stays.
+    fn write_review_clock(
+        &mut self,
+        pr_id: crate::domain::PrId,
+        remote_id: &str,
+        clock: Option<&crate::review_clock::ReviewClock>,
+    ) -> Result<bool, CoreError> {
+        let Some(clock) = clock else {
+            return Ok(false);
+        };
+        if self.store.review_clock(pr_id)?.as_ref() == Some(clock) {
+            return Ok(false);
+        }
+        self.store.set_review_clock(pr_id, clock)?;
         self.changed.insert(remote_id.to_owned());
         Ok(true)
     }
@@ -1494,6 +1537,7 @@ mod tests {
             repo_archived: false,
             merge_queue: None,
             failing_checks: None,
+            review_clock: None,
         }
     }
 
@@ -2579,6 +2623,7 @@ mod tests {
             last_commit_at: Some(ts(15)),
             merge_queue: None,
             failing_checks: None,
+            review_clock: None,
         }
     }
 

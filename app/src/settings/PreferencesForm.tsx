@@ -93,6 +93,21 @@ export function PreferencesForm({ api, prefs, sections, permission, onRequestPer
             checked={draft.review_sla_working_days}
             onChange={(on) => patch({ review_sla_working_days: on })}
           />
+          <Field
+            label="Turn amber when this many hours remain"
+            help="The request age stays neutral until this much of the review wait is left, then turns amber. It turns red after Review now after. 1 to 336. Default 12."
+          >
+            <input
+              {...plainText}
+              aria-label="Turn amber when this many hours remain"
+              className={input}
+              type="number"
+              min={1}
+              max={336}
+              value={draft.review_request_warn_hours}
+              onChange={(event) => patch({ review_request_warn_hours: Number(event.target.value) })}
+            />
+          </Field>
           <Field label="Open PR limit" help="Optional. My PRs shows a hint when you have more open pull requests than this. Leave empty for no limit.">
             <input {...plainText}
               aria-label="Open PR limit"

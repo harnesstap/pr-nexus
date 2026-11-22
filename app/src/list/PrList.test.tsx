@@ -182,6 +182,32 @@ test("a refresh re-renders only the rows that changed", async () => {
   expect(prRowRenderCountRef.current).toBe(1);
 });
 
+test("the request age ticks without re-rendering the row", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-10-26T12:00:00Z"));
+  const asked = row({
+    id: 7,
+    number: 70,
+    title: "Review the latch",
+    involvement: 2,
+    author_login: "lee",
+    reviewers_requested: true,
+    pending_reviewers: [{ kind: "user", login: "lee", name: "Lee", avatar_url: null }],
+    created_at: "2026-10-26T11:59:15Z",
+    review_wait: { at: "2026-10-26T11:59:15Z", exact: true, basis: "request" },
+  });
+  prRowRenderCountRef.current = 0;
+  await show(<Harness rows={[asked]} viewKey="to_review" />);
+  expect(screen.getByText("45s")).toBeInTheDocument();
+  const rendered = prRowRenderCountRef.current;
+  expect(rendered).toBeGreaterThan(0);
+  act(() => {
+    vi.advanceTimersByTime(1000);
+  });
+  expect(screen.getByText("46s")).toBeInTheDocument();
+  expect(prRowRenderCountRef.current).toBe(rendered);
+});
+
 test("a clock tick updates relative time without re-rendering the row", async () => {
   const prior = globalThis.ResizeObserver;
   class SilentObserver {

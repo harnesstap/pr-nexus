@@ -246,6 +246,8 @@ pub struct PrStatus {
     /// check contexts, so the stored names stay. `Some` replaces them,
     /// including an empty list when the rollup is not failing.
     pub failing_checks: Option<Vec<crate::checks::FailingCheck>>,
+    /// Review-request timeline from this payload. `None` leaves the cache.
+    pub review_clock: Option<crate::review_clock::ReviewClock>,
 }
 
 impl PrStatus {
@@ -279,6 +281,7 @@ impl PrStatus {
             last_commit_at: (pr.last_activity_at > pr.updated_at).then_some(pr.last_activity_at),
             merge_queue: None,
             failing_checks: None,
+            review_clock: None,
         }
     }
 
@@ -290,6 +293,9 @@ impl PrStatus {
         }
         if self.failing_checks.is_some() {
             item.failing_checks.clone_from(&self.failing_checks);
+        }
+        if self.review_clock.is_some() {
+            item.review_clock.clone_from(&self.review_clock);
         }
     }
 }
@@ -305,6 +311,8 @@ pub struct SyncedPullRequest {
     pub merge_queue: Option<crate::merge_queue::MergeQueueSnapshot>,
     /// Same meaning as [`PrStatus::failing_checks`]. `None` does not clear the cache.
     pub failing_checks: Option<Vec<crate::checks::FailingCheck>>,
+    /// Same meaning as [`PrStatus::review_clock`]. `None` does not clear the cache.
+    pub review_clock: Option<crate::review_clock::ReviewClock>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -483,6 +491,11 @@ pub trait VcsProvider: Send + Sync {
     /// Review decision, checks, mergeability, and thread counts for `ids`.
     /// A pull request GitHub no longer returns is left out.
     fn pull_request_status(&self, ids: &[ProviderRef]) -> Result<Vec<PrStatus>, ProviderError>;
+    /// Teams `login` belongs to. `Ok(None)` means this provider does not know,
+    /// and the caller must leave any stored list alone.
+    fn viewer_teams(&self, _login: &str) -> Result<Option<Vec<TeamRef>>, ProviderError> {
+        Ok(None)
+    }
     /// Head, base, CODEOWNERS blob, viewer permission, and effective reviews in one call.
     fn ownership_probe(&self, pr: &PullRequest) -> Result<OwnershipProbe, ProviderError>;
     /// Files, rules, and protection for the head and base in `probe`.

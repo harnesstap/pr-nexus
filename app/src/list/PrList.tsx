@@ -14,7 +14,7 @@ import { GitHubRowButton, StarButton } from "./StarButton";
 import { ProjectInfo } from "./JiraChips";
 import { isTypingTarget, wantsRowEnter } from "./keys";
 import { copyText, prsToMarkdown } from "./markdown";
-import { DEFAULT_REVIEW_SLA, wipHint, type ReviewSla } from "./sla";
+import { DEFAULT_REVIEW_SLA, DEFAULT_REVIEW_WARN_HOURS, wipHint, type ReviewSla } from "./sla";
 import type { SnoozeChoice, Toast } from "./model";
 import { displayKey, hint, matchShortcut, shortcut, type ShortcutId } from "./shortcuts";
 import {
@@ -58,6 +58,7 @@ import { githubQueryOf, linkMatches, membershipQuery, searchFieldValue, sortLock
 import { queueChip } from "../detail/mergeQueue";
 import { commentsText, compactSlack, rowPills, staleCue, viewEmptyState, type RowPill, type StaleCue } from "./rowCues";
 import { ClockProvider, RelativeTime, useNow } from "./clock";
+import { ReviewAge } from "./ReviewAge";
 
 /** A section as drawn: its loaded rows, plus counts and ids over every match. */
 type ShownSection = Section & { count: number; ids: number[] };
@@ -181,6 +182,8 @@ interface Props {
   onOpenSettings?: () => void;
   /** Review wait from Settings. Defaults to 48 hours, every day. */
   sla?: ReviewSla;
+  /** Hours of that wait still left when the request age turns amber. */
+  warnHours?: number;
   /** Optional open-PR cap for My PRs. Null means no hint. */
   wipLimit?: number | null;
   /** Copies the My PRs stand-up recap. */
@@ -283,6 +286,7 @@ export function PrList({
   actionsRef,
   onOpenSettings,
   sla = DEFAULT_REVIEW_SLA,
+  warnHours = DEFAULT_REVIEW_WARN_HOURS,
   wipLimit = null,
   onCopyStandup,
   standupMenuInitiallyOpen = false,
@@ -1058,6 +1062,7 @@ export function PrList({
                       show={view.show}
                       viewKey={viewKey}
                       sla={sla}
+                      warnHours={warnHours}
                       detailId={detailId}
                       canStar={onToggleStar !== undefined}
                       onFocusIndex={onFocusIndex}
@@ -1408,6 +1413,7 @@ interface RowProps {
   show: ShowFlags;
   viewKey: string;
   sla: ReviewSla;
+  warnHours: number;
   detailId: number | null;
   canStar: boolean;
   onFocusIndex: (index: number) => void;
@@ -1430,6 +1436,7 @@ export const PrRow = memo(function PrRow({
   show,
   viewKey,
   sla,
+  warnHours,
   detailId,
   canStar,
   onFocusIndex,
@@ -1470,11 +1477,11 @@ export const PrRow = memo(function PrRow({
       {canStar && <StarButton starred={row.starred} title={row.title} shortcut={focused} onToggle={() => onToggleStar(row)} />}
       <GitHubRowButton title={row.title} shortcut={focused} onOpen={() => onOpen(row.url)} />
       {compact ? (
-        <CompactRow row={row} show={show} viewKey={viewKey} sla={sla} active={focused} onDetails={onDetails} onOpen={onOpen} onRequestReview={onRequestReview} />
+        <CompactRow row={row} show={show} viewKey={viewKey} sla={sla} warnHours={warnHours} active={focused} onDetails={onDetails} onOpen={onOpen} onRequestReview={onRequestReview} />
       ) : (
         <>
           <div className="min-w-64 flex-1 overflow-hidden">
-            <TitleLine row={row} show={show} sla={sla} active={focused} onDetails={onDetails} />
+            <TitleLine row={row} show={show} sla={sla} warnHours={warnHours} active={focused} onDetails={onDetails} />
             <p className="flex items-center gap-1 truncate text-xs text-slate-500">
               {show.repo && <span className="truncate">{row.repo}</span>}
               {show.repo && show.ci && <span aria-hidden="true">·</span>}
@@ -1488,8 +1495,11 @@ export const PrRow = memo(function PrRow({
             </p>
           </div>
           {show.review && (
-            <div className="flex w-40 min-w-0 shrink-0 items-center overflow-hidden">
-              <NextActionBadge row={row} viewKey={viewKey} sla={sla} onOpen={onOpen} onRequestReview={onRequestReview} onDetails={onDetails} />
+            <div className="flex shrink-0 items-center gap-1.5">
+              <div className="flex w-40 min-w-0 items-center overflow-hidden">
+                <NextActionBadge row={row} viewKey={viewKey} sla={sla} onOpen={onOpen} onRequestReview={onRequestReview} onDetails={onDetails} />
+              </div>
+              <ReviewAge wait={row.review_wait} sla={sla} warnHours={warnHours} />
             </div>
           )}
           {show.review && (
@@ -1697,12 +1707,14 @@ function TitleLine({
   row,
   show,
   sla,
+  warnHours,
   active,
   onDetails,
 }: {
   row: ListRow;
   show: ShowFlags;
   sla: ReviewSla;
+  warnHours: number;
   /** This row is the keyboard focus, so Enter opens it. */
   active: boolean;
   onDetails: (row: ListRow) => void;
@@ -1721,6 +1733,7 @@ function TitleLine({
         <span className="shrink-0 rounded bg-slate-800 px-1 text-xs text-slate-300">{row.state === "merged" ? "Merged" : "Closed"}</span>
       )}
       <RowCues row={row} sla={sla} />
+      {!show.review && <ReviewAge wait={row.review_wait} sla={sla} warnHours={warnHours} />}
       {show.badges && row.project_ids.length > 1 && (
         <Tooltip label={`Also in ${row.project_ids.length - 1} other project${row.project_ids.length > 2 ? "s" : ""}`} className="shrink-0">
           <span className="shrink-0 rounded bg-slate-800 px-1 text-xs text-slate-400">+{row.project_ids.length - 1}</span>
@@ -1767,6 +1780,7 @@ function CompactRow({
   show,
   viewKey,
   sla,
+  warnHours,
   active,
   onDetails,
   onOpen,
@@ -1776,6 +1790,7 @@ function CompactRow({
   show: ShowFlags;
   viewKey: string;
   sla: ReviewSla;
+  warnHours: number;
   /** This row is the keyboard focus, so Enter opens it. */
   active: boolean;
   onDetails: (row: ListRow) => void;
@@ -1816,6 +1831,7 @@ function CompactRow({
       </div>
       <div className="flex shrink-0 items-center gap-1.5 pt-0.5 text-xs text-slate-400">
         {show.review && <NextActionBadge row={row} viewKey={viewKey} sla={sla} compact onOpen={onOpen} onRequestReview={onRequestReview} onDetails={onDetails} />}
+        <ReviewAge wait={row.review_wait} sla={sla} warnHours={warnHours} />
         {show.threads && <Threads row={row} />}
         <SlackCell row={row} showMissing={show.notRequested} onOpen={onOpen} />
       </div>

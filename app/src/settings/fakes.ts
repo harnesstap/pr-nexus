@@ -23,6 +23,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   bump_due_working_days: true,
   review_sla_hours: 48,
   review_sla_working_days: false,
+  review_request_warn_hours: 12,
   my_prs_wip_limit: null,
   bot_logins: [],
 };

@@ -38,7 +38,7 @@ import { defaultCatalog, effectiveQuery, newViewDraft, normalizeCatalog, type Si
 import { analyzeViewRule, isBumpQueueQuery } from "./viewRule";
 import { loadProjectCounts } from "./projectCount";
 import { knownTotal, loadViewCounts, localRuleCounts, type RemoteFetch } from "./viewCount";
-import { DEFAULT_REVIEW_SLA, type ReviewSla } from "./sla";
+import { DEFAULT_REVIEW_SLA, DEFAULT_REVIEW_WARN_HOURS, type ReviewSla } from "./sla";
 import { loadStandupRows, standupRecap } from "./standup";
 import { sidebarProjects } from "./projects";
 import { GlobalCommands } from "./GlobalCommands";
@@ -129,6 +129,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
   const [detail, setDetail] = useState(false);
   const [now, setNow] = useState(() => new Date());
   const [sla, setSla] = useState<ReviewSla>(DEFAULT_REVIEW_SLA);
+  const [warnHours, setWarnHours] = useState(DEFAULT_REVIEW_WARN_HOURS);
   const [wipLimit, setWipLimit] = useState<number | null>(null);
   const [orgs, setOrgs] = useState(boot.tracked_orgs);
   const [personal, setPersonal] = useState(boot.include_personal);
@@ -216,6 +217,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
         return;
       }
       setSla({ hours: prefs.review_sla_hours, workingDays: prefs.review_sla_working_days });
+      setWarnHours(prefs.review_request_warn_hours);
       setWipLimit(prefs.my_prs_wip_limit);
     }).catch(() => undefined);
     return () => {
@@ -1544,6 +1546,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
                 onEnqueuePullRequests={setQueueRows}
                 onNotice={setNotice}
                 sla={sla}
+                warnHours={warnHours}
                 wipLimit={wipLimit}
                 onCopyStandup={() => void copyStandup()}
                 standupMenuInitiallyOpen={openStandupMenu}

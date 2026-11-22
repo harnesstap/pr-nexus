@@ -71,6 +71,8 @@ pub const NOTIFY_COMMENT: &str = "notify.comment";
 pub const REVIEW_SLA_HOURS: &str = "review_sla_hours";
 /// When true, only Monday–Friday hours count toward [`REVIEW_SLA_HOURS`].
 pub const REVIEW_SLA_WORKING_DAYS: &str = "review_sla_working_days";
+/// Hours of review wait still left when the request age turns amber.
+pub const REVIEW_REQUEST_WARN_HOURS: &str = "review_request_warn_hours";
 /// Optional cap on open pull requests in My PRs. Missing or 0 means no cap.
 pub const MY_PRS_WIP_LIMIT: &str = "my_prs_wip_limit";
 /// Extra GitHub logins treated as bots, besides Bot actors and `[bot]` logins.
@@ -512,6 +514,20 @@ pub fn review_sla_working_days(store: &Store) -> Result<bool, CoreError> {
     json_or(store, REVIEW_SLA_WORKING_DAYS, false)
 }
 
+/// `review_request_warn_hours`. Missing or unreadable values use 12 hours.
+pub fn review_request_warn_hours(store: &Store) -> Result<i64, CoreError> {
+    let hours = json_or(
+        store,
+        REVIEW_REQUEST_WARN_HOURS,
+        crate::sla::DEFAULT_REVIEW_WARN_HOURS,
+    )?;
+    Ok(if REVIEW_SLA_RANGE.contains(&hours) {
+        hours
+    } else {
+        crate::sla::DEFAULT_REVIEW_WARN_HOURS
+    })
+}
+
 /// The list's review wait: hours plus whether weekends count.
 pub fn review_sla(store: &Store) -> Result<crate::sla::ReviewSla, CoreError> {
     Ok(crate::sla::ReviewSla {
@@ -568,6 +584,9 @@ pub struct Preferences {
     /// `review_sla_working_days`. Older clients omit it and count every hour.
     #[serde(default)]
     pub review_sla_working_days: bool,
+    /// `review_request_warn_hours`. Older clients omit it and keep 12 hours.
+    #[serde(default = "default_review_warn_hours")]
+    pub review_request_warn_hours: i64,
     /// `my_prs_wip_limit`. `None` means My PRs has no open-PR cap.
     #[serde(default)]
     pub my_prs_wip_limit: Option<u32>,
@@ -578,6 +597,10 @@ pub struct Preferences {
 
 fn default_review_sla_hours() -> i64 {
     crate::sla::DEFAULT_REVIEW_SLA_HOURS
+}
+
+fn default_review_warn_hours() -> i64 {
+    crate::sla::DEFAULT_REVIEW_WARN_HOURS
 }
 
 fn live_default() -> bool {
@@ -625,6 +648,7 @@ pub fn preferences(store: &Store) -> Result<Preferences, CoreError> {
         notify_comment: json_or(store, NOTIFY_COMMENT, false)?,
         review_sla_hours: review_sla_hours(store)?,
         review_sla_working_days: review_sla_working_days(store)?,
+        review_request_warn_hours: review_request_warn_hours(store)?,
         my_prs_wip_limit: my_prs_wip_limit(store)?,
         bot_logins: bot_logins(store)?,
     })
@@ -692,6 +716,11 @@ pub fn save_preferences(store: &Store, prefs: &Preferences) -> Result<Preference
         KEEP_CLOSED,
     )?;
     check("Review now after", prefs.review_sla_hours, REVIEW_SLA_RANGE)?;
+    check(
+        "Turn amber when this many hours remain",
+        prefs.review_request_warn_hours,
+        REVIEW_SLA_RANGE,
+    )?;
     let wip_limit = match prefs.my_prs_wip_limit {
         Some(0) | None => None,
         Some(limit) => {
@@ -745,6 +774,11 @@ pub fn save_preferences(store: &Store, prefs: &Preferences) -> Result<Preference
         store,
         REVIEW_SLA_WORKING_DAYS,
         &prefs.review_sla_working_days,
+    )?;
+    put_json(
+        store,
+        REVIEW_REQUEST_WARN_HOURS,
+        &prefs.review_request_warn_hours,
     )?;
     put_json(store, MY_PRS_WIP_LIMIT, &wip_limit)?;
     put_json(store, BOT_LOGINS, &bot_logins)?;
@@ -956,6 +990,7 @@ mod tests {
         assert!(!prefs.notify_comment);
         assert_eq!(prefs.review_sla_hours, 48);
         assert!(!prefs.review_sla_working_days);
+        assert_eq!(prefs.review_request_warn_hours, 12);
         assert_eq!(prefs.my_prs_wip_limit, None);
     }
 
@@ -984,6 +1019,7 @@ mod tests {
             notify_comment: true,
             review_sla_hours: 24,
             review_sla_working_days: true,
+            review_request_warn_hours: 6,
             my_prs_wip_limit: Some(8),
             bot_logins: vec![" review-helper ".into(), "review-helper".into(), "".into()],
         };
@@ -993,6 +1029,7 @@ mod tests {
         assert_eq!(saved.review_requester, "for Ada Acme");
         assert_eq!(saved.review_sla_hours, 24);
         assert!(saved.review_sla_working_days);
+        assert_eq!(saved.review_request_warn_hours, 6);
         assert_eq!(saved.my_prs_wip_limit, Some(8));
         assert_eq!(review_sla_hours(&store).unwrap(), 24);
         assert_eq!(
@@ -1023,6 +1060,9 @@ mod tests {
         prefs.review_sla_hours = 0;
         assert!(save_preferences(&store, &prefs).is_err());
         prefs.review_sla_hours = 48;
+        prefs.review_request_warn_hours = 0;
+        assert!(save_preferences(&store, &prefs).is_err());
+        prefs.review_request_warn_hours = 12;
         prefs.my_prs_wip_limit = Some(9_000);
         assert!(save_preferences(&store, &prefs).is_err());
         prefs.my_prs_wip_limit = None;

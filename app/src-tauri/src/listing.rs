@@ -1147,9 +1147,9 @@ fn rank(item: &Item, request: &PageRequest, now_ms: i64) -> i64 {
     }
 }
 
-/// When an open PR started waiting on review: its Slack request, else its
-/// creation. `None` when nobody is asked to review it, or it is a draft or
-/// approved. Mirrors `waitingSince` in `app/src/list/rowCues.ts`.
+/// When an open PR started waiting on review: the cached GitHub request, else
+/// its Slack request, else its creation. `None` when nobody is asked to review
+/// it, or it is a draft or approved. Mirrors `waitingSince` in `app/src/list/rowCues.ts`.
 fn waiting_since(item: &Item) -> Option<i64> {
     let row = &item.row;
     let asked = row.reviewers_requested || row.slack.is_some();
@@ -1160,11 +1160,21 @@ fn waiting_since(item: &Item) -> Option<i64> {
     {
         return None;
     }
+    if let Some(ms) = review_wait_ms(row) {
+        return Some(ms);
+    }
     Some(if item.slack_requested_ms > 0 {
         item.slack_requested_ms
     } else {
         item.created_ms
     })
+}
+
+fn review_wait_ms(row: &ListRow) -> Option<i64> {
+    let wait = row.review_wait.as_ref()?;
+    DateTime::parse_from_rfc3339(&wait.at)
+        .ok()
+        .map(|at| at.timestamp_millis())
 }
 
 /// The next step on a PR (§8.2), most urgent first: the "Needs attention"
@@ -1675,6 +1685,7 @@ mod tests {
                 assignees: Vec::new(),
                 slack: None,
                 bot_comments: 0,
+                review_wait: None,
             },
             updated_ms: updated.timestamp_millis(),
             created_ms: updated.timestamp_millis(),
