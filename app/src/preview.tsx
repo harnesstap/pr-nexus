@@ -1,5 +1,6 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
+import { ErrorBoundary } from "./ErrorBoundary";
 import type { Api, Bootstrap, BulkPreview, BulkRequest, ContextThread, MergeQueueInfo, ProfileDto, ProjectDto, PrOverview, ReviewTarget } from "./api";
 import { ProfileReuse } from "./wizard/ProfileReuse";
 import { mockBranch, mockDetail, mockOverview } from "./detail/mock";
@@ -1133,6 +1134,7 @@ if (!root) {
 
 createRoot(root).render(
   <StrictMode>
+    <ErrorBoundary>
     {screenName === "wizard" || screenName === "slack" ? (
       <Wizard
         api={api}
@@ -1216,5 +1218,6 @@ createRoot(root).render(
         openStandupMenu={standupScene === "menu"}
       />
     )}
+    </ErrorBoundary>
   </StrictMode>,
 );

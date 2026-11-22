@@ -85,12 +85,20 @@ function conclusionWord(conclusion: Conclusion): string {
  * name is cached yet, so the chip stays "Fix CI" and opens the checks page.
  */
 export function ciFailureChip(row: Pick<ListRow, "url" | "failing_checks">): CiFailureChip | null {
-  const checks = (row.failing_checks ?? []).flatMap((check) => {
+  const raw = row.failing_checks;
+  if (!Array.isArray(raw)) {
+    return null;
+  }
+  const checks = raw.flatMap((check) => {
+    if (!check || typeof check.name !== "string") {
+      return [];
+    }
     const name = check.name.trim();
     if (name.length === 0) {
       return [];
     }
-    return [{ name, conclusion: knownConclusion(check.conclusion) ?? "failure", url: check.url?.trim() || null }];
+    const url = typeof check.url === "string" ? check.url.trim() : "";
+    return [{ name, conclusion: knownConclusion(check.conclusion) ?? "failure", url: url || null }];
   });
   if (checks.length === 0) {
     return null;

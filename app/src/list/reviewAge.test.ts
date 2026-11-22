@@ -57,3 +57,13 @@ test("the tooltip names the request and when it is due", () => {
   const ready = reviewWaitText({ at: at.toISOString(), exact: false, basis: "ready" }, now, sla, 12);
   expect(ready.detail).toContain("marked ready for review");
 });
+
+test("a missing or unknown basis still paints the age when the time is approximate", () => {
+  const at = new Date("2026-11-16T14:02:00Z");
+  const now = new Date(at.getTime() + 90 * 60_000);
+  const missing = reviewWaitText({ at: at.toISOString(), exact: false } as { at: string; exact: boolean; basis: "request" }, now, sla, 12);
+  expect(missing.short).toBe("1h 30m");
+  expect(missing.detail).toBe("Approximate: the review request time may not be exact.");
+  const unknown = reviewWaitText({ at: at.toISOString(), exact: false, basis: "timeline" as "request" }, now, sla, 12);
+  expect(unknown.detail).toBe("Approximate: the review request time may not be exact.");
+});

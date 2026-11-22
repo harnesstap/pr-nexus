@@ -79,3 +79,18 @@ test("an unknown conclusion still names the check as a failure", () => {
   expect(chip?.label).toBe("lint failed");
   expect(chip?.lines).toEqual(["lint · failure"]);
 });
+
+test("malformed cached checks are skipped instead of throwing", () => {
+  expect(ciFailureChip({ ...row, failing_checks: "[{}]" as unknown as FailingCheck[] })).toBeNull();
+  expect(
+    ciFailureChip({
+      ...row,
+      failing_checks: [null, { conclusion: "failure" }, { name: null, conclusion: "failure" }, { name: undefined, conclusion: "failure" }] as unknown as FailingCheck[],
+    }),
+  ).toBeNull();
+  const chip = ciFailureChip({
+    ...row,
+    failing_checks: [null, { name: "lint", conclusion: "failure" }] as unknown as FailingCheck[],
+  });
+  expect(chip?.label).toBe("lint failed");
+});
