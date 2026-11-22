@@ -514,9 +514,15 @@ for (const id of (window as { __extraDrafts?: number[] }).__extraDrafts ?? []) {
   await emit(DATA_CHANGED_EVENT);
 };
 
-// `--review-age` adds To review rows at several ages. The default list is unchanged.
+// `--review-age` adds To review rows at several ages, and a request time on the
+// Checkout redesign row, which already has a Slack time. The default list is unchanged.
 if ((window as { __reviewAge?: boolean }).__reviewAge) {
-  rows.push(...reviewAgeScene(Date.now()));
+  const nowMs = Date.now();
+  rows.push(...reviewAgeScene(nowMs));
+  const checkout = rows.find((row) => row.number === 479);
+  if (checkout) {
+    checkout.review_wait = { at: new Date(nowMs - 90 * 60 * 1000).toISOString(), exact: true, basis: "request" };
+  }
   boot.sync.message = `Synced · ${rows.length} pull requests`;
 }
 

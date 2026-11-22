@@ -1394,8 +1394,8 @@ pub const STALE_REVIEW_HOURS: i64 = 48;
 pub const IDLE_DAYS: i64 = 7;
 const HOUR_MS: i64 = 60 * 60 * 1000;
 
-/// Closed and merged rows carry no cue; a long review wait wins over idleness.
-/// Uses the 48 hour default.
+/// Closed and merged rows carry no cue. A long review wait wins over idleness,
+/// unless the row already shows the review-request age. Uses the 48 hour default.
 #[cfg(test)]
 pub fn stale_cue(item: &Item, now_ms: i64) -> Option<StaleCue> {
     stale_cue_with(item, now_ms, &ReviewSla::default(), 0)
@@ -1411,8 +1411,10 @@ pub fn stale_cue_with(
     if item.row.state != "open" {
         return None;
     }
-    if waiting_since(item)
-        .is_some_and(|since| review_wait_exceeded(since, now_ms, sla, offset_east_minutes))
+    let age_shown = review_wait_ms(&item.row).is_some();
+    if !age_shown
+        && waiting_since(item)
+            .is_some_and(|since| review_wait_exceeded(since, now_ms, sla, offset_east_minutes))
     {
         return Some(StaleCue::Waiting);
     }
@@ -2046,6 +2048,15 @@ mod tests {
         waiting.row.reviewers_requested = true;
         waiting.row.review_decision = Some("REVIEW_REQUIRED".into());
         assert_eq!(stale_cue(&waiting, now_ms), Some(StaleCue::Waiting));
+        let mut aged = item(6, &[], 1);
+        aged.row.reviewers_requested = true;
+        aged.row.review_decision = Some("REVIEW_REQUIRED".into());
+        aged.row.review_wait = Some(crate::commands::ReviewWaitDto {
+            at: at(52).to_rfc3339(),
+            exact: true,
+            basis: "request".into(),
+        });
+        assert_eq!(stale_cue(&aged, now_ms), None);
         let mut closed = idle.clone();
         closed.row.state = "merged".into();
         assert_eq!(stale_cue(&closed, now_ms), None);

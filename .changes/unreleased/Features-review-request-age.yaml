@@ -1,3 +1,3 @@
 kind: Features
-body: To review rows show how long ago the review was requested, and turn amber then red as the review wait runs out.
+body: To review rows show how long ago the review was requested, including inside a project, and turn amber then red as the wait runs out. The Waiting chip is left off when that age is shown.
 time: 2026-11-22T09:30:00Z

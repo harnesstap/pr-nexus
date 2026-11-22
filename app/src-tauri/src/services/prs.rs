@@ -180,10 +180,11 @@ pub enum PrStatus {
     MergeReady,
     /// The list's "Waiting" chip: open, asked for review (GitHub or Slack),
     /// not approved, and waiting longer than `review_sla_hours` (default 48)
-    /// since the Slack request, else since creation. Weekends are skipped
-    /// when `review_sla_working_days` is on.
+    /// since the Slack request, else since creation. Absent when the row
+    /// already shows the review-request age. Weekends are skipped when
+    /// `review_sla_working_days` is on.
     #[schemars(
-        description = "Open, asked for review (GitHub or Slack), not approved, and waiting longer than review_sla_hours (default 48) since the Slack request, else since creation."
+        description = "Open, asked for review (GitHub or Slack), not approved, and waiting longer than review_sla_hours (default 48) since the Slack request, else since creation. Absent when the row already shows the review-request age."
     )]
     Waiting,
     /// The list's "Idle" chip: open, no GitHub update and no Slack request
