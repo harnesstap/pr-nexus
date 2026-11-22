@@ -1488,7 +1488,7 @@ export const PrRow = memo(function PrRow({
             </p>
           </div>
           {show.review && (
-            <div className="flex w-40 shrink-0 items-center">
+            <div className="flex w-40 min-w-0 shrink-0 items-center overflow-hidden">
               <NextActionBadge row={row} viewKey={viewKey} sla={sla} onOpen={onOpen} onRequestReview={onRequestReview} onDetails={onDetails} />
             </div>
           )}

@@ -48,12 +48,35 @@ function setup(partial: Partial<ListRow>, viewKey = "mine") {
   return handlers;
 }
 
-test("Fix CI opens the checks page", () => {
+test("Fix CI opens the checks page when no check name is cached", () => {
   const { onOpen } = setup({ checks: "failure" });
   const badge = screen.getByRole("button", { name: /Fix CI/ });
   expect(badge.className).toContain("cursor-pointer");
   fireEvent.click(badge);
   expect(onOpen).toHaveBeenCalledWith("https://github.com/acme/widgets/pull/7/checks");
+});
+
+test("one failing check is named and opens its log", () => {
+  const { onOpen } = setup({
+    checks: "failure",
+    failing_checks: [{ name: "lint", conclusion: "timed_out", url: "https://github.com/acme/widgets/actions/runs/9" }],
+  });
+  const badge = screen.getByRole("button", { name: /lint timed out/ });
+  expect(badge).toHaveAccessibleName("lint timed out: lint · timed out. Click to open the lint log");
+  fireEvent.click(badge);
+  expect(onOpen).toHaveBeenCalledWith("https://github.com/acme/widgets/actions/runs/9");
+});
+
+test("several failing checks open the first log", () => {
+  const { onOpen } = setup({
+    checks: "failure",
+    failing_checks: [
+      { name: "lint", conclusion: "failure", url: "https://github.com/acme/widgets/actions/runs/1" },
+      { name: "typecheck", conclusion: "failure", url: "https://github.com/acme/widgets/actions/runs/2" },
+    ],
+  });
+  fireEvent.click(screen.getByRole("button", { name: /2 checks failed/ }));
+  expect(onOpen).toHaveBeenCalledWith("https://github.com/acme/widgets/actions/runs/1");
 });
 
 test("Follow up opens the Slack reminder flow", () => {

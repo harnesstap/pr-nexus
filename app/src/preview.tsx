@@ -9,7 +9,7 @@ import { ListScreen } from "./list/ListScreen";
 import { memoryProjectApi } from "./memoryProjects";
 import type { SearchRow } from "./list/paging";
 import { chainOf, stackIndex } from "./list/stack";
-import { variedRows } from "./previewRows";
+import { ciFailureRows, variedRows } from "./previewRows";
 import { Wizard } from "./wizard/Wizard";
 import { recordSeenVersion } from "./changelog/changelog";
 import { RELEASES } from "./changelog/data";
@@ -336,6 +336,8 @@ if (previewParams.get("rows") === "varied") {
   rows.splice(0, rows.length, ...variedRows(row));
 } else if (previewParams.get("rows") === "stack") {
   rows.splice(0, rows.length, ...stackRows(row));
+} else if (previewParams.get("rows") === "ci") {
+  rows.splice(0, rows.length, ...ciFailureRows(row));
 }
 
 // `?attention=1` marks demo rows unread, snoozed, or muted. `?attention=snoozed` also turns the Snoozed chip on.

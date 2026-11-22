@@ -1,0 +1,3 @@
+kind: Changed
+body: 'A failing check chip names the check when one failed ("lint failed", "lint timed out", "lint cancelled", "lint needs action") and says how many failed when several did. The tooltip lists each check and its conclusion, and a click opens that check''s log.'
+time: 2026-11-22T08:00:00Z

@@ -238,6 +238,7 @@ fn hit_from_item(item: &Value, account: AccountId, host: &str) -> Option<IssueHi
             default_branch: None,
             repo_archived: false,
             merge_queue: None,
+            failing_checks: None,
             pull_request: PullRequest {
                 id: PrId(0),
                 remote: ProviderRef {

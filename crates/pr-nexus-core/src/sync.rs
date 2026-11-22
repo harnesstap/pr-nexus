@@ -944,9 +944,7 @@ fn sync_bucket(
         });
         if let Some(status) = status {
             status.apply_to(&mut item.pull_request);
-            if status.merge_queue.is_some() {
-                item.merge_queue.clone_from(&status.merge_queue);
-            }
+            status.copy_caches_to(item);
         }
         writer.write(item)?;
         stored_ids.push(id);
@@ -1001,9 +999,7 @@ fn sync_bucket(
                 let mut row = (*pr).clone();
                 status.apply_to(&mut row);
                 let mut item = writer.synced_from(row);
-                if status.merge_queue.is_some() {
-                    item.merge_queue.clone_from(&status.merge_queue);
-                }
+                status.copy_caches_to(&mut item);
                 status_only.push(item);
             }
         }
@@ -1034,9 +1030,7 @@ fn sync_bucket(
         }
         if let Some(status) = statuses.get(&id) {
             status.apply_to(&mut item.pull_request);
-            if status.merge_queue.is_some() {
-                item.merge_queue.clone_from(&status.merge_queue);
-            }
+            status.copy_caches_to(item);
         }
     }
     let refreshed = refreshed_rows.len();
@@ -1295,6 +1289,7 @@ impl<'a> Writer<'a> {
             default_branch: repo.and_then(|repo| repo.default_branch.clone()),
             repo_archived: repo.is_some_and(|repo| repo.archived),
             merge_queue: None,
+            failing_checks: None,
             pull_request: pr,
         }
     }
@@ -1336,7 +1331,9 @@ impl<'a> Writer<'a> {
             .filter(|before| same_content(before, &pr))
             .map(|before| before.id);
         if let Some(pr_id) = unchanged {
-            return self.write_queue(pr_id, &id, item.merge_queue.as_ref());
+            let queue = self.write_queue(pr_id, &id, item.merge_queue.as_ref())?;
+            let checks = self.write_failing_checks(pr_id, &id, item.failing_checks.as_deref())?;
+            return Ok(queue || checks);
         }
         pr.synced_at = self.now;
         let saved = self.store.upsert_pull_request(repo.id, pr)?;
@@ -1346,6 +1343,9 @@ impl<'a> Writer<'a> {
         self.rows.insert(id.clone(), saved.clone());
         if let Some(queue) = &item.merge_queue {
             self.store.set_merge_queue(saved.id, queue)?;
+        }
+        if let Some(checks) = &item.failing_checks {
+            self.store.set_failing_checks(saved.id, checks)?;
         }
         self.changed.insert(id);
         Ok(true)
@@ -1368,6 +1368,26 @@ impl<'a> Writer<'a> {
             self.changed.insert(remote_id.to_owned());
         }
         Ok(changed)
+    }
+
+    /// Failing check names can change without any other pull request field
+    /// changing. `None` means this payload did not ask, so the stored list stays.
+    fn write_failing_checks(
+        &mut self,
+        pr_id: crate::domain::PrId,
+        remote_id: &str,
+        checks: Option<&[crate::checks::FailingCheck]>,
+    ) -> Result<bool, CoreError> {
+        let Some(checks) = checks else {
+            return Ok(false);
+        };
+        let stored = self.store.failing_checks(pr_id)?.unwrap_or_default();
+        if stored == checks {
+            return Ok(false);
+        }
+        self.store.set_failing_checks(pr_id, checks)?;
+        self.changed.insert(remote_id.to_owned());
+        Ok(true)
     }
 
     /// `pr` may be a provider copy with no stored id, so the stored row's id
@@ -1417,6 +1437,7 @@ pub fn note_rate_limit(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::checks::{FailingCheck, FailingConclusion};
     use crate::domain::{
         Account, AuthMode, ChecksState, Involvement, MergeStateStatus, Mergeable, RepoRef,
         RequestStatus, RequestedReviewer, Reviewer,
@@ -1472,6 +1493,7 @@ mod tests {
             default_branch: Some("main".into()),
             repo_archived: false,
             merge_queue: None,
+            failing_checks: None,
         }
     }
 
@@ -2556,6 +2578,7 @@ mod tests {
             total_threads: 5,
             last_commit_at: Some(ts(15)),
             merge_queue: None,
+            failing_checks: None,
         }
     }
 
@@ -2623,6 +2646,109 @@ mod tests {
         assert_eq!(row.checks, ChecksState::Pending);
         assert_eq!(row.merge_state, MergeStateStatus::Dirty);
         assert_eq!(row.unresolved_threads, 2);
+    }
+
+    #[test]
+    fn status_caches_failing_check_names_and_a_green_rollup_clears_them() {
+        let lint = FailingCheck {
+            name: "lint".into(),
+            conclusion: FailingConclusion::TimedOut,
+            url: Some("https://github.com/acme/widgets/actions/runs/7".into()),
+        };
+        let (_dir, store, account) = open_store();
+        let mut red = status("N1", ChecksState::Failure);
+        red.failing_checks = Some(vec![lint.clone()]);
+        sync_account(
+            &store,
+            &fake(vec![pr("N1", "acme", 1, Involvement::AUTHOR)], vec![red]),
+            account,
+            SyncKind::Manual,
+            ts(30),
+        )
+        .unwrap();
+        let id = row(&store, account, 1).id;
+        assert_eq!(
+            store.failing_checks(id).unwrap().as_deref(),
+            Some(std::slice::from_ref(&lint))
+        );
+
+        // A newer document whose rollup is green clears the names.
+        let mut green_pr = pr("N1", "acme", 1, Involvement::AUTHOR);
+        green_pr.pull_request.updated_at = ts(20);
+        let mut green = status("N1", ChecksState::Success);
+        green.updated_at = Some(ts(20));
+        green.failing_checks = Some(Vec::new());
+        sync_account(
+            &store,
+            &fake(vec![green_pr], vec![green]),
+            account,
+            SyncKind::Full,
+            ts(40),
+        )
+        .unwrap();
+        assert_eq!(store.failing_checks(id).unwrap(), None);
+
+        // A failing rollup that did not include contexts leaves the cache alone.
+        store
+            .set_failing_checks(id, std::slice::from_ref(&lint))
+            .unwrap();
+        let mut again = pr("N1", "acme", 1, Involvement::AUTHOR);
+        again.pull_request.updated_at = ts(25);
+        let mut bare = status("N1", ChecksState::Failure);
+        bare.updated_at = Some(ts(25));
+        assert!(bare.failing_checks.is_none());
+        sync_account(
+            &store,
+            &fake(vec![again], vec![bare]),
+            account,
+            SyncKind::Full,
+            ts(50),
+        )
+        .unwrap();
+        assert_eq!(
+            store.failing_checks(id).unwrap().as_deref(),
+            Some(std::slice::from_ref(&lint))
+        );
+    }
+
+    #[test]
+    fn a_later_status_read_replaces_failing_names_when_nothing_else_changed() {
+        let lint = FailingCheck {
+            name: "lint".into(),
+            conclusion: FailingConclusion::Failure,
+            url: Some("https://github.com/acme/widgets/actions/runs/8".into()),
+        };
+        let typecheck = FailingCheck {
+            name: "typecheck".into(),
+            conclusion: FailingConclusion::Cancelled,
+            url: None,
+        };
+        let (_dir, store, account) = open_store();
+        let mut first = status("N1", ChecksState::Pending);
+        first.failing_checks = Some(vec![lint]);
+        sync_account(
+            &store,
+            &fake(vec![pr("N1", "acme", 1, Involvement::AUTHOR)], vec![first]),
+            account,
+            SyncKind::Manual,
+            ts(30),
+        )
+        .unwrap();
+        let mut second = status("N1", ChecksState::Pending);
+        second.failing_checks = Some(vec![typecheck.clone()]);
+        sync_account(
+            &store,
+            &fake(vec![pr("N1", "acme", 1, Involvement::AUTHOR)], vec![second]),
+            account,
+            SyncKind::Manual,
+            ts(40),
+        )
+        .unwrap();
+        let id = row(&store, account, 1).id;
+        assert_eq!(
+            store.failing_checks(id).unwrap().as_deref(),
+            Some(std::slice::from_ref(&typecheck))
+        );
     }
 
     #[test]
