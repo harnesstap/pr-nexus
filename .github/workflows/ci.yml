@@ -311,6 +311,12 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Reject case-insensitive module collisions
+        run: |
+          set -euo pipefail
+          bash scripts/check-case-collisions.sh --self-test
+          bash scripts/check-case-collisions.sh
+
       # rhysd/actionlint is a Docker action. The self-hosted runner itself runs
       # in a container, so its bind mounts do not see the workspace.
       # The binary goes to RUNNER_TEMP, which the runner wipes after the job.
