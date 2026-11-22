@@ -3,6 +3,7 @@ import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "../App";
+import { ErrorBoundary } from "../ErrorBoundary";
 import "../index.css";
 import { pageFromRows, type PageRequest } from "../list/paging";
 import { DATA_CHANGED_EVENT } from "../api";
@@ -548,8 +549,14 @@ const root = document.getElementById("root");
 if (!root) {
   throw new Error("root element missing");
 }
+function CrashForScreenshot(): never {
+  throw new Error("The list could not be drawn.");
+}
+
+const crash = new URLSearchParams(window.location.search).get("crash") === "1";
+
 createRoot(root).render(
   <StrictMode>
-    <App />
+    <ErrorBoundary>{crash ? <CrashForScreenshot /> : <App />}</ErrorBoundary>
   </StrictMode>,
 );

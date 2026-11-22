@@ -97,9 +97,7 @@ function approximateNote(wait: ReviewWait): string {
       return "Approximate: GitHub did not return the review request time, so this uses when it was marked ready for review.";
     case "opened":
       return "Approximate: GitHub did not return the review request time, so this uses when the pull request was opened.";
-    default: {
-      const unreachable: never = wait.basis;
-      return unreachable;
-    }
+    default:
+      return "Approximate: the review request time may not be exact.";
   }
 }

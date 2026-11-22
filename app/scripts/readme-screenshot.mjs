@@ -45,6 +45,7 @@
 // Review, MCP server with Reads expanded, and the section menu below 960px.
 // `--settings-story <dir>` saves the merged settings pages, the setup notice,
 // and an add left pending on one AI agent.
+// `--error-screen <path>` forces a render throw and saves the error screen to <path>.
 // Uses an installed Chrome; set CHROME_PATH to pick another Chromium binary.
 import { mkdirSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -166,6 +167,11 @@ const settingsStoryFlag = process.argv.indexOf("--settings-story");
 const settingsStoryDir = settingsStoryFlag === -1 ? null : process.argv[settingsStoryFlag + 1];
 if (settingsStoryFlag !== -1 && !settingsStoryDir) {
   throw new Error("--settings-story needs an output directory");
+}
+const errorScreenFlag = process.argv.indexOf("--error-screen");
+const errorScreenOut = errorScreenFlag === -1 ? null : process.argv[errorScreenFlag + 1];
+if (errorScreenFlag !== -1 && !errorScreenOut) {
+  throw new Error("--error-screen needs an output path");
 }
 const settingsNavFlag = process.argv.indexOf("--settings-nav");
 const settingsNavDir = settingsNavFlag === -1 ? null : process.argv[settingsNavFlag + 1];
@@ -632,6 +638,21 @@ try {
   browser = await chromium.launch(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: "chrome" });
   if (sidebarTreeDir) {
     await sidebarTreeShots(browser, resolve(sidebarTreeDir));
+    await browser.close();
+    await vite.close();
+    process.exit(0);
+  }
+  if (errorScreenOut) {
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2, colorScheme: "dark" });
+    page.on("pageerror", (err) => console.error("page error:", err.message));
+    await page.goto(`${url}?crash=1`);
+    await page.getByRole("alert").waitFor();
+    await page.getByRole("button", { name: "Reload" }).waitFor();
+    const dest = resolve(errorScreenOut);
+    mkdirSync(dirname(dest), { recursive: true });
+    await page.waitForTimeout(300);
+    await page.screenshot({ path: dest });
+    console.log(`wrote ${dest} (${Math.round(statSync(dest).size / 1024)} KB)`);
     await browser.close();
     await vite.close();
     process.exit(0);
