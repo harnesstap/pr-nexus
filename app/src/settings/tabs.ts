@@ -190,6 +190,7 @@ export const MAPPING_FIELDS: Record<string, string> = {
   slack_channel_name: "channel",
   slack_channel_id: "channel id",
   slack_workspace: "workspace",
+  slack_team_id: "team id",
 };
 
 /** Case-insensitive match on org, slug, team name, workspace or channel. */
