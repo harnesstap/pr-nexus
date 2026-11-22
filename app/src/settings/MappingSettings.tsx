@@ -139,11 +139,11 @@ export function MappingSettings({ api, skippedInSetup, onCountChange, workspaces
   const visible = (entries ?? []).filter((entry) => matchesMapping(entry.row, query));
 
   return (
-    <div className="space-y-8">
+    <div id="settings-anchor-mappings" className="scroll-mt-6 space-y-8">
       <section aria-labelledby="mapping-table">
         <div className="flex flex-wrap items-center gap-3">
           <h2 id="mapping-table" className="text-base font-semibold">
-            Team channels
+            Mappings
           </h2>
           <Tooltip label="Matches team, workspace and channel">
             <input {...plainText}

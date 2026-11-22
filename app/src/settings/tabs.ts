@@ -1,71 +1,122 @@
-/** Settings groups. The labels match the sidebar headings (CSS uppercases them). */
-export const SETTINGS_GROUPS = [
+/** A page in the settings rail. Single-page areas have no section header. */
+export type SettingsPage = "github" | "slack" | "profiles" | "review" | "sync" | "mcp" | "agent-activity" | "about";
+
+/**
+ * A rail page, or an older section id. Older ids still open the merged page
+ * and scroll to that subsection (`requests` opens Review at Requests & bumps).
+ */
+export type SettingsSection =
+  | SettingsPage
+  | "requests"
+  | "rules"
+  | "mappings"
+  | "schedule"
+  | "notifications"
+  | "server"
+  | "permissions"
+  | "client"
+  | "proposals"
+  | "activity"
+  | "app"
+  | "changelog"
+  | "keychain"
+  | "setup";
+
+export interface SettingsNavPage {
+  id: SettingsPage;
+  label: string;
+}
+
+export type SettingsNavEntry =
+  | { kind: "group"; id: string; label: string; pages: readonly SettingsNavPage[] }
+  | ({ kind: "page" } & SettingsNavPage);
+
+/** Rail order. A group label is a heading only when it gathers more than one page. */
+export const SETTINGS_NAV: readonly SettingsNavEntry[] = [
   {
+    kind: "group",
     id: "connections",
     label: "Connections",
-    sections: [
+    pages: [
       { id: "github", label: "GitHub" },
       { id: "slack", label: "Slack" },
       { id: "profiles", label: "Profiles" },
     ],
   },
+  { kind: "page", id: "review", label: "Review" },
+  { kind: "page", id: "sync", label: "Sync" },
   {
-    id: "review",
-    label: "Review",
-    sections: [
-      { id: "requests", label: "Requests & bumps" },
-      { id: "rules", label: "Rules" },
-      { id: "mappings", label: "Mappings" },
-    ],
-  },
-  {
-    id: "sync",
-    label: "Sync",
-    sections: [
-      { id: "schedule", label: "Schedule" },
-      { id: "notifications", label: "Notifications" },
-    ],
-  },
-  {
+    kind: "group",
     id: "agents",
-    label: "Agents",
-    sections: [
-      { id: "server", label: "Server" },
-      { id: "permissions", label: "Permissions" },
-      { id: "client", label: "Connect a client" },
-      { id: "proposals", label: "Proposals" },
-      { id: "activity", label: "Activity" },
+    label: "AI agents",
+    pages: [
+      { id: "mcp", label: "MCP server" },
+      { id: "agent-activity", label: "Agent activity" },
     ],
   },
-  {
-    id: "about",
-    label: "About",
-    sections: [
-      { id: "app", label: "App & updates" },
-      { id: "changelog", label: "Changelog" },
-      { id: "keychain", label: "Keychain" },
-      { id: "setup", label: "Setup" },
-    ],
-  },
-] as const;
+  { kind: "page", id: "about", label: "About" },
+];
 
-export type SettingsSection = (typeof SETTINGS_GROUPS)[number]["sections"][number]["id"];
+const PAGES: readonly SettingsNavPage[] = SETTINGS_NAV.flatMap((entry) => (entry.kind === "group" ? entry.pages : [entry]));
 
-const SECTION_IDS: readonly SettingsSection[] = SETTINGS_GROUPS.flatMap((group) => group.sections.map((section) => section.id));
+const PAGE_IDS: readonly SettingsPage[] = PAGES.map((page) => page.id);
+
+const PAGE_LABELS: Record<SettingsPage, string> = {
+  github: "GitHub",
+  slack: "Slack",
+  profiles: "Profiles",
+  review: "Review",
+  sync: "Sync",
+  mcp: "MCP server",
+  "agent-activity": "Agent activity",
+  about: "About",
+};
+
+/** Older section ids. The anchor is the element scrolled into view. */
+const LEGACY: Record<Exclude<SettingsSection, SettingsPage>, { page: SettingsPage; anchor: string }> = {
+  requests: { page: "review", anchor: "requests" },
+  rules: { page: "review", anchor: "rules" },
+  mappings: { page: "review", anchor: "mappings" },
+  schedule: { page: "sync", anchor: "schedule" },
+  notifications: { page: "sync", anchor: "notifications" },
+  server: { page: "mcp", anchor: "server" },
+  permissions: { page: "mcp", anchor: "permissions" },
+  client: { page: "mcp", anchor: "client" },
+  proposals: { page: "agent-activity", anchor: "proposals" },
+  activity: { page: "agent-activity", anchor: "activity" },
+  app: { page: "about", anchor: "app" },
+  changelog: { page: "about", anchor: "changelog" },
+  keychain: { page: "about", anchor: "keychain" },
+  setup: { page: "about", anchor: "setup" },
+};
+
+const SECTION_IDS: readonly string[] = [...PAGE_IDS, ...Object.keys(LEGACY)];
+
+export function isSettingsPage(value: string): value is SettingsPage {
+  return (PAGE_IDS as readonly string[]).includes(value);
+}
 
 export function isSettingsSection(value: string): value is SettingsSection {
-  return (SECTION_IDS as readonly string[]).includes(value);
+  return SECTION_IDS.includes(value);
+}
+
+export function settingsPage(target: SettingsSection): SettingsPage {
+  if (isSettingsPage(target)) {
+    return target;
+  }
+  return LEGACY[target].page;
+}
+
+/** Subsection to scroll to, or null when the target is a whole page. */
+export function settingsAnchor(target: SettingsSection): string | null {
+  if (isSettingsPage(target)) {
+    return null;
+  }
+  return LEGACY[target].anchor;
 }
 
 export function settingsSectionLabel(id: SettingsSection): string {
-  for (const group of SETTINGS_GROUPS) {
-    for (const section of group.sections) {
-      if (section.id === id) {
-        return section.label;
-      }
-    }
-  }
-  return id;
+  return PAGE_LABELS[settingsPage(id)];
 }
 
 /** The window minimum. Below this, settings navigation is the section menu. */
@@ -112,18 +163,18 @@ export function writeSettingsSection(section: SettingsSection): void {
   }
 }
 
-/** Up and down, Home and End move between sections (vertical tabs). */
-export function sectionAfterKey(current: SettingsSection, key: string): SettingsSection | null {
-  const index = SECTION_IDS.indexOf(current);
+/** Up and down, Home and End move between pages (vertical tabs). */
+export function sectionAfterKey(current: SettingsSection, key: string): SettingsPage | null {
+  const index = PAGE_IDS.indexOf(settingsPage(current));
   switch (key) {
     case "ArrowDown":
-      return SECTION_IDS[(index + 1) % SECTION_IDS.length];
+      return PAGE_IDS[(index + 1) % PAGE_IDS.length];
     case "ArrowUp":
-      return SECTION_IDS[(index - 1 + SECTION_IDS.length) % SECTION_IDS.length];
+      return PAGE_IDS[(index - 1 + PAGE_IDS.length) % PAGE_IDS.length];
     case "Home":
-      return SECTION_IDS[0];
+      return PAGE_IDS[0];
     case "End":
-      return SECTION_IDS[SECTION_IDS.length - 1];
+      return PAGE_IDS[PAGE_IDS.length - 1];
     default:
       return null;
   }

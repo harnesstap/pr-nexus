@@ -2,21 +2,26 @@ import { cloneElement, isValidElement, useEffect, useRef, useState, type ReactEl
 import type { Api, Bootstrap, Preferences } from "../api";
 import { errorMessage } from "../api";
 import { ChangelogSettings } from "../changelog/ChangelogSettings";
-import { AboutSettings, type AboutSection } from "./AboutSettings";
+import { AttentionDot } from "../list/SetupBanners";
+import { AboutSettings } from "./AboutSettings";
 import { type AccountsSection } from "./AccountsSettings";
 import { AgentsSettings, type AgentsSection } from "./AgentsSettings";
 import { MappingSettings } from "./MappingSettings";
+import type { McpClient } from "./mcpClients";
 import { isNotificationPermission, type NotificationPermission } from "./notifications";
 import { PreferencesForm, type PreferencesSection } from "./PreferencesForm";
 import { ProfilesSettings } from "./ProfilesSettings";
 import {
-  SETTINGS_GROUPS,
+  SETTINGS_NAV,
   SETTINGS_NAV_VIEWPORT_PX,
   isSettingsSection,
   sectionAfterKey,
+  settingsAnchor,
   settingsNavIsCompact,
+  settingsPage,
   settingsSectionLabel,
   writeSettingsSection,
+  type SettingsPage,
   type SettingsSection,
 } from "./tabs";
 
@@ -29,19 +34,34 @@ interface Props {
   tab: SettingsSection;
   onTabChange: (tab: SettingsSection) => void;
   onRerunSetup: () => void;
+  /** The MCP server page has a setup problem. */
+  mcpAttention?: boolean;
+  /** AI agent tab to show under Add to your agent. */
+  mcpFocus?: McpClient | null;
+  /** MCP settings or an agent config changed. */
+  onSetupChanged?: () => void;
 }
 
-/** Settings: one section at a time, from the left rail or a narrow-width menu. */
-export function SettingsScreen({ api, boot, onBoot, accounts, tab, onTabChange, onRerunSetup }: Props) {
+const ITEM =
+  "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-slate-200 hover:bg-slate-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-violet-400";
+
+/** Settings: one page at a time, from the left rail or a narrow-width menu. */
+export function SettingsScreen({ api, boot, onBoot, accounts, tab, onTabChange, onRerunSetup, mcpAttention = false, mcpFocus = null, onSetupChanged }: Props) {
+  const page = settingsPage(tab);
+  const anchor = settingsAnchor(tab);
   const [prefs, setPrefs] = useState<Preferences | null>(null);
   const [prefsError, setPrefsError] = useState<string | null>(null);
   const [permission, setPermission] = useState<NotificationPermission>("prompt");
+  const [anchorSeen, setAnchorSeen] = useState(anchor);
+  const [changelogManual, setChangelogManual] = useState<boolean | null>(null);
+  if (anchorSeen !== anchor) {
+    setAnchorSeen(anchor);
+    setChangelogManual(null);
+  }
+  const changelogOpen = changelogManual ?? anchor === "changelog";
   const rootRef = useRef<HTMLDivElement>(null);
-  const tabRefs = useRef<Partial<Record<SettingsSection, HTMLButtonElement | null>>>({});
   const compact = useCompactNav(rootRef);
-  const prefsSection = preferencesSection(tab);
-  const agents = agentSection(tab);
-  const about = aboutSection(tab);
+  const prefsSections = preferenceSections(page);
 
   useEffect(() => {
     writeSettingsSection(tab);
@@ -51,8 +71,30 @@ export function SettingsScreen({ api, boot, onBoot, accounts, tab, onTabChange, 
     if (compact) {
       return;
     }
-    tabRefs.current[tab]?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
-  }, [tab, compact]);
+    document.getElementById(`settings-tab-${page}`)?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+  }, [page, compact]);
+
+  useEffect(() => {
+    if (!anchor) {
+      return;
+    }
+    const id = `settings-anchor-${anchor}`;
+    let frames = 0;
+    let raf = 0;
+    const tick = () => {
+      const node = document.getElementById(id);
+      if (node) {
+        node.scrollIntoView?.({ block: "start" });
+        return;
+      }
+      if (frames < 20) {
+        frames += 1;
+        raf = requestAnimationFrame(tick);
+      }
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [anchor, tab]);
 
   useEffect(() => {
     let cancel = false;
@@ -74,7 +116,7 @@ export function SettingsScreen({ api, boot, onBoot, accounts, tab, onTabChange, 
   }, [api]);
 
   useEffect(() => {
-    if (tab !== "notifications" || !api.notificationPermission) {
+    if (page !== "sync" || !api.notificationPermission) {
       return;
     }
     let cancel = false;
@@ -89,36 +131,27 @@ export function SettingsScreen({ api, boot, onBoot, accounts, tab, onTabChange, 
     return () => {
       cancel = true;
     };
-  }, [api, tab]);
+  }, [api, page]);
 
-  function select(next: SettingsSection) {
+  function select(next: SettingsPage) {
     onTabChange(next);
-    tabRefs.current[next]?.focus();
+    document.getElementById(`settings-tab-${next}`)?.focus();
+  }
+
+  function openAgentSection(section: AgentsSection) {
+    onTabChange(section);
   }
 
   const panel = (
-    <div role="tabpanel" id="settings-panel" aria-labelledby={compact ? undefined : `settings-tab-${tab}`} aria-label={compact ? settingsSectionLabel(tab) : undefined} className="min-h-0 min-w-0 flex-1 overflow-y-auto">
-      <div className="max-w-3xl pb-8">
-        {accountsBody(accounts, tab === "github" || tab === "slack" ? tab : null)}
-        {tab === "profiles" && <ProfilesSettings api={api} boot={boot} onBoot={onBoot} />}
-        {tab === "mappings" && (
-          <MappingSettings
-            api={api}
-            skippedInSetup={boot.onboarding.mapping_skipped}
-            workspaces={boot.slack_workspaces}
-            onConnectSlack={() => onTabChange("slack")}
-            onCountChange={(count) => {
-              if (count !== boot.mapping_count) {
-                onBoot({ ...boot, mapping_count: count });
-              }
-            }}
-          />
-        )}
+    <div role="tabpanel" id="settings-panel" aria-labelledby={compact ? undefined : `settings-tab-${page}`} aria-label={compact ? settingsSectionLabel(tab) : undefined} className="min-h-0 min-w-0 flex-1 overflow-y-auto">
+      <div className="max-w-3xl space-y-8 pb-8">
+        {accountsBody(accounts, page === "github" || page === "slack" ? page : null)}
+        {page === "profiles" && <ProfilesSettings api={api} boot={boot} onBoot={onBoot} />}
         {prefs && (
           <PreferencesForm
             api={api}
             prefs={prefs}
-            section={prefsSection}
+            sections={prefsSections}
             permission={permission}
             onRequestPermission={() => {
               if (!api.requestNotificationPermission) {
@@ -141,15 +174,43 @@ export function SettingsScreen({ api, boot, onBoot, accounts, tab, onTabChange, 
             }}
           />
         )}
-        {prefsSection && prefsError && (
+        {prefsSections.length > 0 && prefsError && (
           <p role="alert" className="text-sm text-rose-300">
             Could not load settings: {prefsError}
           </p>
         )}
-        {prefsSection && !prefs && !prefsError && <p className="text-sm text-slate-400">Loading…</p>}
-        {agents && <AgentsSettings api={api} section={agents} onOpenSection={onTabChange} />}
-        {tab === "changelog" && <ChangelogSettings api={api} />}
-        {about && <AboutSettings api={api} onRerunSetup={onRerunSetup} section={about} />}
+        {prefsSections.length > 0 && !prefs && !prefsError && <p className="text-sm text-slate-400">Loading…</p>}
+        {page === "review" && (
+          <MappingSettings
+            api={api}
+            skippedInSetup={boot.onboarding.mapping_skipped}
+            workspaces={boot.slack_workspaces}
+            onConnectSlack={() => onTabChange("slack")}
+            onCountChange={(count) => {
+              if (count !== boot.mapping_count) {
+                onBoot({ ...boot, mapping_count: count });
+              }
+            }}
+          />
+        )}
+        {page === "mcp" && <AgentsSettings api={api} view="mcp" focusClient={mcpFocus} onOpenSection={openAgentSection} onChanged={onSetupChanged} />}
+        {page === "agent-activity" && <AgentsSettings api={api} view="activity" onOpenSection={openAgentSection} onChanged={onSetupChanged} />}
+        {page === "about" && (
+          <>
+            <AboutSettings api={api} onRerunSetup={onRerunSetup} />
+            <section id="settings-anchor-changelog" className="scroll-mt-6">
+              <details
+                open={changelogOpen}
+                onToggle={(event) => setChangelogManual(event.currentTarget.open)}
+              >
+                <summary className="cursor-pointer text-base font-semibold text-slate-100">Changelog</summary>
+                <div className="mt-3">
+                  <ChangelogSettings api={api} />
+                </div>
+              </details>
+            </section>
+          </>
+        )}
       </div>
     </div>
   );
@@ -158,12 +219,12 @@ export function SettingsScreen({ api, boot, onBoot, accounts, tab, onTabChange, 
     <div ref={rootRef} className={`flex h-full min-h-0 flex-1 ${compact ? "flex-col" : "gap-6"}`}>
       {compact ? (
         <label className="mb-4 block max-w-xs text-sm">
-          <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-500">Section</span>
+          <span className="mb-1 block text-[10px] font-medium uppercase tracking-[0.16em] text-slate-600">Section</span>
           <select
             id="settings-section-menu"
             aria-label="Settings section"
             className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1.5"
-            value={tab}
+            value={page}
             onChange={(event) => {
               const next = event.target.value;
               if (isSettingsSection(next)) {
@@ -171,55 +232,48 @@ export function SettingsScreen({ api, boot, onBoot, accounts, tab, onTabChange, 
               }
             }}
           >
-            {SETTINGS_GROUPS.map((group) => (
-              <optgroup key={group.id} label={group.label}>
-                {group.sections.map((section) => (
-                  <option key={section.id} value={section.id}>
-                    {section.label}
-                  </option>
-                ))}
-              </optgroup>
-            ))}
+            {SETTINGS_NAV.map((entry) =>
+              entry.kind === "group" ? (
+                <optgroup key={entry.id} label={entry.label}>
+                  {entry.pages.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.label}
+                    </option>
+                  ))}
+                </optgroup>
+              ) : (
+                <option key={entry.id} value={entry.id}>
+                  {entry.label}
+                </option>
+              ),
+            )}
           </select>
         </label>
       ) : (
-        <nav aria-label="Settings" className="flex w-[180px] shrink-0 flex-col gap-4 overflow-y-auto border-r border-slate-800 pr-3">
-          {SETTINGS_GROUPS.map((group) => (
-            <div key={group.id}>
-              <h2 id={`settings-group-${group.id}`} className="px-2 pb-1 text-xs font-medium uppercase tracking-wide text-slate-500">
-                {group.label}
-              </h2>
-              <div role="tablist" aria-orientation="vertical" aria-labelledby={`settings-group-${group.id}`} className="flex flex-col gap-0.5">
-                {group.sections.map((section) => (
-                  <button
-                    key={section.id}
-                    ref={(node) => {
-                      tabRefs.current[section.id] = node;
-                    }}
-                    type="button"
-                    role="tab"
-                    id={`settings-tab-${section.id}`}
-                    aria-selected={tab === section.id}
-                    aria-controls="settings-panel"
-                    tabIndex={tab === section.id ? 0 : -1}
-                    className={`rounded-md px-2 py-1.5 text-left text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-violet-400 ${
-                      tab === section.id ? "bg-violet-500/20 text-violet-100" : "text-slate-400 hover:bg-slate-900 hover:text-slate-200"
-                    }`}
-                    onClick={() => onTabChange(section.id)}
-                    onKeyDown={(event) => {
-                      const next = sectionAfterKey(tab, event.key);
-                      if (next) {
-                        event.preventDefault();
-                        select(next);
-                      }
-                    }}
-                  >
-                    {section.label}
-                  </button>
-                ))}
+        <nav aria-label="Settings" className="flex w-[180px] shrink-0 flex-col overflow-y-auto border-r border-slate-800 pr-3">
+          {SETTINGS_NAV.map((entry, index) => {
+            const spaced = index === 0 ? "" : "mt-5";
+            if (entry.kind === "group") {
+              const headingId = `settings-group-${entry.id}`;
+              return (
+                <div key={entry.id} role="group" aria-labelledby={headingId} className={spaced}>
+                  <h2 id={headingId} className="px-2 pb-1 text-[10px] font-medium uppercase tracking-[0.16em] text-slate-600">
+                    {entry.label}
+                  </h2>
+                  <div role="tablist" aria-orientation="vertical" aria-labelledby={headingId} className="ml-2 flex flex-col gap-0.5 border-l border-slate-700 pl-1.5">
+                    {entry.pages.map((item) => (
+                      <PageTab key={item.id} item={item} page={page} attention={item.id === "mcp" && mcpAttention} onTabChange={onTabChange} select={select} />
+                    ))}
+                  </div>
+                </div>
+              );
+            }
+            return (
+              <div key={entry.id} role="tablist" aria-orientation="vertical" aria-label={entry.label} className={spaced}>
+                <PageTab item={entry} page={page} attention={false} onTabChange={onTabChange} select={select} />
               </div>
-            </div>
-          ))}
+            );
+          })}
         </nav>
       )}
       {panel}
@@ -227,32 +281,59 @@ export function SettingsScreen({ api, boot, onBoot, accounts, tab, onTabChange, 
   );
 }
 
+function PageTab({
+  item,
+  page,
+  attention,
+  onTabChange,
+  select,
+}: {
+  item: { id: SettingsPage; label: string };
+  page: SettingsPage;
+  attention: boolean;
+  onTabChange: (tab: SettingsSection) => void;
+  select: (next: SettingsPage) => void;
+}) {
+  const selected = page === item.id;
+  return (
+    <button
+      type="button"
+      role="tab"
+      id={`settings-tab-${item.id}`}
+      aria-selected={selected}
+      aria-controls="settings-panel"
+      tabIndex={selected ? 0 : -1}
+      className={`${ITEM} ${selected ? "bg-violet-500/20 text-violet-100" : ""}`}
+      onClick={() => onTabChange(item.id)}
+      onKeyDown={(event) => {
+        const next = sectionAfterKey(page, event.key);
+        if (next) {
+          event.preventDefault();
+          select(next);
+        }
+      }}
+    >
+      <span className="min-w-0 flex-1">{item.label}</span>
+      {attention && <AttentionDot />}
+    </button>
+  );
+}
+
+function preferenceSections(page: SettingsPage): PreferencesSection[] {
+  if (page === "review") {
+    return ["requests", "rules"];
+  }
+  if (page === "sync") {
+    return ["schedule", "notifications"];
+  }
+  return [];
+}
+
 function accountsBody(accounts: ReactNode, section: AccountsSection | null): ReactNode {
   if (isValidElement(accounts) && typeof accounts.type === "function") {
     return cloneElement(accounts as ReactElement<{ section?: AccountsSection | null }>, { section });
   }
   return section === "github" ? accounts : null;
-}
-
-function preferencesSection(tab: SettingsSection): PreferencesSection | null {
-  if (tab === "requests" || tab === "rules" || tab === "schedule" || tab === "notifications") {
-    return tab;
-  }
-  return null;
-}
-
-function agentSection(tab: SettingsSection): AgentsSection | null {
-  if (tab === "server" || tab === "permissions" || tab === "client" || tab === "proposals" || tab === "activity") {
-    return tab;
-  }
-  return null;
-}
-
-function aboutSection(tab: SettingsSection): AboutSection | null {
-  if (tab === "app" || tab === "keychain" || tab === "setup") {
-    return tab;
-  }
-  return null;
 }
 
 /** The rail collapses under the window minimum, or when this pane is too narrow. */

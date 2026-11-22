@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { ProfileDto } from "../api";
 import { CheckIcon, GearIcon, PlusIcon } from "../icons";
+import { AttentionDot } from "./SetupBanners";
 
 /** Up to two initials: "Acme Labs" → "AL", "work" → "W". */
 export function initials(name: string): string {
@@ -43,13 +44,15 @@ interface Props {
   onAdd: () => void;
   onSettings: () => void;
   onAbout: () => void;
+  /** A setup problem is waiting in Settings. */
+  attention?: boolean;
 }
 
 const ITEM =
   "flex w-full cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-slate-200 outline-none hover:bg-slate-800 focus-visible:bg-slate-800";
 
 /** Bottom-left account menu: profiles, Add a profile, Settings, About. */
-export function AccountMenu({ profiles, settingsActive, onSwitch, onAdd, onSettings, onAbout }: Props) {
+export function AccountMenu({ profiles, settingsActive, onSwitch, onAdd, onSettings, onAbout, attention = false }: Props) {
   const [open, setOpen] = useState(false);
   const menu = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -123,7 +126,7 @@ export function AccountMenu({ profiles, settingsActive, onSwitch, onAdd, onSetti
         type="button"
         aria-haspopup="menu"
         aria-expanded={open}
-        aria-label={`Profile ${active.name}, account menu`}
+        aria-label={`Profile ${active.name}, account menu${attention ? ", needs attention" : ""}`}
         className={`flex w-full cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-slate-800 ${settingsActive ? "bg-slate-800 text-white" : "text-slate-200"}`}
         onClick={() => setOpen((value) => !value)}
         onKeyDown={(event) => {
@@ -135,6 +138,7 @@ export function AccountMenu({ profiles, settingsActive, onSwitch, onAdd, onSetti
       >
         <ProfileAvatar profile={active} />
         <span className="min-w-0 flex-1 truncate">{active.name}</span>
+        {attention && <AttentionDot />}
       </button>
       {open && (
         <div
@@ -174,7 +178,8 @@ export function AccountMenu({ profiles, settingsActive, onSwitch, onAdd, onSetti
             <span className="flex h-5 w-5 items-center justify-center text-slate-400">
               <GearIcon />
             </span>
-            Settings
+            <span className="min-w-0 flex-1">Settings</span>
+            {attention && <AttentionDot />}
           </button>
           <button type="button" role="menuitem" tabIndex={-1} className={ITEM} onClick={() => pick(onAbout)}>
             <span className="h-5 w-5" aria-hidden="true" />

@@ -20,6 +20,7 @@ function Harness({
   onRerun = () => undefined,
   boot: bootOverride = boot,
   accounts,
+  mcpAttention = false,
 }: {
   api: Api;
   start?: SettingsSection;
@@ -27,6 +28,7 @@ function Harness({
   onRerun?: () => void;
   boot?: Bootstrap;
   accounts?: ReactNode;
+  mcpAttention?: boolean;
 }) {
   const [tab, setTab] = useState<SettingsSection>(() => start ?? readSettingsSection());
   return (
@@ -38,6 +40,7 @@ function Harness({
       tab={tab}
       onTabChange={setTab}
       onRerunSetup={onRerun}
+      mcpAttention={mcpAttention}
     />
   );
 }
@@ -81,40 +84,48 @@ const entry = (partial: Partial<MappingEntry> & { slug: string }): MappingEntry 
   has_imported: partial.has_imported ?? true,
 });
 
-test("sections follow the vertical tab pattern: one tab stop, up and down, Home and End", () => {
+test("section labels are not controls, and page items are the tabs", () => {
   render(<Harness api={fakeSettingsApi() as Api} />);
   const github = screen.getByRole("tab", { name: "GitHub" });
+  expect(github.tagName).toBe("BUTTON");
   expect(github).toHaveAttribute("aria-selected", "true");
-  expect(github).toHaveClass("bg-violet-500/20");
-  expect(github.className).toMatch(/focus-visible:outline-violet-400/);
-  expect(screen.getByRole("tab", { name: "Mappings" })).toHaveAttribute("tabindex", "-1");
-  expect(screen.getByRole("tablist", { name: "Connections" })).toBeInTheDocument();
-  expect(screen.getByRole("heading", { name: "Connections" })).toHaveClass("uppercase");
+  expect(screen.getByRole("tab", { name: "Slack" })).toHaveAttribute("tabindex", "-1");
+  const connections = screen.getByRole("heading", { name: "Connections" });
+  expect(connections.tagName).toBe("H2");
+  expect(connections).not.toHaveAttribute("tabindex");
+  expect(screen.queryByRole("button", { name: "Connections" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: "Connections" })).not.toBeInTheDocument();
   expect(screen.queryByRole("tab", { name: "Connections" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "Review" })).not.toBeInTheDocument();
+  expect(screen.getByRole("tablist", { name: "Connections" })).toBeInTheDocument();
+  expect(screen.getByRole("group", { name: "Connections" })).toBeInTheDocument();
+  expect(screen.getByRole("group", { name: "AI agents" })).toBeInTheDocument();
   expect(screen.getByRole("tabpanel")).toHaveTextContent("GitHub body");
   fireEvent.keyDown(github, { key: "ArrowLeft" });
   expect(github).toHaveAttribute("aria-selected", "true");
   fireEvent.keyDown(github, { key: "ArrowUp" });
-  const setup = screen.getByRole("tab", { name: "Setup" });
-  expect(setup).toHaveAttribute("aria-selected", "true");
-  expect(setup).toHaveFocus();
-  fireEvent.keyDown(setup, { key: "Home" });
+  const about = screen.getByRole("tab", { name: "About" });
+  expect(about).toHaveAttribute("aria-selected", "true");
+  expect(about).toHaveFocus();
+  fireEvent.keyDown(about, { key: "Home" });
   expect(github).toHaveFocus();
   fireEvent.keyDown(github, { key: "ArrowDown" });
   expect(screen.getByRole("tab", { name: "Slack" })).toHaveAttribute("aria-selected", "true");
   fireEvent.keyDown(screen.getByRole("tab", { name: "Slack" }), { key: "End" });
-  expect(setup).toHaveAttribute("aria-selected", "true");
-  expect(setup).toHaveFocus();
+  expect(about).toHaveAttribute("aria-selected", "true");
+  expect(about).toHaveFocus();
 });
 
-test("arrow keys, Home and End walk the section list", () => {
+test("arrow keys, Home and End walk the page list, including an older section id", () => {
   expect(sectionAfterKey("github", "ArrowDown")).toBe("slack");
-  expect(sectionAfterKey("github", "ArrowUp")).toBe("setup");
+  expect(sectionAfterKey("github", "ArrowUp")).toBe("about");
   expect(sectionAfterKey("github", "ArrowLeft")).toBeNull();
   expect(sectionAfterKey("github", "ArrowRight")).toBeNull();
   expect(sectionAfterKey("slack", "Home")).toBe("github");
-  expect(sectionAfterKey("requests", "End")).toBe("setup");
+  expect(sectionAfterKey("requests", "End")).toBe("about");
   expect(isSettingsSection("slack")).toBe(true);
+  expect(isSettingsSection("requests")).toBe(true);
+  expect(isSettingsSection("mcp")).toBe(true);
   expect(isSettingsSection("accounts")).toBe(false);
   expect(isSettingsSection("agents")).toBe(false);
 });
@@ -479,16 +490,15 @@ test("About shows paths, the keychain explainer, update check and Re-run setup",
       }),
   }) as Api;
   render(<Harness api={api} start="app" onRerun={() => (reruns += 1)} />);
+  expect(screen.getByRole("tab", { name: "About" })).toHaveAttribute("aria-selected", "true");
   expect(await screen.findByRole("heading", { name: "PR Nexus 0.1.0" })).toBeInTheDocument();
   expect(screen.getByText(/Open Anyway/)).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Copy database" })).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Check for updates" }));
   expect(await screen.findByText(/0.2.0 is available/)).toBeInTheDocument();
-  fireEvent.click(screen.getByRole("tab", { name: "Keychain" }));
-  expect(await screen.findByText(/one keychain item/)).toBeInTheDocument();
+  expect(screen.getByText(/one keychain item/)).toBeInTheDocument();
   expect(screen.getByText(/Always Allow/)).toBeInTheDocument();
-  fireEvent.click(screen.getByRole("tab", { name: "Setup" }));
-  fireEvent.click(await screen.findByRole("button", { name: "Re-run setup" }));
+  fireEvent.click(screen.getByRole("button", { name: "Re-run setup" }));
   expect(reruns).toBe(1);
 });
 
@@ -498,10 +508,10 @@ test("About warns when tokens only live in memory", async () => {
     checkUpdate: () => Promise.resolve(null),
   }) as Api;
   render(<Harness api={api} start="keychain" />);
+  expect(screen.getByRole("tab", { name: "About" })).toHaveAttribute("aria-selected", "true");
   expect(await screen.findByRole("alert")).toHaveTextContent(/in memory only/);
   expect(screen.queryByText(/Open Anyway/)).not.toBeInTheDocument();
-  fireEvent.click(screen.getByRole("tab", { name: "App & updates" }));
-  fireEvent.click(await screen.findByRole("button", { name: "Check for updates" }));
+  fireEvent.click(screen.getByRole("button", { name: "Check for updates" }));
   expect(await screen.findByText("You have the latest release.")).toBeInTheDocument();
 });
 
@@ -567,9 +577,9 @@ test("the rail scrolls the active section into view", () => {
   try {
     render(<Harness api={fakeSettingsApi() as Api} start="activity" />);
     expect(screen.getByRole("navigation", { name: "Settings" })).toHaveClass("overflow-y-auto");
-    expect(scrolled).toContain("Activity");
-    fireEvent.click(screen.getByRole("tab", { name: "Mappings" }));
-    expect(scrolled.at(-1)).toBe("Mappings");
+    expect(scrolled.some((text) => text.includes("Agent activity"))).toBe(true);
+    fireEvent.click(screen.getByRole("tab", { name: "About" }));
+    expect(scrolled.at(-1)).toContain("About");
   } finally {
     HTMLElement.prototype.scrollIntoView = original;
   }
@@ -591,11 +601,12 @@ test("a narrow window uses a section menu instead of the rail", async () => {
     render(<Harness api={fakeSettingsApi() as Api} start="rules" />);
     const menu = await screen.findByRole("combobox", { name: "Settings section" });
     expect(screen.queryByRole("tablist")).not.toBeInTheDocument();
-    expect(menu).toHaveValue("rules");
+    expect(menu).toHaveValue("review");
     expect(await screen.findByRole("heading", { name: "Rules" })).toBeInTheDocument();
-    fireEvent.change(menu, { target: { value: "requests" } });
-    expect(await screen.findByRole("heading", { name: "Requests & bumps" })).toBeInTheDocument();
-    expect(screen.getByRole("combobox", { name: "Settings section" })).toHaveValue("requests");
+    expect(screen.getByRole("heading", { name: "Requests & bumps" })).toBeInTheDocument();
+    fireEvent.change(menu, { target: { value: "sync" } });
+    expect(await screen.findByRole("heading", { name: "Schedule" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Settings section" })).toHaveValue("sync");
   } finally {
     window.matchMedia = original;
   }
@@ -603,36 +614,52 @@ test("a narrow window uses a section menu instead of the rail", async () => {
 
 test("the last opened section is remembered", () => {
   const { unmount } = render(<Harness api={fakeSettingsApi() as Api} />);
-  fireEvent.click(screen.getByRole("tab", { name: "Rules" }));
-  expect(window.localStorage.getItem("pr-nexus.settings-section")).toBe("rules");
+  fireEvent.click(screen.getByRole("tab", { name: "Sync" }));
+  expect(window.localStorage.getItem("pr-nexus.settings-section")).toBe("sync");
   unmount();
   render(<Harness api={fakeSettingsApi() as Api} />);
-  expect(screen.getByRole("tab", { name: "Rules" })).toHaveAttribute("aria-selected", "true");
+  expect(screen.getByRole("tab", { name: "Sync" })).toHaveAttribute("aria-selected", "true");
 });
 
-test("a programmatic section opens that section", async () => {
+test("an older section id opens the merged page and keeps that id", async () => {
   render(<Harness api={fakeSettingsApi() as Api} start="changelog" />);
-  expect(screen.getByRole("tab", { name: "Changelog" })).toHaveAttribute("aria-selected", "true");
+  expect(screen.getByRole("tab", { name: "About" })).toHaveAttribute("aria-selected", "true");
   expect(await screen.findByRole("heading", { name: "Recent changes" })).toBeInTheDocument();
   expect(window.localStorage.getItem("pr-nexus.settings-section")).toBe("changelog");
 });
 
-test("Agents opens on Permissions without the server controls", async () => {
-  render(<Harness api={fakeSettingsApi() as Api} start="permissions" />);
-  expect(screen.getByRole("tab", { name: "Permissions" })).toHaveAttribute("aria-selected", "true");
-  expect(await screen.findByRole("heading", { name: "What agents may do" })).toBeInTheDocument();
-  expect(screen.queryByRole("switch", { name: "Enable MCP server" })).not.toBeInTheDocument();
+test("Review keeps requests, rules and mappings on one page", async () => {
+  render(<Harness api={fakeSettingsApi() as Api} start="mappings" />);
+  expect(screen.getByRole("tab", { name: "Review" })).toHaveAttribute("aria-selected", "true");
+  expect(await screen.findByRole("heading", { name: "Requests & bumps" })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "Rules" })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "Mappings" })).toBeInTheDocument();
+  expect(screen.getByText("No team channels mapped yet.")).toBeInTheDocument();
 });
 
-test("Activity and Server links open those sections", async () => {
+test("Permissions opens the MCP server page with the server controls still there", async () => {
+  render(<Harness api={fakeSettingsApi() as Api} start="permissions" />);
+  expect(screen.getByRole("tab", { name: "MCP server" })).toHaveAttribute("aria-selected", "true");
+  expect(await screen.findByRole("heading", { name: "Permissions" })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "Use PR Nexus from an AI agent (MCP)" })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "Add to your agent" })).toBeInTheDocument();
+  expect(screen.getByRole("switch", { name: "Enable MCP server" })).toBeInTheDocument();
+});
+
+test("Activity and the MCP server page are separate, and a link still opens activity", async () => {
   render(<Harness api={fakeSettingsApi(fakeMcp({ enabled: true, local_writes: true })) as Api} start="permissions" />);
   fireEvent.click(await screen.findByRole("button", { name: "Activity" }));
-  expect(screen.getByRole("tab", { name: "Activity" })).toHaveAttribute("aria-selected", "true");
+  expect(screen.getByRole("tab", { name: "Agent activity" })).toHaveAttribute("aria-selected", "true");
   expect(await screen.findByRole("heading", { name: "Activity" })).toBeInTheDocument();
-  fireEvent.click(screen.getByRole("tab", { name: "Connect a client" }));
-  fireEvent.click(await screen.findByRole("button", { name: "Server" }));
-  expect(screen.getByRole("tab", { name: "Server" })).toHaveAttribute("aria-selected", "true");
-  expect(await screen.findByRole("heading", { name: "Local MCP server" })).toBeInTheDocument();
+  expect(screen.queryByRole("switch", { name: "Enable MCP server" })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("tab", { name: "MCP server" }));
+  expect(await screen.findByRole("heading", { name: "Add to your agent" })).toBeInTheDocument();
+});
+
+test("an outdated MCP config marks the MCP server page", () => {
+  render(<Harness api={fakeSettingsApi() as Api} mcpAttention />);
+  expect(screen.getByRole("tab", { name: /MCP server/ })).toHaveTextContent("Needs attention");
+  expect(screen.getByRole("tab", { name: "GitHub" })).not.toHaveTextContent("Needs attention");
 });
 
 test("an unsaved preferences edit stays across sections of that form", async () => {
@@ -646,15 +673,15 @@ test("an unsaved preferences edit stays across sections of that form", async () 
   render(<Harness api={api} start="requests" />);
   const requester = await screen.findByRole("textbox", { name: /^Requester/ });
   fireEvent.change(requester, { target: { value: "Ada" } });
+  fireEvent.change(screen.getByRole("textbox", { name: "JIRA base URL" }), { target: { value: "https://acme-labs.atlassian.net" } });
   expect(screen.getByRole("region", { name: "Unsaved changes" })).toBeInTheDocument();
-  fireEvent.click(screen.getByRole("tab", { name: "Rules" }));
-  fireEvent.change(await screen.findByRole("textbox", { name: "JIRA base URL" }), { target: { value: "https://acme-labs.atlassian.net" } });
-  fireEvent.click(screen.getByRole("tab", { name: "Mappings" }));
-  expect(await screen.findByText("No team channels mapped yet.")).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "Mappings" })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("tab", { name: "Slack" }));
   expect(screen.queryByRole("region", { name: "Unsaved changes" })).not.toBeInTheDocument();
-  fireEvent.click(screen.getByRole("tab", { name: "Requests & bumps" }));
+  fireEvent.click(screen.getByRole("tab", { name: "Review" }));
   expect(screen.getByRole("textbox", { name: /^Requester/ })).toHaveValue("Ada");
-  fireEvent.click(screen.getByRole("tab", { name: "Schedule" }));
+  expect(screen.getByRole("textbox", { name: "JIRA base URL" })).toHaveValue("https://acme-labs.atlassian.net");
+  fireEvent.click(screen.getByRole("tab", { name: "Sync" }));
   expect(screen.getByRole("region", { name: "Unsaved changes" })).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
   expect(await screen.findByText("Saved")).toBeInTheDocument();

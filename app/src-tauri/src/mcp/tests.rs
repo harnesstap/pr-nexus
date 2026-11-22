@@ -757,7 +757,7 @@ async fn a_disabled_tool_is_hidden_refused_and_audited() {
     assert_eq!(denied["structuredContent"]["kind"], "forbidden");
     let message = denied["structuredContent"]["message"].as_str().unwrap();
     assert!(
-        message.contains("list_projects") && message.contains("What agents may do"),
+        message.contains("list_projects") && message.contains("Permissions"),
         "{message}"
     );
 
@@ -765,13 +765,7 @@ async fn a_disabled_tool_is_hidden_refused_and_audited() {
     assert_eq!(rows[0].tool, "list_projects");
     assert_eq!(rows[0].outcome, AuditOutcome::Denied);
     assert_eq!(rows[0].capability, "reads");
-    assert!(
-        rows[0]
-            .error
-            .as_deref()
-            .unwrap()
-            .contains("What agents may do")
-    );
+    assert!(rows[0].error.as_deref().unwrap().contains("Permissions"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -799,7 +793,7 @@ async fn category_off_overrides_a_selected_tool_and_turning_it_on_restores_it() 
     assert_eq!(denied["structuredContent"]["kind"], "forbidden");
     let message = denied["structuredContent"]["message"].as_str().unwrap();
     assert!(
-        message.contains("turned off") && !message.contains("What agents may do"),
+        message.contains("turned off") && !message.contains("Permissions"),
         "{message}"
     );
     assert_eq!(
@@ -821,7 +815,7 @@ async fn category_off_overrides_a_selected_tool_and_turning_it_on_restores_it() 
         still["structuredContent"]["message"]
             .as_str()
             .unwrap()
-            .contains("What agents may do")
+            .contains("Permissions")
     );
 }
 
