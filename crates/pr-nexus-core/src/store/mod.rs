@@ -19,12 +19,14 @@ mod projects;
 pub use project_info::MAX_TEXT;
 mod pull_requests;
 pub(crate) use pull_requests::cap_body;
+mod review_clock;
 mod reviews;
 mod row;
 mod stats;
 mod time;
 
 pub use listing::ListFacts;
+pub use review_clock::ViewerTeams;
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -240,7 +242,7 @@ mod tests {
         assert_eq!(synchronous, 1);
         assert_eq!(foreign_keys, 1);
         assert_eq!(busy, 5000);
-        assert_eq!(version, 16);
+        assert_eq!(version, 17);
         assert!(tables.contains(&"pull_requests".to_owned()));
         assert!(tables.contains(&"review_requests".to_owned()));
         assert!(tables.contains(&"view_state".to_owned()));
@@ -249,6 +251,9 @@ mod tests {
         assert!(tables.contains(&"pr_attention".to_owned()));
         assert!(tables.contains(&"pr_merge_queue".to_owned()));
         assert!(tables.contains(&"pr_failing_checks".to_owned()));
+        assert!(tables.contains(&"pr_review_clock".to_owned()));
+        assert!(tables.contains(&"viewer_team".to_owned()));
+        assert!(tables.contains(&"viewer_team_state".to_owned()));
         assert!(tables.contains(&"pr_assignees".to_owned()));
         drop(store);
 
@@ -259,7 +264,7 @@ mod tests {
                     .map_err(db)
             })
             .unwrap();
-        assert_eq!(version, 16);
+        assert_eq!(version, 17);
     }
 
     #[test]

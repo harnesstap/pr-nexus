@@ -45,6 +45,7 @@ const SEARCH: &str = include_str!("graphql/search.graphql");
 const REFRESH: &str = include_str!("graphql/refresh.graphql");
 const STATUS: &str = include_str!("graphql/status.graphql");
 const VIEWER: &str = include_str!("graphql/viewer.graphql");
+const VIEWER_TEAMS: &str = include_str!("graphql/viewer_teams.graphql");
 
 /// Longest one GitHub request may take. GitHub itself gives up on a GraphQL
 /// query after about 10 s, so 15 s leaves room for the 502 page to arrive
@@ -379,6 +380,14 @@ impl VcsProvider for GithubClient {
             parse::merge_orgs(&mut user, rest);
         }
         Ok(user)
+    }
+
+    fn viewer_teams(&self, login: &str) -> Result<Option<Vec<TeamRef>>, ProviderError> {
+        if login.trim().is_empty() {
+            return Ok(None);
+        }
+        let body = self.graphql(VIEWER_TEAMS, json!({ "login": login }))?;
+        Ok(Some(parse::parse_viewer_teams(&body)?))
     }
 
     fn search_pull_requests(

@@ -10,6 +10,16 @@ use chrono::Local;
 
 /// Hours before a review is overdue when the user has not chosen otherwise.
 pub const DEFAULT_REVIEW_SLA_HOURS: i64 = 48;
+/// Remaining hours at which the request age turns amber.
+pub const DEFAULT_REVIEW_WARN_HOURS: i64 = 12;
+
+/// How close a review request is to the SLA.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewUrgency {
+    OnTime,
+    Approaching,
+    Late,
+}
 
 pub const HOUR_MS: i64 = 60 * 60 * 1000;
 const DAY_MS: i64 = 24 * HOUR_MS;
@@ -83,6 +93,45 @@ pub fn review_wait_exceeded(
     elapsed > sla.hours.saturating_mul(HOUR_MS)
 }
 
+/// On time, amber, or late for a request that started at `since_ms`.
+///
+/// Late uses the same strict comparison as [`review_wait_exceeded`]. Amber
+/// starts when the remaining wait is `warn_hours` or less. A wait of exactly
+/// the SLA is not late.
+pub fn review_urgency(
+    since_ms: i64,
+    now_ms: i64,
+    sla: &ReviewSla,
+    warn_hours: i64,
+    offset_east_minutes: i32,
+) -> ReviewUrgency {
+    if review_wait_exceeded(since_ms, now_ms, sla, offset_east_minutes) {
+        return ReviewUrgency::Late;
+    }
+    let elapsed = review_elapsed_ms(since_ms, now_ms, sla, offset_east_minutes);
+    let limit = sla.hours.max(0).saturating_mul(HOUR_MS);
+    let warn = warn_hours
+        .clamp(1, sla.hours.max(1))
+        .saturating_mul(HOUR_MS);
+    if elapsed >= limit.saturating_sub(warn) {
+        ReviewUrgency::Approaching
+    } else {
+        ReviewUrgency::OnTime
+    }
+}
+
+/// SLA time still left. Negative once the wait is past the limit.
+pub fn review_remaining_ms(
+    since_ms: i64,
+    now_ms: i64,
+    sla: &ReviewSla,
+    offset_east_minutes: i32,
+) -> i64 {
+    let limit = sla.hours.max(0).saturating_mul(HOUR_MS);
+    let elapsed = review_elapsed_ms(since_ms, now_ms, sla, offset_east_minutes);
+    limit - elapsed
+}
+
 /// Elapsed milliseconds the SLA compares against (calendar, or weekdays).
 pub fn review_elapsed_ms(
     since_ms: i64,
@@ -144,5 +193,70 @@ mod tests {
         let sla = ReviewSla::default();
         assert!(!review_wait_exceeded(exact, now, &sla, 0));
         assert!(review_wait_exceeded(exact - 1, now, &sla, 0));
+    }
+
+    #[test]
+    fn urgency_is_on_time_then_amber_then_late() {
+        let now = ms("2026-11-10T12:00:00Z");
+        let sla = ReviewSla::default();
+        let warn = DEFAULT_REVIEW_WARN_HOURS;
+        assert_eq!(
+            review_urgency(now - 36 * HOUR_MS + 1, now, &sla, warn, 0),
+            ReviewUrgency::OnTime
+        );
+        assert_eq!(
+            review_urgency(now - 36 * HOUR_MS, now, &sla, warn, 0),
+            ReviewUrgency::Approaching
+        );
+        assert_eq!(
+            review_urgency(now - 48 * HOUR_MS, now, &sla, warn, 0),
+            ReviewUrgency::Approaching
+        );
+        assert_eq!(
+            review_urgency(now - 48 * HOUR_MS - 1, now, &sla, warn, 0),
+            ReviewUrgency::Late
+        );
+        assert_eq!(
+            review_remaining_ms(now - 47 * HOUR_MS, now, &sla, 0),
+            HOUR_MS
+        );
+        assert_eq!(
+            review_remaining_ms(now - 50 * HOUR_MS, now, &sla, 0),
+            -2 * HOUR_MS
+        );
+    }
+
+    #[test]
+    fn weekday_urgency_skips_the_weekend() {
+        // Friday 2026-11-06 12:00Z through Monday 2026-11-09 12:00Z is 24 weekday hours.
+        let since = ms("2026-11-06T12:00:00Z");
+        let now = ms("2026-11-09T12:00:00Z");
+        let sla = ReviewSla {
+            hours: 48,
+            working_days: true,
+        };
+        assert_eq!(
+            review_urgency(since, now, &sla, 12, 0),
+            ReviewUrgency::OnTime
+        );
+        // Friday 00:00 through Monday 12:00 is 36 weekday hours: the amber window.
+        let since = ms("2026-11-06T00:00:00Z");
+        assert_eq!(
+            review_urgency(since, now, &sla, 12, 0),
+            ReviewUrgency::Approaching
+        );
+        assert_eq!(
+            review_urgency(
+                since,
+                now,
+                &ReviewSla {
+                    hours: 48,
+                    working_days: false,
+                },
+                12,
+                0
+            ),
+            ReviewUrgency::Late
+        );
     }
 }

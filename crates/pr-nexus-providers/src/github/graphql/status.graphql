@@ -50,6 +50,31 @@ query PullRequestStatus($ids: [ID!]!) {
           ... on RemovedFromMergeQueueEvent { reason }
         }
       }
+      # Newest review requests, ready events, and submitted reviews. `last`
+      # keeps the latest request when the slice is full.
+      reviewClock: timelineItems(last: 40, itemTypes: [REVIEW_REQUESTED_EVENT, READY_FOR_REVIEW_EVENT, PULL_REQUEST_REVIEW]) {
+        nodes {
+          __typename
+          ... on ReviewRequestedEvent {
+            createdAt
+            requestedReviewer {
+              __typename
+              ... on User { login }
+              ... on Bot { login }
+              ... on Mannequin { login }
+              ... on Team {
+                slug
+                organization { login }
+              }
+            }
+          }
+          ... on ReadyForReviewEvent { createdAt }
+          ... on PullRequestReview {
+            submittedAt
+            author { __typename login }
+          }
+        }
+      }
     }
   }
 }

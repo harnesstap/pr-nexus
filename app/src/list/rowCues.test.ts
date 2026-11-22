@@ -52,6 +52,29 @@ test("a review wait over 48h gets a waiting chip, in hours then days", () => {
   expect(staleCue(row({ slack: slack("2026-10-21T12:00:00Z"), created_at: "2026-10-01T00:00:00Z" }), now)?.label).toBe("Waiting 5d");
 });
 
+test("a shown request age replaces the waiting chip", () => {
+  const recent = row({
+    reviewers_requested: true,
+    created_at: "2026-10-01T00:00:00Z",
+    review_wait: { at: "2026-10-26T10:00:00Z", exact: true, basis: "request" },
+  });
+  expect(staleCue(recent, now)).toBeNull();
+  const late = row({
+    reviewers_requested: true,
+    created_at: "2026-10-26T10:00:00Z",
+    updated_at: "2026-10-26T11:00:00Z",
+    review_wait: { at: "2026-10-24T08:00:00Z", exact: true, basis: "request" },
+  });
+  expect(staleCue(late, now)).toBeNull();
+  const silent = row({
+    reviewers_requested: true,
+    created_at: "2026-10-01T00:00:00Z",
+    updated_at: "2026-10-01T00:00:00Z",
+    review_wait: { at: "2026-10-01T00:00:00Z", exact: true, basis: "request" },
+  });
+  expect(staleCue(silent, now)).toMatchObject({ kind: "idle" });
+});
+
 test("drafts, approved and unrequested PRs never wait", () => {
   const old = { created_at: "2026-10-20T00:00:00Z" };
   expect(staleCue(row({ ...old, reviewers_requested: true, is_draft: true }), now)).toBeNull();

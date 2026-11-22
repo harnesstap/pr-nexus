@@ -32,15 +32,21 @@ export function rowPills(row: Pick<ListRow, "is_draft" | "conflicts" | "state">)
 }
 
 /**
- * When an open PR started waiting on review: its Slack request, else its
- * creation (GitHub does not give the request time). Null when nobody is asked
- * to review it, or it is a draft or approved. Mirrors `waiting_since` in
+ * When an open PR started waiting on review: the cached GitHub request, else
+ * its Slack request, else its creation. Null when nobody is asked to review
+ * it, or it is a draft or approved. Mirrors `waiting_since` in
  * `app/src-tauri/src/listing.rs`.
  */
 export function waitingSince(row: ListRow): number | null {
   const asked = row.reviewers_requested || row.slack !== null;
   if (row.state !== "open" || row.is_draft || !asked || row.review_decision === "approved") {
     return null;
+  }
+  if (row.review_wait?.at) {
+    const parsed = Date.parse(row.review_wait.at);
+    if (!Number.isNaN(parsed)) {
+      return parsed;
+    }
   }
   return new Date(row.slack ? row.slack.requested_at : row.created_at).getTime();
 }
@@ -64,13 +70,20 @@ function span(ms: number): string {
   return hours < 72 ? `${hours}h` : `${Math.floor(ms / DAY_MS)}d`;
 }
 
-/** The age chip for a row, or null when it is fresh. A long review wait wins over idleness. Mirrors `stale_cue` in `app/src-tauri/src/listing.rs` (the `waiting`/`idle` MCP statuses). */
+/** True when the row paints the review-request age, so the Waiting chip would repeat it. */
+function hasReviewAge(row: ListRow): boolean {
+  const at = row.review_wait?.at;
+  return typeof at === "string" && !Number.isNaN(Date.parse(at));
+}
+
+/** The age chip for a row, or null when it is fresh. A long review wait wins over idleness, unless the request age is already shown. Mirrors `stale_cue` in `app/src-tauri/src/listing.rs` (the `waiting`/`idle` MCP statuses). */
 export function staleCue(row: ListRow, now: Date, sla: ReviewSla = DEFAULT_REVIEW_SLA): StaleCue | null {
   if (row.state !== "open") {
     return null;
   }
   const since = waitingSince(row);
-  if (since !== null && reviewWaitExceeded(since, now, sla)) {
+  // The request age already says how long, and turns red when the wait is late.
+  if (since !== null && reviewWaitExceeded(since, now, sla) && !hasReviewAge(row)) {
     const waited = reviewElapsedMs(since, now, sla);
     const counted = sla.workingDays ? `${sla.hours} weekday hours` : `${sla.hours}h`;
     return { kind: "waiting", label: `Waiting ${span(waited)}`, title: `Waiting on review for ${span(waited)} (over ${counted})` };

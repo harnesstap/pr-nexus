@@ -23,6 +23,7 @@ import {
   projects,
   reviewChoices,
   reviewText,
+  reviewAgeScene,
   rows,
   searchTargets,
   slackThreads,
@@ -341,6 +342,7 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     bump_due_working_days: true,
     review_sla_hours: 48,
     review_sla_working_days: false,
+    review_request_warn_hours: 12,
     my_prs_wip_limit: null,
     bot_logins: [],
   }),
@@ -511,6 +513,18 @@ for (const id of (window as { __extraDrafts?: number[] }).__extraDrafts ?? []) {
   boot.sync.revision += 1; // the backend bumps it on every agent write
   await emit(DATA_CHANGED_EVENT);
 };
+
+// `--review-age` adds To review rows at several ages, and a request time on the
+// Checkout redesign row, which already has a Slack time. The default list is unchanged.
+if ((window as { __reviewAge?: boolean }).__reviewAge) {
+  const nowMs = Date.now();
+  rows.push(...reviewAgeScene(nowMs));
+  const checkout = rows.find((row) => row.number === 479);
+  if (checkout) {
+    checkout.review_wait = { at: new Date(nowMs - 90 * 60 * 1000).toISOString(), exact: true, basis: "request" };
+  }
+  boot.sync.message = `Synced · ${rows.length} pull requests`;
+}
 
 // `--repo-filter` adds two repositories that share a name, and drops ticket chips.
 if ((window as { __repoScene?: boolean }).__repoScene) {

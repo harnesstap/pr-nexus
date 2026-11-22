@@ -9,6 +9,10 @@ export interface ReviewSla {
 }
 
 export const DEFAULT_REVIEW_SLA_HOURS = 48;
+/** Remaining hours at which the request age turns amber. */
+export const DEFAULT_REVIEW_WARN_HOURS = 12;
+
+export type ReviewUrgency = "on_time" | "approaching" | "late";
 
 export const DEFAULT_REVIEW_SLA: ReviewSla = {
   hours: DEFAULT_REVIEW_SLA_HOURS,
@@ -66,6 +70,22 @@ export function reviewElapsedMs(sinceMs: number, now: Date, sla: ReviewSla, zone
 /** True when the wait is strictly longer than the SLA. */
 export function reviewWaitExceeded(sinceMs: number, now: Date, sla: ReviewSla, zone = offsetEastMinutes(now)): boolean {
   return reviewElapsedMs(sinceMs, now, sla, zone) > sla.hours * HOUR_MS;
+}
+
+/** On time, amber, or late. Late matches `reviewWaitExceeded`. Amber starts when this much time remains. */
+export function reviewUrgency(sinceMs: number, now: Date, sla: ReviewSla, warnHours: number, zone = offsetEastMinutes(now)): ReviewUrgency {
+  if (reviewWaitExceeded(sinceMs, now, sla, zone)) {
+    return "late";
+  }
+  const elapsed = reviewElapsedMs(sinceMs, now, sla, zone);
+  const limit = Math.max(0, sla.hours) * HOUR_MS;
+  const warn = Math.min(Math.max(1, warnHours), Math.max(1, sla.hours)) * HOUR_MS;
+  return elapsed >= limit - warn ? "approaching" : "on_time";
+}
+
+/** SLA time still left. Negative once the wait is past the limit. */
+export function reviewRemainingMs(sinceMs: number, now: Date, sla: ReviewSla, zone = offsetEastMinutes(now)): number {
+  return Math.max(0, sla.hours) * HOUR_MS - reviewElapsedMs(sinceMs, now, sla, zone);
 }
 
 /** Soft hint for My PRs when open pull requests pass the optional cap. */

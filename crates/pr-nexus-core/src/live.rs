@@ -592,6 +592,7 @@ mod tests {
             repo_archived: false,
             merge_queue: None,
             failing_checks: None,
+            review_clock: None,
         }
     }
 
@@ -1237,6 +1238,7 @@ mod tests {
                 last_commit_at: None,
                 merge_queue: None,
                 failing_checks: None,
+                review_clock: None,
             }],
             ..Fake::default()
         };

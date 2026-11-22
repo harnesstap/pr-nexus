@@ -1147,9 +1147,9 @@ fn rank(item: &Item, request: &PageRequest, now_ms: i64) -> i64 {
     }
 }
 
-/// When an open PR started waiting on review: its Slack request, else its
-/// creation. `None` when nobody is asked to review it, or it is a draft or
-/// approved. Mirrors `waitingSince` in `app/src/list/rowCues.ts`.
+/// When an open PR started waiting on review: the cached GitHub request, else
+/// its Slack request, else its creation. `None` when nobody is asked to review
+/// it, or it is a draft or approved. Mirrors `waitingSince` in `app/src/list/rowCues.ts`.
 fn waiting_since(item: &Item) -> Option<i64> {
     let row = &item.row;
     let asked = row.reviewers_requested || row.slack.is_some();
@@ -1160,11 +1160,21 @@ fn waiting_since(item: &Item) -> Option<i64> {
     {
         return None;
     }
+    if let Some(ms) = review_wait_ms(row) {
+        return Some(ms);
+    }
     Some(if item.slack_requested_ms > 0 {
         item.slack_requested_ms
     } else {
         item.created_ms
     })
+}
+
+fn review_wait_ms(row: &ListRow) -> Option<i64> {
+    let wait = row.review_wait.as_ref()?;
+    DateTime::parse_from_rfc3339(&wait.at)
+        .ok()
+        .map(|at| at.timestamp_millis())
 }
 
 /// The next step on a PR (§8.2), most urgent first: the "Needs attention"
@@ -1384,8 +1394,8 @@ pub const STALE_REVIEW_HOURS: i64 = 48;
 pub const IDLE_DAYS: i64 = 7;
 const HOUR_MS: i64 = 60 * 60 * 1000;
 
-/// Closed and merged rows carry no cue; a long review wait wins over idleness.
-/// Uses the 48 hour default.
+/// Closed and merged rows carry no cue. A long review wait wins over idleness,
+/// unless the row already shows the review-request age. Uses the 48 hour default.
 #[cfg(test)]
 pub fn stale_cue(item: &Item, now_ms: i64) -> Option<StaleCue> {
     stale_cue_with(item, now_ms, &ReviewSla::default(), 0)
@@ -1401,8 +1411,10 @@ pub fn stale_cue_with(
     if item.row.state != "open" {
         return None;
     }
-    if waiting_since(item)
-        .is_some_and(|since| review_wait_exceeded(since, now_ms, sla, offset_east_minutes))
+    let age_shown = review_wait_ms(&item.row).is_some();
+    if !age_shown
+        && waiting_since(item)
+            .is_some_and(|since| review_wait_exceeded(since, now_ms, sla, offset_east_minutes))
     {
         return Some(StaleCue::Waiting);
     }
@@ -1675,6 +1687,7 @@ mod tests {
                 assignees: Vec::new(),
                 slack: None,
                 bot_comments: 0,
+                review_wait: None,
             },
             updated_ms: updated.timestamp_millis(),
             created_ms: updated.timestamp_millis(),
@@ -2035,6 +2048,15 @@ mod tests {
         waiting.row.reviewers_requested = true;
         waiting.row.review_decision = Some("REVIEW_REQUIRED".into());
         assert_eq!(stale_cue(&waiting, now_ms), Some(StaleCue::Waiting));
+        let mut aged = item(6, &[], 1);
+        aged.row.reviewers_requested = true;
+        aged.row.review_decision = Some("REVIEW_REQUIRED".into());
+        aged.row.review_wait = Some(crate::commands::ReviewWaitDto {
+            at: at(52).to_rfc3339(),
+            exact: true,
+            basis: "request".into(),
+        });
+        assert_eq!(stale_cue(&aged, now_ms), None);
         let mut closed = idle.clone();
         closed.row.state = "merged".into();
         assert_eq!(stale_cue(&closed, now_ms), None);

@@ -637,6 +637,7 @@ mod tests {
                 repo_archived: false,
                 merge_queue: None,
                 failing_checks: None,
+                review_clock: None,
                 pull_request: PullRequest {
                     id: PrId(0),
                     remote: ProviderRef {

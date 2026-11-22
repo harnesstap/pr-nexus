@@ -263,6 +263,19 @@ pub struct ListRow {
     /// detail was loaded. `0` until then: the list sync does not fetch them.
     #[serde(default)]
     pub bot_comments: u32,
+    /// When review was requested from the signed-in user, or a fallback time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_wait: Option<ReviewWaitDto>,
+}
+
+/// The request age painted on a list row.
+#[derive(Debug, Clone, Serialize)]
+pub struct ReviewWaitDto {
+    pub at: String,
+    /// False when `at` is not a review-request event.
+    pub exact: bool,
+    /// `request`, `ready`, or `opened`.
+    pub basis: String,
 }
 
 /// A user assigned to the pull request.
@@ -1025,6 +1038,7 @@ fn assemble_items(state: &AppState) -> Result<Vec<listing::Item>, AppError> {
     let mut facts = state.store.list_facts(account.id)?;
     let workspaces = pr_nexus_core::review::route::workspaces(&state.store)?;
     let flags = attention_flags(state, prs.iter())?;
+    let teams = state.store.viewer_teams(account.id)?;
     let mut items: Vec<listing::Item> = prs
         .iter()
         .map(|pr| {
@@ -1034,6 +1048,8 @@ fn assemble_items(state: &AppState) -> Result<Vec<listing::Item>, AppError> {
                 pr,
                 flag,
                 flags.get(&pr.id).copied(),
+                &account.login,
+                &teams,
             )
         })
         .collect();
@@ -1111,6 +1127,7 @@ pub(crate) fn items_for_ids(
             prs.iter().filter(|pr| wanted.contains(&pr.id.0)).collect();
         let flags = attention_flags(state, wanted_prs.iter().copied())?;
         let mut facts = state.store.list_facts(account.id)?;
+        let teams = state.store.viewer_teams(account.id)?;
         for pr in wanted_prs {
             out.push(to_item(
                 &mut facts,
@@ -1118,6 +1135,8 @@ pub(crate) fn items_for_ids(
                 pr,
                 flag,
                 flags.get(&pr.id).copied(),
+                &account.login,
+                &teams,
             ));
         }
     }
@@ -2017,6 +2036,29 @@ pub(crate) fn indicator(
     }
 }
 
+fn review_wait_of(
+    pr: &PullRequest,
+    clock: Option<&pr_nexus_core::review_clock::ReviewClock>,
+    viewer_login: &str,
+    teams: &pr_nexus_core::store::ViewerTeams,
+) -> Option<ReviewWaitDto> {
+    let stamp =
+        pr_nexus_core::review_clock::review_stamp(&pr_nexus_core::review_clock::StampQuery {
+            clock,
+            pending: &pr.requested_reviewers,
+            involvement: pr.involvement,
+            viewer: viewer_login,
+            teams: &teams.teams,
+            teams_known: teams.known,
+            created_at: pr.created_at,
+        })?;
+    Some(ReviewWaitDto {
+        at: stamp.at.to_rfc3339(),
+        exact: stamp.exact,
+        basis: stamp.basis.as_str().to_owned(),
+    })
+}
+
 fn attention_flags<'a>(
     state: &AppState,
     prs: impl IntoIterator<Item = &'a PullRequest>,
@@ -2075,6 +2117,7 @@ pub(crate) fn row_for_untracked(pr: &PullRequest) -> ListRow {
             .collect(),
         slack: None,
         bot_comments: 0,
+        review_wait: None,
     }
 }
 
@@ -2084,6 +2127,8 @@ fn to_item(
     pr: &PullRequest,
     flag: bool,
     attention: Option<AttentionFlags>,
+    viewer_login: &str,
+    teams: &pr_nexus_core::store::ViewerTeams,
 ) -> listing::Item {
     let attention = attention.unwrap_or_default();
     let links = facts.links.remove(&pr.id).unwrap_or_default();
@@ -2153,6 +2198,7 @@ fn to_item(
                 .collect(),
             slack: request.map(|request| indicator(request, workspaces)),
             bot_comments: 0,
+            review_wait: review_wait_of(pr, facts.clocks.get(&pr.id), viewer_login, teams),
         },
         updated_ms: pr.updated_at.timestamp_millis(),
         created_ms: pr.created_at.timestamp_millis(),

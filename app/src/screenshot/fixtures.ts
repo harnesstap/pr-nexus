@@ -109,6 +109,37 @@ function row(partial: Partial<SearchRow> & Pick<SearchRow, "id" | "number" | "ti
   };
 }
 
+/** Extra To review rows for the request-age screenshot. Not part of the default list. */
+export function reviewAgeScene(nowMs: number): SearchRow[] {
+  const at = (msAgo: number) => new Date(nowMs - msAgo).toISOString();
+  const one = (id: number, number: number, title: string, msAgo: number): SearchRow =>
+    row({
+      id,
+      number,
+      title,
+      repo: "acme/widgets",
+      owner: "acme",
+      author_login: "lee",
+      involvement: 2,
+      pending_reviewers: asked("sam"),
+      review_decision: "review_required",
+      created_at: at(msAgo),
+      updated_at: at(Math.min(msAgo, 60 * 60 * 1000)),
+      project_ids: [],
+      slack: null,
+      review_wait: { at: at(msAgo), exact: true, basis: "request" },
+    });
+  const hour = 60 * 60 * 1000;
+  return [
+    one(801, 801, "Check the latch", 45_000),
+    one(802, 802, "Rename the token", 80_000),
+    one(803, 803, "Split the cache", 90 * 60_000),
+    one(804, 804, "Page the index", 48 * hour - 30 * 60_000),
+    one(805, 805, "Rotate the key", 52 * hour),
+    one(806, 806, "Retire the flag", (3 * 7 + 2) * 24 * hour),
+  ];
+}
+
 export const rows: SearchRow[] = [
   row({
     id: 1,

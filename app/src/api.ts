@@ -201,6 +201,8 @@ export interface Preferences {
   review_sla_hours: number;
   /** When true, only weekday hours count toward `review_sla_hours`. */
   review_sla_working_days: boolean;
+  /** Remaining review-wait hours when the request age turns amber. */
+  review_request_warn_hours: number;
   /** Open pull requests in My PRs before a soft hint. Null means no cap. */
   my_prs_wip_limit: number | null;
   /** Extra GitHub logins treated as bots, one per entry. */
@@ -644,6 +646,18 @@ export interface ListRow {
    * Absent or 0 until then: the list sync does not fetch comment text.
    */
   bot_comments?: number;
+  /**
+   * When review was requested from the signed-in user. `exact` is false when
+   * `at` is a fallback (ready for review, or when the pull request was opened).
+   */
+  review_wait?: ReviewWait | null;
+}
+
+/** A cached review-request time for the signed-in user. */
+export interface ReviewWait {
+  at: string;
+  exact: boolean;
+  basis: "request" | "ready" | "opened";
 }
 
 /** One pending review request on a list row. */

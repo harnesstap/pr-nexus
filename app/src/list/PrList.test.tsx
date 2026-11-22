@@ -182,6 +182,70 @@ test("a refresh re-renders only the rows that changed", async () => {
   expect(prRowRenderCountRef.current).toBe(1);
 });
 
+test("the request age ticks without re-rendering the row", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-10-26T12:00:00Z"));
+  const asked = row({
+    id: 7,
+    number: 70,
+    title: "Review the latch",
+    involvement: 2,
+    author_login: "lee",
+    reviewers_requested: true,
+    pending_reviewers: [{ kind: "user", login: "lee", name: "Lee", avatar_url: null }],
+    created_at: "2026-10-26T11:59:15Z",
+    review_wait: { at: "2026-10-26T11:59:15Z", exact: true, basis: "request" },
+  });
+  prRowRenderCountRef.current = 0;
+  await show(<Harness rows={[asked]} viewKey="to_review" />);
+  expect(screen.getByText("45s")).toBeInTheDocument();
+  const rendered = prRowRenderCountRef.current;
+  expect(rendered).toBeGreaterThan(0);
+  act(() => {
+    vi.advanceTimersByTime(1000);
+  });
+  expect(screen.getByText("46s")).toBeInTheDocument();
+  expect(prRowRenderCountRef.current).toBe(rendered);
+});
+
+test("a project row shows the request age beside Review and keeps the Slack time", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-10-26T12:00:00Z"));
+  const slack = {
+    workspace: "acme",
+    channel_id: "C1",
+    channel_name: "web-reviews",
+    permalink: "https://acme.slack.example/archives/C1/p1",
+    root_ts: "1.0",
+    source: "app",
+    bump_count: 0,
+    last_bumped_at: null,
+    requested_at: "2026-10-25T16:00:00Z",
+  };
+  const asked = row({
+    id: 2,
+    number: 479,
+    title: "Add address autocomplete to checkout",
+    project_ids: [1],
+    involvement: 2,
+    reviewers_requested: true,
+    pending_reviewers: [{ kind: "user", login: "sam", name: "Sam", avatar_url: null }],
+    slack,
+    created_at: "2026-10-24T08:00:00Z",
+    updated_at: "2026-10-26T11:00:00Z",
+    review_wait: { at: "2026-10-24T08:00:00Z", exact: true, basis: "request" },
+  });
+  await show(<Harness rows={[asked]} viewKey="to_review" projects={[auth]} />);
+  const article = screen.getByRole("article", { name: /Add address autocomplete/ });
+  const age = within(article).getByText("2d 4h");
+  expect(age).toHaveAttribute("data-review-age", "late");
+  expect(within(article).queryByText(/^Waiting/)).not.toBeInTheDocument();
+  const slackTime = within(article).getByRole("button", { name: /Open Slack request/ });
+  expect(slackTime).toHaveTextContent("20h ago");
+  expect(slackTime.contains(age)).toBe(false);
+  expect(screen.getByText("1 open PR across 1 project")).toBeInTheDocument();
+});
+
 test("a clock tick updates relative time without re-rendering the row", async () => {
   const prior = globalThis.ResizeObserver;
   class SilentObserver {
