@@ -3,6 +3,7 @@ import type { ListRow } from "../api";
 import { AlertIcon, CheckIcon, ClockIcon, CommentIcon, DeclinedIcon, DraftIcon, EyeOffIcon, MergeIcon, SlackLogo } from "../icons";
 import { Tooltip } from "../Tooltip";
 import { useNow } from "./clock";
+import { ciFailureChip } from "./ciChip";
 import { nextAction, type NextAction } from "./nextAction";
 import { DEFAULT_REVIEW_SLA, type ReviewSla } from "./sla";
 
@@ -84,23 +85,35 @@ export function NextActionBadge({ row, viewKey, now, compact = false, sla = DEFA
   const at = now ?? clock;
   const { action, reason } = nextAction(row, viewKey, at, sla);
   const spec = BADGE_SPECS[action];
-  const label = action === "done" ? reason : spec.label;
-  const look = `inline-flex max-w-full items-center gap-1 rounded-full border text-xs font-medium whitespace-nowrap ${compact ? "h-5 w-5 justify-center" : "px-2 py-0.5"} ${spec.className}`;
+  const failing = action === "ci_failing" ? ciFailureChip(row) : null;
+  const label = action === "done" ? reason : (failing?.label ?? spec.label);
+  const look = `inline-flex max-w-full min-w-0 items-center gap-1 rounded-full border text-xs font-medium whitespace-nowrap ${compact ? "h-5 w-5 justify-center" : "px-2 py-0.5"} ${spec.className}`;
   const content = (
     <>
       <span aria-hidden="true" className="shrink-0">
         {spec.icon(12)}
       </span>
-      {!compact && <span className="truncate">{label}</span>}
+      {!compact && failing?.name && failing.mark ? (
+        <>
+          <span className="min-w-0 truncate">{failing.name}</span>
+          <span className="shrink-0">{failing.mark}</span>
+        </>
+      ) : (
+        !compact && <span className="min-w-0 truncate">{label}</span>
+      )}
     </>
   );
   const click = spec.click;
-  const detail = click && spec.hint ? `${reason}. ${spec.hint}` : reason;
+  const detail = failing ? undefined : click && spec.hint ? `${reason}. ${spec.hint}` : reason;
+  const lines = failing ? [...failing.lines, failing.detail] : undefined;
+  const accessible = failing ? failing.summary : reason;
   const run = () => {
     if (click === "slack") {
       onRequestReview(row);
     } else if (click === "details") {
       onDetails(row);
+    } else if (failing) {
+      onOpen(failing.url);
     } else {
       const url = badgeUrl(row, click);
       if (url) {
@@ -109,13 +122,13 @@ export function NextActionBadge({ row, viewKey, now, compact = false, sla = DEFA
     }
   };
   return (
-    <Tooltip label={label} detail={detail} align="end" className="min-w-0">
+    <Tooltip label={label} detail={detail} lines={lines} align="end" className="min-w-0 max-w-full">
       {click ? (
-        <button type="button" data-action={action} aria-label={`${label}: ${reason}`} className={`${look} cursor-pointer transition hover:brightness-125 focus-visible:outline focus-visible:outline-violet-400`} onClick={run}>
+        <button type="button" data-action={action} aria-label={`${label}: ${accessible}`} className={`${look} cursor-pointer transition hover:brightness-125 focus-visible:outline focus-visible:outline-violet-400`} onClick={run}>
           {content}
         </button>
       ) : (
-        <span data-action={action} role="img" aria-label={`${label}: ${reason}`} className={look}>
+        <span data-action={action} role="img" aria-label={`${label}: ${accessible}`} className={look}>
           {content}
         </span>
       )}

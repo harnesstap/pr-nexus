@@ -190,6 +190,7 @@ mod tests {
                 default_branch: Some("main".into()),
                 repo_archived: false,
                 merge_queue: None,
+                failing_checks: None,
             }))
         }
 

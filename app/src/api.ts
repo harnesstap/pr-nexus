@@ -562,6 +562,15 @@ export type PrLinkHit =
   | { status: "opened"; row: ListRow; overview: PrOverview }
   | { status: "missing"; message: string };
 
+/** One check that did not pass, as the status rollup reported it. */
+export interface FailingCheck {
+  name: string;
+  /** `failure`, `timed_out`, `cancelled`, or `action_required`. */
+  conclusion: "failure" | "timed_out" | "cancelled" | "action_required";
+  /** Log or details page. Absent when GitHub did not send one. */
+  url?: string | null;
+}
+
 export interface ListRow {
   id: number;
   number: number;
@@ -578,6 +587,11 @@ export interface ListRow {
   is_draft: boolean;
   state: string;
   checks: string;
+  /**
+   * Failing checks from the last status read: name, conclusion, and the
+   * details URL. Absent until that read, which keeps the chip on "Fix CI".
+   */
+  failing_checks?: FailingCheck[] | null;
   review_decision: string | null;
   unresolved_threads: number;
   total_threads: number;

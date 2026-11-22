@@ -224,6 +224,9 @@ pub struct ListRow {
     pub is_draft: bool,
     pub state: String,
     pub checks: String,
+    /// Failing checks from the last status read. Absent until that read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failing_checks: Option<Vec<pr_nexus_core::checks::FailingCheck>>,
     pub review_decision: Option<String>,
     pub unresolved_threads: u32,
     pub total_threads: u32,
@@ -2041,6 +2044,7 @@ pub(crate) fn row_for_untracked(pr: &PullRequest) -> ListRow {
         is_draft: pr.is_draft,
         state: pr.state.as_str().to_owned(),
         checks: pr.checks.as_str().to_owned(),
+        failing_checks: None,
         review_decision: pr.review_decision.map(|value| value.as_str().to_owned()),
         unresolved_threads: pr.unresolved_threads,
         total_threads: pr.total_threads,
@@ -2114,6 +2118,7 @@ fn to_item(
             is_draft: pr.is_draft,
             state: pr.state.as_str().to_owned(),
             checks: pr.checks.as_str().to_owned(),
+            failing_checks: facts.failing_checks.get(&pr.id).cloned(),
             review_decision: pr.review_decision.map(|value| value.as_str().to_owned()),
             unresolved_threads: pr.unresolved_threads,
             total_threads: pr.total_threads,

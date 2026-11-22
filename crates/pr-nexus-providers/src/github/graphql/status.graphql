@@ -19,6 +19,13 @@ query PullRequestStatus($ids: [ID!]!) {
             committedDate
             statusCheckRollup {
               state
+              contexts(first: 100) {
+                nodes {
+                  __typename
+                  ... on CheckRun { name status conclusion detailsUrl }
+                  ... on StatusContext { context state targetUrl }
+                }
+              }
             }
           }
         }

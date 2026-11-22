@@ -25,6 +25,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../migrations/0013_bot_comment_count.sql"),
     include_str!("../../migrations/0014_pr_assignees.sql"),
     include_str!("../../migrations/0015_detail_fetched_at.sql"),
+    include_str!("../../migrations/0016_pr_failing_checks.sql"),
 ];
 
 pub(super) fn migrate(conn: &mut Connection) -> Result<(), CoreError> {

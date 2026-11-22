@@ -242,6 +242,10 @@ pub struct PrStatus {
     /// `None` when this payload did not include the merge queue fields, so
     /// the stored queue is left as it is.
     pub merge_queue: Option<crate::merge_queue::MergeQueueSnapshot>,
+    /// Failing check names from this payload. `None` when it did not include
+    /// check contexts, so the stored names stay. `Some` replaces them,
+    /// including an empty list when the rollup is not failing.
+    pub failing_checks: Option<Vec<crate::checks::FailingCheck>>,
 }
 
 impl PrStatus {
@@ -274,6 +278,18 @@ impl PrStatus {
             total_threads: pr.total_threads,
             last_commit_at: (pr.last_activity_at > pr.updated_at).then_some(pr.last_activity_at),
             merge_queue: None,
+            failing_checks: None,
+        }
+    }
+
+    /// Copies optional side caches onto `item`. `None` leaves the stored
+    /// value alone: a payload that did not ask does not wipe it.
+    pub fn copy_caches_to(&self, item: &mut SyncedPullRequest) {
+        if self.merge_queue.is_some() {
+            item.merge_queue.clone_from(&self.merge_queue);
+        }
+        if self.failing_checks.is_some() {
+            item.failing_checks.clone_from(&self.failing_checks);
         }
     }
 }
@@ -287,6 +303,8 @@ pub struct SyncedPullRequest {
     pub repo_archived: bool,
     /// `None` when this payload did not include the merge queue fields.
     pub merge_queue: Option<crate::merge_queue::MergeQueueSnapshot>,
+    /// Same meaning as [`PrStatus::failing_checks`]. `None` does not clear the cache.
+    pub failing_checks: Option<Vec<crate::checks::FailingCheck>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

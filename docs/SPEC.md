@@ -461,7 +461,10 @@ fragment PrListFields on PullRequest {
 
 # status.graphql: nodes(ids: $ids) { ... on PullRequest { … } }
   id state updatedAt reviewDecision mergeable mergeStateStatus
-  commits(last: 1) { nodes { commit { committedDate statusCheckRollup { state } } } }
+  commits(last: 1) { nodes { commit { committedDate statusCheckRollup {
+    state
+    contexts(first: 100) { nodes { … on CheckRun { name status conclusion detailsUrl }
+      … on StatusContext { context state targetUrl } } } } } }
   reviewThreads(first: 100) { totalCount nodes { isResolved } }
 
 # refresh.graphql: PrFields = PrListFields + the status fields
@@ -482,7 +485,7 @@ Unresolved threads come from counting `reviewThreads.nodes[].isResolved == false
 - **High-water mark.** `settings["sync.mark"]` keeps, per scope (viewer login, personal repos, tracked orgs; lowercased, orgs sorted and deduplicated), the newest `updatedAt` seen, the last full pass, and the last all-open status refresh. It is written only after a pass succeeds, so a failed pass retries the same window. It moves to the newest `updatedAt` stored, never backwards.
 - **Full** runs at app start, when there is no mark, when the last full pass is older than 6 h, when the scope changes (viewer or orgs), and on **Full resync** (sync details in the sidebar footer, with a tooltip). It runs the open-PR searches and refreshes local open rows that no search returned, as before.
 - **Incremental** runs the same searches with `is:open` dropped and `updated:>=<mark − 5 min>` added (UTC, the overlap covers clock skew and search index lag), split by date buckets exactly like the full search. A hit that is now merged or closed moves its stored row; a closed hit with no local row is ignored.
-- **Volatile fields.** `reviewDecision`, `mergeable`, the check rollup, and the merge queue can change without `updatedAt` moving. Every incremental pass re-reads them with `status.graphql` (`nodes(ids:)`, chunks of 10, since mergeability costs about 0.3 s per PR) for open rows whose checks are pending or expected or whose mergeability is unknown. Every 30 min it re-reads all open rows. A status answer whose `state` is final or whose `updatedAt` is newer than the stored row triggers a full `refresh.graphql` for that row. The queue fields ride on that same status query; there is no separate poll.
+- **Volatile fields.** `reviewDecision`, `mergeable`, the check rollup, and the merge queue can change without `updatedAt` moving. Every incremental pass re-reads them with `status.graphql` (`nodes(ids:)`, chunks of 10, since mergeability costs about 0.3 s per PR) for open rows whose checks are pending or expected or whose mergeability is unknown. Every 30 min it re-reads all open rows. A status answer whose `state` is final or whose `updatedAt` is newer than the stored row triggers a full `refresh.graphql` for that row. The queue fields ride on that same status query; there is no separate poll. That query also reads the rollup's check contexts (name, conclusion, details URL). The failing ones are cached in `pr_failing_checks` (migration 0016) so the list chip can name them. A payload without contexts leaves the cache as it is. A rollup that is not `failure` or `error` clears it. `refresh.graphql` carries the same contexts, so a full re-read does too.
 - **Changed rows only.** A row or repository that matches what is stored is not written. The merge queue is stored beside the row and is updated when its position or phase changes even if the rest of the row matches. A payload that did not ask about the queue leaves the stored queue alone. The sync status carries a `revision` that bumps when stored rows changed and when a live detail or a panel action writes the list row; the list re-reads on a revision change (polled every 500 ms while syncing and every 15 s otherwise, and at once on `pr-nexus://data-changed`). The footer shows `Synced · 3 updated · 2m ago` after an incremental pass that changed rows.
 - **Cost.** For about 100 open PRs with nothing changed, a full pass costs about 20 requests and 200 row writes. An incremental pass costs 2–3 requests and no writes (plus 10 status requests on the 30-min refresh).
 
@@ -1217,7 +1220,7 @@ The number and title are one button, cut off with an ellipsis (two lines when th
 | Action | Badge | Side | Rule | Click |
 |---|---|---|---|---|
 | conflicts | Resolve conflicts (rose) | author | merge conflicts | opens the PR |
-| ci_failing | Fix CI (rose) | author | checks `failure` or `error` | opens `/checks` |
+| ci_failing | the failing check (rose); `Fix CI` until names are cached | author | checks `failure` or `error` | opens that check's log, or `/checks` |
 | changes_requested | Address review (amber) | author | changes requested | opens the PR |
 | ready_to_merge | Ready to merge (emerald) | author | approved, CI not pending | opens details |
 | review_overdue | Review now (rose) | reviewer | waiting longer than `review_sla_hours` (`waitingSince`, else created; weekday hours when `review_sla_working_days`) | opens `/files` |
@@ -1233,6 +1236,8 @@ The number and title are one button, cut off with an ellipsis (two lines when th
 | done | Merged / Closed (slate) | both | not open (checked first) | none |
 
 Author rules run in the order conflicts, CI, changes requested, draft, approved, request review, nudge, waiting; reviewer rules in the order draft, waiting on author, approved, overdue, review. A clickable badge is a button with a pointer cursor; the others are labelled images. Every badge has a tooltip giving the reason (`Checks are failing`, `Requested on Slack 2d ago`), also its accessible name `Label: reason`. Compact rows show the badge without its label. The Follow up badge is this 24 h cue and still opens the single Slack dialog. The Bumps due queue (§7.14) is separate: it lists bumps that are due under the 48 h rule, and it sends only from that queue.
+
+**Failing-check chip.** When the rollup is `failure` or `error` and the status cache has the failing checks, one of them is named on the chip: `lint failed`, `lint timed out`, `lint cancelled`, or `lint needs action`. A name longer than 18 characters is cut with an ellipsis. Several read `N checks failed`. The tooltip lists each as `name · failure`, `name · timed out`, `name · cancelled`, or `name · action required`, then says what a click does. A click calls `open_external` with that check's details URL when the only failing check, or the first of several, has one, and the tooltip names that check. When that check has no details URL, the click opens `/checks` and the tooltip says so. A rollup that is failing before any name is cached keeps the label `Fix CI` and opens `/checks`. Failing checks still do not block a Slack request or a bump (§7.9).
 
 **Slack request indicator** (from the newest active `review_requests` row):
 - Slack icon plus the newest event and its age: `Requested · 2d ago`, or `Bumped · 5h ago` once `last_bumped_at` is set. Tooltip: `workspace · #channel`, the request age, and the bump count. With several active channels: `Requested 2d ago · 2 channels`, with a hover list.
@@ -1613,7 +1618,7 @@ Closing the window hides it. The same process stays in the menu bar and keeps sy
 The menu is **Open PR Nexus**, **To review: N**, **Mine: N**, **Refresh**, **Quit**. The two counts are open pull requests on the GitHub account the list reads. Hidden, snoozed, and muted rows are left out. They use the same next action as the list, including `review_sla_hours` and `review_sla_working_days`:
 
 - **To review** counts rows whose next action (§8.2), read as a reviewer, is Review or Review overdue.
-- **Mine** counts rows the user authored whose next action, read as the author, is Resolve conflicts, Fix CI, Changes requested, Ready to merge, Request review, or Nudge.
+- **Mine** counts rows the user authored whose next action, read as the author, is Resolve conflicts, the failing-check chip, Changes requested, Ready to merge, Request review, or Nudge.
 - Drafts, checks still running, waiting on review, waiting on the author, already reviewed, and closed rows count in neither.
 - A pull request that is both authored and assigned to the user counts once. The menu bar title is that number (empty at zero). On macOS and Linux the title sits beside the icon; Windows shows the same number in the tooltip, and the menu counts on every platform. On macOS the same number is the dock badge (`set_badge_count`); Windows does not show a dock badge.
 

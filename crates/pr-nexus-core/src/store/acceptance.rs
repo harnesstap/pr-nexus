@@ -856,6 +856,7 @@ fn upgrading_from_version_3_rebuilds_search_text_with_the_new_fold() {
                      DROP TABLE pr_close_notes;
                      DROP TABLE pr_attention;
                      DROP TABLE pr_merge_queue;
+                     DROP TABLE pr_failing_checks;
                      DROP TABLE pr_assignees;
                      ALTER TABLE pull_requests DROP COLUMN detail_fetched_at;
                      ALTER TABLE pr_overview_cache DROP COLUMN bot_comment_count;",

@@ -1,4 +1,4 @@
-import type { ListRow } from "./api";
+import type { FailingCheck, ListRow } from "./api";
 import type { SearchRow } from "./list/paging";
 
 const HOUR = 60 * 60 * 1000;
@@ -19,6 +19,68 @@ function slack(requestedHoursAgo: number, bumpedHoursAgo: number | null, id: num
 
 const dana = { kind: "user" as const, login: "dana", name: "Dana Example", avatar_url: null };
 const lee = { kind: "user" as const, login: "lee", name: "Lee Sample", avatar_url: null };
+
+const check = (name: string, conclusion: FailingCheck["conclusion"], run: string): FailingCheck => ({
+  name,
+  conclusion,
+  url: `https://github.com/acme/widgets/actions/runs/${run}`,
+});
+
+/**
+ * `?rows=ci` in the preview: one failing check, several, a timeout, and a
+ * long name, so the chip labels can be checked by eye.
+ */
+export function ciFailureRows(row: (partial: Partial<SearchRow> & Pick<SearchRow, "id" | "title" | "number">) => SearchRow): SearchRow[] {
+  const ago = (hours: number) => new Date(Date.now() - hours * HOUR).toISOString();
+  const failing = {
+    checks: "failure" as const,
+    review_decision: "review_required" as const,
+    readiness: "blocked" as const,
+    reviewers_requested: true,
+    pending_reviewers: [dana],
+    repo: "acme/widgets",
+    project_ids: [1],
+  };
+  return [
+    row({
+      id: 31,
+      number: 401,
+      title: "Tighten the latch",
+      ...failing,
+      created_at: ago(30),
+      failing_checks: [check("lint", "failure", "401")],
+    }),
+    row({
+      id: 32,
+      number: 402,
+      title: "Retry webhook deliveries",
+      ...failing,
+      repo: "acme-labs/widgets",
+      created_at: ago(20),
+      failing_checks: [
+        check("lint", "failure", "402"),
+        check("typecheck", "timed_out", "403"),
+        { name: "deploy", conclusion: "cancelled", url: null },
+      ],
+    }),
+    row({
+      id: 33,
+      number: 403,
+      title: "Refresh the widget cache",
+      ...failing,
+      created_at: ago(12),
+      failing_checks: [check("integration", "timed_out", "404")],
+    }),
+    row({
+      id: 34,
+      number: 404,
+      title: "Publish the release notes",
+      ...failing,
+      created_at: ago(6),
+      failing_checks: [check("release-please-and-publish-notes", "action_required", "405")],
+    }),
+  ];
+}
 
 /**
  * `?rows=varied` in the preview: one PR per next action (§8.2), mine and to

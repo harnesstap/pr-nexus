@@ -626,6 +626,7 @@ fn status_reads_the_slow_fields_by_id_in_small_chunks() {
     assert_eq!(status[0].mergeable, Mergeable::Conflicting);
     assert_eq!(status[0].merge_state, MergeStateStatus::Dirty);
     assert_eq!(status[0].checks, ChecksState::Failure);
+    assert!(status[0].failing_checks.is_none());
     assert_eq!(
         (status[0].unresolved_threads, status[0].total_threads),
         (1, 2)

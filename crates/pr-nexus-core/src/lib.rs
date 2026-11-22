@@ -5,6 +5,7 @@
 pub mod attention;
 pub mod bots;
 pub mod branch;
+pub mod checks;
 pub mod close;
 pub mod domain;
 pub mod error;

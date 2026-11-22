@@ -3,6 +3,7 @@
 use std::collections::HashSet;
 
 use chrono::{DateTime, Utc};
+use pr_nexus_core::checks::{FailingCheck, FailingConclusion};
 use pr_nexus_core::domain::{
     AccountId, Assignee, ChecksState, Involvement, MergeStateStatus, Mergeable, PrId, PrState,
     ProviderRef, PullRequest, RepoRef, RequestedReviewer, ReviewDecision, Reviewer, TeamRef,
@@ -255,6 +256,7 @@ fn parse_pr(
             .and_then(Value::as_bool)
             .unwrap_or(false),
         merge_queue: status.merge_queue.clone(),
+        failing_checks: status.failing_checks.clone(),
     };
     status.apply_to(&mut synced.pull_request);
     Ok(synced)
@@ -316,6 +318,76 @@ fn parse_status_node(node: &Value) -> Result<PrStatus, ProviderError> {
             .and_then(Value::as_str)
             .and_then(parse_time),
         merge_queue: super::merge_queue::snapshot_from_node(node),
+        failing_checks: failing_checks(node),
+    })
+}
+
+/// Failing checks on the head commit. `None` when this payload has no
+/// `contexts` field, so a caller leaves the cache alone. An empty list means
+/// the rollup is not failing, or it failed without a named check.
+fn failing_checks(node: &Value) -> Option<Vec<FailingCheck>> {
+    let rollup = node.pointer("/commits/nodes/0/commit/statusCheckRollup")?;
+    let contexts = rollup.get("contexts")?;
+    let state = rollup
+        .get("state")
+        .and_then(Value::as_str)
+        .map(checks_state)
+        .unwrap_or(ChecksState::None);
+    if !matches!(state, ChecksState::Failure | ChecksState::Error) {
+        return Some(Vec::new());
+    }
+    let Some(nodes) = contexts.get("nodes").and_then(Value::as_array) else {
+        return Some(Vec::new());
+    };
+    let mut out = Vec::new();
+    for node in nodes {
+        if let Some(check) = one_failing_check(node) {
+            out.push(check);
+            if out.len() == 100 {
+                break;
+            }
+        }
+    }
+    Some(out)
+}
+
+fn one_failing_check(node: &Value) -> Option<FailingCheck> {
+    let (name, conclusion, url) = match node.get("__typename").and_then(Value::as_str)? {
+        "CheckRun" => {
+            if node.get("status").and_then(Value::as_str) != Some("COMPLETED") {
+                return None;
+            }
+            let conclusion = match node.get("conclusion").and_then(Value::as_str)? {
+                "FAILURE" | "STARTUP_FAILURE" => FailingConclusion::Failure,
+                "TIMED_OUT" => FailingConclusion::TimedOut,
+                "CANCELLED" => FailingConclusion::Cancelled,
+                "ACTION_REQUIRED" => FailingConclusion::ActionRequired,
+                _ => return None,
+            };
+            (node.get("name"), conclusion, node.get("detailsUrl"))
+        }
+        "StatusContext" => {
+            let conclusion = match node.get("state").and_then(Value::as_str)? {
+                "FAILURE" | "ERROR" => FailingConclusion::Failure,
+                _ => return None,
+            };
+            (node.get("context"), conclusion, node.get("targetUrl"))
+        }
+        _ => return None,
+    };
+    let name = name
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())?;
+    let url = url
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+        .map(str::to_owned);
+    Some(FailingCheck {
+        name: name.chars().take(200).collect(),
+        conclusion,
+        url,
     })
 }
 
@@ -587,5 +659,77 @@ mod tests {
         });
         let page = parse_search(&bare, AccountId(1), Involvement::empty()).unwrap();
         assert!(page.items[0].pull_request.assignees.is_empty());
+    }
+
+    #[test]
+    fn status_keeps_named_failing_checks_and_skips_the_rest() {
+        let body = serde_json::json!({
+            "data": { "nodes": [{
+                "id": "PR_1",
+                "commits": { "nodes": [{ "commit": { "statusCheckRollup": {
+                    "state": "FAILURE",
+                    "contexts": { "nodes": [
+                        {"__typename":"CheckRun","name":"lint","status":"COMPLETED","conclusion":"FAILURE","detailsUrl":"https://github.com/acme/widgets/actions/runs/1"},
+                        {"__typename":"CheckRun","name":"build","status":"COMPLETED","conclusion":"SUCCESS","detailsUrl":"https://github.com/acme/widgets/actions/runs/2"},
+                        {"__typename":"CheckRun","name":"integration","status":"COMPLETED","conclusion":"TIMED_OUT","detailsUrl":"https://github.com/acme/widgets/actions/runs/3"},
+                        {"__typename":"CheckRun","name":"nightly","status":"COMPLETED","conclusion":"CANCELLED","detailsUrl":null},
+                        {"__typename":"CheckRun","name":"deploy","status":"COMPLETED","conclusion":"ACTION_REQUIRED","detailsUrl":"https://github.com/acme/widgets/actions/runs/4"},
+                        {"__typename":"CheckRun","name":"boot","status":"COMPLETED","conclusion":"STARTUP_FAILURE","detailsUrl":"https://github.com/acme/widgets/actions/runs/5"},
+                        {"__typename":"CheckRun","name":"still-running","status":"IN_PROGRESS","conclusion":null,"detailsUrl":null},
+                        {"__typename":"StatusContext","context":"ci/legacy","state":"ERROR","targetUrl":"https://github.com/acme/widgets/commit/abc"}
+                    ]}
+                }}}]}
+            }, {
+                "id": "PR_green",
+                "commits": { "nodes": [{ "commit": { "statusCheckRollup": {
+                    "state": "SUCCESS",
+                    "contexts": { "nodes": [
+                        {"__typename":"CheckRun","name":"lint","status":"COMPLETED","conclusion":"FAILURE","detailsUrl":null}
+                    ]}
+                }}}]}
+            }, {
+                "id": "PR_bare",
+                "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "FAILURE" } } }] }
+            }] }
+        });
+        let status = parse_status(&body).unwrap();
+        assert_eq!(status[0].checks, ChecksState::Failure);
+        let checks = status[0].failing_checks.as_ref().unwrap();
+        assert_eq!(
+            checks
+                .iter()
+                .map(|check| (check.name.as_str(), check.conclusion, check.url.as_deref()))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    "lint",
+                    FailingConclusion::Failure,
+                    Some("https://github.com/acme/widgets/actions/runs/1")
+                ),
+                (
+                    "integration",
+                    FailingConclusion::TimedOut,
+                    Some("https://github.com/acme/widgets/actions/runs/3")
+                ),
+                ("nightly", FailingConclusion::Cancelled, None),
+                (
+                    "deploy",
+                    FailingConclusion::ActionRequired,
+                    Some("https://github.com/acme/widgets/actions/runs/4")
+                ),
+                (
+                    "boot",
+                    FailingConclusion::Failure,
+                    Some("https://github.com/acme/widgets/actions/runs/5")
+                ),
+                (
+                    "ci/legacy",
+                    FailingConclusion::Failure,
+                    Some("https://github.com/acme/widgets/commit/abc")
+                ),
+            ]
+        );
+        assert_eq!(status[1].failing_checks.as_deref(), Some(&[][..]));
+        assert!(status[2].failing_checks.is_none());
     }
 }

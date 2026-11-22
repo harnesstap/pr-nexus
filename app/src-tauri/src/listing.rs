@@ -1652,6 +1652,7 @@ mod tests {
                 is_draft: false,
                 state: "open".into(),
                 checks: "success".into(),
+                failing_checks: None,
                 review_decision: None,
                 unresolved_threads: 0,
                 total_threads: 0,

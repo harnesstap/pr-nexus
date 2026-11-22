@@ -3,6 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::checks::FailingCheck;
 use crate::domain::{AccountId, OwnershipCacheEntry, PrId, PrProjectLink, ReviewRequest};
 use crate::error::CoreError;
 use crate::merge_queue::MergeQueueSnapshot;
@@ -25,6 +26,8 @@ pub struct ListFacts {
     pub starred: HashSet<PrId>,
     /// Merge queue facts from the last status read. Missing means not read yet.
     pub merge_queues: HashMap<PrId, MergeQueueSnapshot>,
+    /// Failing check names from the last status read. Missing means not read yet.
+    pub failing_checks: HashMap<PrId, Vec<FailingCheck>>,
 }
 
 impl Store {
@@ -81,6 +84,7 @@ impl Store {
             }
             facts.starred = starred_in(conn, account_id)?;
             facts.merge_queues = super::merge_queue::merge_queues_for(conn, account_id)?;
+            facts.failing_checks = super::failing_checks::failing_checks_for(conn, account_id)?;
             Ok(facts)
         })
     }
