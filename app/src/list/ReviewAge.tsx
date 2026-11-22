@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { ReviewWait } from "../api";
 import { Tooltip } from "../Tooltip";
-import { reviewWaitText } from "./reviewAge";
+import { reviewWaitText } from "./reviewWait";
 import type { ReviewSla, ReviewUrgency } from "./sla";
 
 const HOUR_MS = 60 * 60 * 1000;

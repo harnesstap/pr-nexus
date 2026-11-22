@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import { DEFAULT_REVIEW_SLA, type ReviewSla } from "./sla";
-import { formatElapsed, formatRequestWhen, reviewWaitText } from "./reviewAge";
+import { formatElapsed, formatRequestWhen, reviewWaitText } from "./reviewWait";
 
 const sla: ReviewSla = DEFAULT_REVIEW_SLA;
 const hour = 60 * 60 * 1000;
