@@ -11,9 +11,26 @@ import { Mrkdwn } from "./mrkdwn";
 import { TargetCombobox } from "./TargetCombobox";
 import { expiredSignIn } from "./workspaces";
 
-/** `message::slack_bullets`: a leading `- ` or `* ` becomes `• `, so Slack shows what the preview shows. */
+/**
+ * `message::slack_bullets`: a leading `- `, `* ` or `• ` becomes `• `, and the
+ * first bullet of a block gets a blank line before it when it follows a text
+ * line, so Slack shows what the preview shows.
+ */
 function slackBullets(text: string): string {
-  return text.replace(/^([ \t]*)[-*] /gm, "$1• ");
+  const out: string[] = [];
+  let inList = false;
+  for (const line of text.split("\n")) {
+    const item = /^([ \t]*)[-*•] (.*)$/.exec(line);
+    if (!item) {
+      if (!line.trim()) inList = false;
+      out.push(line);
+      continue;
+    }
+    if (!inList && out.length > 0 && out[out.length - 1].trim()) out.push("");
+    inList = true;
+    out.push(`${item[1]}• ${item[2]}`);
+  }
+  return out.join("\n");
 }
 
 /**

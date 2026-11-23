@@ -836,7 +836,7 @@ mod tests {
         assert_eq!(
             calls[0].1["message"],
             json!(
-                "Hello team\nCould someone please review these pull requests?\n\
+                "Hello team\nCould someone please review these pull requests?\n\n\
                  • `feat: run tests against a mock`\nhttps://github.com/acme/svc/pull/545\n\
                  • `perf: run test features in parallel`\nhttps://github.com/acme/svc/pull/547\n\
                  Thanks!\n\nnote\n"

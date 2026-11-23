@@ -577,7 +577,7 @@ pub(crate) mod tests {
         assert!(
             listed
                 .text
-                .ends_with("Thanks!\n\nContext:\n• first\n  • second\n"),
+                .ends_with("Thanks!\n\nContext:\n\n• first\n  • second\n"),
             "{}",
             listed.text
         );

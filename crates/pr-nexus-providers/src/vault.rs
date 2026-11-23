@@ -901,7 +901,7 @@ impl PromptSuppression {
             unsafe {
                 SecKeychainSetUserInteractionAllowed(0);
             }
-            return Self { restore: true };
+            Self { restore: true }
         }
         #[cfg(not(target_os = "macos"))]
         {

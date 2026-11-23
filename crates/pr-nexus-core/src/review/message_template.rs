@@ -417,7 +417,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             text,
-            "2 PRs (alice):\n• `one_two` -> https://github.com/acme/widgets/pull/1\n• `use 'x'` -> https://github.com/acme/widgets/pull/2\n\nnote\n"
+            "2 PRs (alice):\n\n• `one_two` -> https://github.com/acme/widgets/pull/1\n• `use 'x'` -> https://github.com/acme/widgets/pull/2\n\nnote\n"
         );
     }
 
