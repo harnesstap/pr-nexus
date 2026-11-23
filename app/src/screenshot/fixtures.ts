@@ -460,6 +460,52 @@ const webReviews: ReviewTarget = { workspace: "acme", team_id: "T0ACME0001", wor
 /** The code-owner channel the review dialog suggests. */
 export const reviewChoices: TargetChoice[] = [{ target: webReviews, teams: ["@acme/web"], source: "mapping" }];
 
+const teamAReviews: ReviewTarget = { workspace: "acme", team_id: "T0ACME0001", workspace_name: "Acme", channel_id: "C0ACME00A1", channel_name: "acme-team-a" };
+const teamBReviews: ReviewTarget = { workspace: "acme", team_id: "T0ACME0001", workspace_name: "Acme", channel_id: "C0ACME00B1", channel_name: "acme-team-b" };
+
+/** Two code-owner channels, approved team first, as the mapping list used to be ordered. */
+export const pendingOwnerChoices: TargetChoice[] = [
+  { target: teamAReviews, teams: ["@acme/team-a"], source: "mapping" },
+  { target: teamBReviews, teams: ["@acme/team-b"], source: "mapping" },
+];
+
+/** #479 when one owner team has approved and another still has to review. */
+export const pendingOwnerDetail = mockDetail(detailRowId, {
+  readiness: "ready",
+  readiness_notes: ["GitHub reports BLOCKED: waiting for reviews"],
+  mandatory_teams: [],
+  approved_teams: ["@acme/team-a"],
+  candidate_teams: ["@acme/team-a", "@acme/team-b"],
+  requested_teams: ["@acme/team-b"],
+  explanations: [
+    { tone: "warn", text: "GitHub is waiting for required reviews." },
+    { tone: "warn", text: "@acme/team-b still has to approve: it owns changed files." },
+  ],
+  files: [
+    { path: "src/billing/Totals.ts", teams: ["@acme/team-a"] },
+    { path: "src/cli/main.ts", teams: ["@acme/team-b"] },
+  ],
+  owner_groups: [
+    { id: "line-a", pattern: "/billing/", teams: ["@acme/team-a"], users: [], satisfied: true },
+    { id: "line-b", pattern: "*", teams: ["@acme/team-b"], users: [], satisfied: false },
+  ],
+});
+
+/** Merge card for the pending-owner screenshot: reviews still required, checks green. */
+export const pendingOwnerOverview: PrOverview = {
+  ...overview,
+  mergeable: "mergeable",
+  merge_state: "blocked",
+  review_decision: "review_required",
+  approvals: 1,
+  required_approvals: null,
+  checks: overview.checks.map((check) => ({ ...check, state: "passed" })),
+  reviewers: [
+    { kind: "team", login: "acme/team-a", name: "Team A", avatar_url: null, state: "approved" },
+    { kind: "team", login: "acme/team-b", name: "Team B", avatar_url: null, state: "pending" },
+  ],
+};
+
 /** The request text as the backend renders it: the title as inline code, the bare URL on its own line. */
 export function reviewText(title: string, url: string): string {
   return `Hello team\nCould someone please review \`${title.replaceAll("`", "'")}\`? (Ada Park)\n${url}\nThanks!\n`;

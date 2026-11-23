@@ -46,6 +46,8 @@
 // `--settings-story <dir>` saves the merged settings pages, the setup notice,
 // and an add left pending on one AI agent.
 // `--error-screen <path>` forces a render throw and saves the error screen to <path>.
+// `--pending-owners <dir>` saves the review dialog when one code-owner team has
+// already approved and another still has to review (pending-owner-channel.png).
 // Uses an installed Chrome; set CHROME_PATH to pick another Chromium binary.
 import { mkdirSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -102,6 +104,11 @@ const reviewOpenFlag = process.argv.indexOf("--review-open");
 const reviewOpenDir = reviewOpenFlag === -1 ? null : process.argv[reviewOpenFlag + 1];
 if (reviewOpenFlag !== -1 && !reviewOpenDir) {
   throw new Error("--review-open needs an output directory");
+}
+const pendingOwnersFlag = process.argv.indexOf("--pending-owners");
+const pendingOwnersDir = pendingOwnersFlag === -1 ? null : process.argv[pendingOwnersFlag + 1];
+if (pendingOwnersFlag !== -1 && !pendingOwnersDir) {
+  throw new Error("--pending-owners needs an output directory");
 }
 const repoFilterFlag = process.argv.indexOf("--repo-filter");
 const repoFilterDir = repoFilterFlag === -1 ? null : process.argv[repoFilterFlag + 1];
@@ -586,6 +593,32 @@ async function filterBarShots(browser, dir) {
   await shoot("filter-bar-sort.png", 1440, "author:me sort:created-asc", true);
 }
 
+async function pendingOwnerShots(browser, dir) {
+  mkdirSync(dir, { recursive: true });
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2, colorScheme: "dark" });
+  page.on("pageerror", (err) => console.error("page error:", err.message));
+  await page.addInitScript(() => {
+    globalThis.__pendingOwners = true;
+  });
+  await page.goto(url);
+  await page.getByRole("group", { name: "Quick filters" }).waitFor();
+  await page.getByRole("button", { name: rowButton("Add address autocomplete to checkout") }).first().click();
+  await page.getByTestId("detail-panel").getByText("You can't merge").waitFor();
+  await page.getByTestId("detail-panel").getByRole("button", { name: "Request review on Slack" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Message preview").waitFor();
+  const box = dialog.getByRole("combobox", { name: "Channel or person" });
+  await box.click();
+  await dialog.getByRole("option").first().waitFor();
+  await page.waitForTimeout(300);
+  const frame = await dialog.boundingBox();
+  await page.screenshot({ path: resolve(dir, "pending-owner-channel.png"), clip: frame ?? undefined });
+  console.log("wrote pending-owner-channel.png");
+  await page.screenshot({ path: resolve(dir, "pending-owner-channel-page.png") });
+  console.log("wrote pending-owner-channel-page.png");
+  await page.close();
+}
+
 async function reviewOpenShots(browser, dir) {
   mkdirSync(dir, { recursive: true });
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2, colorScheme: "dark" });
@@ -677,6 +710,12 @@ try {
   }
   if (settingsNavDir) {
     await settingsNavShots(browser, resolve(settingsNavDir));
+    await browser.close();
+    await vite.close();
+    process.exit(0);
+  }
+  if (pendingOwnersDir) {
+    await pendingOwnerShots(browser, resolve(pendingOwnersDir));
     await browser.close();
     await vite.close();
     process.exit(0);

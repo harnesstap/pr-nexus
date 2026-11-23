@@ -22,6 +22,9 @@ import {
   notes,
   overview,
   projects,
+  pendingOwnerChoices,
+  pendingOwnerDetail,
+  pendingOwnerOverview,
   reviewChoices,
   reviewText,
   reviewAgeScene,
@@ -31,8 +34,18 @@ import {
   slackVariants,
 } from "./fixtures";
 
+
+function pendingOwners(): boolean {
+  return (window as { __pendingOwners?: boolean }).__pendingOwners === true;
+}
+
 const baseOverviewFor = (id: unknown) => (id === draftRowId ? draftOverview : id === mergeableRowId ? mergeableOverview : overview);
-const overviewFor = (id: unknown) => ({ ...baseOverviewFor(id), ...(branchFixtures[Number(id)]?.overview ?? {}) });
+const overviewFor = (id: unknown) => {
+  if (pendingOwners() && Number(id) === detailRowId) {
+    return pendingOwnerOverview;
+  }
+  return { ...baseOverviewFor(id), ...(branchFixtures[Number(id)]?.overview ?? {}) };
+};
 const branchFor = (id: unknown) => branchFixtures[Number(id)]?.branch ?? branchFixtures[1].branch;
 
 /**
@@ -247,9 +260,12 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   },
   // `--update` scenes set the answer before the app loads.
   check_update: () => (window as { __update?: unknown }).__update ?? null,
-  pr_detail: () => detail,
-  review_teams: () => ({ teams: detail.mandatory_teams, owner_groups: detail.owner_groups, source: "cache" }),
-  review_owners: () => detail,
+  pr_detail: () => (pendingOwners() ? pendingOwnerDetail : detail),
+  review_teams: () => {
+    const current = pendingOwners() ? pendingOwnerDetail : detail;
+    return { teams: current.mandatory_teams.length > 0 ? current.mandatory_teams : current.candidate_teams, owner_groups: current.owner_groups, source: "cache" };
+  },
+  review_owners: () => (pendingOwners() ? pendingOwnerDetail : detail),
   // The stored overview follows the row, the same way `set_pr_draft` refreshes
   // the cache. A later read must not put a draft flag back onto a PR that
   // was just marked ready.
@@ -386,6 +402,9 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     rows.filter((row) => row.project_ids.includes(Number(args.projectId))).map((row) => ({ pr_id: row.id, source: "manual", rule_id: null })),
   rows_by_id: (args) => rows.filter((row) => (args.ids as number[]).includes(row.id)),
   review_targets: (args) => {
+    if (pendingOwners()) {
+      return pendingOwnerChoices;
+    }
     const timing = (window as { __reviewTiming?: boolean }).__reviewTiming === true;
     if (args.cachedNames === false && timing) {
       const renamed = reviewChoices.map((choice) => ({
@@ -470,7 +489,7 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     };
   },
   pr_slack_context: (args) =>
-    args.prId === draftRowId || args.prId === mergeableRowId
+    args.prId === draftRowId || args.prId === mergeableRowId || pendingOwners()
       ? []
       : (slackVariants[(window as { __slackVariant?: string }).__slackVariant ?? ""] ?? slackThreads),
   pr_slack_mentions: () => [],
@@ -481,6 +500,20 @@ function draftWarnings(row: ListRow): PrWarning[] {
   return row.state === "open" && row.is_draft
     ? [{ kind: "draft", pr_id: row.id, number: row.number, message: `#${row.number} is still a draft. Reviewers may skip it until it's marked ready.` }]
     : [];
+}
+
+// `--pending-owners` opens #479 waiting on a second code-owner team.
+if ((window as { __pendingOwners?: boolean }).__pendingOwners) {
+  const row = rows.find((item) => item.id === detailRowId);
+  if (row) {
+    row.slack = null;
+    row.review_decision = "review_required";
+    row.reviewers_requested = true;
+    row.merge_state = "blocked";
+    row.checks = "success";
+    row.conflicts = false;
+    row.is_draft = false;
+  }
 }
 
 // `--agree` starts #479 stale so a detail refresh can bring the row in line.

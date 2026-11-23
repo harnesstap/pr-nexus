@@ -564,6 +564,42 @@ test("opening the dialog preselects the code-owner channel and '#' lists it firs
   expect(screen.getByRole("button", { name: "Send request" })).toBeEnabled();
 });
 
+test("opening the dialog preselects the pending code-owner channel when another team already approved", async () => {
+  const teamA: TargetChoice = {
+    target: { workspace: "acme", channel_id: "C0ACME0001", channel_name: "acme-team-a" },
+    teams: ["@acme/team-a"],
+    source: "mapping",
+  };
+  const teamB: TargetChoice = {
+    target: { workspace: "acme", channel_id: "C0ACME0002", channel_name: "acme-team-b" },
+    teams: ["@acme/team-b"],
+    source: "mapping",
+  };
+  const { api } = fake({
+    prDetail: () =>
+      Promise.resolve({
+        mandatory_teams: [],
+        candidate_teams: ["@acme/team-a", "@acme/team-b"],
+        approved_teams: ["@acme/team-a"],
+        requested_teams: ["@acme/team-b"],
+        owner_groups: [
+          { id: "line-a", pattern: "/billing/", teams: ["@acme/team-a"], users: [], satisfied: true },
+          { id: "line-b", pattern: "*", teams: ["@acme/team-b"], users: [], satisfied: false },
+        ],
+      } as unknown as PrDetail),
+    reviewTargets: () => Promise.resolve([teamA, teamB]),
+    searchSlackTargets: () => Promise.resolve([]),
+  });
+  render(<ReviewDialog api={api} row={row} onClose={() => undefined} onOpen={() => undefined} onSent={() => undefined} />);
+  const box = await screen.findByRole("combobox", { name: "Channel or person" });
+  await waitFor(() => expect(box).toHaveValue("#acme-team-b"));
+  fireEvent.change(box, { target: { value: "#" } });
+  const options = screen.getAllByRole("option");
+  expect(options[0]).toHaveTextContent("#acme-team-b");
+  expect(options[1]).toHaveTextContent("#acme-team-a");
+  expect(screen.getByRole("button", { name: "Send request" })).toBeEnabled();
+});
+
 test("a mapping without a channel ID never prefills '#' or shows an ID error; picking it searches by name", async () => {
   const searched: string[] = [];
   const previewed: ReviewTarget[] = [];

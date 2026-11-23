@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Api, ListRow, OwnerGroup, PrDetail, ReviewPreview, ReviewTarget, SlackIndicator, SlackWorkspace, TargetChoice } from "../api";
 import { channelLabel, errorMessage, isSendable } from "../api";
+import { firstSendableChoice, pendingOwnerTeams, rankTargetChoices, suggestionTeams } from "./pendingOwners";
 import { beginDraftFlip, draftPhase, offerPreviewDraft, settleDraftCall, settleDraftFlip, takeGeneration, useDraftRecord, type DraftPhase } from "../detail/draftRecord";
 import { Tooltip } from "../Tooltip";
 import { plainText } from "../textInput";
@@ -38,10 +39,6 @@ function sameDestination(a: ReviewTarget, b: ReviewTarget): boolean {
   return a.channel_id === b.channel_id && a.workspace === b.workspace && (a.team_id ?? "") === (b.team_id ?? "");
 }
 
-function suggestionTeams(detail: { mandatory_teams: string[]; candidate_teams: string[] }): string[] {
-  return detail.mandatory_teams.length > 0 ? detail.mandatory_teams : detail.candidate_teams;
-}
-
 function sameTeams(left: string[], right: string[]): boolean {
   if (left.length !== right.length) {
     return false;
@@ -56,6 +53,7 @@ interface Painted {
   found: TargetChoice[];
   first: TargetChoice;
   mine: number;
+  evidence: { approved_teams: string[]; requested_teams: string[]; owner_groups: OwnerGroup[] | undefined };
 }
 
 function hasDraft(preview: ReviewPreview): boolean {
@@ -147,7 +145,7 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNot
         if (!sawValidated.current) {
           setWorkspaces(signedIn);
         }
-        const painted = await paintTeams(owners.teams, owners.groups, true);
+        const painted = await paintTeams(owners.teams, owners.groups, true, { approved_teams: owners.approved, requested_teams: owners.requested, owner_groups: owners.groups });
         if (cancel) {
           return;
         }
@@ -176,7 +174,7 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNot
               if (!changed) {
                 return;
               }
-              void paintTeams(liveTeams, live.owner_groups, false).then((next) => {
+              void paintTeams(liveTeams, live.owner_groups, false, { approved_teams: live.approved_teams ?? [], requested_teams: live.requested_teams ?? [], owner_groups: live.owner_groups }).then((next) => {
                 if (next && !cancel && !picked.current) {
                   void applyLiveNames(next, false);
                 }
@@ -196,33 +194,39 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNot
       }
     })();
 
-    async function loadOwners(): Promise<{ teams: string[]; groups: OwnerGroup[] | undefined }> {
+    async function loadOwners(): Promise<{ teams: string[]; groups: OwnerGroup[] | undefined; approved: string[]; requested: string[] }> {
       if (detail) {
-        return { teams: suggestionTeams(detail), groups: detail.owner_groups };
+        return { teams: suggestionTeams(detail), groups: detail.owner_groups, approved: detail.approved_teams ?? [], requested: detail.requested_teams ?? [] };
       }
       if (api.reviewTeams) {
         try {
           const stored = await api.reviewTeams(row.id);
-          return { teams: stored.teams, groups: stored.owner_groups };
+          return { teams: suggestionTeams({ mandatory_teams: stored.teams, candidate_teams: [], approved_teams: [], requested_teams: [], owner_groups: stored.owner_groups }), groups: stored.owner_groups, approved: [], requested: [] };
         } catch (err) {
           if (!cancel) {
             setHint(`Couldn't read this PR's code owners, so no channel is suggested (${errorMessage(err)}). Search for one above.`);
           }
-          return { teams: [], groups: [] };
+          return { teams: [], groups: [], approved: [], requested: [] };
         }
       }
       try {
         const loaded = await api.prDetail(row.id);
-        return { teams: suggestionTeams(loaded), groups: loaded.owner_groups };
+        return { teams: suggestionTeams(loaded), groups: loaded.owner_groups, approved: loaded.approved_teams ?? [], requested: loaded.requested_teams ?? [] };
       } catch (err) {
         if (!cancel) {
           setHint(`Couldn't read this PR's code owners, so no channel is suggested (${errorMessage(err)}). Search for one above.`);
         }
-        return { teams: [], groups: [] };
+        return { teams: [], groups: [], approved: [], requested: [] };
       }
     }
 
-    async function paintTeams(wanted: string[], groups: OwnerGroup[] | undefined, first: boolean): Promise<Painted | null> {
+    async function paintTeams(
+      wanted: string[],
+      groups: OwnerGroup[] | undefined,
+      first: boolean,
+      evidence: { approved_teams: string[]; requested_teams: string[]; owner_groups: OwnerGroup[] | undefined },
+    ): Promise<Painted | null> {
+
       if (needsGroupSends(groups)) {
         if (!cancel && !picked.current) {
           setGroupsMode(true);
@@ -246,10 +250,12 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNot
       }
       setGroupsMode(false);
       setTeams(wanted);
-      setChoices(found);
+      const ranked = rankTargetChoices(found, pendingOwnerTeams(wanted, evidence));
+      setChoices(ranked);
       // Preselect only a channel with a real ID: a name-only mapping is a
       // suggestion to search for, never a target to preview (§7.11).
-      const firstChoice = found.find((choice) => choice.source !== "unresolved" && isSendable(choice.target));
+      // Prefer a team that still needs a review over one that already approved.
+      const firstChoice = firstSendableChoice(ranked, wanted, evidence);
       if (!firstChoice) {
         setNaming(false);
         return null;
@@ -266,7 +272,7 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNot
       }
       applyPreview(next, observed);
       setNaming(true);
-      return { teams: wanted, found, first: firstChoice, mine };
+      return { teams: wanted, found, first: firstChoice, mine, evidence };
     }
 
     async function applyLiveNames(painted: Painted, first: boolean): Promise<void> {
@@ -281,9 +287,13 @@ export function ReviewDialog({ api, row, onClose, onSent, onOpen, onReady, onNot
         }
         return;
       }
+      const rankedLive = rankTargetChoices(live, pendingOwnerTeams(painted.teams, painted.evidence));
       const index = found.indexOf(suggestion);
-      const liveChoice = live[index] ?? live.find((choice) => choice.target.channel_id === suggestion.target.channel_id);
-      setChoices(live);
+      const liveChoice =
+        live[index] ??
+        rankedLive.find((choice) => sameDestination(choice.target, suggestion.target)) ??
+        rankedLive.find((choice) => choice.target.channel_id === suggestion.target.channel_id);
+      setChoices(rankedLive);
       if (!liveChoice || sameDestination(liveChoice.target, suggestion.target)) {
         if (liveChoice && liveChoice.target.channel_name !== suggestion.target.channel_name) {
           setTarget(liveChoice.target);
