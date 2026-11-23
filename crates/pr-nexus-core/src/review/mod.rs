@@ -12,6 +12,7 @@ pub mod lifecycle;
 pub mod message;
 pub mod message_template;
 pub mod owners;
+pub mod pending;
 pub mod permalink;
 pub mod readiness;
 pub mod route;

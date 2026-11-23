@@ -9,6 +9,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use pr_nexus_core::domain::{PrId, PullRequest};
 use pr_nexus_core::ownership;
+use pr_nexus_core::review::pending::{GroupStatus, OwnerSlackEvidence, prefer_pending_owner_teams};
 use pr_nexus_core::settings;
 use serde::{Deserialize, Serialize};
 
@@ -82,19 +83,39 @@ pub fn pr_detail_resolve(state: &AppState, id: i64) -> Result<PrDetail, AppError
 }
 
 fn stored_from_detail(detail: PrDetail, source: &str) -> StoredReviewTeams {
-    let teams = if detail.mandatory_teams.is_empty() {
-        detail.candidate_teams.clone()
-    } else {
-        detail.mandatory_teams.clone()
-    };
     StoredReviewTeams {
-        teams,
+        teams: suggestion_teams(&detail),
         owner_groups: detail.owner_groups,
         source: source.into(),
     }
 }
 
-fn requested_team_names(pr: &PullRequest) -> Vec<String> {
+/// Coverage or candidate teams, with teams that still need a review first.
+pub(crate) fn suggestion_teams(detail: &PrDetail) -> Vec<String> {
+    let teams = if detail.mandatory_teams.is_empty() {
+        detail.candidate_teams.clone()
+    } else {
+        detail.mandatory_teams.clone()
+    };
+    let groups: Vec<GroupStatus<'_>> = detail
+        .owner_groups
+        .iter()
+        .map(|group| GroupStatus {
+            teams: &group.teams,
+            satisfied: group.satisfied,
+        })
+        .collect();
+    prefer_pending_owner_teams(
+        &teams,
+        &OwnerSlackEvidence {
+            approved_teams: &detail.approved_teams,
+            requested_teams: &detail.requested_teams,
+            groups: &groups,
+        },
+    )
+}
+
+pub(crate) fn requested_team_names(pr: &PullRequest) -> Vec<String> {
     pr.requested_reviewers
         .iter()
         .filter_map(|request| match &request.reviewer {

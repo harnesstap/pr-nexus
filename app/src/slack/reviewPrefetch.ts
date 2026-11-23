@@ -1,5 +1,5 @@
 import type { Api, PrDetail, ReviewPreview, ReviewTarget, StoredReviewTeams, TargetChoice } from "../api";
-import { isSendable } from "../api";
+import { firstSendableChoice, pendingOwnerTeams, rankTargetChoices, suggestionTeams } from "./pendingOwners";
 import { takeGeneration } from "../detail/draftRecord";
 import { needsGroupSends } from "./OwnerGroups";
 
@@ -66,7 +66,7 @@ export function scheduleReviewPrefetch(api: Api, prId: number, detail: () => PrD
 }
 
 function detailFromStored(stored: StoredReviewTeams): PrDetail {
-  return { mandatory_teams: stored.teams, candidate_teams: [], owner_groups: stored.owner_groups } as unknown as PrDetail;
+  return { mandatory_teams: stored.teams, candidate_teams: [], approved_teams: [], requested_teams: [], owner_groups: stored.owner_groups } as unknown as PrDetail;
 }
 
 async function fill(api: Api, prId: number, known: PrDetail | null, gen: number, observed: number): Promise<void> {
@@ -81,12 +81,12 @@ async function fill(api: Api, prId: number, known: PrDetail | null, gen: number,
   if (needsGroupSends(detail.owner_groups)) {
     return;
   }
-  const teams = detail.mandatory_teams.length > 0 ? detail.mandatory_teams : detail.candidate_teams;
-  const choices = await api.reviewTargets(prId, teams, true).catch(() => [] as TargetChoice[]);
+  const teams = suggestionTeams(detail);
+  const choices = rankTargetChoices(await api.reviewTargets(prId, teams, true).catch(() => [] as TargetChoice[]), pendingOwnerTeams(teams, detail));
   if (gen !== generation) {
     return;
   }
-  const choice = choices.find((item) => item.source !== "unresolved" && isSendable(item.target)) ?? null;
+  const choice = firstSendableChoice(choices, teams, detail) ?? null;
   const preview = choice ? await api.reviewPreview(prId, choice.target, true).catch(() => null) : null;
   if (gen !== generation) {
     return;

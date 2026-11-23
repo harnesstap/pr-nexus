@@ -1,0 +1,3 @@
+kind: Fixed
+body: The review dialog on Slack prefers a code-owner team that still needs a review, instead of pre-filling the channel of a team that already approved.
+time: 2026-11-23T10:05:07Z

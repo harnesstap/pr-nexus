@@ -477,11 +477,7 @@ pub(crate) fn cached_detail(
 }
 
 fn owners_of(detail: &crate::commands::PrDetail) -> Owners {
-    let teams = if detail.mandatory_teams.is_empty() {
-        detail.candidate_teams.clone()
-    } else {
-        detail.mandatory_teams.clone()
-    };
+    let teams = crate::services::prs::suggestion_teams(detail);
     let blocked = (detail.readiness == "blocked")
         .then(|| slack_skip_detail(&detail.readiness_notes))
         .flatten();
@@ -897,9 +893,40 @@ fn route_groups(
             groups: Vec::new(),
         };
     }
+    let catalog_teams: Vec<String> = catalog
+        .iter()
+        .flat_map(|group| group.teams.iter().cloned())
+        .collect();
+    let requested = crate::services::prs::requested_team_names(pr);
+    let approved: Vec<String> = catalog
+        .iter()
+        .filter(|group| group.satisfied)
+        .flat_map(|group| group.teams.iter().cloned())
+        .collect();
+    let groups: Vec<pr_nexus_core::review::pending::GroupStatus<'_>> = catalog
+        .iter()
+        .map(|group| pr_nexus_core::review::pending::GroupStatus {
+            teams: &group.teams,
+            satisfied: group.satisfied,
+        })
+        .collect();
+    let evidence = pr_nexus_core::review::pending::OwnerSlackEvidence {
+        approved_teams: &approved,
+        requested_teams: &requested,
+        groups: &groups,
+    };
     let pending: Vec<OwnerGroup> = catalog
         .iter()
-        .filter(|group| !group.satisfied)
+        .filter(|group| {
+            !group.satisfied
+                && group.teams.iter().any(|team| {
+                    !pr_nexus_core::review::pending::team_already_covered(
+                        team,
+                        &catalog_teams,
+                        &evidence,
+                    )
+                })
+        })
         .map(owner_group_from_dto)
         .collect();
     if pending.is_empty() {
