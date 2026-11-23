@@ -564,10 +564,12 @@ fn assignees(node: &Value) -> Vec<Assignee> {
 /// the reviewer-team filter showed only one option. `combinedSlug` (`org/slug`)
 /// is a scalar on the team and still identifies it when `organization` is missing.
 pub(crate) fn team_ref(reviewer: &Value) -> Option<TeamRef> {
-    if let Some(combined) = reviewer.get("combinedSlug").and_then(Value::as_str) {
-        if let Some(team) = team_ref_from_combined(combined) {
-            return Some(team);
-        }
+    if let Some(team) = reviewer
+        .get("combinedSlug")
+        .and_then(Value::as_str)
+        .and_then(team_ref_from_combined)
+    {
+        return Some(team);
     }
     let slug = reviewer
         .get("slug")
