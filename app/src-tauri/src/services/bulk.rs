@@ -1520,7 +1520,7 @@ mod draft_tests {
         }];
         assert_eq!(
             note_block([(1, 142)], &listed).as_deref(),
-            Some("Context:\n• first\n• second")
+            Some("Context:\n\n• first\n• second")
         );
     }
 }

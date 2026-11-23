@@ -505,7 +505,7 @@ test("the preview renders like Slack and shows the optional note, which is sent"
 test("withNote mirrors the backend: blank line, trimmed, blank ignored", () => {
   expect(withNote("Hello\n", "  hi  ")).toBe("Hello\n\nhi\n");
   expect(withNote("Hello\n", "   ")).toBe("Hello\n");
-  expect(withNote("Hello\n", "Context:\n- first\n  * second")).toBe("Hello\n\nContext:\n• first\n  • second\n");
+  expect(withNote("Hello\n", "Context:\n- first\n  * second")).toBe("Hello\n\nContext:\n\n• first\n  • second\n");
 });
 
 test("a title with underscores previews as inline code with no Markdown warning", async () => {

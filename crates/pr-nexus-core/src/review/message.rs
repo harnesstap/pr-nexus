@@ -129,21 +129,37 @@ fn finish(lines: Vec<String>) -> String {
 /// `- item` line right after a paragraph line is not parsed as a list item
 /// there: Slack glued it to the previous line with a stray `*`, while the
 /// next item became a real bullet. A leading `- ` or `* ` (after optional
-/// indentation) therefore becomes `• `, which every converter leaves as
-/// plain text, so Slack shows exactly what the preview shows. This also
-/// covers custom templates and the note.
+/// indentation) therefore becomes `• `. The converter also reads `• ` as a
+/// list marker with the same rule, so the first bullet of a block also gets a
+/// blank line before it when it follows a text line. This also covers custom
+/// templates and the note.
 pub fn slack_bullets(text: &str) -> String {
-    text.split('\n')
-        .map(|line| {
-            let rest = line.trim_start_matches([' ', '\t']);
-            let indent = &line[..line.len() - rest.len()];
-            match rest.strip_prefix("- ").or_else(|| rest.strip_prefix("* ")) {
-                Some(item) => format!("{indent}• {item}"),
-                None => line.to_string(),
+    let mut out: Vec<String> = Vec::new();
+    let mut in_list = false;
+    for line in text.split('\n') {
+        let rest = line.trim_start_matches([' ', '\t']);
+        let indent = &line[..line.len() - rest.len()];
+        let item = rest
+            .strip_prefix("- ")
+            .or_else(|| rest.strip_prefix("* "))
+            .or_else(|| rest.strip_prefix("• "));
+        match item {
+            Some(item) => {
+                if !in_list && out.last().is_some_and(|prev| !prev.trim().is_empty()) {
+                    out.push(String::new());
+                }
+                in_list = true;
+                out.push(format!("{indent}• {item}"));
             }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+            None => {
+                if line.trim().is_empty() {
+                    in_list = false;
+                }
+                out.push(line.to_string());
+            }
+        }
+    }
+    out.join("\n")
 }
 
 /// Wrap a trimmed title in a Slack inline code span so Markdown characters
@@ -622,7 +638,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             text,
-            "Hello team\nCould someone please review these pull requests?\n\
+            "Hello team\nCould someone please review these pull requests?\n\n\
              • `feat:[ACME-1] run integration tests against apimock`\nhttps://github.com/acme/svc/pull/545\n\
              • `perf:[ACME-1] run integration test features in parallel`\nhttps://github.com/acme/svc/pull/547\n\
              Thanks!\n\nStart with the first one\n"
@@ -652,5 +668,8 @@ mod tests {
         assert!(text.contains("  • `a` https://github.com/acme/w/pull/1\n  • `b`"));
         assert!(text.ends_with("\n\n• check tests\n-not a list\n• also\n"));
         assert_eq!(slack_bullets("x - y\n`- z`"), "x - y\n`- z`");
+        let spaced = slack_bullets("a?\n• b\nurl\n• c\nThanks!");
+        assert_eq!(spaced, "a?\n\n• b\nurl\n• c\nThanks!");
+        assert_eq!(slack_bullets(&spaced), spaced);
     }
 }
