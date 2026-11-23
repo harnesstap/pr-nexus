@@ -52,6 +52,7 @@ query ReviewStats($query: String!, $first: Int!, $cursor: String) {
                 }
                 ... on Team {
                   slug
+                  combinedSlug
                   organization {
                     login
                   }

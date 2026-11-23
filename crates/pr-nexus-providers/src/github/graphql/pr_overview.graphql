@@ -67,7 +67,7 @@ query PullRequestOverview($owner: String!, $name: String!, $number: Int!) {
           requestedReviewer {
             __typename
             ... on User { login name avatarUrl(size: 64) }
-            ... on Team { slug name avatarUrl(size: 64) organization { login } }
+            ... on Team { slug name combinedSlug avatarUrl(size: 64) organization { login } }
           }
         }
       }

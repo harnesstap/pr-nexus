@@ -206,7 +206,7 @@ fn team_matches(facts: &LocalFacts<'_>, value: &str) -> bool {
     facts
         .teams
         .iter()
-        .any(|team| team.eq_ignore_ascii_case(value))
+        .any(|team| crate::team_id::pending_team_matches(team, value))
 }
 
 fn assignee_matches(facts: &LocalFacts<'_>, value: &str) -> bool {
@@ -1007,6 +1007,35 @@ mod tests {
         assert!(!matches_facts(
             &facts(&[web], &[], "ada"),
             "-team-review-requested:acme/web-platform"
+        ));
+    }
+
+    #[test]
+    fn a_bare_team_slug_in_a_view_rule_matches_that_slug_in_any_org() {
+        let acme = "acme/platform".to_owned();
+        let labs = "acme-labs/platform".to_owned();
+        let pay = "acme/payments".to_owned();
+        let bare = "is:open team-review-requested:platform";
+        assert!(matches_facts(
+            &facts(std::slice::from_ref(&acme), &[], "ada"),
+            bare
+        ));
+        assert!(matches_facts(
+            &facts(std::slice::from_ref(&labs), &[], "ada"),
+            bare
+        ));
+        assert!(!matches_facts(
+            &facts(std::slice::from_ref(&pay), &[], "ada"),
+            bare
+        ));
+        let one = "is:open team-review-requested:acme-labs/platform";
+        assert!(!matches_facts(
+            &facts(std::slice::from_ref(&acme), &[], "ada"),
+            one
+        ));
+        assert!(matches_facts(
+            &facts(std::slice::from_ref(&labs), &[], "ada"),
+            one
         ));
     }
 }

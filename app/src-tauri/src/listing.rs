@@ -921,11 +921,12 @@ fn passes_menu(item: &Item, filters: &FiltersDto, now_ms: i64) -> bool {
     }
     let team_on = !filters.teams.is_empty() || filters.no_team;
     if team_on {
-        let pending = pending_teams(row);
-        let named = filters
-            .teams
-            .iter()
-            .any(|team| pending.iter().any(|have| have.eq_ignore_ascii_case(team)));
+        let pending = pending_team_reviewers(row);
+        let named = filters.teams.iter().any(|team| {
+            pending.iter().any(|(login, name)| {
+                pr_nexus_core::team_id::pending_team_matches_named(login, name.as_deref(), team)
+            })
+        });
         let none = filters.no_team && pending.is_empty();
         if !named && !none {
             return false;
@@ -946,11 +947,11 @@ fn passes_menu(item: &Item, filters: &FiltersDto, now_ms: i64) -> bool {
     true
 }
 
-fn pending_teams(row: &ListRow) -> Vec<&str> {
+fn pending_team_reviewers(row: &ListRow) -> Vec<(&str, Option<&str>)> {
     row.pending_reviewers
         .iter()
         .filter(|reviewer| reviewer.kind == "team")
-        .map(|reviewer| reviewer.login.as_str())
+        .map(|reviewer| (reviewer.login.as_str(), reviewer.name.as_deref()))
         .collect()
 }
 
@@ -1026,10 +1027,19 @@ fn people_choices(
             no_team += 1;
         }
     }
+    // A chosen team stays in the menu with a zero count. A bare slug or name
+    // that already matches a listed team does not add a second, empty choice.
     for team in &filters.teams {
-        team_counts
-            .entry(team.to_ascii_lowercase())
-            .or_insert((team.clone(), String::new(), 0));
+        let listed = team_counts.values().any(|(login, name, _)| {
+            pr_nexus_core::team_id::pending_team_matches_named(login, Some(name), team)
+        });
+        if !listed {
+            team_counts.entry(team.to_ascii_lowercase()).or_insert((
+                team.clone(),
+                String::new(),
+                0,
+            ));
+        }
     }
 
     let mut assignee_counts: BTreeMap<String, (String, String, usize)> = BTreeMap::new();
@@ -1797,6 +1807,80 @@ mod tests {
                 .iter()
                 .any(|choice| choice.slug == "acme/missing" && choice.count == 0)
         );
+    }
+
+    #[test]
+    fn same_team_slug_in_two_orgs_stays_two_filter_choices() {
+        let mut acme = item(1, &[], 1);
+        acme.row.owner = "acme".into();
+        acme.row.repo = "acme/storefront".into();
+        acme.row.pending_reviewers = vec![team("acme/platform", "Platform")];
+        let mut labs = item(2, &[], 2);
+        labs.row.owner = "acme-labs".into();
+        labs.row.repo = "acme-labs/api".into();
+        labs.row.pending_reviewers = vec![team("acme-labs/platform", "Platform")];
+        let items = vec![acme, labs];
+
+        let mut request = request("repository");
+        let shown = page(&items, &[], &request, None);
+        let slugs: Vec<&str> = shown
+            .teams
+            .iter()
+            .map(|choice| choice.slug.as_str())
+            .collect();
+        assert_eq!(slugs, vec!["acme-labs/platform", "acme/platform"]);
+        assert!(shown.teams.iter().all(|choice| choice.count == 1));
+
+        request.filters.teams = vec!["acme/platform".into()];
+        let shown = page(&items, &[], &request, None);
+        let ids: Vec<i64> = shown
+            .entries
+            .iter()
+            .filter_map(|entry| entry.row.as_ref().map(|row| row.id))
+            .collect();
+        assert_eq!(ids, vec![1]);
+
+        request.filters.teams = vec!["acme-labs/platform".into()];
+        let shown = page(&items, &[], &request, None);
+        let ids: Vec<i64> = shown
+            .entries
+            .iter()
+            .filter_map(|entry| entry.row.as_ref().map(|row| row.id))
+            .collect();
+        assert_eq!(ids, vec![2]);
+
+        request.filters.teams = vec!["platform".into()];
+        let shown = page(&items, &[], &request, None);
+        let ids: Vec<i64> = shown
+            .entries
+            .iter()
+            .filter_map(|entry| entry.row.as_ref().map(|row| row.id))
+            .collect();
+        assert_eq!(ids, vec![1, 2]);
+        let slugs: Vec<&str> = shown
+            .teams
+            .iter()
+            .map(|choice| choice.slug.as_str())
+            .collect();
+        assert_eq!(slugs, vec!["acme-labs/platform", "acme/platform"]);
+    }
+
+    #[test]
+    fn list_sync_rows_that_lost_the_org_collapse_the_same_slug() {
+        let mut acme = item(1, &[], 1);
+        acme.row.owner = "acme".into();
+        acme.row.pending_reviewers = vec![team("/platform", "Platform")];
+        let mut labs = item(2, &[], 2);
+        labs.row.owner = "acme-labs".into();
+        labs.row.pending_reviewers = vec![team("/platform", "Platform")];
+        let shown = page(&[acme, labs], &[], &request("repository"), None);
+        let slugs: Vec<&str> = shown
+            .teams
+            .iter()
+            .map(|choice| choice.slug.as_str())
+            .collect();
+        assert_eq!(slugs, vec!["/platform"]);
+        assert_eq!(shown.teams[0].count, 2);
     }
 
     #[test]

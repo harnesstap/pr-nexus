@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 
 use super::GithubClient;
 use super::ownership::{fatal, segment};
-use super::parse::data;
+use super::parse::{data, team_ref};
 
 const OVERVIEW: &str = include_str!("graphql/pr_overview.graphql");
 const ENABLE: &str = include_str!("graphql/enable_auto_merge.graphql");
@@ -286,15 +286,12 @@ fn reviewers(node: &Value) -> Vec<Reviewer> {
         };
         let person = match reviewer.get("__typename").and_then(Value::as_str) {
             Some("Team") => {
-                let (Some(org), Some(slug)) = (
-                    opt_str(reviewer.pointer("/organization/login")),
-                    opt_str(reviewer.get("slug")),
-                ) else {
+                let Some(team) = team_ref(reviewer) else {
                     continue;
                 };
                 Person {
                     kind: PersonKind::Team,
-                    login: format!("{org}/{slug}"),
+                    login: team.to_string(),
                     name: opt_str(reviewer.get("name")),
                     avatar_url: opt_str(reviewer.get("avatarUrl")),
                 }
@@ -601,6 +598,23 @@ mod tests {
             ]
         );
         assert_eq!(reviewers[2].person.kind, PersonKind::Team);
+    }
+
+    #[test]
+    fn a_missing_organization_still_keeps_same_slug_teams_from_two_orgs() {
+        let node = json!({
+            "latestReviews": {"nodes": []},
+            "reviewRequests": {"nodes": [
+                {"requestedReviewer": {"__typename": "Team", "slug": "platform", "name": "Platform", "combinedSlug": "acme/platform", "organization": null}},
+                {"requestedReviewer": {"__typename": "Team", "slug": "platform", "name": "Platform", "combinedSlug": "acme-labs/platform", "organization": null}}
+            ]}
+        });
+        let items = reviewers(&node);
+        let logins: Vec<_> = items
+            .iter()
+            .map(|reviewer| reviewer.person.login.as_str())
+            .collect();
+        assert_eq!(logins, ["acme/platform", "acme-labs/platform"]);
     }
 
     #[test]

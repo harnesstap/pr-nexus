@@ -378,16 +378,10 @@ fn request_event(item: &Value) -> Option<ReviewRequestEvent> {
     let reviewer = item.get("requestedReviewer")?;
     let target = match reviewer.get("__typename").and_then(Value::as_str) {
         Some("Team") => {
-            let org = reviewer
-                .pointer("/organization/login")
-                .and_then(Value::as_str)?;
-            let slug = reviewer.get("slug").and_then(Value::as_str)?;
-            if org.is_empty() || slug.is_empty() {
-                return None;
-            }
+            let team = team_ref(reviewer)?;
             RequestTarget::Team {
-                org: org.to_owned(),
-                slug: slug.to_owned(),
+                org: team.org,
+                slug: team.slug,
             }
         }
         Some("Bot" | "Mannequin") => return None,
@@ -562,6 +556,44 @@ fn assignees(node: &Value) -> Vec<Assignee> {
     out
 }
 
+/// A requested team from a GraphQL `requestedReviewer` node.
+///
+/// Reads `combinedSlug` (`org/slug`), then `slug` with `organization.login`.
+/// A team with no org is dropped: stored as `/slug`, two orgs that share a
+/// slug would read as one team.
+pub(crate) fn team_ref(reviewer: &Value) -> Option<TeamRef> {
+    if let Some(team) = reviewer
+        .get("combinedSlug")
+        .and_then(Value::as_str)
+        .and_then(team_ref_from_combined)
+    {
+        return Some(team);
+    }
+    let slug = reviewer
+        .get("slug")
+        .and_then(Value::as_str)
+        .filter(|slug| !slug.is_empty())?;
+    let org = reviewer
+        .pointer("/organization/login")
+        .and_then(Value::as_str)
+        .filter(|org| !org.is_empty())?;
+    Some(TeamRef {
+        org: org.to_owned(),
+        slug: slug.to_owned(),
+    })
+}
+
+fn team_ref_from_combined(combined: &str) -> Option<TeamRef> {
+    let (org, slug) = combined.split_once('/')?;
+    if org.is_empty() || slug.is_empty() || slug.contains('/') {
+        return None;
+    }
+    Some(TeamRef {
+        org: org.to_owned(),
+        slug: slug.to_owned(),
+    })
+}
+
 fn reviewers(node: &Value) -> Vec<RequestedReviewer> {
     let Some(nodes) = node
         .pointer("/reviewRequests/nodes")
@@ -581,16 +613,8 @@ fn reviewers(node: &Value) -> Vec<RequestedReviewer> {
                 .filter(|value| !value.is_empty())
                 .map(str::to_owned)
         };
-        let identity = if let Some(slug) = reviewer.get("slug").and_then(Value::as_str) {
-            let org = reviewer
-                .pointer("/organization/login")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_owned();
-            Reviewer::Team(TeamRef {
-                org,
-                slug: slug.to_owned(),
-            })
+        let identity = if let Some(team) = team_ref(reviewer) {
+            Reviewer::Team(team)
         } else if let Some(login) = reviewer.get("login").and_then(Value::as_str) {
             Reviewer::User {
                 login: login.to_owned(),
@@ -872,6 +896,62 @@ mod tests {
         );
         assert_eq!(status[1].failing_checks.as_deref(), Some(&[][..]));
         assert!(status[2].failing_checks.is_none());
+    }
+
+    #[test]
+    fn a_missing_organization_does_not_collapse_the_same_slug_in_two_orgs() {
+        let request = |combined: &str| {
+            serde_json::json!({
+                "reviewRequests": { "nodes": [{
+                    "requestedReviewer": {
+                        "slug": "platform",
+                        "name": "Platform",
+                        "combinedSlug": combined,
+                        "organization": null
+                    }
+                }]}
+            })
+        };
+        let acme = reviewers(&request("acme/platform"));
+        let labs = reviewers(&request("acme-labs/platform"));
+        let team = |items: &[RequestedReviewer]| match &items[0].reviewer {
+            Reviewer::Team(team) => team.to_string(),
+            Reviewer::User { .. } => panic!("expected a team"),
+        };
+        assert_eq!(team(&acme), "acme/platform");
+        assert_eq!(team(&labs), "acme-labs/platform");
+        assert_eq!(acme[0].name.as_deref(), Some("Platform"));
+    }
+
+    #[test]
+    fn a_team_without_an_org_or_combined_slug_is_dropped() {
+        let node = serde_json::json!({
+            "reviewRequests": { "nodes": [{
+                "requestedReviewer": { "slug": "platform", "name": "Platform", "organization": null }
+            }]}
+        });
+        assert!(reviewers(&node).is_empty());
+    }
+
+    #[test]
+    fn a_team_still_parses_from_organization_login_without_combined_slug() {
+        let node = serde_json::json!({
+            "reviewRequests": { "nodes": [{
+                "requestedReviewer": {
+                    "slug": "web",
+                    "name": "Web",
+                    "organization": { "login": "acme" }
+                }
+            }]}
+        });
+        let items = reviewers(&node);
+        match &items[0].reviewer {
+            Reviewer::Team(team) => {
+                assert_eq!(team.org, "acme");
+                assert_eq!(team.slug, "web");
+            }
+            Reviewer::User { .. } => panic!("expected a team"),
+        }
     }
 
     #[test]

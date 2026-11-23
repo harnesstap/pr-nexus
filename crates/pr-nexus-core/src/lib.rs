@@ -34,5 +34,6 @@ pub mod stack;
 pub mod stats;
 pub mod store;
 pub mod sync;
+pub mod team_id;
 pub mod update;
 pub mod view_rule;
