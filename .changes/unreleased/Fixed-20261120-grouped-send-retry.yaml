@@ -1,3 +1,0 @@
-kind: Fixed
-body: When one card of a CODEOWNERS send fails, the cards already posted leave the dialog, so sending again does not post them twice.
-time: 2026-11-20T06:00:00Z

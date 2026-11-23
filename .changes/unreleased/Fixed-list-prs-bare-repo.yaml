@@ -1,3 +1,0 @@
-kind: Fixed
-body: The agent list_prs tool's repo filter matches a bare repository name, as its description says, instead of returning nothing.
-time: 2026-11-20T15:20:00Z

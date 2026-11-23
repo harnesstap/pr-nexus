@@ -1,3 +1,0 @@
-kind: Fixed
-body: Settings → Agents shows the active profile's Slack send policy after a profile switch, so saving there no longer copies the previous profile's policy into it.
-time: 2026-11-20T10:00:00Z

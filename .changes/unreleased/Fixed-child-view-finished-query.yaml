@@ -1,3 +1,0 @@
-kind: Fixed
-body: A view under My PRs or To review that asks for merged or closed pull requests with a GitHub-only qualifier, such as is:merged label:bug, no longer comes back empty.
-time: 2026-11-20T10:00:00Z

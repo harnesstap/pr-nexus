@@ -1,3 +1,0 @@
-kind: Changed
-body: The list no longer redraws every 30 seconds while the window is hidden, or on every sync status check that reports nothing new.
-time: 2026-11-20T18:20:00Z

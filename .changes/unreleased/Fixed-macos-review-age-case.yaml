@@ -1,3 +1,0 @@
-kind: Fixed
-body: Fix a blank window on macOS caused by two files whose names differ only by case.
-time: 2026-11-22T20:20:00Z

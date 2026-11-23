@@ -1,3 +1,0 @@
-kind: Fixed
-body: Finishing a Slack sign-in reloads the workspace list without token checks, so switches, removals and refreshes made while it waited are kept and the dialog ends sooner.
-time: 2026-11-20T06:20:00Z

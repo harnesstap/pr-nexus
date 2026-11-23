@@ -1,3 +1,0 @@
-kind: Fixed
-body: A Slack review request whose connection drops mid-send is no longer posted a second time.
-time: 2026-11-20T12:00:00Z

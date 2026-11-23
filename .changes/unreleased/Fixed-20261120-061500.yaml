@@ -1,3 +1,0 @@
-kind: Fixed
-body: Switching profiles no longer reuses the previous profile's draft state or review preview for a pull request with the same id.
-time: 2026-11-20T06:15:00.000000+01:00

@@ -1,3 +1,0 @@
-kind: Fixed
-body: Agent activity no longer records the link text an agent passed to remove_jira_link when the project has no such link.
-time: 2026-11-20T15:40:00Z

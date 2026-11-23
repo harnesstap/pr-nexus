@@ -1,3 +1,0 @@
-kind: Fixed
-body: A view rule with is:closed now lists merged pull requests too, as GitHub does.
-time: 2026-11-20T10:01:00.000000+01:00

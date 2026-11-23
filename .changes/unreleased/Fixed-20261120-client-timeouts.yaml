@@ -1,3 +1,0 @@
-kind: Fixed
-body: When a GitHub request hits the 15 s client timeout, sync now retries with a smaller page instead of failing.
-time: 2026-11-20T12:00:00Z

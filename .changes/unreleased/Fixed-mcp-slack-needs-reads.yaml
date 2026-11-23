@@ -1,3 +1,0 @@
-kind: Fixed
-body: Turning off Slack reads for agents now also stops Slack private search and Slack sends, as Settings → Agents shows.
-time: 2026-11-20T15:05:00Z

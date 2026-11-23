@@ -1,3 +1,0 @@
-kind: Fixed
-body: Agent prompts accept a pull request link with a fragment, query or /files path, and no longer take a non-GitHub link for a GitHub pull request.
-time: 2026-11-20T15:30:00Z

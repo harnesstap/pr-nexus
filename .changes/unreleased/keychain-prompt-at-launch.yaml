@@ -1,3 +1,0 @@
-kind: Fixed
-body: The first keychain read at launch can prompt at once, and saving a credential is no longer stuck behind a silent keychain call that can stall for tens of seconds.
-time: 2026-11-21T00:50:00Z

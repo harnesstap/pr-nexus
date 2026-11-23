@@ -1,3 +1,0 @@
-kind: Fixed
-body: Review requests asked for by an agent no longer stay loading when the sync fails or pauses on the rate limit; To review shows the error instead.
-time: 2026-11-20T10:20:00Z

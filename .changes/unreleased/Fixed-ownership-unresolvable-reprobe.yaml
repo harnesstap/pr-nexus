@@ -1,3 +1,0 @@
-kind: Fixed
-body: A pull request whose code-owner status cannot be resolved is no longer checked again on every sync, so other pull requests get their turn and the list stops refreshing for nothing.
-time: 2026-11-20T12:00:00Z

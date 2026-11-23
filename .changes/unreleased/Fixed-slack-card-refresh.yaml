@@ -1,3 +1,0 @@
-kind: Fixed
-body: The detail panel's Slack card shows a request or bump right after it is sent, so Bump is no longer offered again at once.
-time: 2026-11-20T15:15:00Z

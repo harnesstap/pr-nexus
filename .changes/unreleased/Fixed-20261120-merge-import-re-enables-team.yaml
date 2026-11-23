@@ -1,3 +1,0 @@
-kind: Fixed
-body: A merge CSV import re-enables a team that was hidden in Settings, as import always writes disabled=0.
-time: 2026-11-20T09:00:00Z

@@ -1,3 +1,0 @@
-kind: Fixed
-body: Sync closes the review requests of merged and closed pull requests in one write, and no longer fails when one was already closed by a merge from the detail panel.
-time: 2026-11-20T14:40:00Z

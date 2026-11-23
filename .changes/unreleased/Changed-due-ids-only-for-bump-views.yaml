@@ -1,3 +1,0 @@
-kind: Changed
-body: The list and sidebar counts reload faster with many pull requests, because only a view with a bump rule looks up which bumps are due.
-time: 2026-11-20T18:00:00Z

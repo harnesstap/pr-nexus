@@ -1,3 +1,0 @@
-kind: Fixed
-body: Agent review requests over several channels look up each pull request's owners on GitHub once per channel it goes to, not once per channel for every pull request.
-time: 2026-11-20T12:00:00Z

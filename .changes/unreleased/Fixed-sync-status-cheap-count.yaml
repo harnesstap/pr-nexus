@@ -1,3 +1,0 @@
-kind: Fixed
-body: The sync status poll counts loaded review requests from the cached list rows instead of reading every pull request with its description, and the view hint reads rows without descriptions.
-time: 2026-11-20T10:00:00Z

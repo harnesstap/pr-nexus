@@ -1,3 +1,0 @@
-kind: Fixed
-body: In Settings → Mappings, a channel name read from Slack after an ID is entered no longer wipes edits made meanwhile or reopens a row that was cancelled or saved.
-time: 2026-11-20T15:30:00Z

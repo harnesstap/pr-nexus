@@ -1,3 +1,0 @@
-kind: Fixed
-body: Focusing the window or saving new sync intervals now moves the next scheduled sync at once, and saving review preferences repaints the menu bar and dock counts.
-time: 2026-11-20T10:20:00Z

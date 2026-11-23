@@ -1,3 +1,0 @@
-kind: Fixed
-body: A fork pull request from a contributor's main branch no longer makes every other pull request into main look stacked on it.
-time: 2026-11-20T10:00:00.000000+01:00

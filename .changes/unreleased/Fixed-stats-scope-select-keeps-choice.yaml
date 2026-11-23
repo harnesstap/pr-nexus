@@ -1,3 +1,0 @@
-kind: Fixed
-body: The review stats repository or organization menu keeps showing the chosen scope when the new period has no pull requests in it, instead of reading "All tracked repositories" while the numbers stay filtered.
-time: 2026-11-20T12:20:00Z

@@ -1,3 +1,0 @@
-kind: Fixed
-body: Adding a pull request to the merge queue or removing it keeps bot comments and bot reviews apart from human ones in the detail panel.
-time: 2026-11-20T06:25:00.000000+01:00

@@ -1,3 +1,0 @@
-kind: Fixed
-body: 'A render error shows a short error screen with Reload and Copy details, instead of a blank window. The failing-check chip and the review-request age ignore malformed cached fields instead of crashing the list.'
-time: 2026-11-22T09:45:00Z

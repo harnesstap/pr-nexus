@@ -1,3 +1,0 @@
-kind: Fixed
-body: An open pull request detail no longer refetches from GitHub every 15 seconds; the list reloads only when the live read changed the row.
-time: 2026-11-20T10:00:00Z

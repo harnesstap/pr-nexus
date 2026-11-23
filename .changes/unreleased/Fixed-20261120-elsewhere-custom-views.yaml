@@ -1,3 +1,0 @@
-kind: Fixed
-body: In custom views and Bumps due, a search with no results no longer offers Include archived and closed or Reset filters for pull requests outside the view.
-time: 2026-11-20T09:00:00Z
