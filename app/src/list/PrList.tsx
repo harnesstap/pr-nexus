@@ -59,6 +59,7 @@ import { queueChip } from "../detail/mergeQueue";
 import { commentsText, compactSlack, rowPills, staleCue, viewEmptyState, type RowPill, type StaleCue } from "./rowCues";
 import { ClockProvider, RelativeTime, useNow } from "./clock";
 import { ReviewAge } from "./ReviewAge";
+import { teamFilterLabels, teamFilterSelected, toggleTeamFilter } from "./teamFilter";
 
 /** A section as drawn: its loaded rows, plus counts and ids over every match. */
 type ShownSection = Section & { count: number; ids: number[] };
@@ -2131,18 +2132,18 @@ function FilterChoices({
         <SearchableChoices
           options={[
             { id: NO_TEAM, label: `No team (${noTeam})` },
-            ...teams.map((team) => ({
-              id: team.slug,
-              label: team.name ? `${team.name} · ${team.slug} (${team.count})` : `${team.slug} (${team.count})`,
-            })),
+            ...teamFilterLabels(teams),
           ]}
-          selected={[...view.filters.teams, ...(view.filters.no_team ? [NO_TEAM] : [])]}
+          selected={[
+            ...teams.map((team) => team.slug).filter((id) => teamFilterSelected(view.filters.teams, id)),
+            ...(view.filters.no_team ? [NO_TEAM] : []),
+          ]}
           onToggle={(id) => {
             if (id === NO_TEAM) {
               apply({ no_team: !view.filters.no_team });
               return;
             }
-            apply({ teams: toggleValue(view.filters.teams, id) });
+            apply({ teams: toggleTeamFilter(view.filters.teams, id, teams) });
           }}
         />
       )}
@@ -2224,18 +2225,25 @@ function ToggleList<T extends string>({
   );
 }
 
+function optionLabel(option: { label: string; hint?: string; countLabel?: string }): string {
+  return [option.label, option.hint, option.countLabel].filter((part) => part).join(" ");
+}
+
 function SearchableChoices({
   options,
   selected,
   onToggle,
 }: {
-  options: { id: string; label: string }[];
+  options: { id: string; label: string; hint?: string; countLabel?: string }[];
   selected: readonly string[];
   onToggle: (id: string) => void;
 }) {
   const [query, setQuery] = useState("");
   const needle = query.trim().toLowerCase();
-  const shown = needle === "" ? options : options.filter((option) => option.label.toLowerCase().includes(needle));
+  const shown =
+    needle === ""
+      ? options
+      : options.filter((option) => `${option.label} ${option.hint ?? ""}`.toLowerCase().includes(needle));
   return (
     <div className="ml-2 border-l border-slate-800 pl-2">
       {options.length > 8 && (
@@ -2250,9 +2258,19 @@ function SearchableChoices({
       )}
       {shown.map((option) => (
         <label key={option.id} className="flex items-center gap-2 py-0.5">
-          <input type="checkbox" className="shrink-0" checked={selected.includes(option.id)} onChange={() => onToggle(option.id)} />
-          <Tooltip label={option.label} className="min-w-0 flex-1">
-            <span className="block w-full truncate">{option.label}</span>
+          <input
+            type="checkbox"
+            className="shrink-0"
+            checked={selected.includes(option.id)}
+            aria-label={optionLabel(option)}
+            onChange={() => onToggle(option.id)}
+          />
+          <Tooltip label={optionLabel(option)} className="min-w-0 flex-1">
+            <span className="block w-full truncate">
+              {option.label}
+              {option.hint ? <span className="ml-1 text-slate-500">{option.hint}</span> : null}
+              {option.countLabel ? ` ${option.countLabel}` : null}
+            </span>
           </Tooltip>
         </label>
       ))}

@@ -1643,3 +1643,38 @@ test("the search field suggests qualifiers and inserts the chosen one", async ()
   fireEvent.click(screen.getByRole("option", { name: "is:draft" }));
   expect(input).toHaveValue("is:draft ");
 });
+
+test("the team filter lists the same slug from two orgs and filters each one", async () => {
+  const team = (login: string): SearchRow["pending_reviewers"] => [{ kind: "team", login, name: "Platform", avatar_url: null }];
+  const acme = row({
+    id: 1,
+    title: "Acme checkout",
+    owner: "acme",
+    repo: "acme/storefront",
+    reviewers_requested: true,
+    pending_reviewers: team("acme/platform"),
+  });
+  const labs = row({
+    id: 2,
+    title: "Labs API",
+    owner: "acme-labs",
+    repo: "acme-labs/api",
+    reviewers_requested: true,
+    pending_reviewers: team("acme-labs/platform"),
+  });
+  await show(<Harness rows={[acme, labs]} />);
+  fireEvent.click(screen.getByRole("button", { name: "Filter menu" }));
+  fireEvent.click(screen.getByRole("button", { name: /^Reviewer team/ }));
+  expect(screen.getByRole("checkbox", { name: /Platform acme \(1\)$/ })).toBeInTheDocument();
+  expect(screen.getByRole("checkbox", { name: /Platform acme-labs \(1\)/ })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("checkbox", { name: /Platform acme \(1\)$/ }));
+  await settle();
+  expect(screen.getByRole("article", { name: /Acme checkout/ })).toBeInTheDocument();
+  expect(screen.queryByRole("article", { name: /Labs API/ })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("checkbox", { name: /Platform acme \(1\)$/ }));
+  fireEvent.click(screen.getByRole("checkbox", { name: /Platform acme-labs \(1\)/ }));
+  await settle();
+  expect(screen.queryByRole("article", { name: /Acme checkout/ })).not.toBeInTheDocument();
+  expect(screen.getByRole("article", { name: /Labs API/ })).toBeInTheDocument();
+});
+

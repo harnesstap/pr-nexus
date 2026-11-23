@@ -73,6 +73,8 @@ const people: Record<string, PendingReviewer> = {
   payments: { kind: "team", login: "acme/payments", name: "Payments", avatar_url: null },
   identity: { kind: "team", login: "acme/identity", name: "Identity", avatar_url: null },
   mobile: { kind: "team", login: "acme/mobile", name: "Mobile", avatar_url: null },
+  acmePlatform: { kind: "team", login: "acme/platform", name: "Platform", avatar_url: null },
+  labsPlatform: { kind: "team", login: "acme-labs/platform", name: "Platform", avatar_url: null },
 };
 const asked = (...logins: string[]) => logins.map((login) => people[login]);
 
@@ -595,3 +597,43 @@ export const branchFixtures: Record<number, { overview: Partial<PrOverview>; bra
     branch: mockBranch({ state: "checking", behind_by: null, head_ref: "feature/1210", conflicts_url: "https://github.com/acme/mobile/pull/1210/conflicts" }),
   },
 };
+
+/** Two orgs with a team named Platform, for the team-filter collision shots. */
+export function teamCollisionScene(): SearchRow[] {
+  return [
+    row({
+      id: 901,
+      number: 901,
+      title: "Tighten checkout rate limits",
+      owner: "acme",
+      repo: "acme/storefront",
+      involvement: 2,
+      reviewers_requested: true,
+      pending_reviewers: asked("acmePlatform"),
+      project_ids: [1],
+    }),
+    row({
+      id: 902,
+      number: 902,
+      title: "Cache the labs catalog",
+      owner: "acme-labs",
+      repo: "acme-labs/api",
+      involvement: 2,
+      reviewers_requested: true,
+      pending_reviewers: asked("labsPlatform"),
+      project_ids: [1],
+    }),
+    row({
+      id: 903,
+      number: 903,
+      title: "Retry payout webhooks",
+      owner: "acme",
+      repo: "acme/billing",
+      involvement: 2,
+      reviewers_requested: true,
+      pending_reviewers: asked("payments"),
+      project_ids: [2],
+    }),
+  ];
+}
+

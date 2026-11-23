@@ -32,6 +32,7 @@ import {
   searchTargets,
   slackThreads,
   slackVariants,
+  teamCollisionScene,
 } from "./fixtures";
 
 
@@ -557,6 +558,12 @@ if ((window as { __reviewAge?: boolean }).__reviewAge) {
   if (checkout) {
     checkout.review_wait = { at: new Date(nowMs - 90 * 60 * 1000).toISOString(), exact: true, basis: "request" };
   }
+  boot.sync.message = `Synced · ${rows.length} pull requests`;
+}
+
+// `--team-collision` replaces the list with two orgs that share a Platform team.
+if ((window as { __teamCollision?: boolean }).__teamCollision) {
+  rows.splice(0, rows.length, ...teamCollisionScene());
   boot.sync.message = `Synced · ${rows.length} pull requests`;
 }
 

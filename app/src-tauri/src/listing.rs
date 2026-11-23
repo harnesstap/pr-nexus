@@ -921,11 +921,12 @@ fn passes_menu(item: &Item, filters: &FiltersDto, now_ms: i64) -> bool {
     }
     let team_on = !filters.teams.is_empty() || filters.no_team;
     if team_on {
-        let pending = pending_teams(row);
-        let named = filters
-            .teams
-            .iter()
-            .any(|team| pending.iter().any(|have| have.eq_ignore_ascii_case(team)));
+        let pending = pending_team_reviewers(row);
+        let named = filters.teams.iter().any(|team| {
+            pending.iter().any(|(login, name)| {
+                pr_nexus_core::team_id::pending_team_matches_named(login, name.as_deref(), team)
+            })
+        });
         let none = filters.no_team && pending.is_empty();
         if !named && !none {
             return false;
@@ -946,11 +947,11 @@ fn passes_menu(item: &Item, filters: &FiltersDto, now_ms: i64) -> bool {
     true
 }
 
-fn pending_teams(row: &ListRow) -> Vec<&str> {
+fn pending_team_reviewers(row: &ListRow) -> Vec<(&str, Option<&str>)> {
     row.pending_reviewers
         .iter()
         .filter(|reviewer| reviewer.kind == "team")
-        .map(|reviewer| reviewer.login.as_str())
+        .map(|reviewer| (reviewer.login.as_str(), reviewer.name.as_deref()))
         .collect()
 }
 
@@ -1797,6 +1798,56 @@ mod tests {
                 .iter()
                 .any(|choice| choice.slug == "acme/missing" && choice.count == 0)
         );
+    }
+
+    #[test]
+    fn same_team_slug_in_two_orgs_stays_two_filter_choices() {
+        let mut acme = item(1, &[], 1);
+        acme.row.owner = "acme".into();
+        acme.row.repo = "acme/storefront".into();
+        acme.row.pending_reviewers = vec![team("acme/platform", "Platform")];
+        let mut labs = item(2, &[], 2);
+        labs.row.owner = "acme-labs".into();
+        labs.row.repo = "acme-labs/api".into();
+        labs.row.pending_reviewers = vec![team("acme-labs/platform", "Platform")];
+        let items = vec![acme, labs];
+
+        let mut request = request("repository");
+        let shown = page(&items, &[], &request, None);
+        let slugs: Vec<&str> = shown
+            .teams
+            .iter()
+            .map(|choice| choice.slug.as_str())
+            .collect();
+        assert_eq!(slugs, vec!["acme-labs/platform", "acme/platform"]);
+        assert!(shown.teams.iter().all(|choice| choice.count == 1));
+
+        request.filters.teams = vec!["acme/platform".into()];
+        let shown = page(&items, &[], &request, None);
+        let ids: Vec<i64> = shown
+            .entries
+            .iter()
+            .filter_map(|entry| entry.row.as_ref().map(|row| row.id))
+            .collect();
+        assert_eq!(ids, vec![1]);
+
+        request.filters.teams = vec!["acme-labs/platform".into()];
+        let shown = page(&items, &[], &request, None);
+        let ids: Vec<i64> = shown
+            .entries
+            .iter()
+            .filter_map(|entry| entry.row.as_ref().map(|row| row.id))
+            .collect();
+        assert_eq!(ids, vec![2]);
+
+        request.filters.teams = vec!["platform".into()];
+        let shown = page(&items, &[], &request, None);
+        let ids: Vec<i64> = shown
+            .entries
+            .iter()
+            .filter_map(|entry| entry.row.as_ref().map(|row| row.id))
+            .collect();
+        assert_eq!(ids, vec![1, 2]);
     }
 
     #[test]

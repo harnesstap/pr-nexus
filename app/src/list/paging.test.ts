@@ -454,3 +454,36 @@ test("an exact pull request link ignores the view and shows that pull request", 
   );
   expect(pageIds(mixed.sections)).toEqual([]);
 });
+
+test("the same team slug in two orgs stays two filter choices", () => {
+  const acme = row({
+    id: 1,
+    title: "Acme checkout",
+    owner: "acme",
+    repo: "acme/storefront",
+    pending_reviewers: [{ kind: "team", login: "acme/platform", name: "Platform", avatar_url: null }],
+  });
+  const labs = row({
+    id: 2,
+    title: "Labs API",
+    owner: "acme-labs",
+    repo: "acme-labs/api",
+    pending_reviewers: [{ kind: "team", login: "acme-labs/platform", name: "Platform", avatar_url: null }],
+  });
+  const page = pageFromRows([acme, labs], [auth], request("mine", defaultView()));
+  expect(page.teams.map((team) => team.slug)).toEqual(["acme-labs/platform", "acme/platform"]);
+  expect(page.teams.every((team) => team.count === 1)).toBe(true);
+
+  const acmeOnly = defaultView();
+  acmeOnly.filters.teams = ["acme/platform"];
+  expect(shownIds([acme, labs], [auth], "mine", acmeOnly)).toEqual([1]);
+
+  const labsOnly = defaultView();
+  labsOnly.filters.teams = ["acme-labs/platform"];
+  expect(shownIds([acme, labs], [auth], "mine", labsOnly)).toEqual([2]);
+
+  const bare = defaultView();
+  bare.filters.teams = ["platform"];
+  expect(shownIds([acme, labs], [auth], "mine", bare)).toEqual([1, 2]);
+});
+

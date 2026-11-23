@@ -26,6 +26,7 @@
 // matching rows, a rejected query, and the same list at 720px.
 // `--pr-link <dir>` saves a pasted pull request URL (pr-link-*.png): a stored
 // pull request from another view, and one read from GitHub for the panel.
+// `--team-collision <dir>` saves the reviewer-team menu when two orgs share a slug.
 // `--people-filters <dir>` saves the reviewer-team and assignee menus, then
 // the list after those menus write qualifiers into the search field.
 // `--update <dir>` saves the sidebar's update indicator (update-*.png): none,
@@ -139,6 +140,11 @@ const viewDragFlag = process.argv.indexOf("--view-drag");
 const viewDragDir = viewDragFlag === -1 ? null : process.argv[viewDragFlag + 1];
 if (viewDragFlag !== -1 && !viewDragDir) {
   throw new Error("--view-drag needs an output directory");
+}
+const teamCollisionFlag = process.argv.indexOf("--team-collision");
+const teamCollisionDir = teamCollisionFlag === -1 ? null : process.argv[teamCollisionFlag + 1];
+if (teamCollisionFlag !== -1 && !teamCollisionDir) {
+  throw new Error("--team-collision needs an output directory");
 }
 const peopleFiltersFlag = process.argv.indexOf("--people-filters");
 const peopleFiltersDir = peopleFiltersFlag === -1 ? null : process.argv[peopleFiltersFlag + 1];
@@ -545,6 +551,45 @@ async function peopleFilterShots(browser, dir) {
   await page.close();
 }
 
+/** Two orgs share a team named Platform; both must appear in the menu. */
+async function teamCollisionShots(browser, dir) {
+  mkdirSync(dir, { recursive: true });
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2, colorScheme: "dark" });
+  page.on("pageerror", (err) => console.error("page error:", err.message));
+  await page.addInitScript(() => {
+    globalThis.__teamCollision = true;
+  });
+  await page.goto(url);
+  await page.getByRole("button", { name: /To review/ }).click();
+  await page.getByRole("button", { name: "Filter menu" }).click();
+  await page.getByRole("button", { name: /^Reviewer team/ }).click();
+  await page.getByRole("checkbox", { name: /acme-labs/ }).waitFor();
+  await page.mouse.move(8, 8);
+  await page.screenshot({ path: resolve(dir, "filters-team-menu.png") });
+  await page.getByRole("checkbox", { name: /Platform acme \(1\)$/ }).click();
+  await page.keyboard.press("Escape");
+  await page.getByRole("article", { name: /Tighten checkout rate limits/ }).waitFor();
+  await page.getByRole("textbox", { name: "Search" }).waitFor();
+  await page.waitForFunction(() => {
+    const field = globalThis.document.querySelector('[aria-label="Search"]');
+    return field instanceof globalThis.HTMLInputElement && field.value.includes("team-review-requested:acme/platform");
+  });
+  await page.screenshot({ path: resolve(dir, "filters-team-acme.png") });
+  await page.getByRole("button", { name: "Filter menu" }).click();
+  await page.getByRole("button", { name: /^Reviewer team/ }).click();
+  await page.getByRole("checkbox", { name: /Platform acme \(1\)$/ }).click();
+  await page.getByRole("checkbox", { name: /Platform acme-labs \(1\)/ }).click();
+  await page.keyboard.press("Escape");
+  await page.getByRole("article", { name: /Cache the labs catalog/ }).waitFor();
+  await page.waitForFunction(() => {
+    const field = globalThis.document.querySelector('[aria-label="Search"]');
+    return field instanceof globalThis.HTMLInputElement && field.value.includes("team-review-requested:acme-labs/platform");
+  });
+  await page.screenshot({ path: resolve(dir, "filters-team-acme-labs.png") });
+  console.log("wrote team collision shots");
+  await page.close();
+}
+
 /** The one search field, with the filter menu open on Sort. */
 async function filterBarShots(browser, dir) {
   mkdirSync(dir, { recursive: true });
@@ -758,6 +803,12 @@ try {
   }
   if (peopleFiltersDir) {
     await peopleFilterShots(browser, resolve(peopleFiltersDir));
+    await browser.close();
+    await vite.close();
+    process.exit(0);
+  }
+  if (teamCollisionDir) {
+    await teamCollisionShots(browser, resolve(teamCollisionDir));
     await browser.close();
     await vite.close();
     process.exit(0);

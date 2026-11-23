@@ -5,6 +5,7 @@
  * the lists they already were.
  */
 import { AUTHOR, REVIEW_REQUESTED } from "./model";
+import { teamMatches } from "./teamFilter";
 
 export const MINE_QUERY = "is:open author:@me";
 export const REVIEW_QUERY = "is:open review-requested:@me";
@@ -185,7 +186,7 @@ function matchesFacts(facts: Facts, raw: string): boolean {
   const teams = tokens.filter((token) => !token.negated && token.key === "team-review-requested" && token.value !== "");
   const people = tokens.filter((token) => !token.negated && token.key === "assignee" && token.value !== "");
   const unassigned = tokens.some((token) => !token.negated && token.key === "no" && token.value.toLowerCase() === "assignee");
-  if (teams.length > 0 && !teams.some((token) => facts.teams.some((team) => team.toLowerCase() === token.value.toLowerCase()))) {
+  if (teams.length > 0 && !teams.some((token) => facts.teams.some((team) => teamMatches(team, token.value)))) {
     return false;
   }
   const personHit = people.some((token) => assigneeHit(facts, token.value));
@@ -297,7 +298,7 @@ function matchToken(token: Token, facts: Facts, strict: boolean): boolean {
       positive = value === "due" ? facts.due : false;
       break;
     case "team-review-requested":
-      positive = token.value !== "" && facts.teams.some((team) => team.toLowerCase() === token.value.toLowerCase());
+      positive = token.value !== "" && facts.teams.some((team) => teamMatches(team, token.value));
       break;
     case "assignee":
       positive = token.value !== "" ? assigneeHit(facts, token.value) : !strict;

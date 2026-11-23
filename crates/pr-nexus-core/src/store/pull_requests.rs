@@ -769,8 +769,8 @@ fn replace_reviewers(conn: &Connection, id: i64, pr: &PullRequest) -> Result<(),
         .map_err(db)?;
     for request in &pr.requested_reviewers {
         let (kind, org, login_or_slug) = match &request.reviewer {
-            Reviewer::User { login } => ("user", None, login.as_str()),
-            Reviewer::Team(team) => ("team", Some(team.org.as_str()), team.slug.as_str()),
+            Reviewer::User { login } => ("user", "", login.as_str()),
+            Reviewer::Team(team) => ("team", team.org.as_str(), team.slug.as_str()),
         };
         conn.execute(
             "INSERT INTO pr_requested_reviewers
@@ -1121,17 +1121,19 @@ fn map_reviewer(row: &rusqlite::Row<'_>) -> rusqlite::Result<RequestedReviewer> 
 fn map_reviewer_ref(row: &rusqlite::Row<'_>) -> rusqlite::Result<Reviewer> {
     let kind: String = row.get("kind")?;
     let login_or_slug: String = row.get("login_or_slug")?;
-    let org: Option<String> = row.get("org")?;
+    let org: String = row.get("org")?;
     match kind.as_str() {
         "user" => Ok(Reviewer::User {
             login: login_or_slug,
         }),
         "team" => {
-            let org = org.ok_or_else(|| {
-                conv(CoreError::Validation(
+            let org = if org.is_empty() {
+                return Err(conv(CoreError::Validation(
                     "team reviewer is missing org".to_owned(),
-                ))
-            })?;
+                )));
+            } else {
+                org
+            };
             Ok(Reviewer::Team(TeamRef {
                 org,
                 slug: login_or_slug,

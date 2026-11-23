@@ -119,3 +119,16 @@ test("team and assignee rules stay local and match any selected value", () => {
     matchesLocalRule({ involvement: REVIEW_REQUESTED, state: "open", is_draft: false, assignees: [{ login: "ada" }] }, false, "assignee:@me", "ada"),
   ).toBe(true);
 });
+
+test("a bare team slug in a view rule matches that slug in any org", () => {
+  const acme = [{ kind: "team" as const, login: "acme/platform", name: "Platform", avatar_url: null }];
+  const labs = [{ kind: "team" as const, login: "acme-labs/platform", name: "Platform", avatar_url: null }];
+  const pay = [{ kind: "team" as const, login: "acme/payments", name: "Payments", avatar_url: null }];
+  const open = { involvement: REVIEW_REQUESTED, state: "open" as const, is_draft: false };
+  expect(matchesLocalRule({ ...open, pending_reviewers: acme, assignees: [] }, false, "is:open team-review-requested:platform")).toBe(true);
+  expect(matchesLocalRule({ ...open, pending_reviewers: labs, assignees: [] }, false, "is:open team-review-requested:platform")).toBe(true);
+  expect(matchesLocalRule({ ...open, pending_reviewers: pay, assignees: [] }, false, "is:open team-review-requested:platform")).toBe(false);
+  expect(matchesLocalRule({ ...open, pending_reviewers: acme, assignees: [] }, false, "is:open team-review-requested:acme-labs/platform")).toBe(false);
+  expect(matchesLocalRule({ ...open, pending_reviewers: labs, assignees: [] }, false, "is:open team-review-requested:acme-labs/platform")).toBe(true);
+});
+

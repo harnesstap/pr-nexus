@@ -3,6 +3,7 @@ import type { BulkOutcome, BulkResult, FilteredReviews, ListRow, ProjectDto, Rem
 import { channelLabel } from "../api";
 import { applyFilterChange, applySearchChange } from "./filterQuery";
 import { githubQueryOf, membershipQuery, splitSearch, SEARCH_FIELD_MAX } from "./searchText";
+import { teamMatches } from "./teamFilter";
 
 export const AUTHOR = 1;
 export const REVIEW_REQUESTED = 2;
@@ -356,8 +357,8 @@ export function passesMenu(row: ListRow, filters: Filters, now: Date): boolean {
     return false;
   }
   if (filters.teams.length > 0 || filters.no_team) {
-    const pending = (row.pending_reviewers ?? []).filter((reviewer) => reviewer.kind === "team").map((reviewer) => reviewer.login);
-    const named = filters.teams.some((team) => pending.some((have) => have.toLowerCase() === team.toLowerCase()));
+    const pending = (row.pending_reviewers ?? []).filter((reviewer) => reviewer.kind === "team");
+    const named = filters.teams.some((team) => pending.some((have) => teamMatches(have.login, team, have.name)));
     const none = filters.no_team && pending.length === 0;
     if (!named && !none) {
       return false;
