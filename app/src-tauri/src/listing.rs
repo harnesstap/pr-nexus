@@ -1027,10 +1027,19 @@ fn people_choices(
             no_team += 1;
         }
     }
+    // A chosen team stays in the menu with a zero count. A bare slug or name
+    // that already matches a listed team does not add a second, empty choice.
     for team in &filters.teams {
-        team_counts
-            .entry(team.to_ascii_lowercase())
-            .or_insert((team.clone(), String::new(), 0));
+        let listed = team_counts.values().any(|(login, name, _)| {
+            pr_nexus_core::team_id::pending_team_matches_named(login, Some(name), team)
+        });
+        if !listed {
+            team_counts.entry(team.to_ascii_lowercase()).or_insert((
+                team.clone(),
+                String::new(),
+                0,
+            ));
+        }
     }
 
     let mut assignee_counts: BTreeMap<String, (String, String, usize)> = BTreeMap::new();
@@ -1848,6 +1857,12 @@ mod tests {
             .filter_map(|entry| entry.row.as_ref().map(|row| row.id))
             .collect();
         assert_eq!(ids, vec![1, 2]);
+        let slugs: Vec<&str> = shown
+            .teams
+            .iter()
+            .map(|choice| choice.slug.as_str())
+            .collect();
+        assert_eq!(slugs, vec!["acme-labs/platform", "acme/platform"]);
     }
 
     #[test]

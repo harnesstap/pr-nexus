@@ -20,6 +20,7 @@ import {
   type QuickFilter,
 } from "./model";
 import { linkMatches, sortLocksOrder } from "./searchText";
+import { teamMatches } from "./teamFilter";
 import { analyzeViewRule, matchesBumpOnly, matchesLocalRule } from "./viewRule";
 
 /** Rows per `list_page` call. Bigger pages mean fewer round trips while scrolling. */
@@ -370,9 +371,12 @@ function peopleChoices(
       }
     }
   }
+  // A chosen team stays in the menu with a zero count. A bare slug or name
+  // that already matches a listed team does not add a second, empty choice.
   for (const team of filters.teams) {
     const key = team.toLowerCase();
-    if (!teams.has(key)) {
+    const listed = [...teams.values()].some((have) => teamMatches(have.slug, team, have.name));
+    if (!teams.has(key) && !listed) {
       teams.set(key, { slug: team, name: "", count: 0 });
     }
   }

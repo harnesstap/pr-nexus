@@ -27,7 +27,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../migrations/0015_detail_fetched_at.sql"),
     include_str!("../../migrations/0016_pr_failing_checks.sql"),
     include_str!("../../migrations/0017_pr_review_clock.sql"),
-    include_str!("../../migrations/0018_reviewer_team_org_key.sql"),
+    include_str!("../../migrations/0018_drop_orgless_team_reviewers.sql"),
 ];
 
 pub(super) fn migrate(conn: &mut Connection) -> Result<(), CoreError> {
@@ -97,6 +97,59 @@ mod tests {
         assert_eq!(login, "octo");
         assert_eq!(name, None);
         assert_eq!(avatar, None);
+    }
+
+    #[test]
+    fn orgless_team_reviewers_are_dropped_and_their_pr_resynced() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..17] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 17_i64).unwrap();
+        conn.pragma_update(None, "foreign_keys", false).unwrap();
+        conn.execute_batch(
+            "INSERT INTO pull_requests (id, repo_id, number, node_id, title, url, author_login, state, is_draft,
+                head_ref, base_ref, head_sha, checks_state, mergeable, merge_state, unresolved_threads,
+                total_threads, involvement, created_at, updated_at, last_activity_at, synced_at, detail_fetched_at)
+             VALUES
+               (1, 1, 1, 'PR_1', 't', 'u', 'ada', 'open', 0, 'h', 'main', 's', 'none', 'unknown', 'unknown', 0, 0, 2, 'x', 'x', 'x', 'x', 'x'),
+               (2, 1, 2, 'PR_2', 't', 'u', 'ada', 'open', 0, 'h', 'main', 's', 'none', 'unknown', 'unknown', 0, 0, 2, 'x', 'x', 'x', 'x', 'x');
+             INSERT INTO pr_requested_reviewers (pr_id, kind, org, login_or_slug) VALUES
+               (1, 'team', '', 'platform'),
+               (1, 'user', NULL, 'octo'),
+               (2, 'team', 'acme', 'platform');",
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+
+        let rows: Vec<(i64, String, Option<String>, String)> = conn
+            .prepare("SELECT pr_id, kind, org, login_or_slug FROM pr_requested_reviewers ORDER BY pr_id, kind")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                (1, "user".to_owned(), None, "octo".to_owned()),
+                (
+                    2,
+                    "team".to_owned(),
+                    Some("acme".to_owned()),
+                    "platform".to_owned()
+                ),
+            ]
+        );
+        let fetched: Vec<Option<String>> = conn
+            .prepare("SELECT detail_fetched_at FROM pull_requests ORDER BY id")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(fetched, vec![None, Some("x".to_owned())]);
     }
 
     #[test]

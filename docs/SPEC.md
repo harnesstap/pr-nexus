@@ -1275,7 +1275,7 @@ Author rules run in the order conflicts, CI, changes requested, draft, approved,
   - Org: tracked orgs only;
   - Status / draft: Ready, Unknown, Blocked, Draft;
   - Review decision: Approved, Changes requested, Review required, None;
-  - Reviewer team: teams found on the loaded pull requests, `org/team-slug`, with the team name and a count. Several teams match a pull request that has any one of them as a pending requested reviewer. **No team** keeps pull requests with no pending team reviewer. A long list has a find field.
+  - Reviewer team: teams found on the loaded pull requests, `org/team-slug`, with the team name and a count. A team is its `org/team-slug`: two orgs that share a slug or a team name are two choices, and each row then reads `Team name org (n)` with the org muted. Several teams match a pull request that has any one of them as a pending requested reviewer. A saved filter or `team-review-requested:` value without an org (a bare slug or team name) matches that team in every org; choosing a team in the menu rewrites it to the matching `org/team-slug` values. **No team** keeps pull requests with no pending team reviewer. A long list has a find field.
   - Assignee: people assigned on the loaded pull requests. **Me** is first (the signed-in login, written as `assignee:@me`), then **Unassigned**, then the other logins. Several choices match a pull request assigned to any of them, or unassigned when that box is on. GitHub assignees are users.
   - CI: Passing, Failing, Pending, None;
   - Slack request: None, Requested, Bumped, Bump due (last request or bump older than `review.min_bump_interval_hours`);

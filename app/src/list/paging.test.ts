@@ -485,6 +485,7 @@ test("the same team slug in two orgs stays two filter choices", () => {
   const bare = defaultView();
   bare.filters.teams = ["platform"];
   expect(shownIds([acme, labs], [auth], "mine", bare)).toEqual([1, 2]);
+  expect(pageFromRows([acme, labs], [auth], request("mine", bare)).teams.map((team) => team.slug)).toEqual(["acme-labs/platform", "acme/platform"]);
 });
 
 test("list-sync rows that lost the org collapse the same slug into one filter choice", () => {

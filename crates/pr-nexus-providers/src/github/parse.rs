@@ -558,11 +558,9 @@ fn assignees(node: &Value) -> Vec<Assignee> {
 
 /// A requested team from a GraphQL `requestedReviewer` node.
 ///
-/// List sync used to take `slug` and `organization.login`, and fall back to an
-/// empty org when GitHub omitted the organization (a field error, or a null
-/// org). Two orgs that share a slug then stored as the same `/slug` key, so
-/// the reviewer-team filter showed only one option. `combinedSlug` (`org/slug`)
-/// is a scalar on the team and still identifies it when `organization` is missing.
+/// Reads `combinedSlug` (`org/slug`), then `slug` with `organization.login`.
+/// A team with no org is dropped: stored as `/slug`, two orgs that share a
+/// slug would read as one team.
 pub(crate) fn team_ref(reviewer: &Value) -> Option<TeamRef> {
     if let Some(team) = reviewer
         .get("combinedSlug")
