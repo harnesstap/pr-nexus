@@ -64,6 +64,7 @@ query PullRequestStatus($ids: [ID!]!) {
               ... on Mannequin { login }
               ... on Team {
                 slug
+                combinedSlug
                 organization { login }
               }
             }

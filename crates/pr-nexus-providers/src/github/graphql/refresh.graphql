@@ -75,6 +75,7 @@ fragment PrFields on PullRequest {
         ... on Team {
           slug
           name
+          combinedSlug
           avatarUrl(size: 64)
           organization {
             login

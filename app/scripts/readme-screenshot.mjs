@@ -27,6 +27,7 @@
 // `--pr-link <dir>` saves a pasted pull request URL (pr-link-*.png): a stored
 // pull request from another view, and one read from GitHub for the panel.
 // `--team-collision <dir>` saves the reviewer-team menu when two orgs share a slug.
+// `--team-collision-before <dir>` uses the collapsed list-sync shape (one option).
 // `--people-filters <dir>` saves the reviewer-team and assignee menus, then
 // the list after those menus write qualifiers into the search field.
 // `--update <dir>` saves the sidebar's update indicator (update-*.png): none,
@@ -145,6 +146,11 @@ const teamCollisionFlag = process.argv.indexOf("--team-collision");
 const teamCollisionDir = teamCollisionFlag === -1 ? null : process.argv[teamCollisionFlag + 1];
 if (teamCollisionFlag !== -1 && !teamCollisionDir) {
   throw new Error("--team-collision needs an output directory");
+}
+const teamCollisionBeforeFlag = process.argv.indexOf("--team-collision-before");
+const teamCollisionBeforeDir = teamCollisionBeforeFlag === -1 ? null : process.argv[teamCollisionBeforeFlag + 1];
+if (teamCollisionBeforeFlag !== -1 && !teamCollisionBeforeDir) {
+  throw new Error("--team-collision-before needs an output directory");
 }
 const peopleFiltersFlag = process.argv.indexOf("--people-filters");
 const peopleFiltersDir = peopleFiltersFlag === -1 ? null : process.argv[peopleFiltersFlag + 1];
@@ -551,6 +557,30 @@ async function peopleFilterShots(browser, dir) {
   await page.close();
 }
 
+/** Collapsed list-sync shape: both orgs stored as `/platform`, so only one option appears. */
+async function teamCollisionBeforeShots(browser, dir) {
+  mkdirSync(dir, { recursive: true });
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2, colorScheme: "dark" });
+  page.on("pageerror", (err) => console.error("page error:", err.message));
+  await page.addInitScript(() => {
+    globalThis.__teamCollision = true;
+    globalThis.__teamCollisionLegacy = true;
+  });
+  await page.goto(url);
+  await page.getByRole("button", { name: /To review/ }).click();
+  await page.getByRole("button", { name: "Filter menu" }).click();
+  await page.getByRole("button", { name: /^Reviewer team/ }).click();
+  await page.getByRole("checkbox", { name: /Platform/ }).waitFor();
+  const platform = await page.getByRole("checkbox", { name: /Platform/ }).count();
+  if (platform !== 1) {
+    throw new Error(`expected one Platform checkbox, got ${platform}`);
+  }
+  await page.mouse.move(8, 8);
+  await page.screenshot({ path: resolve(dir, "filters-team-menu.png") });
+  console.log("wrote team collision before shot");
+  await page.close();
+}
+
 /** Two orgs share a team named Platform; both must appear in the menu. */
 async function teamCollisionShots(browser, dir) {
   mkdirSync(dir, { recursive: true });
@@ -803,6 +833,12 @@ try {
   }
   if (peopleFiltersDir) {
     await peopleFilterShots(browser, resolve(peopleFiltersDir));
+    await browser.close();
+    await vite.close();
+    process.exit(0);
+  }
+  if (teamCollisionBeforeDir) {
+    await teamCollisionBeforeShots(browser, resolve(teamCollisionBeforeDir));
     await browser.close();
     await vite.close();
     process.exit(0);

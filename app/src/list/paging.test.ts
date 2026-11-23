@@ -487,3 +487,23 @@ test("the same team slug in two orgs stays two filter choices", () => {
   expect(shownIds([acme, labs], [auth], "mine", bare)).toEqual([1, 2]);
 });
 
+test("list-sync rows that lost the org collapse the same slug into one filter choice", () => {
+  const collapsed = { kind: "team" as const, login: "/platform", name: "Platform", avatar_url: null };
+  const acme = row({
+    id: 1,
+    title: "Acme checkout",
+    owner: "acme",
+    repo: "acme/storefront",
+    pending_reviewers: [collapsed],
+  });
+  const labs = row({
+    id: 2,
+    title: "Labs API",
+    owner: "acme-labs",
+    repo: "acme-labs/api",
+    pending_reviewers: [collapsed],
+  });
+  const page = pageFromRows([acme, labs], [auth], request("mine", defaultView()));
+  expect(page.teams).toEqual([{ slug: "/platform", name: "Platform", count: 2 }]);
+});
+

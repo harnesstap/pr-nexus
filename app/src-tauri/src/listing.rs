@@ -1851,6 +1851,24 @@ mod tests {
     }
 
     #[test]
+    fn list_sync_rows_that_lost_the_org_collapse_the_same_slug() {
+        let mut acme = item(1, &[], 1);
+        acme.row.owner = "acme".into();
+        acme.row.pending_reviewers = vec![team("/platform", "Platform")];
+        let mut labs = item(2, &[], 2);
+        labs.row.owner = "acme-labs".into();
+        labs.row.pending_reviewers = vec![team("/platform", "Platform")];
+        let shown = page(&[acme, labs], &[], &request("repository"), None);
+        let slugs: Vec<&str> = shown
+            .teams
+            .iter()
+            .map(|choice| choice.slug.as_str())
+            .collect();
+        assert_eq!(slugs, vec!["/platform"]);
+        assert_eq!(shown.teams[0].count, 2);
+    }
+
+    #[test]
     fn a_local_team_rule_keeps_only_that_pending_team() {
         let mut web = item(1, &[], 1);
         web.row.pending_reviewers = vec![team("acme/web-platform", "Web platform")];

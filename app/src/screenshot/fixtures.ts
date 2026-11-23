@@ -598,8 +598,17 @@ export const branchFixtures: Record<number, { overview: Partial<PrOverview>; bra
   },
 };
 
-/** Two orgs with a team named Platform, for the team-filter collision shots. */
-export function teamCollisionScene(): SearchRow[] {
+/**
+ * Two orgs with a team named Platform, for the team-filter collision shots.
+ *
+ * `legacy` is the list-row shape list sync used to produce when GitHub omitted
+ * `organization.login`: both teams stored as `org=""`, `slug=platform`, so
+ * `login` is `/platform` and the filter menu shows a single option.
+ */
+export function teamCollisionScene(legacy = false): SearchRow[] {
+  const collapsed = { kind: "team" as const, login: "/platform", name: "Platform", avatar_url: null };
+  const acmeTeam = legacy ? [collapsed] : asked("acmePlatform");
+  const labsTeam = legacy ? [collapsed] : asked("labsPlatform");
   return [
     row({
       id: 901,
@@ -609,7 +618,7 @@ export function teamCollisionScene(): SearchRow[] {
       repo: "acme/storefront",
       involvement: 2,
       reviewers_requested: true,
-      pending_reviewers: asked("acmePlatform"),
+      pending_reviewers: acmeTeam,
       project_ids: [1],
     }),
     row({
@@ -620,7 +629,7 @@ export function teamCollisionScene(): SearchRow[] {
       repo: "acme-labs/api",
       involvement: 2,
       reviewers_requested: true,
-      pending_reviewers: asked("labsPlatform"),
+      pending_reviewers: labsTeam,
       project_ids: [1],
     }),
     row({

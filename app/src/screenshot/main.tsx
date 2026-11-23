@@ -563,7 +563,8 @@ if ((window as { __reviewAge?: boolean }).__reviewAge) {
 
 // `--team-collision` replaces the list with two orgs that share a Platform team.
 if ((window as { __teamCollision?: boolean }).__teamCollision) {
-  rows.splice(0, rows.length, ...teamCollisionScene());
+  const legacy = (window as { __teamCollisionLegacy?: boolean }).__teamCollisionLegacy === true;
+  rows.splice(0, rows.length, ...teamCollisionScene(legacy));
   boot.sync.message = `Synced · ${rows.length} pull requests`;
 }
 

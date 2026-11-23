@@ -1,3 +1,3 @@
 kind: Fixed
-body: The reviewer-team filter lists the same team slug in each GitHub org, and a saved filter that stored only the slug still matches.
+body: The reviewer-team filter lists the same team slug in each GitHub org. List sync kept the slug when GitHub omitted the team organization, so two orgs collapsed into one option, and a saved filter that stored only the slug still matches.
 time: 2026-11-23T10:41:19Z
