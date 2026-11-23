@@ -1,0 +1,3 @@
+kind: Dependencies
+body: Upgrade cookie to 0.18.3 for the private-cookie nonce advisory.
+time: 2026-11-23T10:14:00Z
