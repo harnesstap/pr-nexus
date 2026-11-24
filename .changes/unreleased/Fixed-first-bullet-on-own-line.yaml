@@ -1,3 +1,0 @@
-kind: Fixed
-body: The first pull request in a batch review request now starts on its own line in Slack instead of being stuck to the line above it.
-time: 2026-11-23T12:00:00Z

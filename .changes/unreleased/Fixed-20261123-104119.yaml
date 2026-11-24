@@ -1,3 +1,0 @@
-kind: Fixed
-body: "The reviewer-team filter shows a team once per GitHub org and adds the org to the row when two orgs share a team slug or name. A saved filter that has only the slug still matches that team in every org."
-time: 2026-11-23T10:41:19Z
