@@ -972,7 +972,7 @@ export interface McpSettings {
   enabled: boolean;
   reads: boolean;
   local_writes: boolean;
-  /** Agents propose Slack sends, drafts, schedules and reactions; you approve each one. */
+  /** Agents propose Slack sends, drafts, schedules, reactions and canvases; you approve each one. */
   slack_sends: boolean;
   /** Search and read Slack in the workspaces listed in `slack_workspaces`. */
   slack_reads: boolean;

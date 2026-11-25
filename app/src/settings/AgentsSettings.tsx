@@ -467,7 +467,7 @@ export function AgentsSettings({ api, view: page, onOpenSection, focusClient, on
               ) : null
             }
           >
-            Slack sends <span className="text-slate-400">— agents send messages, drafts, schedules and reactions as you</span>
+            Slack sends <span className="text-slate-400">— agents send messages, drafts, schedules, reactions and canvases as you</span>
           </CapabilityRow>
         </ul>
       </section>
