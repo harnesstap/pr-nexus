@@ -32,7 +32,8 @@
         "emoji:read",
         "files:read",
         "canvases:read",
-        "lists:read"
+        "lists:read",
+        "canvases:write"
       ],
       "user_optional": [
         "search:read.private"

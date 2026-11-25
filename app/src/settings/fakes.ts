@@ -152,6 +152,7 @@ export const SAMPLE_MCP_TOOLS: McpToolInfo[] = [
     ["slack_get_proposal", "The state of a send this session asked for."],
     ["request_reviews", "Ask for reviews of the user's open pull requests on Slack."],
   ]),
+  ...sampleTools("slack_sends", [["slack_create_canvas", "Create a Slack canvas from a title and Markdown."]], false),
 ];
 
 /** Two made-up workspaces: `acme`, and `acme-labs` on an Enterprise Grid. */

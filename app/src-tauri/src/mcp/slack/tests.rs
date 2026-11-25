@@ -677,7 +677,7 @@ fn a_send_waits_for_approval_then_slack_answers_as_is() {
 
     let id = out["proposal_id"].as_u64().unwrap();
     let listed = super::sends::list(&env.state);
-    assert_eq!(listed[0].channel_id, ACME_CHANNEL);
+    assert_eq!(listed[0].channel_id.as_deref(), Some(ACME_CHANNEL));
     assert_eq!(listed[0].arguments["message"], "Ship it");
 
     let sent = super::sends::decide(&env.state, id, true).unwrap();
@@ -1341,4 +1341,204 @@ async fn the_in_app_approval_says_where_it_went() {
         summary,
         format!("user approved Slack proposal {id}, replied in a thread in #release")
     );
+}
+
+// Canvases (SPEC §10.1.3): one workspace, no channel, Slack's reply as is.
+
+fn canvas() -> Value {
+    json!({ "workspace": "acme", "title": "Review queue", "content": "# Waiting\n- [acme/api#12](https://github.com/acme/api/pull/12)" })
+}
+
+#[test]
+fn a_canvas_waits_with_the_allowlist_then_is_created_once_approved() {
+    let (env, calls) = sending(&[ACME_CHANNEL], false);
+    let out = call(&env, "slack_create_canvas", canvas()).unwrap();
+    assert_eq!(out["status"], "pending", "{out}");
+    assert_eq!(out["held"]["reason"], "no_channel");
+    assert!(out["channel_id"].is_null());
+    assert!(writes(&calls).is_empty(), "nothing reaches Slack first");
+
+    let id = out["proposal_id"].as_u64().unwrap();
+    let sent = super::sends::decide(&env.state, id, true).unwrap();
+    assert_eq!(sent.status, super::sends::Status::Sent);
+    let made = writes(&calls);
+    assert_eq!(made.len(), 1);
+    let (domain, tool, args) = &made[0];
+    assert_eq!(
+        (domain.as_str(), tool.as_str()),
+        ("acme", "slack_create_canvas")
+    );
+    let keys: Vec<&str> = args.keys().map(String::as_str).collect();
+    assert_eq!(keys, ["title", "content"], "only Slack's own arguments");
+    assert_eq!(args["title"], "Review queue");
+    assert!(args["content"].as_str().unwrap().starts_with("# Waiting"));
+    assert_eq!(
+        sent.link.as_deref(),
+        Some("https://acme.slack.com/docs/T0ACME01/F0ACME0009")
+    );
+    assert_eq!(
+        super::sends::decide(&env.state, id, true).unwrap_err().kind,
+        "conflict"
+    );
+    assert_eq!(writes(&calls).len(), 1);
+}
+
+#[test]
+fn a_canvas_follows_the_other_send_modes() {
+    let (env, calls) = sending(&[], false);
+    with_mode(&env, SlackSendMode::ApproveAll);
+    let held = call(&env, "slack_create_canvas", canvas()).unwrap();
+    assert_eq!(held["held"]["reason"], "approve_all");
+
+    with_mode(&env, SlackSendMode::Allowlist);
+    let crossed = as_session("s1", || {
+        call(
+            &env,
+            "slack_read_channel",
+            json!({ "channel_id": LABS_CHANNEL }),
+        )
+        .unwrap();
+        call(&env, "slack_create_canvas", canvas()).unwrap()
+    });
+    assert_eq!(crossed["held"]["reason"], "read_other_workspace");
+    assert!(writes(&calls).is_empty());
+
+    with_mode(&env, SlackSendMode::Automatic);
+    let out = call(&env, "slack_create_canvas", canvas()).unwrap();
+    assert_eq!(out["status"], "sent", "{out}");
+    assert_eq!(out["auto_sent"], true);
+    assert_eq!(
+        out["link"],
+        "https://acme.slack.com/docs/T0ACME01/F0ACME0009"
+    );
+    assert_eq!(writes(&calls).len(), 1);
+}
+
+#[test]
+fn a_canvas_needs_one_workspace_a_title_and_content() {
+    let (env, calls) = sending(&[], false);
+    with_mode(&env, SlackSendMode::Automatic);
+    for (field, value) in [
+        ("workspace", json!("all")),
+        ("workspace", json!("nowhere")),
+        ("title", json!("  ")),
+        ("content", json!("")),
+        ("channel_id", json!(ACME_CHANNEL)),
+    ] {
+        let mut args = canvas();
+        args[field] = value;
+        let err = call(&env, "slack_create_canvas", args).unwrap_err();
+        assert_eq!(err.kind, "validation", "{field}: {}", err.message);
+    }
+    assert!(writes(&calls).is_empty());
+}
+
+/// Fixtures, but Slack refuses `slack_create_canvas` with `text`.
+struct CanvasRefused(&'static str);
+
+struct CanvasRefusedCaller(Arc<dyn ToolCaller>, &'static str);
+
+impl ToolCaller for CanvasRefusedCaller {
+    fn call(&self, tool: &str, arguments: JsonObject) -> Result<ToolOutput, ProviderError> {
+        if tool == "slack_create_canvas" {
+            return Ok(ToolOutput {
+                text: self.1.into(),
+                structured: None,
+                is_error: true,
+            });
+        }
+        self.0.call(tool, arguments)
+    }
+}
+
+impl Upstream for CanvasRefused {
+    fn caller(&self, state: &AppState, ws: &Exposed) -> Result<Arc<dyn ToolCaller>, AppError> {
+        Ok(Arc::new(CanvasRefusedCaller(
+            Fixtures.caller(state, ws)?,
+            self.0,
+        )))
+    }
+    fn enterprise(&self, state: &AppState, account: &Account) -> Option<String> {
+        Fixtures.enterprise(state, account)
+    }
+    fn granted_scopes(&self, _state: &AppState, _account: &Account) -> Option<Vec<String>> {
+        None
+    }
+}
+
+#[test]
+fn canvas_errors_say_what_to_do() {
+    for (text, hint) in [
+        ("missing_scope: canvases:write", "canvases:write"),
+        (
+            "Unknown tool: slack_create_canvas",
+            "does not offer slack_create_canvas",
+        ),
+    ] {
+        let env = env(&[ACME, GRID_TEAM], Arc::new(CanvasRefused(text)));
+        let mut settings = config::load(&env.state.store).unwrap();
+        settings.slack_sends = true;
+        settings.slack_send_mode = SlackSendMode::Automatic;
+        config::save(&env.state.store, &settings).unwrap();
+        let err = call(&env, "slack_create_canvas", canvas()).unwrap_err();
+        assert!(err.message.contains(hint), "{text}: {}", err.message);
+        let listed = super::sends::list(&env.state);
+        assert_eq!(listed[0].status, super::sends::Status::Failed);
+    }
+}
+
+#[test]
+fn a_canvas_is_confirmed_in_the_agent_with_its_title_and_content() {
+    let (env, calls) = sending(&[], false);
+    let ask = asking(Answer::Accept);
+    let out = super::session::with(
+        Caller {
+            session: Some("s1".into()),
+            client: Some("acme-agent".into()),
+            ask: Some(ask.clone() as Arc<dyn Ask>),
+        },
+        || call(&env, "slack_create_canvas", canvas()),
+    )
+    .unwrap();
+    assert_eq!(out["status"], "sent", "{out}");
+    assert_eq!(out["decided_in"], "acme-agent");
+    let shown = ask.shown.lock().unwrap();
+    assert!(
+        shown[0].starts_with("Create this Slack canvas as you?"),
+        "{}",
+        shown[0]
+    );
+    assert!(shown[0].contains("Title: Review queue"));
+    assert!(shown[0].contains("Content:\n# Waiting"));
+    assert!(!shown[0].contains("Channel:"));
+    assert_eq!(writes(&calls).len(), 1);
+}
+
+#[test]
+fn canvas_links_come_from_slacks_reply() {
+    let escaped = r#"{"result":"Created. https:\/\/acme.slack.com\/docs\/T0ACME0001\/F0ACME0042"}"#;
+    let link = super::link::for_write(
+        "acme",
+        "slack_create_canvas",
+        &JsonObject::new(),
+        &json!(escaped),
+    );
+    assert_eq!(
+        link.as_deref(),
+        Some("https://acme.slack.com/docs/T0ACME0001/F0ACME0042")
+    );
+    assert_eq!(super::link::canvas_link("no link here"), None);
+}
+
+#[test]
+fn creating_canvases_is_off_until_switched_on() {
+    use crate::mcp::Capability;
+    assert!(!config::tool_defaults_on(
+        Capability::SlackSends,
+        "slack_create_canvas"
+    ));
+    assert!(config::tool_defaults_on(
+        Capability::SlackSends,
+        "slack_send_message"
+    ));
 }

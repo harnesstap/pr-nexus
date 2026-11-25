@@ -342,6 +342,23 @@ test("pending proposals are approved or rejected, with why each one waited", asy
   expect(within(list).getByText("rejected")).toBeInTheDocument();
 });
 
+test("a canvas proposal shows its title and content, and no channel", async () => {
+  const canvas = proposal(4, {
+    tool: "slack_create_canvas",
+    channel_id: null,
+    arguments: { title: "Review queue", content: "# Waiting\n- acme/api#12" },
+    held: { reason: "no_channel" },
+  });
+  const api = fakeMcp({ enabled: true, slack_reads: true, slack_sends: true }, [], FAKE_SLACK_WORKSPACES, [canvas]);
+  render(<AgentsSettings api={api} />);
+  const list = await screen.findByRole("list", { name: "Slack proposals" });
+  expect(within(list).getByText("Create canvas")).toBeInTheDocument();
+  expect(within(list).getByText(/Review queue\s+# Waiting/)).toBeInTheDocument();
+  expect(within(list).getByText("No channel to match the auto-send list")).toBeInTheDocument();
+  expect(within(list).queryByText(/T0ACME0001\//)).toBeNull();
+  expect(screen.getByRole("button", { name: "Approve proposal 4" })).toBeEnabled();
+});
+
 test("approving needs Slack sends on; rejecting does not", async () => {
   const api = fakeMcp({ enabled: true, slack_reads: true, slack_sends: false }, [], FAKE_SLACK_WORKSPACES, [proposal(1)]);
   render(<AgentsSettings api={api} />);

@@ -342,7 +342,7 @@ fn propose(state: &AppState, ws: &Exposed, request: &BulkRequest, card: BulkCard
         client: caller.client.clone(),
         tool: "request_reviews".to_owned(),
         workspace: workspace_ref(ws),
-        channel_id: format!("{}/{channel}", ws.qualifier()),
+        channel_id: Some(format!("{}/{channel}", ws.qualifier())),
         arguments,
         status: Status::Pending,
         auto_sent: held.is_none(),

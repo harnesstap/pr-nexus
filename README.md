@@ -76,9 +76,10 @@ The MCP server is off by default. To turn it on, open **Settings → MCP server*
 - read PRs and projects;
 - write local data (notes, stars, projects);
 - read Slack in the workspaces you expose;
-- send Slack messages, including review requests for several PRs at once (`request_reviews`).
+- send Slack messages, including review requests for several PRs at once (`request_reviews`);
+- create Slack canvases (`slack_create_canvas`), for example a list of PRs waiting for review. This tool is off until you switch it on, and it needs the `canvases:write` scope, so sign in to the workspace again after updating.
 
-Slack messages wait for your approval unless you allow specific channels. Every call is listed in the activity log on that screen. Its **Stats** tab shows how fast your own PRs get a first review and who you ask most (7, 30 or 90 days, per repo or org); agents can read the same numbers with `get_review_stats`. Tools act on the active profile unless the agent passes a `profile`.
+Slack messages wait for your approval unless you allow specific channels. Canvases always wait for your approval unless you choose fully automatic sends. Every call is listed in the activity log on that screen. Its **Stats** tab shows how fast your own PRs get a first review and who you ask most (7, 30 or 90 days, per repo or org); agents can read the same numbers with `get_review_stats`. Tools act on the active profile unless the agent passes a `profile`.
 
 ## Privacy and security
 

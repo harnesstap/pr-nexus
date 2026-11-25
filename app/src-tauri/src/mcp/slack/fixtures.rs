@@ -105,6 +105,9 @@ pub fn reply(domain: &str, tool: &str, arguments: &JsonObject) -> Result<String,
             "channel_link": format!("https://app.slack.com/client/T0{u}01/{c}", c = arguments.get("channel_id").and_then(|c| c.as_str()).unwrap_or_default(), u = up(d)),
         }),
         "slack_add_reaction" => json!({ "result": "Reaction added." }),
+        "slack_create_canvas" => json!({
+            "result": format!("Canvas created: {t}\nCanvas ID: F0{u}0009\nLink: https://{d}.slack.com/docs/T0{u}01/F0{u}0009\n", t = arguments.get("title").and_then(|t| t.as_str()).unwrap_or_default(), u = up(d)),
+        }),
         other => {
             return Err(ProviderError::Unsupported(format!(
                 "{other} has no fixture"

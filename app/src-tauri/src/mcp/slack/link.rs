@@ -5,7 +5,12 @@
 //! built from the workspace domain, the channel and the message `ts`, as
 //! Slack's "Copy link" does. A reaction links to the message it was added
 //! to. A scheduled message has no link until it is posted; a draft links
-//! only when Slack returns one.
+//! only when Slack returns one. A canvas links to the `…/docs/…` URL
+//! Slack's reply carries.
+
+use std::sync::LazyLock;
+
+use regex::Regex;
 
 use pr_nexus_core::review::permalink;
 use rmcp::model::JsonObject;
@@ -21,8 +26,6 @@ pub fn for_write(
     reply: &Value,
 ) -> Option<String> {
     let text = |key: &str| arguments.get(key).and_then(Value::as_str);
-    let channel = text("channel_id")?;
-    let thread = text("thread_ts").filter(|ts| permalink::is_ts(ts));
     let reply_text = match reply {
         Value::String(s) => s.clone(),
         other => other.to_string(),
@@ -30,6 +33,11 @@ pub fn for_write(
     // JSON-encoding may have escaped Slack's own `\/` once more.
     .replace("\\\\/", "/")
     .replace("\\/", "/");
+    if tool == super::sends::CREATE_CANVAS {
+        return canvas_link(&reply_text);
+    }
+    let channel = text("channel_id")?;
+    let thread = text("thread_ts").filter(|ts| permalink::is_ts(ts));
     match tool {
         "slack_add_reaction" => {
             let ts = text("message_ts").filter(|ts| permalink::is_ts(ts))?;
@@ -55,6 +63,16 @@ pub fn for_write(
         }
         _ => None,
     }
+}
+
+static CANVAS_URL: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"https://[A-Za-z0-9.-]+\.slack\.com/docs/[A-Z0-9]+/F[A-Z0-9]+").expect("canvas url")
+});
+
+/// The first canvas URL (`https://<domain>.slack.com/docs/<team>/F…`) in
+/// Slack's reply.
+pub fn canvas_link(text: &str) -> Option<String> {
+    CANVAS_URL.find(text).map(|m| m.as_str().to_owned())
 }
 
 fn build(domain: &str, channel: &str, ts: &str, thread: Option<&str>) -> String {

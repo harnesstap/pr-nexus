@@ -244,7 +244,9 @@ impl McpControl {
         let (tool, arguments, outcome, summary, error) = match &decided {
             Ok(proposal) => {
                 let mut arguments = serde_json::Map::new();
-                arguments.insert("channel_id".into(), proposal.channel_id.clone().into());
+                if let Some(channel) = &proposal.channel_id {
+                    arguments.insert("channel_id".into(), channel.clone().into());
+                }
                 let (outcome, error, done) = match proposal.status {
                     Status::Failed => {
                         let kind = proposal.error.as_ref().and_then(|e| e["kind"].as_str());
@@ -257,10 +259,13 @@ impl McpControl {
                             ", Slack refused it".to_owned(),
                         )
                     }
+                    Status::Sent if proposal.channel_id.is_none() => {
+                        (Outcome::Ok, None, ", created a canvas".to_owned())
+                    }
                     Status::Sent => {
                         let label = super::audit::channel_label(
                             proposal.channel_name.as_deref(),
-                            &proposal.channel_id,
+                            proposal.channel_id.as_deref().unwrap_or_default(),
                         );
                         let thread = proposal
                             .arguments

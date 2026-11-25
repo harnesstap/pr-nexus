@@ -57,6 +57,8 @@ pub const USER_SCOPES: &[&str] = &[
     "files:read",
     "canvases:read",
     "lists:read",
+    // Agent sends (§10.1.3): `slack_create_canvas`.
+    "canvases:write",
 ];
 
 /// The scopes a saved grant has, from the stored token JSON. `None` when the

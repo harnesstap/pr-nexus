@@ -972,7 +972,7 @@ export interface McpSettings {
   enabled: boolean;
   reads: boolean;
   local_writes: boolean;
-  /** Agents propose Slack sends, drafts, schedules and reactions; you approve each one. */
+  /** Agents propose Slack sends, drafts, schedules, reactions and canvases; you approve each one. */
   slack_sends: boolean;
   /** Search and read Slack in the workspaces listed in `slack_workspaces`. */
   slack_reads: boolean;
@@ -1019,7 +1019,11 @@ export type SlackSendMode = "approve_all" | "automatic" | "allowlist";
 export type SlackProposalStatus = "pending" | "sent" | "failed" | "rejected";
 
 /** Why a proposal waited for approval. */
-export type SlackProposalHeld = { reason: "approve_all" } | { reason: "not_listed" } | { reason: "read_other_workspace"; workspaces: string[] };
+export type SlackProposalHeld =
+  | { reason: "approve_all" }
+  | { reason: "not_listed" }
+  | { reason: "no_channel" }
+  | { reason: "read_other_workspace"; workspaces: string[] };
 
 /** One Slack write an agent proposed. */
 export interface SlackProposal {
@@ -1028,7 +1032,8 @@ export interface SlackProposal {
   client: string | null;
   tool: string;
   workspace: unknown;
-  channel_id: string;
+  /** Qualified channel ID; `null` for a write with no channel (a canvas). */
+  channel_id: string | null;
   arguments: Record<string, unknown>;
   status: SlackProposalStatus;
   held: SlackProposalHeld | null;

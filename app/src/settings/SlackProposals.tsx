@@ -21,6 +21,7 @@ const VERB: Record<string, string> = {
   slack_send_message_draft: "Draft",
   slack_add_reaction: "React",
   request_reviews: "Request review",
+  slack_create_canvas: "Create canvas",
 };
 
 const STATUS: Record<SlackProposal["status"], string> = {
@@ -45,6 +46,8 @@ function why(p: SlackProposal): string | null {
       return "Every write waits for approval";
     case "not_listed":
       return "Channel not on the auto-send list";
+    case "no_channel":
+      return "No channel to match the auto-send list";
     case "read_other_workspace":
       return `Auto-send blocked: this agent read ${p.held.workspaces.join(", ")} first`;
     default: {
@@ -58,6 +61,9 @@ function body(p: SlackProposal): string {
   const args = p.arguments;
   if (typeof args.message === "string") {
     return args.message;
+  }
+  if (typeof args.title === "string" && typeof args.content === "string") {
+    return `${args.title}\n\n${args.content}`;
   }
   if (typeof args.emoji === "string") {
     return `:${args.emoji}: on ${String(args.message_ts)}`;
@@ -120,7 +126,7 @@ export function SlackProposals({ api, canSend }: Props) {
               <div className="flex items-center gap-2">
                 <span className={`rounded border px-1.5 py-0.5 text-[11px] leading-none ${STATUS[p.status]}`}>{p.status}</span>
                 <span className="font-medium">{VERB[p.tool] ?? p.tool}</span>
-                <span className="min-w-0 truncate font-mono text-xs text-slate-400">{p.channel_id}</span>
+                {p.channel_id && <span className="min-w-0 truncate font-mono text-xs text-slate-400">{p.channel_id}</span>}
                 <span className="ml-auto shrink-0 text-xs text-slate-500">
                   {p.client ?? "agent"} · {ago(p.created_at, new Date())}
                 </span>
