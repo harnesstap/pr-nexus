@@ -7,8 +7,8 @@ use std::sync::{Arc, Mutex};
 
 use chrono::Utc;
 use pr_nexus_core::domain::{
-    Account, AccountId, AccountKind, AuthMode, ChatKind, ChecksState, PrId, PrState, PullRequest,
-    SlackChannel, SyncStateEntry,
+    Account, AccountId, AccountKind, AuthMode, ChatKind, ChecksState, MergeStateStatus, PrId,
+    PrState, PullRequest, SlackChannel, SyncStateEntry,
 };
 use pr_nexus_core::error::{CoreError, ProviderError};
 use pr_nexus_core::mapping::lookup_mapping;
@@ -126,15 +126,16 @@ pub struct ReviewPreview {
 /// A non-blocking warning about a PR in a review-request preview.
 #[derive(Debug, Serialize, Clone, PartialEq, Eq)]
 pub struct PrWarning {
-    /// `draft`.
+    /// `draft`, `checks` or `behind`.
     pub kind: String,
     pub pr_id: i64,
     pub number: u64,
     pub message: String,
 }
 
-/// What reviewers should know before a request goes out: today, only that
-/// the PR is still a draft. Sending stays allowed.
+/// What reviewers should know before a request goes out: the PR is still a
+/// draft, has failing checks, or its branch is behind its base. Sending
+/// stays allowed.
 pub fn pr_warnings(pr: &PullRequest) -> Vec<PrWarning> {
     if pr.state != PrState::Open {
         return Vec::new();
@@ -157,6 +158,19 @@ pub fn pr_warnings(pr: &PullRequest) -> Vec<PrWarning> {
             pr_id: pr.id.0,
             number: pr.number,
             message: format!("#{} has failing checks.", pr.number),
+        });
+    }
+    if pr.merge_state == MergeStateStatus::Behind {
+        let base = if pr.base_ref.is_empty() {
+            "its base branch"
+        } else {
+            pr.base_ref.as_str()
+        };
+        warnings.push(PrWarning {
+            kind: "behind".into(),
+            pr_id: pr.id.0,
+            number: pr.number,
+            message: format!("#{} is behind {base}.", pr.number),
         });
     }
     warnings

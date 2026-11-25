@@ -712,6 +712,53 @@ fn mark_ready_refreshes_the_preview_and_keeps_a_real_ci_block() {
 }
 
 #[test]
+fn a_branch_behind_its_base_warns_but_is_still_sent() {
+    use pr_nexus_core::domain::{MergeStateStatus, PrId};
+
+    let fx = fixture("behind-note");
+    let state = &fx.state;
+    connect_fake_workspace(state);
+    let slack = Arc::new(FakeSlack::default());
+    let pr = pr_id(state, 1);
+    let mut row = state.store.get_pull_request(PrId(pr)).unwrap().unwrap();
+    row.merge_state = MergeStateStatus::Behind;
+    state.store.update_pull_request_gate(&row).unwrap();
+    let base = row.base_ref.clone();
+    assert!(!base.is_empty());
+
+    let preview = review::preview(state, pr, channel()).unwrap();
+    assert_eq!(
+        preview
+            .pr_warnings
+            .iter()
+            .map(|w| (w.kind.as_str(), w.message.clone()))
+            .collect::<Vec<_>>(),
+        [("behind", format!("#1 is behind {base}."))]
+    );
+
+    let request: BulkRequest = serde_json::from_value(serde_json::json!({
+        "pr_ids": [pr],
+        "target": channel_json(),
+    }))
+    .unwrap();
+    let bulk = bulk::preview(state, &request).unwrap();
+    assert!(
+        bulk.skipped.is_empty(),
+        "behind is not a skip: {:?}",
+        bulk.skipped
+    );
+    assert!(
+        bulk.pr_warnings
+            .iter()
+            .any(|w| w.pr_id == pr && w.kind == "behind")
+    );
+
+    review::send(state, &slack, pr, channel(), &[], None, None)
+        .expect("a branch behind its base does not block the request");
+    assert_eq!(slack.posts.lock().unwrap().len(), 1);
+}
+
+#[test]
 fn failing_checks_stay_in_the_request_and_pending_checks_do_not() {
     use pr_nexus_core::domain::{ChecksState, PrId};
 

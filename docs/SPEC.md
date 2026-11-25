@@ -556,7 +556,7 @@ Computed from synced fields. Re-computed in the pre-send refresh.
 | evidence fetch failed | Unknown | the provider error |
 
 - **Blocked** PRs: the Slack action button (§7.7) is disabled and the tooltip lists the reasons. Blocked PRs cannot be overridden in v1. The skill says "never override".
-- **Slack requests and failing checks.** The list table above is unchanged: a failing, cancelled, timed-out, or action-required check still makes the row Blocked. A Slack request treats that same check as a note (`#N has failing checks.`) and still includes the PR. A pending check, a draft's other blockers, conflicts, requested changes, and a closed or merged PR still leave it out of the send. A draft stays a warning and is still sent.
+- **Slack requests and failing checks.** The list table above is unchanged: a failing, cancelled, timed-out, or action-required check still makes the row Blocked. A Slack request treats that same check as a note (`#N has failing checks.`) and still includes the PR. A branch behind its base (`PR branch is behind the base branch`) is a note too (`#N is behind <base>.`): the list row stays Blocked, but the request, the bulk request or bump, and the agents' `request_reviews` still send it. A pending check, a draft's other blockers, conflicts, requested changes, and a closed or merged PR still leave it out of the send. A draft stays a warning and is still sent.
 - **Unknown** PRs: the preview shows the reasons and requires an explicit "I confirm only reviews are missing" checkbox. The confirmation is scoped to `(head_sha, reasons)`. If either changes, the confirmation is invalidated.
 - **Δ BLOCKED: intentional deviation from the skill (decided by the owner).** The skill marks every `BLOCKED` PR as Unknown. Nearly every PR that waits for review reports `BLOCKED`, so the skill asks for confirmation on almost every request. PR Nexus treats a `BLOCKED` PR as **Ready** when only reviews are missing:
   - `reviewDecision = REVIEW_REQUIRED` (or null with code-owner review pending);
@@ -808,7 +808,7 @@ When the user clicks Send, for each affected PR:
 
 - Select PRs with the three-level tri-state checkboxes (global, per project section, per row; §8.2). A floating bulk bar appears at the bottom: `N selected · [Request / bump on Slack] · [Clear]`. There is **one** bulk action. The planner sorts each PR into a request or a bump per channel, using `review_requests`.
 - Pipeline:
-  1. gate each PR, dropping Blocked ones with their reason, except a draft and a failing check, which stay in the request as notes;
+  1. gate each PR, dropping Blocked ones with their reason, except a draft, a failing check and a branch behind its base, which stay in the request as notes;
   2. when CODEOWNERS groups loaded, pick one team per group that still needs an approval (§7.2); otherwise run `decide_owners` and use its coverage teams, or the candidates when coverage is empty;
   3. resolve channels;
   4. **group by `(workspace, channel)`: one message per channel lists every selected PR routed to it**. A batch can span several workspaces;
