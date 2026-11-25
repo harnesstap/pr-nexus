@@ -48,23 +48,32 @@ pub fn outcome(answer: Answer) -> Outcome {
     }
 }
 
-/// What the confirmation says: action, workspace, channel and the exact
-/// content.
-pub fn message(tool: &str, workspace: &Value, channel_id: &str, arguments: &Value) -> String {
+/// What the confirmation says: action, workspace, channel (when the write
+/// has one) and the exact content.
+pub fn message(
+    tool: &str,
+    workspace: &Value,
+    channel_id: Option<&str>,
+    arguments: &Value,
+) -> String {
     let action = match tool {
         "slack_send_message" => "Send this Slack message",
         "slack_schedule_message" => "Schedule this Slack message",
         "slack_send_message_draft" => "Save this Slack draft",
         "slack_add_reaction" => "Add this Slack reaction",
         "request_reviews" => "Send this Slack review request",
+        "slack_create_canvas" => "Create this Slack canvas",
         other => other,
     };
     let text = |key: &str| arguments.get(key).and_then(Value::as_str);
     let mut out = format!(
-        "{action} as you?\n\nWorkspace: {} ({})\nChannel: {channel_id}",
+        "{action} as you?\n\nWorkspace: {} ({})",
         workspace["name"].as_str().unwrap_or_default(),
         workspace["qualifier"].as_str().unwrap_or_default(),
     );
+    if let Some(channel_id) = channel_id {
+        out.push_str(&format!("\nChannel: {channel_id}"));
+    }
     if let Some(thread) = text("thread_ts") {
         out.push_str(&format!("\nIn thread: {thread}"));
     }
@@ -79,6 +88,12 @@ pub fn message(tool: &str, workspace: &Value, channel_id: &str, arguments: &Valu
     }
     if let Some(body) = text("message") {
         out.push_str(&format!("\n\nMessage:\n{body}"));
+    }
+    if let Some(title) = text("title") {
+        out.push_str(&format!("\nTitle: {title}"));
+    }
+    if let Some(content) = text("content") {
+        out.push_str(&format!("\n\nContent:\n{content}"));
     }
     out
 }

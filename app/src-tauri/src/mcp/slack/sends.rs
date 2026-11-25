@@ -1,11 +1,13 @@
-//! Slack writes agents ask for: send, schedule, draft, react (SPEC §10.1.2).
+//! Slack writes agents ask for: send, schedule, draft, react, create a
+//! canvas (SPEC §10.1.3).
 //!
 //! Each call names its workspace and becomes a [`Proposal`]. Whether it
 //! waits for the user follows [`SlackSendMode`]: `approve_all` holds every
 //! write; `automatic` sends every write at once; `allowlist` sends at once
 //! only when the channel is on the auto-send list and the session has read
 //! no other workspace, so content read in one workspace cannot be carried
-//! to another unseen. A held proposal is approved or rejected in Settings
+//! to another unseen. A canvas has no channel to match the list, so in
+//! `allowlist` mode it always waits. A held proposal is approved or rejected in Settings
 //! → Agents, and only then does PR Nexus call Slack.
 //! Slack's reply comes back as Slack sent it.
 
@@ -48,6 +50,8 @@ pub enum Held {
     ApproveAll,
     /// The channel is not on the auto-send list.
     NotListed,
+    /// The write has no channel to match the auto-send list (a canvas).
+    NoChannel,
     /// The session read these other workspaces first.
     ReadOtherWorkspace { workspaces: Vec<String> },
 }
@@ -60,8 +64,9 @@ pub struct Proposal {
     /// The official tool PR Nexus calls once approved.
     pub tool: String,
     pub workspace: Value,
-    /// Qualified (`<qualifier>/C…`).
-    pub channel_id: String,
+    /// Qualified (`<qualifier>/C…`); `None` for a write that targets no
+    /// channel (a canvas).
+    pub channel_id: Option<String>,
     /// What Slack receives, bare IDs.
     pub arguments: JsonObject,
     pub status: Status,
@@ -77,7 +82,7 @@ pub struct Proposal {
     pub decided_in: Option<String>,
     /// Why asking in the agent got no answer, so it waits in PR Nexus.
     pub unanswered: Option<String>,
-    /// The Slack message once sent (see [`super::link`]).
+    /// The Slack message or canvas once sent (see [`super::link`]).
     pub link: Option<String>,
     /// The channel's name when PR Nexus has it cached.
     pub channel_name: Option<String>,
@@ -170,10 +175,24 @@ pub fn send_tools() -> Vec<ToolSpec> {
             schema_for_type::<ReactionArgs>,
             |state, args| propose::<ReactionArgs>(state, args, "slack_add_reaction"),
         ),
+        spec(
+            CREATE_CANVAS,
+            "Create a Slack canvas",
+            leak(format!(
+                "Create a standalone canvas from `title` and `content` (Canvas-flavored Markdown: \
+                    `#` to `###` headings, lists, tables, links, `![](@U…)` for a person and \
+                    `![](#C…)` for a channel, with bare IDs). The canvas belongs to the user and is \
+                    not shared with anyone; once created, `link` opens it. Not available on Slack's \
+                    free plan.{AFTER} With the channel allowlist it always waits, since a canvas \
+                    has no channel."
+            )),
+            schema_for_type::<CanvasArgs>,
+            propose_canvas,
+        ),
         ToolSpec {
             name: "slack_get_proposal",
             title: "Check a Slack send",
-            description: "The state of a send, schedule, draft or reaction this session asked for: \
+            description: "The state of a send, schedule, draft, reaction or canvas this session asked for: \
                 `pending` (waiting for the user), `sent` (with Slack's reply in `result`), `failed` \
                 (Slack's error) or `rejected` by the user.",
             capability: Capability::SlackSends,
@@ -184,6 +203,9 @@ pub fn send_tools() -> Vec<ToolSpec> {
         },
     ]
 }
+
+/// The official tool behind `slack_create_canvas`, called under the same name.
+pub const CREATE_CANVAS: &str = "slack_create_canvas";
 
 /// Tool descriptions live for the whole run.
 fn leak(text: String) -> &'static str {
@@ -348,6 +370,17 @@ impl WriteArgs for ReactionArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct CanvasArgs {
+    /// Workspace to create the canvas in (required).
+    pub workspace: String,
+    /// Canvas title; keep it out of `content`.
+    pub title: String,
+    /// Canvas-flavored Markdown.
+    pub content: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ProposalArgs {
     /// `proposal_id` from the send.
     pub proposal_id: u64,
@@ -426,21 +459,67 @@ fn propose<A: WriteArgs>(
     let mut upstream = JsonObject::new();
     upstream.insert("channel_id".into(), json!(channel));
     upstream.extend(args.rest());
+    submit(state, &ws, tool, Some(channel), upstream)
+}
+
+fn propose_canvas(state: &AppState, arguments: JsonObject) -> Result<Value, AppError> {
+    let CanvasArgs {
+        workspace,
+        title,
+        content,
+    } = parse(arguments)?;
+    let title = title.trim();
+    if title.is_empty() {
+        return Err(validation("title must not be empty"));
+    }
+    if content.trim().is_empty() {
+        return Err(validation("content must not be empty"));
+    }
+    let ws = target(state, &workspace)?;
+    let mut upstream = JsonObject::new();
+    upstream.insert("title".into(), json!(title));
+    upstream.insert("content".into(), json!(content));
+    submit(state, &ws, CREATE_CANVAS, None, upstream)
+}
+
+/// Record one write as a proposal, then send it, ask in the agent, or
+/// leave it waiting, as the send mode says. `channel` is bare.
+fn submit(
+    state: &AppState,
+    ws: &Exposed,
+    tool: &str,
+    channel: Option<String>,
+    upstream: JsonObject,
+) -> Result<Value, AppError> {
     let caller = session::current();
     let others = state
         .slack_proxy
         .read_elsewhere(caller.session.as_deref(), ws.qualifier());
     let settings = config::load(&state.store)?;
-    let held = hold(settings.slack_send_mode, others, || {
-        listed(&settings.slack_auto_send_channels, &ws, &channel)
+    let held = match &channel {
+        Some(channel) => hold(settings.slack_send_mode, others, || {
+            listed(&settings.slack_auto_send_channels, ws, channel)
+        }),
+        None => hold(settings.slack_send_mode, others, || false).map(|held| match held {
+            Held::NotListed => Held::NoChannel,
+            other => other,
+        }),
+    };
+    let channel_name = channel.as_ref().and_then(|channel| {
+        state
+            .store
+            .get_slack_channel(ws.domain.clone(), channel.clone())
+            .ok()
+            .flatten()
+            .map(|cached| cached.name)
     });
     let proposal = lock(&state.slack_proxy.proposals).push(Proposal {
         id: 0,
         created_at: Utc::now().to_rfc3339(),
         client: caller.client.clone(),
         tool: tool.to_owned(),
-        workspace: workspace_ref(&ws),
-        channel_id: format!("{}/{channel}", ws.qualifier()),
+        workspace: workspace_ref(ws),
+        channel_id: channel.map(|channel| format!("{}/{channel}", ws.qualifier())),
         arguments: upstream,
         status: Status::Pending,
         auto_sent: held.is_none(),
@@ -452,12 +531,7 @@ fn propose<A: WriteArgs>(
         unanswered: None,
         link: None,
         review: None,
-        channel_name: state
-            .store
-            .get_slack_channel(ws.domain.clone(), channel.clone())
-            .ok()
-            .flatten()
-            .map(|cached| cached.name),
+        channel_name,
         session: caller.session,
     });
     if proposal.held.is_some() {
@@ -465,12 +539,12 @@ fn propose<A: WriteArgs>(
             Some(ask)
                 if elicit::should_ask(proposal.held.as_ref(), settings.slack_elicit, true) =>
             {
-                ask_in_agent(state, &ws, proposal, ask.as_ref(), caller.client)
+                ask_in_agent(state, ws, proposal, ask.as_ref(), caller.client)
             }
             _ => Ok(agent_view(&proposal)),
         };
     }
-    let proposal = execute(state, &ws, proposal.id)?;
+    let proposal = execute(state, ws, proposal.id)?;
     match &proposal.error {
         // Sent by itself: Slack's error is the call's error, as for a read.
         Some(error) => Err(AppError::new(
@@ -493,7 +567,7 @@ pub(super) fn ask_in_agent(
     let mut text = elicit::message(
         &proposal.tool,
         &proposal.workspace,
-        &proposal.channel_id,
+        proposal.channel_id.as_deref(),
         &Value::Object(proposal.arguments.clone()),
     );
     if let Some(profile) = crate::mcp::profiles::label(state) {
@@ -567,7 +641,8 @@ pub(super) fn execute(state: &AppState, ws: &Exposed, id: u64) -> Result<Proposa
     let (outcome, link) = match &review {
         Some(card) => super::reviews::send(state, card),
         None => {
-            let outcome = run(state, &tool, vec![ws.clone()], None, |_| arguments.clone());
+            let outcome = run(state, &tool, vec![ws.clone()], None, |_| arguments.clone())
+                .map_err(|err| explain(&tool, err));
             let link = outcome
                 .as_ref()
                 .ok()
@@ -591,6 +666,39 @@ pub(super) fn execute(state: &AppState, ws: &Exposed, id: u64) -> Result<Proposa
         }
     }
     Ok(proposal.clone())
+}
+
+/// Slack's error for `tool`, with what to do about it when PR Nexus knows.
+fn explain(tool: &str, mut err: AppError) -> AppError {
+    if tool != CREATE_CANVAS {
+        return err;
+    }
+    let lower = err.message.to_ascii_lowercase();
+    let hint = if lower.contains("missing_scope") {
+        Some(
+            "Creating canvases needs the `canvases:write` scope: add it to your Slack app's user \
+             token scopes, then sign in to this workspace again in Settings → Slack.",
+        )
+    } else if [
+        "unknown tool",
+        "tool not found",
+        "not found: slack_create_canvas",
+        "no such tool",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+    {
+        Some(
+            "This workspace's Slack MCP server does not offer slack_create_canvas (canvases are \
+             not available on Slack's free plan).",
+        )
+    } else {
+        None
+    };
+    if let Some(hint) = hint {
+        err.message = format!("{} {hint}", err.message);
+    }
+    err
 }
 
 /// What the agent sees of a proposal.

@@ -90,6 +90,8 @@ pub fn per_minute(tool: &str) -> usize {
         "slack_schedule_message" | "slack_add_reaction" => 50,
         // Slack documents "special" limits for sends; one a second at most.
         "slack_send_message" | "slack_send_message_draft" => 20,
+        // `canvases.create` is Tier 2.
+        "slack_create_canvas" => 20,
         _ => 100,
     }
 }

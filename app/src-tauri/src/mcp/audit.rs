@@ -305,6 +305,7 @@ pub fn summarize(tool: &str, arguments: &Map<String, Value>, result: Option<&Val
         "slack_schedule_message" => slack_write_summary("a scheduled Slack message", result),
         "slack_send_message_draft" => slack_write_summary("a Slack draft", result),
         "slack_add_reaction" => slack_write_summary("a Slack reaction", result),
+        "slack_create_canvas" => slack_write_summary("a Slack canvas", result),
         "slack_get_proposal" => "checked a Slack proposal".to_owned(),
         "request_reviews" => review_summary(result),
         "list_projects" => "listed projects".to_owned(),
