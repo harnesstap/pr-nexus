@@ -396,7 +396,7 @@ export interface TargetMatch {
 
 /** A non-blocking warning about the PR itself, e.g. it is still a draft. */
 export interface PrWarning {
-  kind: "draft" | "checks";
+  kind: "draft" | "checks" | "behind";
   pr_id: number;
   number: number;
   message: string;

@@ -1,0 +1,3 @@
+kind: Fixed
+body: "A pull request whose branch is behind its base is no longer blocked from Slack review requests and bumps. The dialog shows it as a note instead, for example: #42 is behind main."
+time: 2026-11-25T13:46:08Z

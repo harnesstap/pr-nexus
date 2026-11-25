@@ -61,18 +61,22 @@ export function groupOnCard(group: BulkGroup, target: ReviewTarget): boolean {
   return group.channel_id === target.channel_id && sameWorkspace(group.workspace, target.workspace);
 }
 
-export function isFailingCheck(warning: PrWarning): boolean {
+/** The header note's label, or `null` for a warning shown elsewhere (drafts). */
+export function noteLabel(warning: PrWarning): string | null {
   switch (warning.kind) {
     case "draft":
-      return false;
+      return null;
     case "checks":
-      return true;
+      return "Failing checks";
+    case "behind":
+      return "Behind base";
     default: {
       const unexpected: never = warning.kind;
       return unexpected;
     }
   }
 }
+
 
 /** Compact team choice. The button names the team, never a channel. */
 export function GroupSwitcher({
@@ -349,8 +353,11 @@ export async function saveChosenChannels(api: Pick<Api, "saveMapping">, preview:
 export function CheckNotes({ warnings }: { warnings: PrWarning[] }) {
   return (
     <>
-      {warnings.filter(isFailingCheck).map((warning) => (
-        <p key={`${warning.pr_id}:${warning.kind}`} role="note" aria-label="Failing checks" className="text-xs text-slate-500">
+      {warnings.flatMap((warning) => {
+        const label = noteLabel(warning);
+        return label ? [{ warning, label }] : [];
+      }).map(({ warning, label }) => (
+        <p key={`${warning.pr_id}:${warning.kind}`} role="note" aria-label={label} className="text-xs text-slate-500">
           {warning.message}
         </p>
       ))}

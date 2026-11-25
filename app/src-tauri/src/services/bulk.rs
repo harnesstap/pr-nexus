@@ -1256,14 +1256,17 @@ pub(crate) fn blocked_reasons(readiness: Readiness) -> Option<String> {
     }
 }
 
-/// A draft and a failing check only warn (see [`crate::slack::pr_warnings`]).
-/// Pending checks and every other blocked reason still leave the PR out.
+/// A draft, a failing check and a branch behind its base only warn (see
+/// [`crate::slack::pr_warnings`]). Pending checks and every other blocked
+/// reason still leave the PR out.
 /// `None` when nothing that still blocks remains.
 fn slack_skip_detail(reasons: &[String]) -> Option<String> {
     let rest: Vec<&str> = reasons
         .iter()
         .map(String::as_str)
-        .filter(|reason| *reason != DRAFT_REASON && !is_failing_check(reason))
+        .filter(|reason| {
+            *reason != DRAFT_REASON && *reason != BEHIND_REASON && !is_failing_check(reason)
+        })
         .collect();
     if rest.is_empty() && !reasons.is_empty() {
         None
@@ -1302,6 +1305,8 @@ fn soften_cached_block(blocked: &Option<String>) -> Option<String> {
 
 /// The readiness reason for a draft (`review::readiness`).
 const DRAFT_REASON: &str = "PR is a draft";
+/// The readiness reason for a branch behind its base (`review::readiness`).
+const BEHIND_REASON: &str = "PR branch is behind the base branch";
 
 fn preview_dto(
     state: &AppState,
@@ -1493,12 +1498,20 @@ fn pr_dto_by_id(prs: &[PullRequest], id: PrId, title: &str) -> BulkPr {
 
 #[cfg(test)]
 mod draft_tests {
-    use super::{BumpNote, DRAFT_REASON, note_block, slack_skip_detail, soften_cached_block};
+    use super::{
+        BEHIND_REASON, BumpNote, DRAFT_REASON, note_block, slack_skip_detail, soften_cached_block,
+    };
 
     #[test]
     fn a_draft_or_failing_check_does_not_block_but_other_reasons_still_do() {
         assert_eq!(slack_skip_detail(&[DRAFT_REASON.to_owned()]), None);
         assert_eq!(slack_skip_detail(&["check ci is fail".to_owned()]), None);
+        assert_eq!(slack_skip_detail(&[BEHIND_REASON.to_owned()]), None);
+        assert_eq!(
+            slack_skip_detail(&[BEHIND_REASON.to_owned(), "check ci is pending".to_owned()]),
+            Some("check ci is pending".to_owned())
+        );
+        assert_eq!(soften_cached_block(&Some(BEHIND_REASON.into())), None);
         assert_eq!(
             slack_skip_detail(&["check ci is pending".to_owned()]),
             Some("check ci is pending".to_owned())

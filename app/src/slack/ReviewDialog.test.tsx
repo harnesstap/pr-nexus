@@ -662,7 +662,10 @@ test("two CODEOWNERS lines propose two sends and the team button changes the cha
       return Promise.resolve({
         cards: [card(first), card(second)],
         skipped: [],
-        pr_warnings: [{ kind: "checks" as const, pr_id: 7, number: 42, message: "#42 has failing checks." }],
+        pr_warnings: [
+          { kind: "checks" as const, pr_id: 7, number: 42, message: "#42 has failing checks." },
+          { kind: "behind" as const, pr_id: 7, number: 42, message: "#42 is behind main." },
+        ],
         groups: [
           { pr_id: 7, number: 42, group_id: "line-a", pattern: "/src/", teams: ["acme/team-a", "acme/team-b"], selected: picked, hint: null, channel_id: first.channel_id, workspace: "acme" },
           { pr_id: 7, number: 42, group_id: "line-c", pattern: "/billing/", teams: ["acme/team-c", "acme/team-d"], selected: "acme/team-c", hint: null, channel_id: second.channel_id, workspace: "acme" },
@@ -681,6 +684,7 @@ test("two CODEOWNERS lines propose two sends and the team button changes the cha
   expect(screen.getByRole("region", { name: "Choose a channel for @acme/team-e" })).toBeInTheDocument();
   expect(screen.getByRole("combobox", { name: "Channel" })).toBeInTheDocument();
   expect(screen.getByRole("note", { name: "Failing checks" })).toHaveTextContent("#42 has failing checks.");
+  expect(screen.getByRole("note", { name: "Behind base" })).toHaveTextContent("#42 is behind main.");
   fireEvent.click(screen.getByRole("button", { name: "@acme/team-b" }));
   expect(await screen.findByRole("region", { name: "#team-b" })).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Send 2 messages" }));
