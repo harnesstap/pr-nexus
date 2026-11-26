@@ -1,3 +1,0 @@
-kind: Added
-body: "Agents (MCP): new `slack_create_canvas` tool creates a Slack canvas from a title and Markdown content, through the same approval as Slack sends. It is off until you switch it on in Settings → MCP server and needs the `canvases:write` scope, so sign in to the workspace again."
-time: 2026-11-25T12:35:16Z
