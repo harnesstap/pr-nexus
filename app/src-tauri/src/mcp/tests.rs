@@ -1460,13 +1460,34 @@ async fn slack_reads_are_off_by_default_then_audited_without_text() {
         )
         .await;
     ok(&searched);
+    let picture = h
+        .call(
+            &session,
+            "slack_read_file",
+            json!({"file_id": "F0ACME0003"}),
+        )
+        .await;
+    let listed = &ok(&picture)["results"][0]["images"];
+    assert_eq!(listed[0]["index"], 0, "{picture}");
+    assert!(ok(&picture).get("_images").is_none(), "{picture}");
+    let blocks = picture["content"].as_array().unwrap();
+    assert_eq!(blocks[0]["type"], "text");
+    assert_eq!(blocks[1]["type"], "image");
+    assert_eq!(blocks[1]["mimeType"], "image/png");
+    let png = crate::mcp::slack::fixtures::SCREENSHOT_PNG;
+    assert_eq!(blocks[1]["data"], png);
+    assert!(!blocks[0]["text"].as_str().unwrap().contains(png));
 
     let events = h.audit.0.lock().unwrap().clone();
+    assert!(
+        !format!("{events:?}").contains(png),
+        "no image data in the audit"
+    );
     let slack: Vec<_> = events
         .iter()
         .filter(|e| e.tool.starts_with("slack_"))
         .collect();
-    assert_eq!(slack.len(), 3);
+    assert_eq!(slack.len(), 4);
     assert_eq!(slack[0].outcome, Outcome::Denied);
     assert_eq!(slack[0].capability, Capability::SlackReads);
     assert_eq!(slack[1].target_ids(), "slack:C0ACME0001");
@@ -1477,6 +1498,7 @@ async fn slack_reads_are_off_by_default_then_audited_without_text() {
     let text = format!("{rows:?}");
     assert!(text.contains("slack:C0ACME0001"), "{text}");
     assert!(!text.contains("secret plans"), "{text}");
+    assert!(!text.contains(png), "{text}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

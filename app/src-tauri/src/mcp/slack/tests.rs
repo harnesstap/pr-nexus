@@ -595,6 +595,7 @@ impl ToolCaller for RecordingCaller {
                 text: "not_in_channel".into(),
                 structured: None,
                 is_error: true,
+                images: Vec::new(),
             });
         }
         self.inner.call(tool, arguments)
@@ -1436,15 +1437,17 @@ fn a_canvas_needs_one_workspace_a_title_and_content() {
 /// Fixtures, but Slack refuses `slack_create_canvas` with `text`.
 struct CanvasRefused(&'static str);
 
-struct CanvasRefusedCaller(Arc<dyn ToolCaller>, &'static str);
+/// Fixtures, but Slack refuses the tool named first with the text second.
+struct CanvasRefusedCaller(Arc<dyn ToolCaller>, &'static str, &'static str);
 
 impl ToolCaller for CanvasRefusedCaller {
     fn call(&self, tool: &str, arguments: JsonObject) -> Result<ToolOutput, ProviderError> {
-        if tool == "slack_create_canvas" {
+        if tool == self.2 {
             return Ok(ToolOutput {
                 text: self.1.into(),
                 structured: None,
                 is_error: true,
+                images: Vec::new(),
             });
         }
         self.0.call(tool, arguments)
@@ -1456,6 +1459,7 @@ impl Upstream for CanvasRefused {
         Ok(Arc::new(CanvasRefusedCaller(
             Fixtures.caller(state, ws)?,
             self.0,
+            "slack_create_canvas",
         )))
     }
     fn enterprise(&self, state: &AppState, account: &Account) -> Option<String> {
@@ -1541,4 +1545,145 @@ fn creating_canvases_is_off_until_switched_on() {
         Capability::SlackSends,
         "slack_send_message"
     ));
+}
+
+/// Slack answers a picture with an image block, and a bad one in the same
+/// reply.
+struct BadPicture(Arc<dyn ToolCaller>);
+
+impl ToolCaller for BadPicture {
+    fn call(&self, tool: &str, arguments: JsonObject) -> Result<ToolOutput, ProviderError> {
+        let mut output = self.0.call(tool, arguments)?;
+        output
+            .images
+            .push(pr_nexus_providers::slack_mcp::schema::ToolImage {
+                data: "PGh0bWw+".into(), // "<html>"
+                mime_type: "image/png".into(),
+            });
+        Ok(output)
+    }
+}
+
+struct BadPictures;
+
+impl Upstream for BadPictures {
+    fn caller(&self, state: &AppState, ws: &Exposed) -> Result<Arc<dyn ToolCaller>, AppError> {
+        Ok(Arc::new(BadPicture(Fixtures.caller(state, ws)?)))
+    }
+    fn enterprise(&self, state: &AppState, account: &Account) -> Option<String> {
+        Fixtures.enterprise(state, account)
+    }
+    fn granted_scopes(&self, _state: &AppState, _account: &Account) -> Option<Vec<String>> {
+        None
+    }
+}
+
+#[test]
+fn a_screenshot_reaches_the_agent_as_an_image_and_a_fake_one_does_not() {
+    let env = env(&[ACME], Arc::new(BadPictures));
+    let mut reply = call(
+        &env,
+        "slack_read_file",
+        json!({ "file_id": format!("{ACME}/F0ACME0003") }),
+    )
+    .unwrap();
+    let result = &reply["results"][0];
+    assert!(content(&reply).contains("screenshot.png"));
+    assert_eq!(
+        result["images"],
+        json!([{ "index": 0, "mime_type": "image/png", "bytes": 69 }])
+    );
+    assert_eq!(
+        result["images_skipped"],
+        json!([{ "mime_type": "image/png", "reason": "not_an_image" }])
+    );
+    let blocks = crate::mcp::images::take(&mut reply);
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(
+        blocks[0].as_image().unwrap().data,
+        super::fixtures::SCREENSHOT_PNG
+    );
+    assert!(reply.get(crate::mcp::images::IMAGES_KEY).is_none());
+
+    // A text file has no image fields and no images.
+    let env = self::env(&[ACME], Arc::new(Fixtures));
+    let mut text = call(
+        &env,
+        "slack_read_file",
+        json!({ "file_id": format!("{ACME}/F0ACME0001") }),
+    )
+    .unwrap();
+    assert!(text["results"][0].get("images").is_none());
+    assert!(crate::mcp::images::take(&mut text).is_empty());
+}
+
+/// Fixtures, but Slack refuses `tool` for a missing scope.
+struct ScopeRefused(&'static str);
+
+impl Upstream for ScopeRefused {
+    fn caller(&self, state: &AppState, ws: &Exposed) -> Result<Arc<dyn ToolCaller>, AppError> {
+        Ok(Arc::new(CanvasRefusedCaller(
+            Fixtures.caller(state, ws)?,
+            "missing_scope",
+            self.0,
+        )))
+    }
+    fn enterprise(&self, state: &AppState, account: &Account) -> Option<String> {
+        Fixtures.enterprise(state, account)
+    }
+    fn granted_scopes(&self, _state: &AppState, _account: &Account) -> Option<Vec<String>> {
+        None
+    }
+}
+
+#[test]
+fn a_send_refused_for_a_scope_names_the_scope_to_add() {
+    for (tool, arguments, scope) in [
+        (
+            "slack_send_message",
+            json!({ "workspace": "acme", "channel_id": ACME_CHANNEL, "message": "Ship it", "thread_ts": "1761055380.000100" }),
+            "chat:write",
+        ),
+        (
+            "slack_add_reaction",
+            json!({ "workspace": "acme", "channel_id": ACME_CHANNEL, "message_ts": "1761055380.000100", "emoji": "eyes" }),
+            "reactions:write",
+        ),
+    ] {
+        let env = env(&[ACME, GRID_TEAM], Arc::new(ScopeRefused(tool)));
+        let mut settings = config::load(&env.state.store).unwrap();
+        settings.slack_sends = true;
+        settings.slack_send_mode = SlackSendMode::Automatic;
+        config::save(&env.state.store, &settings).unwrap();
+        let err = call(&env, tool, arguments).unwrap_err();
+        assert!(
+            err.message.starts_with(tool),
+            "Slack's text first: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains(&format!("`{scope}`")),
+            "{tool}: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("Sign in again"),
+            "{tool}: {}",
+            err.message
+        );
+    }
+}
+
+#[test]
+fn every_send_tool_scope_is_requested_at_sign_in() {
+    for spec in super::sends::send_tools() {
+        if let Some(scope) = super::sends::send_scope(spec.name) {
+            assert!(
+                pr_nexus_providers::slack_mcp::USER_SCOPES.contains(&scope),
+                "{} needs {scope}",
+                spec.name
+            );
+        }
+    }
+    assert_eq!(super::sends::send_scope("slack_get_proposal"), None);
 }

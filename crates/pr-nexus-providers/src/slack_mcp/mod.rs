@@ -57,7 +57,9 @@ pub const USER_SCOPES: &[&str] = &[
     "files:read",
     "canvases:read",
     "lists:read",
-    // Agent sends (§10.1.3): `slack_create_canvas`.
+    // Agent sends (§10.1.3): `slack_add_reaction` and `slack_create_canvas`
+    // (messages use `chat:write` above).
+    "reactions:write",
     "canvases:write",
 ];
 

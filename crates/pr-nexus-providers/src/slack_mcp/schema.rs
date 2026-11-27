@@ -54,12 +54,22 @@ pub fn pin_mismatch(tools: &[ToolShape]) -> Option<String> {
     None
 }
 
-/// The text and structured parts of one `tools/call` result.
+/// The text, structured and image parts of one `tools/call` result.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ToolOutput {
     pub text: String,
     pub structured: Option<Value>,
     pub is_error: bool,
+    /// Image blocks, as Slack sent them (`slack_read_file` on a picture).
+    /// Not checked here: the MCP server checks them before agents get one.
+    pub images: Vec<ToolImage>,
+}
+
+/// One MCP `image` content block: base64 `data` and its declared type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolImage {
+    pub data: String,
+    pub mime_type: String,
 }
 
 impl ToolOutput {

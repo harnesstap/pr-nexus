@@ -33,6 +33,7 @@
         "files:read",
         "canvases:read",
         "lists:read",
+        "reactions:write",
         "canvases:write"
       ],
       "user_optional": [

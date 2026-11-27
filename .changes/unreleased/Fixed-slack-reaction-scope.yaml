@@ -1,0 +1,3 @@
+kind: Fixed
+body: "Agents (MCP): adding a Slack reaction needs the reactions:write scope, which PR Nexus now requests. Add it under User Token Scopes in your Slack app, then click Sign in again in Settings → MCP server. A send refused for a missing scope now names the scope to add."
+time: 2026-11-27T11:54:23Z

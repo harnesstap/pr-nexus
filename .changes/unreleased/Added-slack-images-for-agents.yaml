@@ -1,0 +1,3 @@
+kind: Added
+body: "Agents (MCP): slack_read_file now passes Slack screenshots and other pictures (PNG, JPEG, GIF, WebP, up to 5 MB each) to the agent as images, instead of only the file details."
+time: 2026-11-27T11:54:23Z

@@ -75,7 +75,7 @@ The MCP server is off by default. To turn it on, open **Settings → MCP server*
 
 - read PRs and projects;
 - write local data (notes, stars, projects);
-- read Slack in the workspaces you expose;
+- read Slack in the workspaces you expose, including screenshots and other pictures shared there;
 - send Slack messages, including review requests for several PRs at once (`request_reviews`);
 - create Slack canvases (`slack_create_canvas`), for example a list of PRs waiting for review. This tool is off until you switch it on, and it needs the `canvases:write` scope, so sign in to the workspace again after updating.
 

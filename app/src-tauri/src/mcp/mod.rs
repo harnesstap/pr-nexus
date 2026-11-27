@@ -10,6 +10,8 @@
 //! - [`writes`]: the Local writes tools (projects, links, notes, stars).
 //! - [`audit`]: every call goes through one [`audit::AuditSink`]; the
 //!   default one also keeps the `mcp_audit` table shown under Activity.
+//! - [`images`]: pictures in tool replies, checked, then sent as `image`
+//!   content blocks (never stored in the audit log).
 //! - [`control`]: start, stop and status for the Settings → Agents tab.
 //!
 //! Off by default.
@@ -19,6 +21,7 @@ pub mod clients;
 pub mod config;
 pub mod control;
 mod hosts;
+pub mod images;
 pub mod profiles;
 pub mod prompts;
 pub mod server;
