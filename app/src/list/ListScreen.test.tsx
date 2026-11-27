@@ -119,6 +119,22 @@ function api(projects: ProjectDto[], rows: SearchRow[] = []): Api {
     dequeuePullRequest: () => Promise.reject(new Error("unused")),
     enqueuePullRequests: () => Promise.reject(new Error("unused")),
     closePullRequests: () => Promise.reject(new Error("unused")),
+    previewApprovals: (ids: number[]) =>
+      Promise.resolve(
+        ids.map((id) => ({
+          id,
+          repo: "acme/widgets",
+          number: id,
+          title: `PR ${id}`,
+          action: "approve" as const,
+          reason: null,
+          message: null,
+          head_sha: `sha-${id}`,
+          draft: false,
+          approved_earlier: false,
+        })),
+      ),
+    approvePullRequests: () => Promise.reject(new Error("unused")),
     prBranchStatus: () => Promise.reject(new Error("unused")),
     updatePrBranch: () => Promise.reject(new Error("unused")),
     prSlackContext: () => Promise.resolve([]),
@@ -347,6 +363,32 @@ test("the sidebar's new-project field can take the current selection", async () 
   await waitFor(() => expect(create).toHaveBeenCalledWith("Launch", [7]));
   expect(await screen.findByRole("status")).toHaveTextContent("Created Launch with 1 PR");
   expect(await within(projects).findByRole("button", { name: "Launch" })).toHaveAttribute("aria-current", "page");
+});
+
+test("Approve in the selection bar checks the selected PRs, approves them, and reloads the list", async () => {
+  const fake = api([], [pr(7, "Add passkeys"), pr(8, "Fix tax rounding")]);
+  const approve = vi.spyOn(fake, "approvePullRequests").mockResolvedValue([
+    { id: 7, repo: "acme/widgets", number: 7, title: "PR 7", outcome: "approved", reason: null, message: null, draft: false },
+    { id: 8, repo: "acme/widgets", number: 8, title: "PR 8", outcome: "approved", reason: null, message: null, draft: false },
+  ]);
+  const preview = vi.spyOn(fake, "previewApprovals");
+  render(<ListScreen api={fake} boot={boot} onBoot={() => undefined} />);
+  fireEvent.click(await screen.findByRole("checkbox", { name: /Select Add passkeys/ }));
+  fireEvent.click(screen.getByRole("checkbox", { name: /Select Fix tax rounding/ }));
+  fireEvent.click(within(screen.getByRole("region", { name: "Selection actions" })).getByRole("button", { name: "Approve" }));
+  await waitFor(() => expect(preview).toHaveBeenCalledWith([7, 8]));
+  fireEvent.click(await screen.findByRole("button", { name: "Approve 2 PRs" }));
+  await waitFor(() =>
+    expect(approve).toHaveBeenCalledWith(
+      [
+        { id: 7, head_sha: "sha-7" },
+        { id: 8, head_sha: "sha-8" },
+      ],
+      "",
+    ),
+  );
+  expect(await screen.findByRole("status")).toHaveTextContent("Approved 2 pull requests.");
+  expect(screen.queryByRole("dialog")).toBeNull();
 });
 
 test("Add to project → New project from selection creates it, confirms, and highlights it", async () => {

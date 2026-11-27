@@ -434,6 +434,30 @@ impl VcsProvider for DemoProvider {
     fn close_pull_request(&self, _: &PullRequest) -> Result<(), ProviderError> {
         Ok(())
     }
+    /// Demo probes read the stored rows; the viewer has not reviewed any.
+    fn approval_probes(
+        &self,
+        prs: &[PullRequest],
+    ) -> Result<pr_nexus_core::approve::ApprovalProbes, ProviderError> {
+        Ok(pr_nexus_core::approve::ApprovalProbes {
+            viewer_login: "ada".into(),
+            probes: prs
+                .iter()
+                .map(|pr| pr_nexus_core::approve::ApprovalProbe {
+                    node_id: pr.remote.id.clone(),
+                    state: pr.state,
+                    is_draft: pr.is_draft,
+                    head_oid: pr.head_sha.clone(),
+                    author_login: pr.author_login.clone(),
+                    viewer_review_state: None,
+                    viewer_review_commit: None,
+                })
+                .collect(),
+        })
+    }
+    fn approve_pull_request(&self, _: &PullRequest, _: &str, _: &str) -> Result<(), ProviderError> {
+        Ok(())
+    }
     fn kind(&self) -> VcsKind {
         VcsKind::GitHub
     }

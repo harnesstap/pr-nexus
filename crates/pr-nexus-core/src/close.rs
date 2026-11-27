@@ -338,7 +338,7 @@ fn bare(id: PrId, outcome: CloseOutcome, comment_posted: bool, message: String) 
 }
 
 /// `f` over `items` on at most `limit` threads, in input order.
-fn bounded<T, R>(items: &[T], limit: usize, f: impl Fn(&T) -> R + Sync) -> Vec<R>
+pub(crate) fn bounded<T, R>(items: &[T], limit: usize, f: impl Fn(&T) -> R + Sync) -> Vec<R>
 where
     T: Sync,
     R: Send,

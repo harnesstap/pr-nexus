@@ -1,0 +1,13 @@
+query ApprovalProbes($ids: [ID!]!) {
+  viewer { login }
+  nodes(ids: $ids) {
+    ... on PullRequest {
+      id
+      state
+      isDraft
+      headRefOid
+      author { login }
+      viewerLatestReview { state commit { oid } }
+    }
+  }
+}

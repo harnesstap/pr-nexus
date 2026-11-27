@@ -762,6 +762,8 @@ const api: Api = {
       }),
     ),
   closePullRequests: () => Promise.resolve([]),
+  previewApprovals: () => Promise.resolve([]),
+  approvePullRequests: () => Promise.resolve([]),
   setPrDraft: (_id, draft) => Promise.resolve(mockOverview({ is_draft: draft, merge_state: draft ? "draft" : "blocked" })),
   prBranchStatus: () =>
     Promise.resolve(

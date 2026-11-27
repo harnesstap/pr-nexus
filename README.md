@@ -15,6 +15,7 @@ All your open GitHub pull requests in one desktop app, grouped by project. Ask t
 - **Spot stuck PRs.** Quick filters and row cues show failing checks, conflicts, drafts, requested changes and reviews that have waited too long.
 - **Review requests on Slack.** PR Nexus finds the owning teams from CODEOWNERS, maps each team to its Slack channel, and previews the message before it sends it. Later you can bump the same thread. It also works in bulk across several PRs.
 - **Act on a PR without leaving the app.** You can mark a PR ready, convert it to draft, toggle auto-merge, update the branch, and keep notes and stars.
+- **Approve in batches.** Select several PRs, such as a set of dependency bumps, and approve them in one go. PR Nexus checks each one on GitHub first and tells you which it skips and why.
 - **Keyboard first.** <kbd>⌘K</kbd> (<kbd>Ctrl+K</kbd> on Linux and Windows) opens the command palette. Press <kbd>?</kbd> to list the shortcuts.
 - **Works with AI assistants.** An optional local MCP server lets Cursor, VS Code and other MCP clients read your PRs and, if you allow it, propose Slack messages for you to approve.
 

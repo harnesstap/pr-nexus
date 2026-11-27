@@ -234,6 +234,8 @@ pub fn run() {
             commands::dequeue_pull_request,
             commands::enqueue_pull_requests,
             commands::close_pull_requests,
+            commands::preview_approvals,
+            commands::approve_pull_requests,
             commands::pr_branch_status,
             commands::update_pr_branch,
             mcp::control::mcp_settings,

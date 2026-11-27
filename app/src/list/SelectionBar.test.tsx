@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import { SelectionBar, barLayout } from "./SelectionBar";
 
@@ -140,4 +140,20 @@ test("a very narrow column shortens the count and the Slack button but keeps it 
   );
   expect(onRequest).toHaveBeenCalled();
   expect(onClear).toHaveBeenCalled();
+});
+
+test("Approve stays visible at every width and opens the confirmation", () => {
+  for (const width of [1000, 600, 400]) {
+    const onApprove = vi.fn();
+    const { region } = bar(width, { onApprove });
+    fireEvent.click(within(region).getByRole("button", { name: "Approve" }));
+    expect(onApprove).toHaveBeenCalledTimes(1);
+    cleanup();
+    vi.restoreAllMocks();
+  }
+});
+
+test("Approve is hidden when approving is unavailable", () => {
+  const { region } = bar(1000);
+  expect(within(region).queryByRole("button", { name: "Approve" })).toBeNull();
 });

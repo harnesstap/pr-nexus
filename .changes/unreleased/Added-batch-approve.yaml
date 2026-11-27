@@ -1,0 +1,3 @@
+kind: Added
+body: "Approve several pull requests at once: select them and click Approve in the selection bar. The confirmation checks each one on GitHub first, lists what will be approved and why the rest are skipped (merged, closed, your own, already approved), and approves only the commit it checked. Results show per pull request."
+time: 2026-11-27T12:23:15Z

@@ -919,6 +919,44 @@ export interface CloseReport {
   message: string | null;
 }
 
+/** Why a batch approval leaves a pull request alone (§8.2 Approve pull requests). */
+export type ApprovalSkipReason = "merged" | "closed" | "own_pr" | "already_approved" | "not_github" | "not_found";
+
+/** One row of the approval confirmation, read fresh from GitHub. */
+export interface ApprovalPreview {
+  id: number;
+  repo: string;
+  number: number;
+  title: string;
+  action: "approve" | "skip";
+  reason: ApprovalSkipReason | null;
+  message: string | null;
+  /** The head commit that will be approved. Empty when skipped. */
+  head_sha: string;
+  draft: boolean;
+  /** You approved an older commit; this approves the new head. */
+  approved_earlier: boolean;
+}
+
+export interface ApproveTarget {
+  id: number;
+  head_sha: string;
+}
+
+export type ApproveOutcome = "approved" | "skipped" | "failed";
+
+export interface ApproveReport {
+  id: number;
+  repo: string;
+  number: number;
+  title: string;
+  outcome: ApproveOutcome;
+  reason: ApprovalSkipReason | null;
+  /** Why it was skipped or failed. Empty after a clean approval. */
+  message: string | null;
+  draft: boolean;
+}
+
 /** One CODEOWNERS owner set on the changed files. */
 export interface OwnerGroup {
   id: string;
@@ -1332,6 +1370,10 @@ export interface Api {
    * one first. The branch stays. One failure does not stop the others.
    */
   closePullRequests(ids: number[], comment: string): Promise<CloseReport[]>;
+  /** Which of `ids` would be approved, read fresh from GitHub. Sends nothing. */
+  previewApprovals(ids: number[]): Promise<ApprovalPreview[]>;
+  /** Approves each target's previewed head commit; `comment` is the review body when not blank. */
+  approvePullRequests(targets: ApproveTarget[], comment: string): Promise<ApproveReport[]>;
   /** The Branch card; `refresh: false` reuses the cached overview. */
   prBranchStatus(id: number, refresh: boolean): Promise<BranchStatus>;
   /** Brings the base into the branch; the caller confirms a rebase first. */
@@ -1504,6 +1546,8 @@ export const tauriApi: Api = {
   dequeuePullRequest: (id) => invoke("dequeue_pull_request", { id }),
   enqueuePullRequests: (ids) => invoke("enqueue_pull_requests", { ids }),
   closePullRequests: (ids, comment) => invoke("close_pull_requests", { ids, comment }),
+  previewApprovals: (ids) => invoke("preview_approvals", { ids }),
+  approvePullRequests: (targets, comment) => invoke("approve_pull_requests", { targets, comment }),
   prBranchStatus: (id, refresh) => invoke("pr_branch_status", { id, refresh }),
   updatePrBranch: (id, method) => invoke("update_pr_branch", { id, method }),
   prSlackContext: (prId, refresh) => invoke("pr_slack_context", { prId, refresh }),

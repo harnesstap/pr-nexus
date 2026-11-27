@@ -2,6 +2,7 @@ import { createPortal } from "react-dom";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Api, Bootstrap, ListRow, PrDetail, PrOverview, ProjectDto, RemoteReviewFilter, ReplacedLinkDto } from "../api";
 import { CloseDialog, type CloseTarget } from "../detail/CloseDialog";
+import { ApproveDialog, type ApproveTargetRow } from "./ApproveDialog";
 import { MergeQueueDialog } from "../detail/MergeQueueDialog";
 import { errorMessage } from "../api";
 import { every } from "../every";
@@ -928,6 +929,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
   const [mergedPatches, setMergedPatches] = useState<Record<number, number>>({});
   const [closeTargets, setCloseTargets] = useState<CloseTarget[] | null>(null);
   const [queueRows, setQueueRows] = useState<ListRow[] | null>(null);
+  const [approveRows, setApproveRows] = useState<ApproveTargetRow[] | null>(null);
   const removedIds = useMemo(() => {
     const ids = new Set<number>();
     for (const [id, until] of Object.entries(mergedPatches)) if (version <= until) ids.add(Number(id));
@@ -1544,6 +1546,7 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
                 onBulkReview={setBulkIds}
                 onClosePullRequests={setCloseTargets}
                 onEnqueuePullRequests={setQueueRows}
+                onApprovePullRequests={setApproveRows}
                 onNotice={setNotice}
                 sla={sla}
                 warnHours={warnHours}
@@ -1598,6 +1601,15 @@ export function ListScreen({ api, boot, onBoot, onRerunSetup, onSwitchProfile, o
                   setQueueRows(null);
                   void reload();
                 }}
+                onNotice={(text) => setNotice({ text })}
+              />
+            )}
+            {approveRows && approveRows.length > 0 && (
+              <ApproveDialog
+                api={api}
+                rows={approveRows}
+                onDismiss={() => setApproveRows(null)}
+                onApproved={() => void reload()}
                 onNotice={(text) => setNotice({ text })}
               />
             )}
