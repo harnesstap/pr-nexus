@@ -7,6 +7,7 @@ import {
   type ReactNode,
 } from "react";
 import {
+  CheckIcon,
   CloseIcon,
   CopyIcon,
   FolderPlusIcon,
@@ -18,7 +19,7 @@ import type { SnoozeChoice } from "./model";
 import { hint } from "./shortcuts";
 
 /** Below this list width the secondary actions move into the More menu. */
-export const SELECTION_BAR_FULL_PX = 760;
+export const SELECTION_BAR_FULL_PX = 880;
 /** Below this the count and the Slack button shorten too. */
 export const SELECTION_BAR_COMPACT_PX = 480;
 
@@ -51,6 +52,8 @@ interface Props {
   onMarkAllRead: () => void;
   onSnooze: (choice: SnoozeChoice) => void;
   onMute: (muted: boolean) => void;
+  /** Opens the batch approval confirmation (§8.2 Approve pull requests). Omitted when approving is unavailable. */
+  onApprove?: () => void;
   /** Opens the merge-queue confirmation. Omitted when no selected PR uses a queue. */
   onEnqueue?: () => void;
 }
@@ -66,7 +69,8 @@ const secondary =
  * still does not fit, it wraps onto a second line. More is always there:
  * it holds mark read, snooze, mute, Close, and Add to merge queue when a
  * selected pull request's base branch requires one. Add and Copy join it
- * when the column is narrow. Clear and the Slack button always stay visible.
+ * when the column is narrow. Clear, the Slack button, and Approve always
+ * stay visible.
  */
 export function SelectionBar({
   count,
@@ -78,6 +82,7 @@ export function SelectionBar({
   onCopy,
   onClose,
   onEnqueue,
+  onApprove,
   onClear,
   onMarkRead,
   onMarkAllRead,
@@ -180,6 +185,24 @@ export function SelectionBar({
             {layout === "compact" ? "Slack" : "Request / bump on Slack"}
           </button>
         </Tooltip>
+        {onApprove && (
+          <Tooltip
+            label="Approve"
+            detail="Check the selected PRs on GitHub, then approve them after you confirm"
+            side="top"
+          >
+            <button
+              type="button"
+              aria-label="Approve"
+              className={`${secondary} shrink-0 whitespace-nowrap ${layout === "compact" ? "px-3" : ""}`}
+              disabled={count === 0}
+              onClick={onApprove}
+            >
+              <CheckIcon />
+              Approve
+            </button>
+          </Tooltip>
+        )}
         {!folded && (
           <>
             <div className="relative shrink-0">

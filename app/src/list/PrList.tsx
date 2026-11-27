@@ -160,6 +160,8 @@ interface Props {
   onMute?: (ids: number[], muted: boolean) => void;
   /** Opens the merge-queue confirmation for the active selection. */
   onEnqueuePullRequests?: (rows: ListRow[]) => void;
+  /** Opens the batch approval confirmation for these pull requests (§8.2 Approve pull requests). */
+  onApprovePullRequests?: (rows: { id: number; repo: string; number: number; title: string }[]) => void;
   /** Shows a toast, e.g. after "Copy as Markdown". */
   onNotice?: (toast: Toast) => void;
   /** Draft flags changed in the app ahead of the reload, by PR id. */
@@ -276,6 +278,7 @@ export function PrList({
   onSnooze,
   onMute,
   onEnqueuePullRequests,
+  onApprovePullRequests,
   onNotice,
   draftPatches,
   removedIds,
@@ -1175,6 +1178,21 @@ export function PrList({
                     const row = byId.get(id);
                     return row ? [row] : [];
                   }));
+                }
+              : undefined
+          }
+          onApprove={
+            onApprovePullRequests
+              ? () => {
+                  const byId = new Map(flat.map((item) => [item.row.id, item.row]));
+                  onApprovePullRequests(
+                    activeIds.map((id) => {
+                      const row = byId.get(id);
+                      return row
+                        ? { id: row.id, repo: row.repo, number: row.number, title: row.title }
+                        : { id, repo: "", number: 0, title: "" };
+                    }),
+                  );
                 }
               : undefined
           }

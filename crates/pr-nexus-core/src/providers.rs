@@ -578,6 +578,29 @@ pub trait VcsProvider: Send + Sync {
             "closing pull requests is not available".into(),
         ))
     }
+    /// Fresh state, head commit, author, and the viewer's latest review for
+    /// `prs`, in as few requests as the provider allows. A pull request the
+    /// provider no longer returns is left out. Read-only.
+    fn approval_probes(
+        &self,
+        _prs: &[PullRequest],
+    ) -> Result<crate::approve::ApprovalProbes, ProviderError> {
+        Err(ProviderError::Unsupported(
+            "approving pull requests is not available".into(),
+        ))
+    }
+    /// Submits an approving review of `head_oid` with `body` (none when
+    /// empty). Never merges.
+    fn approve_pull_request(
+        &self,
+        _pr: &PullRequest,
+        _head_oid: &str,
+        _body: &str,
+    ) -> Result<(), ProviderError> {
+        Err(ProviderError::Unsupported(
+            "approving pull requests is not available".into(),
+        ))
+    }
     /// Compares `base...head` (REST compare): how far the head is behind,
     /// and who wrote its commits. One request; never called by sync.
     fn compare_branches(

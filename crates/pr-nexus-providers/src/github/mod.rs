@@ -8,6 +8,7 @@
 //! page shrinks and retries when GitHub times out (502/503/504 or a GraphQL
 //! timeout error), and waits out a secondary rate limit before retrying.
 
+mod approve;
 mod auth;
 mod branch;
 mod http;
@@ -578,6 +579,22 @@ impl VcsProvider for GithubClient {
 
     fn dequeue_pull_request(&self, pr: &PullRequest) -> Result<(), ProviderError> {
         merge_queue::dequeue(self, pr)
+    }
+
+    fn approval_probes(
+        &self,
+        prs: &[PullRequest],
+    ) -> Result<pr_nexus_core::approve::ApprovalProbes, ProviderError> {
+        approve::probes(self, prs)
+    }
+
+    fn approve_pull_request(
+        &self,
+        pr: &PullRequest,
+        head_oid: &str,
+        body: &str,
+    ) -> Result<(), ProviderError> {
+        approve::approve(self, pr, head_oid, body)
     }
 
     fn compare_branches(

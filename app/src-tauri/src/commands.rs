@@ -1703,6 +1703,46 @@ pub async fn close_pull_requests(
     .await
 }
 
+/// Which of `ids` would be approved, read fresh from GitHub (§8.2 Approve pull requests).
+/// Sends nothing.
+#[tauri::command]
+pub async fn preview_approvals(
+    app: State<'_, std::sync::Arc<AppState>>,
+    ids: Vec<i64>,
+) -> Result<Vec<pr_nexus_core::approve::ApprovalPreview>, AppError> {
+    let ids: Vec<PrId> = ids.into_iter().map(PrId).collect();
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        with_vcs(state, |provider| {
+            pr_nexus_core::approve::preview(&state.store, provider, &ids)
+        })
+    })
+    .await
+}
+
+/// Approves each target's previewed head commit, with `comment` as the
+/// review body when it is not blank. The UI confirms first. One failure
+/// does not stop the others; each report says what happened.
+#[tauri::command]
+pub async fn approve_pull_requests(
+    app: State<'_, std::sync::Arc<AppState>>,
+    targets: Vec<pr_nexus_core::approve::ApproveTarget>,
+    comment: Option<String>,
+) -> Result<Vec<pr_nexus_core::approve::ApproveReport>, AppError> {
+    let comment = comment.unwrap_or_default();
+    let app = blocking::Handle::new(&app);
+    blocking::run(move || {
+        let state = app.inner().as_ref();
+        let reports = with_vcs(state, |provider| {
+            pr_nexus_core::approve::approve(&state.store, provider, &targets, &comment)
+        })?;
+        state::note_list_changed(state);
+        Ok(reports)
+    })
+    .await
+}
+
 /// Adds the pull request to its base branch's merge queue and returns the
 /// refreshed overview. The UI confirms first. Never called by sync.
 #[tauri::command]

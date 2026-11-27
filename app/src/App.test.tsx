@@ -129,6 +129,8 @@ function api(): Api {
     dequeuePullRequest: () => Promise.reject(new Error("unused")),
     enqueuePullRequests: () => Promise.reject(new Error("unused")),
     closePullRequests: () => Promise.reject(new Error("unused")),
+    previewApprovals: () => Promise.reject(new Error("unused")),
+    approvePullRequests: () => Promise.reject(new Error("unused")),
     prBranchStatus: () => Promise.reject(new Error("unused")),
     updatePrBranch: () => Promise.reject(new Error("unused")),
     prSlackContext: () => Promise.resolve([]),

@@ -1,0 +1,7 @@
+mutation ApprovePullRequest($id: ID!, $commit: GitObjectID!, $body: String) {
+  addPullRequestReview(
+    input: { pullRequestId: $id, commitOID: $commit, event: APPROVE, body: $body }
+  ) {
+    pullRequestReview { id state }
+  }
+}
