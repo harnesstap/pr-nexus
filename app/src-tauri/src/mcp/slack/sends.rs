@@ -642,6 +642,11 @@ pub(super) fn execute(state: &AppState, ws: &Exposed, id: u64) -> Result<Proposa
         Some(card) => super::reviews::send(state, card),
         None => {
             let outcome = run(state, &tool, vec![ws.clone()], None, |_| arguments.clone())
+                .map(|mut reply| {
+                    // A send has no picture to show; never keep one in a proposal.
+                    crate::mcp::images::take(&mut reply);
+                    reply
+                })
                 .map_err(|err| explain(&tool, err));
             let link = outcome
                 .as_ref()
@@ -668,29 +673,49 @@ pub(super) fn execute(state: &AppState, ws: &Exposed, id: u64) -> Result<Proposa
     Ok(proposal.clone())
 }
 
-/// Slack's error for `tool`, with what to do about it when PR Nexus knows.
-fn explain(tool: &str, mut err: AppError) -> AppError {
-    if tool != CREATE_CANVAS {
-        return err;
+/// The user scope Slack wants for each send tool ([Slack MCP server
+/// overview, "OAuth scopes"](https://docs.slack.dev/ai/slack-mcp-server/#oauth-scopes)).
+/// Slack does not list one for drafts; they are messages, so `chat:write`.
+pub(super) fn send_scope(tool: &str) -> Option<&'static str> {
+    match tool {
+        "slack_send_message" | "slack_schedule_message" | "slack_send_message_draft" => {
+            Some("chat:write")
+        }
+        "slack_add_reaction" => Some("reactions:write"),
+        CREATE_CANVAS => Some("canvases:write"),
+        _ => None,
     }
+}
+
+/// Slack's error for `tool`, with what to do about it when PR Nexus knows.
+/// Slack's own text stays first.
+fn explain(tool: &str, mut err: AppError) -> AppError {
     let lower = err.message.to_ascii_lowercase();
-    let hint = if lower.contains("missing_scope") {
-        Some(
-            "Creating canvases needs the `canvases:write` scope: add it to your Slack app's user \
-             token scopes, then sign in to this workspace again in Settings → Slack.",
-        )
-    } else if [
-        "unknown tool",
-        "tool not found",
-        "not found: slack_create_canvas",
-        "no such tool",
-    ]
-    .iter()
-    .any(|needle| lower.contains(needle))
+    let scope_hint = send_scope(tool)
+        .filter(|_| lower.contains("missing_scope"))
+        .map(|scope| {
+            format!(
+                "This needs the `{scope}` user scope, which this workspace's sign-in lacks: \
+                 make sure your Slack app lists it under OAuth & Permissions → User Token Scopes, \
+                 then click Sign in again next to this workspace in PR Nexus → Settings → MCP server."
+            )
+        });
+    let hint = if scope_hint.is_some() {
+        scope_hint
+    } else if tool == CREATE_CANVAS
+        && [
+            "unknown tool",
+            "tool not found",
+            "not found: slack_create_canvas",
+            "no such tool",
+        ]
+        .iter()
+        .any(|needle| lower.contains(needle))
     {
         Some(
             "This workspace's Slack MCP server does not offer slack_create_canvas (canvases are \
-             not available on Slack's free plan).",
+             not available on Slack's free plan)."
+                .to_owned(),
         )
     } else {
         None

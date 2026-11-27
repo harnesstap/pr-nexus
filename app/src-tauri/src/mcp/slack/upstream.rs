@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use pr_nexus_core::domain::Account;
+use pr_nexus_providers::slack_mcp::schema::ToolImage;
 use pr_nexus_providers::slack_mcp::{self, RmcpSession, ToolCaller};
 use rmcp::model::JsonObject;
 
@@ -219,7 +220,7 @@ impl SlackProxy {
         ws: &Exposed,
         tool: &str,
         arguments: JsonObject,
-    ) -> Result<String, AppError> {
+    ) -> Result<Reply, AppError> {
         if !ws.signed_in {
             return Err(AppError::new(
                 "unauthorized",
@@ -246,6 +247,17 @@ impl SlackProxy {
         if output.is_error {
             return Err(slack_mcp::schema::map_error(tool, &output.text, None).into());
         }
-        Ok(output.text)
+        Ok(Reply {
+            text: output.text,
+            images: output.images,
+        })
     }
+}
+
+/// One workspace's answer: its text, and any pictures (unchecked; see
+/// [`crate::mcp::images`]).
+#[derive(Debug)]
+pub struct Reply {
+    pub text: String,
+    pub images: Vec<ToolImage>,
 }

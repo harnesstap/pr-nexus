@@ -297,7 +297,9 @@ impl ServerHandler for NexusMcp {
         .await
         .map_err(|err| ErrorData::internal_error(err.to_string(), None))?;
         Ok(match result {
-            Ok(value) => {
+            Ok(mut value) => {
+                // Lifted out first, so the audit log never holds image data.
+                let images = super::images::take(&mut value);
                 audit(Outcome::Ok, Some(&value), None);
                 // A Slack send records review requests the list shows.
                 let sent = spec.capability == Capability::SlackSends
@@ -305,7 +307,9 @@ impl ServerHandler for NexusMcp {
                 if spec.capability == Capability::LocalWrites || sent {
                     self.shared.wrote();
                 }
-                CallToolResult::structured(value)
+                let mut reply = CallToolResult::structured(value);
+                reply.content.extend(images);
+                reply
             }
             Err(err) => {
                 audit(

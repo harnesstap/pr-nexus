@@ -6,7 +6,7 @@ use std::sync::Arc;
 use pr_nexus_core::domain::Account;
 use pr_nexus_core::error::ProviderError;
 use pr_nexus_providers::slack_mcp::ToolCaller;
-use pr_nexus_providers::slack_mcp::schema::ToolOutput;
+use pr_nexus_providers::slack_mcp::schema::{ToolImage, ToolOutput};
 use rmcp::model::JsonObject;
 use serde_json::json;
 
@@ -131,12 +131,37 @@ fn up(domain: &str) -> String {
     stem
 }
 
+/// A 1×1 PNG: what `slack_read_file` sends back for a screenshot.
+pub const SCREENSHOT_PNG: &str =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGPgW/oSAAJhAZ1J9NK9AAAAAElFTkSuQmCC";
+
+/// `F0…0003` is a picture: the official server answers with its details as
+/// text and the picture as an image block.
+fn screenshot(domain: &str, tool: &str, arguments: &JsonObject) -> Option<ToolOutput> {
+    let id = arguments.get("file_id")?.as_str()?;
+    (tool == "slack_read_file" && id.ends_with("0003")).then(|| ToolOutput {
+        text: json!({
+            "result": format!("File ID: {id}\nTitle: screenshot.png\nMIME Type: image/png\nSize: 1 KB\nWorkspace: {domain}\n"),
+        })
+        .to_string(),
+        images: vec![ToolImage {
+            data: SCREENSHOT_PNG.into(),
+            mime_type: "image/png".into(),
+        }],
+        ..ToolOutput::default()
+    })
+}
+
 impl ToolCaller for Canned {
     fn call(&self, tool: &str, arguments: JsonObject) -> Result<ToolOutput, ProviderError> {
+        if let Some(output) = screenshot(&self.domain, tool, &arguments) {
+            return Ok(output);
+        }
         Ok(ToolOutput {
             text: reply(&self.domain, tool, &arguments)?,
             structured: None,
             is_error: false,
+            images: Vec::new(),
         })
     }
 }

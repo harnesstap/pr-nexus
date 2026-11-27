@@ -30,7 +30,7 @@ use tracing::Instrument;
 use super::oauth::{self, KeychainCredentialStore};
 use super::schema::{
     self, READ_CHANNEL, READ_THREAD, READ_USER_PROFILE, SEARCH_CHANNELS, SEARCH_PUBLIC,
-    SEARCH_PUBLIC_AND_PRIVATE, SEARCH_USERS, SEND_MESSAGE, ToolOutput, ToolShape,
+    SEARCH_PUBLIC_AND_PRIVATE, SEARCH_USERS, SEND_MESSAGE, ToolImage, ToolOutput, ToolShape,
 };
 use super::{USER_SCOPES, install_tls_provider};
 use crate::vault::Vault;
@@ -362,10 +362,20 @@ fn to_output(result: rmcp::model::CallToolResult) -> ToolOutput {
         .filter_map(|block| block.as_text().map(|text| text.text.clone()))
         .collect::<Vec<_>>()
         .join("\n");
+    let images = result
+        .content
+        .iter()
+        .filter_map(|block| block.as_image())
+        .map(|image| ToolImage {
+            data: image.data.clone(),
+            mime_type: image.mime_type.clone(),
+        })
+        .collect();
     ToolOutput {
         text,
         structured: result.structured_content,
         is_error: result.is_error.unwrap_or(false),
+        images,
     }
 }
 
@@ -1022,6 +1032,31 @@ mod tests {
     fn fixture(json: &str) -> ToolOutput {
         let result: rmcp::model::CallToolResult = serde_json::from_str(json).unwrap();
         to_output(result)
+    }
+
+    /// `slack_read_file` on a picture: a text block of metadata, then the
+    /// picture as an MCP image block. Both reach the caller.
+    #[test]
+    fn image_blocks_are_kept_next_to_the_text() {
+        let output = fixture(
+            r#"{"content": [
+                {"type": "text", "text": "File ID: F0ACME0003\nTitle: screenshot.png\nMIME Type: image/png"},
+                {"type": "image", "data": "iVBORw0KGgo=", "mimeType": "image/png"}
+            ], "isError": false}"#,
+        );
+        assert!(output.text.contains("screenshot.png"));
+        assert_eq!(
+            output.images,
+            vec![ToolImage {
+                data: "iVBORw0KGgo=".into(),
+                mime_type: "image/png".into(),
+            }]
+        );
+        assert!(
+            fixture(r#"{"content": [{"type": "text", "text": "hi"}]}"#)
+                .images
+                .is_empty()
+        );
     }
 
     /// The panel's read tools (§7.10), on the official server's shapes.
